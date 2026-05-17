@@ -158,6 +158,7 @@ fn bezier_position_animation_should_match_reference_curve() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -173,6 +174,7 @@ fn bezier_position_animation_should_match_reference_curve() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .build()

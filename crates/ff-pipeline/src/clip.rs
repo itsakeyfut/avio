@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::XfadeTransition;
+use ff_filter::{BlendMode, XfadeTransition};
 
 /// A single media clip on a timeline.
 ///
@@ -85,6 +85,21 @@ pub struct Clip {
     /// Applied via the `eq` video filter during `Timeline::render()`.
     /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
     pub saturation: f32,
+    /// Per-clip overlay opacity applied when this clip is composited over a lower layer.
+    /// Range: `0.0` (fully transparent) to `1.0` (fully opaque). Default: `1.0`.
+    ///
+    /// For [`BlendMode::Normal`], opacity is applied via a `colorchannelmixer` filter before
+    /// the overlay. For photographic blend modes, it is forwarded to the `blend` filter's
+    /// `all_opacity` parameter.
+    ///
+    /// Neutral value (`1.0`) produces bit-identical output to the no-opacity path.
+    pub opacity: f32,
+    /// Blend mode for compositing this clip over the layer(s) below it.
+    /// Default: [`BlendMode::Normal`] (standard alpha-over composite).
+    ///
+    /// [`BlendMode::Normal`] uses `FFmpeg`'s `overlay` filter. All other variants use `FFmpeg`'s
+    /// `blend` filter with the corresponding `all_mode`.
+    pub blend_mode: BlendMode,
     /// Per-clip playback speed multiplier. Range: 0.1..=100.0. Default: 1.0 (normal speed).
     ///
     /// Applied via `setpts=PTS/{speed}` on the video stream and a chain of `atempo` filters
@@ -119,6 +134,8 @@ impl Clip {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
             speed: 1.0,
         }
     }
@@ -267,6 +284,50 @@ impl Clip {
             brightness,
             contrast,
             saturation,
+            ..self
+        }
+    }
+
+    /// Sets the overlay opacity and returns the updated clip.
+    ///
+    /// `opacity` is clamped to `[0.0, 1.0]`.  The neutral value (`1.0`) produces
+    /// bit-identical output to the no-opacity path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("overlay.mp4").with_opacity(0.5);
+    /// assert_eq!(clip.opacity, 0.5);
+    /// ```
+    #[must_use]
+    pub fn with_opacity(self, opacity: f32) -> Self {
+        Self {
+            opacity: opacity.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// Sets the blend mode for compositing this clip over the layer below and returns
+    /// the updated clip.
+    ///
+    /// [`BlendMode::Normal`] (the default) uses `FFmpeg`'s `overlay` filter.  All other
+    /// variants use `FFmpeg`'s `blend` filter with the corresponding `all_mode`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::BlendMode;
+    ///
+    /// let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Multiply);
+    /// assert_eq!(clip.blend_mode, BlendMode::Multiply);
+    /// ```
+    #[must_use]
+    pub fn with_blend_mode(self, mode: BlendMode) -> Self {
+        Self {
+            blend_mode: mode,
             ..self
         }
     }
@@ -434,5 +495,50 @@ mod tests {
     fn clip_with_speed_slow_motion_should_set_speed() {
         let clip = Clip::new("video.mp4").with_speed(0.5);
         assert_eq!(clip.speed, 0.5);
+    }
+
+    #[test]
+    fn clip_new_should_default_opacity_to_one() {
+        let clip = Clip::new("video.mp4");
+        assert_eq!(clip.opacity, 1.0);
+    }
+
+    #[test]
+    fn clip_with_opacity_should_set_opacity() {
+        let clip = Clip::new("overlay.mp4").with_opacity(0.5);
+        assert_eq!(clip.opacity, 0.5);
+    }
+
+    #[test]
+    fn clip_with_opacity_should_clamp_above_one() {
+        let clip = Clip::new("overlay.mp4").with_opacity(1.5);
+        assert_eq!(clip.opacity, 1.0);
+    }
+
+    #[test]
+    fn clip_with_opacity_should_clamp_below_zero() {
+        let clip = Clip::new("overlay.mp4").with_opacity(-0.5);
+        assert_eq!(clip.opacity, 0.0);
+    }
+
+    #[test]
+    fn clip_new_should_default_blend_mode_to_normal() {
+        use ff_filter::BlendMode;
+        let clip = Clip::new("video.mp4");
+        assert_eq!(clip.blend_mode, BlendMode::Normal);
+    }
+
+    #[test]
+    fn clip_with_blend_mode_should_set_blend_mode() {
+        use ff_filter::BlendMode;
+        let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Multiply);
+        assert_eq!(clip.blend_mode, BlendMode::Multiply);
+    }
+
+    #[test]
+    fn clip_with_blend_mode_screen_should_set_blend_mode() {
+        use ff_filter::BlendMode;
+        let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Screen);
+        assert_eq!(clip.blend_mode, BlendMode::Screen);
     }
 }

@@ -277,6 +277,14 @@ impl Timeline {
                         });
                     }
 
+                    // Per-clip opacity overrides the track-level animation when not 1.0.
+                    #[allow(clippy::float_cmp)]
+                    let clip_opacity = if clip.opacity != 1.0 {
+                        AnimatedValue::Static(f64::from(clip.opacity))
+                    } else {
+                        va(track_idx, "opacity", 1.0)
+                    };
+
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
                         x: va(track_idx, "x", 0.0),
@@ -284,7 +292,8 @@ impl Timeline {
                         scale_x: va(track_idx, "scale_x", 1.0),
                         scale_y: va(track_idx, "scale_y", 1.0),
                         rotation: va(track_idx, "rotation", 0.0),
-                        opacity: va(track_idx, "opacity", 1.0),
+                        opacity: clip_opacity,
+                        blend_mode: clip.blend_mode,
                         z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
                         time_offset: clip.timeline_offset,
                         in_point: clip.in_point,

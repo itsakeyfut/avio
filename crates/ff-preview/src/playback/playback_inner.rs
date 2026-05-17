@@ -32,11 +32,14 @@ pub(crate) fn audio_frame_to_f32(frame: &AudioFrame) -> Vec<f32> {
 /// reused for subsequent frames with the same dimensions and source pixel format.
 /// A new context is allocated automatically when the frame geometry changes
 /// (uncommon in practice for a single file).
+///
+/// [`convert_to`](Self::convert_to) accepts explicit output dimensions so that overlay
+/// layers can be scaled to match the primary video track's canvas size before compositing.
 pub(crate) struct SwsRgbaConverter {
     /// Nullable: `null` before the first `convert` call or after a geometry change.
     ctx: *mut ff_sys::SwsContext,
-    /// Cached (width, height, format) so geometry changes can be detected.
-    cache_key: Option<(u32, u32, PixelFormat)>,
+    /// Cached `(src_w, src_h, format, dst_w, dst_h)` so geometry changes can be detected.
+    cache_key: Option<(u32, u32, PixelFormat, u32, u32)>,
 }
 
 // SAFETY: `SwsContext` is not thread-safe per the FFmpeg docs, but
@@ -53,22 +56,40 @@ impl SwsRgbaConverter {
         }
     }
 
-    /// Convert `frame` to packed RGBA and write into `dst`.
+    /// Convert `frame` to packed RGBA at its native resolution and write into `dst`.
     ///
     /// Returns `true` on success; `false` when the frame dimensions are zero or
     /// when `sws_getContext` / `sws_scale` fails (failures are logged as `warn`).
     ///
     /// `dst` is resized to `width * height * 4` bytes before writing.
     pub(crate) fn convert(&mut self, frame: &VideoFrame, dst: &mut Vec<u8>) -> bool {
-        let w = frame.width();
-        let h = frame.height();
-        if w == 0 || h == 0 {
+        self.convert_to(frame, dst, frame.width(), frame.height())
+    }
+
+    /// Convert `frame` to packed RGBA scaled to `(dst_w, dst_h)` and write into `dst`.
+    ///
+    /// When `dst_w == frame.width()` and `dst_h == frame.height()` this is identical to
+    /// [`convert`](Self::convert). When the dimensions differ, `libswscale` performs
+    /// bilinear rescaling so the output always matches the requested canvas size.
+    ///
+    /// This is used by overlay layers (V2, V3, …) to match the primary video track's
+    /// resolution before `composite_over` is applied.
+    pub(crate) fn convert_to(
+        &mut self,
+        frame: &VideoFrame,
+        dst: &mut Vec<u8>,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> bool {
+        let src_w = frame.width();
+        let src_h = frame.height();
+        if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
             return false;
         }
         let fmt = frame.format();
-        let key = (w, h, fmt);
+        let key = (src_w, src_h, fmt, dst_w, dst_h);
 
-        // Re-create the context when geometry or format changes.
+        // Re-create the context when geometry, format, or output size changes.
         if self.cache_key.as_ref() != Some(&key) {
             // SAFETY: ctx is either null or was returned by get_context; freeing
             // a null pointer is explicitly documented as safe by free_context.
@@ -80,11 +101,11 @@ impl SwsRgbaConverter {
             // SAFETY: dimensions are > 0 (checked above); formats are valid AV constants.
             match unsafe {
                 ff_sys::swscale::get_context(
-                    w as i32,
-                    h as i32,
+                    src_w as i32,
+                    src_h as i32,
                     src_fmt,
-                    w as i32,
-                    h as i32,
+                    dst_w as i32,
+                    dst_h as i32,
                     dst_fmt,
                     ff_sys::swscale::scale_flags::FAST_BILINEAR,
                 )
@@ -92,7 +113,8 @@ impl SwsRgbaConverter {
                 Ok(ctx) => self.ctx = ctx,
                 Err(code) => {
                     log::warn!(
-                        "sws_getContext failed format={fmt:?} width={w} height={h} code={code}"
+                        "sws_getContext failed format={fmt:?} src={src_w}x{src_h} \
+                         dst={dst_w}x{dst_h} code={code}"
                     );
                     return false;
                 }
@@ -100,8 +122,8 @@ impl SwsRgbaConverter {
             self.cache_key = Some(key);
         }
 
-        let rgba_stride = (w * 4) as usize;
-        let total = rgba_stride * h as usize;
+        let rgba_stride = (dst_w * 4) as usize;
+        let total = rgba_stride * dst_h as usize;
         dst.resize(total, 0u8);
 
         // Collect per-plane pointers and strides from the VideoFrame.
@@ -127,14 +149,14 @@ impl SwsRgbaConverter {
         let dst_strides: [i32; 4] = [dst_stride_val, 0, 0, 0];
 
         // SAFETY: ctx is non-null (created above); src and dst pointers are valid
-        // for the lifetime of this call; buffer sizes match width * height * 4 bytes.
+        // for the lifetime of this call; buffer sizes match dst_w * dst_h * 4 bytes.
         let result = unsafe {
             ff_sys::swscale::scale(
                 self.ctx,
                 src_ptrs.as_ptr(),
                 src_strides.as_ptr(),
                 0,
-                h as i32,
+                src_h as i32,
                 dst_ptrs.as_mut_ptr().cast::<*mut u8>(),
                 dst_strides.as_ptr(),
             )
@@ -142,7 +164,7 @@ impl SwsRgbaConverter {
         match result {
             Ok(_) => true,
             Err(code) => {
-                log::warn!("sws_scale failed width={w} height={h} code={code}");
+                log::warn!("sws_scale failed src={src_w}x{src_h} dst={dst_w}x{dst_h} code={code}");
                 false
             }
         }

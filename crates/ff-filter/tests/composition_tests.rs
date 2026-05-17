@@ -93,6 +93,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -108,6 +109,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -123,6 +125,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .build()
@@ -568,6 +571,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -583,6 +587,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .build()
@@ -836,6 +841,7 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            blend_mode: ff_filter::BlendMode::Normal,
             effects: vec![],
         })
         .build()
