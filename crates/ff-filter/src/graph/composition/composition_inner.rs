@@ -13,6 +13,7 @@ use std::time::Duration;
 use ff_format::ChannelLayout;
 
 use crate::animation::{AnimatedValue, AnimationEntry};
+use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 use crate::graph::graph::FilterGraph;
@@ -20,6 +21,32 @@ use crate::graph::types::Rgb;
 
 use super::multi_track_composer::VideoLayer;
 use super::multi_track_mixer::AudioTrack;
+
+/// Maps a `BlendMode` to the `FFmpeg` `blend` filter `all_mode` name.
+///
+/// `BlendMode::Normal` is not handled here; it uses the `overlay` filter instead.
+fn blend_mode_to_ffmpeg(mode: BlendMode) -> &'static str {
+    match mode {
+        BlendMode::Multiply => "multiply",
+        BlendMode::Screen => "screen",
+        BlendMode::Overlay => "overlay",
+        BlendMode::SoftLight => "softlight",
+        BlendMode::HardLight => "hardlight",
+        BlendMode::ColorDodge => "dodge",
+        BlendMode::ColorBurn => "burn",
+        BlendMode::Darken => "darken",
+        BlendMode::Lighten => "lighten",
+        BlendMode::Difference => "difference",
+        BlendMode::Exclusion => "exclusion",
+        BlendMode::Add => "addition",
+        BlendMode::Subtract => "subtract",
+        BlendMode::Hue => "hue",
+        BlendMode::Saturation => "saturation",
+        BlendMode::Color => "color",
+        BlendMode::Luminosity => "luminosity",
+        _ => "normal",
+    }
+}
 
 // ── Video composition graph builder ──────────────────────────────────────────
 
@@ -318,19 +345,22 @@ pub(super) unsafe fn build_video_composition(
 
         // ── Optional opacity ──────────────────────────────────────────────────
         //
-        // Animated opacity: add `format=yuva420p` → `colorchannelmixer aa=<v>`
-        // so that `tick()` can update the alpha plane per-frame via send_command.
-        // The overlay filter must use `format=auto` to blend the alpha channel.
+        // For BlendMode::Normal the opacity is applied via colorchannelmixer so
+        // the overlay filter can blend the alpha channel.
         //
-        // Static opacity < 1.0: legacy path (colorchannelmixer only, no alpha
-        // conversion).  The overlay still receives a yuv420p frame which FFmpeg
-        // handles by treating the fully-opaque layer as semi-transparent via the
-        // colorchannelmixer alpha reduction.
-        let is_animated_opacity = matches!(layer.opacity, AnimatedValue::Track(_));
+        // For photographic blend modes (Multiply, Screen, etc.) opacity is
+        // forwarded to the blend filter's `all_opacity` parameter instead; the
+        // colorchannelmixer step is skipped entirely.
+        let use_blend_filter = !matches!(layer.blend_mode, BlendMode::Normal);
+        let is_animated_opacity =
+            !use_blend_filter && matches!(layer.opacity, AnimatedValue::Track(_));
         let opacity_initial = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0);
+        // True for any Normal-mode layer whose opacity may be < 1.0 (static or animated).
+        // Both cases require yuva420p + colorchannelmixer so the overlay can use alpha blending.
+        let needs_alpha = !use_blend_filter && (is_animated_opacity || opacity_initial < 1.0);
 
-        if is_animated_opacity {
-            // ── format=yuva420p: ensure the alpha plane exists ─────────────────
+        if needs_alpha {
+            // ── format=yuva420p: add alpha plane before colorchannelmixer ─────
             let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
             if fmt_filter.is_null() {
                 bail!(graph, "filter not found: format");
@@ -403,41 +433,6 @@ pub(super) unsafe fn build_video_composition(
                     suffix: "",
                 });
             }
-        } else if opacity_initial < 1.0 {
-            // Static opacity < 1.0: legacy path.
-            let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
-            if ccm_filter.is_null() {
-                bail!(graph, "filter not found: colorchannelmixer");
-            }
-            let Ok(ccm_name) = CString::new(format!("ccm{idx}")) else {
-                bail!(graph, "CString::new failed for colorchannelmixer name");
-            };
-            let Ok(ccm_args) = CString::new(format!("aa={opacity_initial}")) else {
-                bail!(graph, "CString::new failed for colorchannelmixer args");
-            };
-            let mut ccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-            let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut ccm_ctx,
-                ccm_filter,
-                ccm_name.as_ptr(),
-                ccm_args.as_ptr(),
-                std::ptr::null_mut(),
-                graph,
-            );
-            if ret < 0 {
-                bail!(
-                    graph,
-                    format!("failed to create colorchannelmixer filter layer={idx} code={ret}")
-                );
-            }
-            let ret = ff_sys::avfilter_link(chain_end, 0, ccm_ctx, 0);
-            if ret < 0 {
-                bail!(
-                    graph,
-                    format!("link failed: →colorchannelmixer layer={idx}")
-                );
-            }
-            chain_end = ccm_ctx;
         }
 
         // ── Per-layer video effects ───────────────────────────────────────────
@@ -562,8 +557,92 @@ pub(super) unsafe fn build_video_composition(
         if skip_overlay[idx] {
             // The next layer will xfade from this one; defer the overlay.
             saved_chain = chain_end;
+        } else if use_blend_filter {
+            // ── Photographic blend mode (Multiply, Screen, Overlay, etc.) ────────
+            //
+            // FFmpeg's `blend` filter takes two same-sized inputs and applies a
+            // pixel-level blend operation.  Opacity is forwarded via `all_opacity`.
+            // The `blend` filter does not support positional (x/y) placement.
+            //
+            // Normalise the layer to yuv420p so both inputs share the same format.
+            let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+            if fmt_filter.is_null() {
+                bail!(graph, "filter not found: format (blend pre-norm)");
+            }
+            let Ok(bfmt_name) = CString::new(format!("blend_fmt{idx}")) else {
+                bail!(graph, "CString::new failed for blend format name");
+            };
+            let mut bfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut bfmt_ctx,
+                fmt_filter,
+                bfmt_name.as_ptr(),
+                c"yuv420p".as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!(
+                        "failed to create format filter (blend pre-norm) layer={idx} code={ret}"
+                    )
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, bfmt_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: →blend_fmt layer={idx}"));
+            }
+            chain_end = bfmt_ctx;
+
+            let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
+            if blend_filter.is_null() {
+                bail!(graph, "filter not found: blend");
+            }
+            let Ok(bl_name) = CString::new(format!("blend{idx}")) else {
+                bail!(graph, "CString::new failed for blend name");
+            };
+            let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
+            let bl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
+                format!("all_mode={mode_name}")
+            } else {
+                format!("all_mode={mode_name}:all_opacity={opacity_initial:.6}")
+            };
+            let Ok(bl_args) = CString::new(bl_args_str.as_str()) else {
+                bail!(graph, "CString::new failed for blend args");
+            };
+            let mut blend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut blend_ctx,
+                blend_filter,
+                bl_name.as_ptr(),
+                bl_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!(
+                        "failed to create blend filter layer={idx} args={bl_args_str} code={ret}"
+                    )
+                );
+            }
+            // blend pad 0 = bottom (base canvas), pad 1 = top (layer content)
+            let ret = ff_sys::avfilter_link(prev_ctx, 0, blend_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: base→blend[0] layer={idx}"));
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, blend_ctx, 1);
+            if ret < 0 {
+                bail!(graph, format!("link failed: layer→blend[1] layer={idx}"));
+            }
+            log::debug!(
+                "video composition layer={idx} blend mode={mode_name} opacity={opacity_initial:.3}"
+            );
+            prev_ctx = blend_ctx;
         } else {
-            // ── overlay ───────────────────────────────────────────────────────────
+            // ── Normal blend mode: overlay ────────────────────────────────────────
             // Last layer uses eof_action=endall so the graph terminates when that
             // layer's source ends.  Intermediate layers use pass so the canvas
             // continues while other layers are still producing.
@@ -583,11 +662,7 @@ pub(super) unsafe fn build_video_composition(
             let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
                 || matches!(layer.y, AnimatedValue::Track(_));
             let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
-            let format_suffix = if is_animated_opacity {
-                ":format=auto"
-            } else {
-                ""
-            };
+            let format_suffix = if needs_alpha { ":format=auto" } else { "" };
             let Ok(ov_args) = CString::new(format!(
                 "{lx}:{ly}:eof_action={eof_action}{eval_suffix}{format_suffix}"
             )) else {

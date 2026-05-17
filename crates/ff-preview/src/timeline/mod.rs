@@ -71,6 +71,10 @@ struct ClipState {
     /// Playback speed multiplier from `Clip::speed` (`1.0` = normal).
     /// Used to remap source-file PTS → timeline PTS in `run()`.
     speed: f64,
+    /// Per-clip opacity for overlay compositing (`1.0` = fully opaque).
+    /// Applied to the RGBA alpha channel after SWS conversion so that
+    /// `composite_over` blends at the correct transparency level.
+    opacity: f32,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
@@ -242,6 +246,7 @@ impl TimelinePlayer {
             video_w: u32,
             video_h: u32,
             speed: f64,
+            opacity: f32,
         }
 
         let tracks = timeline.video_tracks();
@@ -300,6 +305,7 @@ impl TimelinePlayer {
                 video_w,
                 video_h,
                 speed,
+                opacity: clip.opacity.clamp(0.0, 1.0),
             });
         }
 
@@ -347,6 +353,7 @@ impl TimelinePlayer {
                 transition_dur: p.transition_dur,
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
+                opacity: p.opacity,
             });
         }
 
@@ -406,6 +413,7 @@ impl TimelinePlayer {
                     transition_dur: Duration::ZERO,
                     audio_track: None,
                     speed: clip.speed.max(0.01),
+                    opacity: clip.opacity.clamp(0.0, 1.0),
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -1108,7 +1116,22 @@ impl TimelineRunner {
                                         let tl_start = layer.clips[cidx].timeline_start;
                                         let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
                                         if v2_pts + Duration::from_millis(50) >= gap_pts {
-                                            layer.sws.convert(&f, &mut layer.rgba);
+                                            // Scale to V1 canvas size so sizes always match.
+                                            layer.sws.convert_to(&f, &mut layer.rgba, gw, gh);
+                                            let op = layer.clips[cidx].opacity;
+                                            if (op - 1.0).abs() > 1e-6 {
+                                                for chunk in layer.rgba.chunks_exact_mut(4) {
+                                                    #[allow(
+                                                        clippy::cast_possible_truncation,
+                                                        clippy::cast_sign_loss
+                                                    )]
+                                                    {
+                                                        chunk[3] = (f32::from(chunk[3]) * op)
+                                                            .round()
+                                                            as u8;
+                                                    }
+                                                }
+                                            }
                                             break;
                                         }
                                     }
@@ -1215,7 +1238,22 @@ impl TimelineRunner {
 
                     let a_ok = self.sws_a.convert(&frame, &mut self.rgba_a);
 
-                    // ── Composite overlay layers: V1 is foreground, V2/V3… are background ──
+                    // Apply per-clip opacity for V1: blend with black background before compositing.
+                    if a_ok {
+                        let v1_op = self.clips[active].opacity;
+                        if (v1_op - 1.0).abs() > 1e-6 {
+                            for chunk in self.rgba_a.chunks_exact_mut(4) {
+                                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                                {
+                                    chunk[0] = (f32::from(chunk[0]) * v1_op).round() as u8;
+                                    chunk[1] = (f32::from(chunk[1]) * v1_op).round() as u8;
+                                    chunk[2] = (f32::from(chunk[2]) * v1_op).round() as u8;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Composite overlay layers: V1 is background, V2/V3… are composited on top ──
                     // Phase 1: drain each overlay layer to update its decoded rgba buffer.
                     if a_ok {
                         for layer in &mut self.overlay_layers {
@@ -1237,42 +1275,44 @@ impl TimelineRunner {
                                 let tl_start = layer.clips[cidx].timeline_start;
                                 let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
                                 if v2_pts + Duration::from_millis(50) >= timeline_pts {
-                                    layer.sws.convert(&f, &mut layer.rgba);
+                                    // Scale overlay to V1's canvas size so composite_over
+                                    // works even when V1 and V2 have different resolutions.
+                                    layer.sws.convert_to(
+                                        &f,
+                                        &mut layer.rgba,
+                                        self.last_frame_w,
+                                        self.last_frame_h,
+                                    );
+                                    // Apply per-clip opacity to the alpha channel so that
+                                    // composite_over() blends at the correct transparency.
+                                    let op = layer.clips[cidx].opacity;
+                                    if (op - 1.0).abs() > 1e-6 {
+                                        for chunk in layer.rgba.chunks_exact_mut(4) {
+                                            #[allow(
+                                                clippy::cast_possible_truncation,
+                                                clippy::cast_sign_loss
+                                            )]
+                                            {
+                                                chunk[3] = (f32::from(chunk[3]) * op).round() as u8;
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                             }
                         }
                     }
-                    // Phase 2: build composite — deepest background layer first, V1 on top.
-                    if a_ok {
-                        let base_idx = self
-                            .overlay_layers
-                            .iter()
-                            .enumerate()
-                            .rev()
-                            .find(|(_, l)| !l.rgba.is_empty())
-                            .map(|(i, _)| i);
-                        if let Some(base) = base_idx {
-                            // Seed the background buffer with the deepest layer.
-                            self.blend_buf
-                                .resize(self.overlay_layers[base].rgba.len(), 0);
-                            self.blend_buf
-                                .copy_from_slice(&self.overlay_layers[base].rgba);
-                            // Composite shallower background layers on top (from base-1 to V2).
-                            for i in (0..base).rev() {
-                                if !self.overlay_layers[i].rgba.is_empty() {
-                                    let layer_rgba = self.overlay_layers[i].rgba.clone();
-                                    timeline_inner::composite_over(
-                                        &mut self.blend_buf,
-                                        &layer_rgba,
-                                    );
-                                }
+                    // Phase 2: V1 is background; overlay layers (V2, V3, …) are composited on top.
+                    if a_ok && self.overlay_layers.iter().any(|l| !l.rgba.is_empty()) {
+                        self.blend_buf.resize(self.rgba_a.len(), 0);
+                        self.blend_buf.copy_from_slice(&self.rgba_a);
+                        for layer in &self.overlay_layers {
+                            if !layer.rgba.is_empty() && layer.rgba.len() == self.blend_buf.len() {
+                                let layer_rgba = layer.rgba.clone();
+                                timeline_inner::composite_over(&mut self.blend_buf, &layer_rgba);
                             }
-                            // Composite V1 on top of the background.
-                            timeline_inner::composite_over(&mut self.blend_buf, &self.rgba_a);
-                            // blend_buf now holds the final composite; make it the active frame.
-                            std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
                         }
+                        std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
                     }
 
                     if in_trans && a_ok {

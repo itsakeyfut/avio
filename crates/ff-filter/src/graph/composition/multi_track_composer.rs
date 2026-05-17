@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::animation::AnimatedValue;
+use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::{Rgb, XfadeTransition};
@@ -65,6 +66,12 @@ pub struct VideoLayer {
     /// Transition applied at the start of this layer (from the preceding layer on the same z-order).
     /// `None` = hard cut. Set by [`MultiTrackComposer::join_with_dissolve`].
     pub in_transition: Option<ClipTransition>,
+    /// How this layer blends with the layer(s) below it.
+    ///
+    /// [`BlendMode::Normal`] uses the `FFmpeg` `overlay` filter (standard alpha-over composite).
+    /// All other modes use the `FFmpeg` `blend` filter with the corresponding `all_mode`.
+    /// Defaults to [`BlendMode::Normal`].
+    pub blend_mode: BlendMode,
     /// Per-layer video filter steps applied to this layer's decoded stream before compositing.
     ///
     /// Applied in order after trim/setpts/scale/rotate/opacity and before the `overlay` node.
@@ -261,6 +268,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                blend_mode: BlendMode::Normal,
                 effects: vec![],
             })
             .build();
@@ -284,6 +292,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                blend_mode: BlendMode::Normal,
                 effects: vec![],
             })
             .build();
@@ -315,6 +324,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                blend_mode: BlendMode::Normal,
                 effects: vec![],
             })
             .build();
@@ -354,6 +364,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                blend_mode: BlendMode::Normal,
                 effects: vec![],
             })
             .build();
@@ -383,6 +394,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                blend_mode: BlendMode::Normal,
                 effects: vec![],
             })
             .build();
