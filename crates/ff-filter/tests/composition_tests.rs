@@ -82,6 +82,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
             source: src1_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -98,6 +99,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         })
         .add_layer(VideoLayer {
             source: src2_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(160.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -114,6 +116,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         })
         .add_layer(VideoLayer {
             source: src3_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(134.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -560,6 +563,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
     let mut composer = match MultiTrackComposer::new(W, H)
         .add_layer(VideoLayer {
             source: bg_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -576,6 +580,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
         })
         .add_layer(VideoLayer {
             source: layer_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -830,6 +835,7 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
     let mut composer = match MultiTrackComposer::new(W, H)
         .add_layer(VideoLayer {
             source: src_path.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),

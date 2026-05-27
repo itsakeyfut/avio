@@ -90,6 +90,7 @@ fn main() {
     let mut video_graph = match MultiTrackComposer::new(args.width, args.height)
         .add_layer(VideoLayer {
             source: args.base.clone(),
+            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -106,6 +107,7 @@ fn main() {
         })
         .add_layer(VideoLayer {
             source: args.overlay.clone(),
+            input_format: None,
             x: AnimatedValue::Static(f64::from(overlay_x)),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(0.5),

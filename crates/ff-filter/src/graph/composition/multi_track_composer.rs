@@ -41,8 +41,16 @@ pub struct ClipTransition {
 /// the value at `Duration::ZERO`; per-frame updates are added in issue #363.
 #[derive(Debug, Clone)]
 pub struct VideoLayer {
-    /// Source media file path.
+    /// Source media file path, or a `lavfi` filtergraph string when
+    /// [`input_format`](Self::input_format) is `Some("lavfi")`.
     pub source: PathBuf,
+    /// Optional `FFmpeg` input format name passed to the `movie` filter.
+    ///
+    /// When `Some("lavfi")`, `source` is interpreted as a filtergraph string
+    /// (e.g. `"color=s=1920x1080:c=black@0.0,drawtext=text='Title'"`) and opened
+    /// via `FFmpeg`'s `lavfi` virtual demuxer. When `None` (the default), `source`
+    /// is opened as an ordinary media file.
+    pub input_format: Option<String>,
     /// X offset on the canvas in pixels (top-left origin).
     pub x: AnimatedValue<f64>,
     /// Y offset on the canvas in pixels.
@@ -98,6 +106,7 @@ pub struct VideoLayer {
 /// let mut graph = MultiTrackComposer::new(1920, 1080)
 ///     .add_layer(VideoLayer {
 ///         source: "clip.mp4".into(),
+///         input_format: None,
 ///         x: AnimatedValue::Static(0.0),
 ///         y: AnimatedValue::Static(0.0),
 ///         scale_x: AnimatedValue::Static(1.0),
@@ -109,6 +118,8 @@ pub struct VideoLayer {
 ///         in_point: None,
 ///         out_point: None,
 ///         in_transition: None,
+///         blend_mode: BlendMode::Normal,
+///         effects: vec![],
 ///     })
 ///     .build()?;
 ///
@@ -257,6 +268,7 @@ mod tests {
         let result = MultiTrackComposer::new(0, 1080)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
+                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -281,6 +293,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 0)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
+                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -313,6 +326,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent_640x480.mp4".into(),
+                input_format: None,
                 x: AnimatedValue::Static(100.0),
                 y: AnimatedValue::Static(100.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -353,6 +367,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
+                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -383,6 +398,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
+                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),

@@ -69,6 +69,15 @@ pub struct Timeline {
     ///
     /// Supported properties: `volume`, `pan`.
     pub(crate) audio_animations: HashMap<String, AnimationTrack<f64>>,
+    /// Optional `lavfi` filtergraph string composited as the topmost video layer.
+    ///
+    /// When set, a [`VideoLayer`] with `input_format = Some("lavfi")` is added above
+    /// all regular video tracks. Use `FFmpeg` `drawtext` syntax to render text titles:
+    ///
+    /// ```text
+    /// color=s=1920x1080:c=black@0.0,drawtext=text='Hello':fontsize=48:fontcolor=white
+    /// ```
+    pub(crate) lavfi_overlay: Option<String>,
 }
 
 impl Timeline {
@@ -186,6 +195,7 @@ impl Timeline {
             audio_tracks,
             video_animations,
             audio_animations,
+            lavfi_overlay,
         } = self;
 
         let nv = video_tracks.len();
@@ -287,6 +297,7 @@ impl Timeline {
 
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
+                        input_format: None,
                         x: va(track_idx, "x", 0.0),
                         y: va(track_idx, "y", 0.0),
                         scale_x: va(track_idx, "scale_x", 1.0),
@@ -320,6 +331,28 @@ impl Timeline {
                     prev_end_by_track.insert(track_idx, end_secs);
                 }
             }
+            // Lavfi overlay sits above all regular tracks.
+            if let Some(ref lavfi_str) = lavfi_overlay {
+                use ff_filter::BlendMode;
+                composer = composer.add_layer(VideoLayer {
+                    source: std::path::PathBuf::from(lavfi_str),
+                    input_format: Some("lavfi".to_string()),
+                    x: AnimatedValue::Static(0.0),
+                    y: AnimatedValue::Static(0.0),
+                    scale_x: AnimatedValue::Static(1.0),
+                    scale_y: AnimatedValue::Static(1.0),
+                    rotation: AnimatedValue::Static(0.0),
+                    opacity: AnimatedValue::Static(1.0),
+                    blend_mode: BlendMode::Normal,
+                    z_order: u32::try_from(nv).unwrap_or(u32::MAX),
+                    time_offset: Duration::ZERO,
+                    in_point: None,
+                    out_point: None,
+                    in_transition: None,
+                    effects: vec![],
+                });
+            }
+
             video_graph = Some(composer.build().map_err(PipelineError::Filter)?);
         }
 
@@ -486,6 +519,8 @@ pub struct TimelineBuilder {
     audio_tracks: Vec<Vec<Clip>>,
     video_animations: HashMap<String, AnimationTrack<f64>>,
     audio_animations: HashMap<String, AnimationTrack<f64>>,
+    /// See [`TimelineBuilder::lavfi_overlay`].
+    lavfi_overlay: Option<String>,
 }
 
 impl Default for TimelineBuilder {
@@ -505,6 +540,7 @@ impl TimelineBuilder {
             audio_tracks: Vec::new(),
             video_animations: HashMap::new(),
             audio_animations: HashMap::new(),
+            lavfi_overlay: None,
         }
     }
 
@@ -581,6 +617,30 @@ impl TimelineBuilder {
         }
     }
 
+    /// Sets an `FFmpeg` `lavfi` filtergraph string that is composited as the topmost
+    /// video layer during rendering.
+    ///
+    /// The string is interpreted by `FFmpeg`'s `lavfi` virtual demuxer via the `movie`
+    /// filter's `format_name=lavfi` option. Use `drawtext` to render text titles, or
+    /// chain multiple filter expressions with `,`:
+    ///
+    /// ```ignore
+    /// builder.lavfi_overlay(
+    ///     "color=s=1920x1080:c=black@0.0,\
+    ///      drawtext=text='Hello World':fontsize=48:fontcolor=white:\
+    ///      x=(w-text_w)/2:y=(h-text_h)/2"
+    /// )
+    /// ```
+    ///
+    /// When not set (the default) no overlay is added and the rendering path is unchanged.
+    #[must_use]
+    pub fn lavfi_overlay(self, filter: impl Into<String>) -> Self {
+        Self {
+            lavfi_overlay: Some(filter.into()),
+            ..self
+        }
+    }
+
     /// Builds the [`Timeline`].
     ///
     /// # Errors
@@ -604,6 +664,7 @@ impl TimelineBuilder {
             audio_tracks: self.audio_tracks,
             video_animations: self.video_animations,
             audio_animations: self.audio_animations,
+            lavfi_overlay: self.lavfi_overlay,
         })
     }
 
