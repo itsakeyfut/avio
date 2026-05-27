@@ -123,15 +123,6 @@ pub(super) unsafe fn build_video_composition(
     let mut saved_chain: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
 
     for (idx, layer) in layers.iter().enumerate() {
-        // On Windows, paths contain backslashes and a drive-letter colon
-        // (e.g. "D:\…").  FFmpeg's filter-option parser uses ":" as a
-        // key=value separator, so the colon must be escaped as "\:".
-        // Forward-slashes are safe on all platforms.
-        let path = layer
-            .source
-            .to_string_lossy()
-            .replace('\\', "/")
-            .replace(':', "\\:");
         let is_last = idx == layer_count - 1;
 
         // ── movie= source ─────────────────────────────────────────────────────
@@ -142,7 +133,22 @@ pub(super) unsafe fn build_video_composition(
         let Ok(movie_name) = CString::new(format!("movie{idx}")) else {
             bail!(graph, "CString::new failed for movie name");
         };
-        let Ok(movie_args) = CString::new(format!("filename={path}")) else {
+        // When input_format is "lavfi", source is a filtergraph string opened via
+        // FFmpeg's lavfi virtual demuxer; escape "\" and ":" for the option parser.
+        // For regular files, normalise Windows backslashes and escape the drive colon.
+        let movie_args_str = if layer.input_format.as_deref() == Some("lavfi") {
+            let lavfi_str = layer.source.to_string_lossy();
+            let escaped = lavfi_str.replace('\\', "\\\\").replace(':', "\\:");
+            format!("filename={escaped}:format_name=lavfi")
+        } else {
+            let path = layer
+                .source
+                .to_string_lossy()
+                .replace('\\', "/")
+                .replace(':', "\\:");
+            format!("filename={path}")
+        };
+        let Ok(movie_args) = CString::new(movie_args_str) else {
             bail!(graph, "CString::new failed for movie args");
         };
         let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -160,7 +166,7 @@ pub(super) unsafe fn build_video_composition(
                 format!("failed to create movie filter layer={idx} code={ret}")
             );
         }
-        log::debug!("video composition layer={idx} movie source path={path}");
+        log::debug!("video composition layer={idx} movie source");
         let mut chain_end = movie_ctx;
 
         // ── Optional trim + setpts ────────────────────────────────────────────
