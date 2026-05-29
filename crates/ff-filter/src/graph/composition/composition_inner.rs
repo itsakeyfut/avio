@@ -854,6 +854,85 @@ pub(super) unsafe fn build_audio_mix(
         log::debug!("audio mix track={idx} amovie source path={path}");
         let mut chain_end = amovie_ctx;
 
+        // ── Optional atrim + asetpts (source in/out point trim) ───────────────
+        // Inserted immediately after amovie so that subsequent filters
+        // (aresample, aformat, adelay, volume, effects) see only the desired
+        // source window.  asetpts resets timestamps to zero after the trim so
+        // that adelay positions the trimmed content correctly on the timeline.
+        if track.in_point.is_some() || track.out_point.is_some() {
+            let atrim_args_str = match (track.in_point, track.out_point) {
+                (Some(ip), Some(op)) => {
+                    format!("start={:.6}:end={:.6}", ip.as_secs_f64(), op.as_secs_f64())
+                }
+                (Some(ip), None) => format!("start={:.6}", ip.as_secs_f64()),
+                (None, Some(op)) => format!("end={:.6}", op.as_secs_f64()),
+                (None, None) => unreachable!(),
+            };
+
+            let atrim_filter = ff_sys::avfilter_get_by_name(c"atrim".as_ptr());
+            if atrim_filter.is_null() {
+                bail!(graph, "filter not found: atrim");
+            }
+            let Ok(atrim_name) = CString::new(format!("atrim{idx}")) else {
+                bail!(graph, "CString::new failed for atrim name");
+            };
+            let Ok(atrim_args) = CString::new(atrim_args_str.as_str()) else {
+                bail!(graph, "CString::new failed for atrim args");
+            };
+            let mut atrim_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut atrim_ctx,
+                atrim_filter,
+                atrim_name.as_ptr(),
+                atrim_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create atrim filter track={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, atrim_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: amovie→atrim track={idx}"));
+            }
+            chain_end = atrim_ctx;
+
+            let asetpts_filter = ff_sys::avfilter_get_by_name(c"asetpts".as_ptr());
+            if asetpts_filter.is_null() {
+                bail!(graph, "filter not found: asetpts");
+            }
+            let Ok(asp_name) = CString::new(format!("atrim_setpts{idx}")) else {
+                bail!(graph, "CString::new failed for asetpts name");
+            };
+            let Ok(asp_args) = CString::new("PTS-STARTPTS") else {
+                bail!(graph, "CString::new failed for asetpts args");
+            };
+            let mut asp_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut asp_ctx,
+                asetpts_filter,
+                asp_name.as_ptr(),
+                asp_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create asetpts filter track={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, asp_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: atrim→asetpts track={idx}"));
+            }
+            chain_end = asp_ctx;
+            log::debug!("audio track trimmed track={idx} args={atrim_args_str}");
+        }
+
         // ── Optional aresample (sample rate conversion) ───────────────────────
         if track.sample_rate != sample_rate {
             let src_rate = track.sample_rate;

@@ -427,6 +427,8 @@ impl Timeline {
                         volume,
                         pan: aa(track_idx, "pan", 0.0),
                         time_offset: clip.timeline_offset,
+                        in_point: clip.in_point,
+                        out_point: clip.out_point,
                         effects,
                         sample_rate: 48_000,
                         channel_layout: ff_format::ChannelLayout::Stereo,
