@@ -147,6 +147,7 @@ fn bezier_position_animation_should_match_reference_curve() {
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
             source: bg_path.clone(),
+            proxy: None,
             input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
@@ -164,6 +165,7 @@ fn bezier_position_animation_should_match_reference_curve() {
         })
         .add_layer(VideoLayer {
             source: marker_path.clone(),
+            proxy: None,
             input_format: None,
             x: AnimatedValue::Track(bezier_track),
             y: AnimatedValue::Static(0.0),

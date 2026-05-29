@@ -28,6 +28,24 @@ pub struct ClipTransition {
     pub duration_secs: f64,
 }
 
+// ── ProxySource ───────────────────────────────────────────────────────────────
+
+/// A low-resolution proxy substitute for a [`VideoLayer`]'s source.
+///
+/// When set on [`VideoLayer::proxy`], frames are decoded from [`path`](Self::path)
+/// instead of the layer's `source`, then scaled up to `width` × `height` (the
+/// original source resolution) before any other processing. This lets callers
+/// render from small proxy files for speed while producing full-resolution output.
+#[derive(Debug, Clone)]
+pub struct ProxySource {
+    /// Path to the proxy media file to decode from.
+    pub path: PathBuf,
+    /// Original source width, in pixels. Decoded proxy frames are scaled to this.
+    pub width: u32,
+    /// Original source height, in pixels. Decoded proxy frames are scaled to this.
+    pub height: u32,
+}
+
 // ── VideoLayer ────────────────────────────────────────────────────────────────
 
 /// A single video layer in a [`MultiTrackComposer`] composition.
@@ -44,6 +62,13 @@ pub struct VideoLayer {
     /// Source media file path, or a `lavfi` filtergraph string when
     /// [`input_format`](Self::input_format) is `Some("lavfi")`.
     pub source: PathBuf,
+    /// Optional low-resolution proxy to decode from instead of `source`.
+    ///
+    /// When `Some`, frames are decoded from the proxy and scaled up to the
+    /// original source resolution before trim/effects/compositing, so the
+    /// output is identical in size to a non-proxy render. Ignored when
+    /// [`input_format`](Self::input_format) is `Some("lavfi")`.
+    pub proxy: Option<ProxySource>,
     /// Optional `FFmpeg` input format name passed to the `movie` filter.
     ///
     /// When `Some("lavfi")`, `source` is interpreted as a filtergraph string
@@ -106,6 +131,7 @@ pub struct VideoLayer {
 /// let mut graph = MultiTrackComposer::new(1920, 1080)
 ///     .add_layer(VideoLayer {
 ///         source: "clip.mp4".into(),
+///         proxy: None,
 ///         input_format: None,
 ///         x: AnimatedValue::Static(0.0),
 ///         y: AnimatedValue::Static(0.0),
@@ -268,6 +294,7 @@ mod tests {
         let result = MultiTrackComposer::new(0, 1080)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
+                proxy: None,
                 input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
@@ -293,6 +320,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 0)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
+                proxy: None,
                 input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
@@ -326,6 +354,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent_640x480.mp4".into(),
+                proxy: None,
                 input_format: None,
                 x: AnimatedValue::Static(100.0),
                 y: AnimatedValue::Static(100.0),
@@ -361,12 +390,51 @@ mod tests {
     }
 
     #[test]
+    fn video_layer_with_proxy_should_insert_scale_filter() {
+        // When a proxy is set, a scale filter is inserted right after the movie
+        // source to upscale to the original resolution. Build fails (nonexistent
+        // file) but must NOT fail at "filter not found: scale".
+        let result = MultiTrackComposer::new(1920, 1080)
+            .add_layer(VideoLayer {
+                source: "nonexistent.mp4".into(),
+                proxy: Some(ProxySource {
+                    path: "nonexistent_proxy_quarter.mp4".into(),
+                    width: 1920,
+                    height: 1080,
+                }),
+                input_format: None,
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
+                z_order: 0,
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
+                in_transition: None,
+                blend_mode: BlendMode::Normal,
+                effects: vec![],
+            })
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent proxy file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: scale"),
+                "scale filter must exist and be created for proxy upscale; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
     fn video_layer_with_positive_offset_should_insert_setpts() {
         // setpts_offset is inserted when time_offset > 0.
         // Build fails (nonexistent file) but NOT at "filter not found: setpts".
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
+                proxy: None,
                 input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
@@ -398,6 +466,7 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
+                proxy: None,
                 input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),

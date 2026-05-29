@@ -315,11 +315,14 @@ impl FilterGraphInner {
                 self.hw.as_ref(),
             ) {
                 Ok((src_ctxs, asink_ctx)) => {
+                    // The audio contexts (src_ctxs, asink_ctx) live inside `graph_nn`.
+                    // When a video graph already occupies `self.graph`, keep the audio
+                    // graph in `self.audio_graph` — freeing it here would leave the
+                    // audio contexts dangling and segfault on the next pull_audio.
                     if self.graph.is_none() {
                         self.graph = Some(graph_nn);
                     } else {
-                        let mut raw = graph_nn.as_ptr();
-                        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(raw));
+                        self.audio_graph = Some(graph_nn);
                     }
                     let video_slots = self.src_ctxs.len();
                     self.src_ctxs.resize(video_slots + num_inputs, None);
@@ -631,6 +634,15 @@ impl Drop for FilterGraphInner {
             // `vsink_ctx`, and `asink_ctx` must NOT be freed individually.
             // Filter contexts that held `av_buffer_ref` refs to `hw_device_ctx`
             // release those refs here as well.
+            unsafe {
+                let mut raw = ptr.as_ptr();
+                ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(raw));
+            }
+        }
+        // Free the secondary audio graph when present (built when both video and
+        // audio chains are used). Its filter contexts are freed along with it.
+        if let Some(ptr) = self.audio_graph.take() {
+            // SAFETY: non-null `NonNull`, sole owner; frees its attached contexts.
             unsafe {
                 let mut raw = ptr.as_ptr();
                 ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(raw));

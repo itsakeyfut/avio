@@ -108,8 +108,14 @@ pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterEr
 /// All fields start as `None`; they are populated lazily on the first
 /// `push_video` / `push_audio` call.
 pub(crate) struct FilterGraphInner {
-    /// The `AVFilterGraph` itself (`None` until the first push call).
+    /// The primary `AVFilterGraph` (`None` until the first push call). Holds the
+    /// video graph when both video and audio are used, or the audio graph for an
+    /// audio-only pipeline.
     graph: Option<NonNull<ff_sys::AVFilterGraph>>,
+    /// Secondary `AVFilterGraph` holding the audio chain when a video graph already
+    /// occupies [`graph`](Self::graph). Video and audio are built into separate
+    /// `AVFilterGraph` allocations; both must be kept alive (and freed in `Drop`).
+    audio_graph: Option<NonNull<ff_sys::AVFilterGraph>>,
     /// One `AVFilterContext` per input slot (video or audio buffersrc).
     src_ctxs: Vec<Option<NonNull<ff_sys::AVFilterContext>>>,
     /// Sink context for video output.
@@ -153,6 +159,7 @@ impl FilterGraphInner {
     pub(crate) fn new(steps: Vec<FilterStep>, hw: Option<HwAccel>) -> Self {
         Self {
             graph: None,
+            audio_graph: None,
             src_ctxs: Vec::new(),
             vsink_ctx: None,
             asink_ctx: None,
@@ -191,6 +198,7 @@ impl FilterGraphInner {
     ) -> Self {
         Self {
             graph: Some(graph),
+            audio_graph: None,
             src_ctxs: Vec::new(),
             vsink_ctx: Some(vsink_ctx),
             asink_ctx: None,
@@ -219,6 +227,7 @@ impl FilterGraphInner {
     ) -> Self {
         Self {
             graph: Some(graph),
+            audio_graph: None,
             src_ctxs: Vec::new(),
             vsink_ctx: None,
             asink_ctx: Some(asink_ctx),
