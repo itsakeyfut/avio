@@ -32,6 +32,18 @@ pub struct AudioTrack {
     pub pan: AnimatedValue<f64>,
     /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
     pub time_offset: Duration,
+    /// Source in-point: start reading audio at this offset in the source file.
+    ///
+    /// When `Some`, an `atrim=start=<t>` filter is inserted immediately after
+    /// the source node so that audio before this timestamp is discarded.
+    /// `None` reads from the beginning of the file.
+    pub in_point: Option<Duration>,
+    /// Source out-point: stop reading audio at this offset in the source file.
+    ///
+    /// When `Some`, an `atrim=end=<t>` filter is inserted immediately after
+    /// the source node so that audio after this timestamp is discarded.
+    /// `None` reads to the end of the file.
+    pub out_point: Option<Duration>,
     /// Ordered per-track audio effect chain applied before mixing.
     ///
     /// Each [`FilterStep`] is inserted as a filter node immediately after
@@ -74,6 +86,8 @@ pub struct AudioTrack {
 ///         volume: ff_filter::AnimatedValue::Static(-3.0),
 ///         pan: ff_filter::AnimatedValue::Static(0.0),
 ///         time_offset: Duration::ZERO,
+///         in_point: None,
+///         out_point: None,
 ///         effects: vec![],
 ///         sample_rate: 48000,
 ///         channel_layout: ChannelLayout::Stereo,
@@ -155,6 +169,8 @@ mod tests {
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -176,6 +192,8 @@ mod tests {
             volume: AnimatedValue::Static(0.0),
             pan: AnimatedValue::Static(0.0),
             time_offset: Duration::ZERO,
+            in_point: None,
+            out_point: None,
             effects: vec![FilterStep::Volume(6.0)],
             sample_rate: 48_000,
             channel_layout: ChannelLayout::Stereo,
@@ -199,6 +217,8 @@ mod tests {
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 44_100, // mismatch → aresample should be inserted
                 channel_layout: ChannelLayout::Stereo,
@@ -223,6 +243,8 @@ mod tests {
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::from_secs(2),
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -246,6 +268,8 @@ mod tests {
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -269,6 +293,8 @@ mod tests {
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000, // matches output → no aresample
                 channel_layout: ChannelLayout::Stereo, // matches output → no aformat
@@ -305,6 +331,8 @@ mod tests {
                 volume: AnimatedValue::Track(vol_track),
                 pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -317,6 +345,61 @@ mod tests {
             assert!(
                 !reason.contains("no tracks"),
                 "must not fail with 'no tracks'; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_track_with_in_out_points_should_insert_atrim_and_asetpts() {
+        // atrim and asetpts must be registered in FFmpeg — build must not fail
+        // with "filter not found: atrim" or "filter not found: asetpts".
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
+                time_offset: Duration::ZERO,
+                in_point: Some(Duration::from_secs(2)),
+                out_point: Some(Duration::from_secs(6)),
+                effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: atrim"),
+                "atrim must exist in FFmpeg and be created; got: {reason}"
+            );
+            assert!(
+                !reason.contains("filter not found: asetpts"),
+                "asetpts must exist in FFmpeg and be created; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_track_with_out_point_only_should_insert_atrim() {
+        // out_point alone (no in_point) must also trigger atrim insertion.
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: Some(Duration::from_secs(4)),
+                effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: atrim"),
+                "atrim must exist in FFmpeg and be created; got: {reason}"
             );
         }
     }
@@ -339,6 +422,8 @@ mod tests {
             volume: AnimatedValue::Static(0.0),
             pan: AnimatedValue::Track(pan_track),
             time_offset: Duration::ZERO,
+            in_point: None,
+            out_point: None,
             effects: vec![],
             sample_rate: 48_000,
             channel_layout: ChannelLayout::Stereo,
