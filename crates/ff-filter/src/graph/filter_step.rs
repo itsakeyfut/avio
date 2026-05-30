@@ -9,6 +9,17 @@ use super::types::{
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
 
+/// Escapes a filesystem path for use as a value inside an `FFmpeg` filter
+/// argument string (e.g. `lut3d`'s `file=` option).
+///
+/// `FFmpeg`'s filter-argument parser treats `:` as an option separator and `\`
+/// as an escape character, so Windows paths like `D:\dir\file.cube` break the
+/// parser. Normalising backslashes to forward slashes (accepted on Windows) and
+/// escaping the drive colon as `\:` yields a value the parser accepts.
+pub(crate) fn escape_filter_path(path: &str) -> String {
+    path.replace('\\', "/").replace(':', "\\:")
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain.
@@ -1022,7 +1033,9 @@ impl FilterStep {
             // bypassed in favour of add_parametric_eq_chain); provided here for
             // completeness using the first band's args.
             Self::ParametricEq { bands } => bands.first().map(EqBand::args).unwrap_or_default(),
-            Self::Lut3d { path } => format!("file={path}:interp=trilinear"),
+            Self::Lut3d { path } => {
+                format!("file={}:interp=trilinear", escape_filter_path(path))
+            }
             Self::Eq {
                 brightness,
                 contrast,
@@ -1476,5 +1489,39 @@ impl FilterStep {
                 "threshold={threshold_linear}:ratio={ratio}:attack={attack_ms}:release={release_ms}"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_filter_path_should_escape_windows_drive_path() {
+        // Backslashes → forward slashes; the drive colon is escaped as `\:` so
+        // FFmpeg's filter-arg parser does not treat it as an option separator.
+        assert_eq!(
+            escape_filter_path(r"D:\dir\look.cube"),
+            "D\\:/dir/look.cube"
+        );
+    }
+
+    #[test]
+    fn escape_filter_path_should_leave_unix_path_unchanged() {
+        assert_eq!(escape_filter_path("/home/u/look.cube"), "/home/u/look.cube");
+    }
+
+    #[test]
+    fn lut3d_args_should_escape_path() {
+        let step = FilterStep::Lut3d {
+            path: r"D:\luts\look.cube".to_string(),
+        };
+        let args = step.args();
+        assert!(
+            !args.contains(r"D:\"),
+            "raw Windows path must not appear unescaped in args: {args}"
+        );
+        assert!(args.contains("D\\:/luts/look.cube"), "got: {args}");
+        assert!(args.ends_with(":interp=trilinear"));
     }
 }

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, XfadeTransition};
+use ff_filter::{BlendMode, FilterStep, XfadeTransition};
 
 /// A single media clip on a timeline.
 ///
@@ -134,6 +134,20 @@ pub struct Clip {
     /// assert!(clip.proxy.is_some());
     /// ```
     pub proxy: Option<PathBuf>,
+    /// Ordered per-clip video filter steps applied to the clip's video layer.
+    ///
+    /// Applied during `Timeline::render()` after the built-in speed and
+    /// colour-correction steps, allowing callers to attach any video
+    /// [`FilterStep`] (e.g. `Lut3d`, `Curves`, `ChromaKey`, `GBlur`) to a
+    /// single clip. An empty vec (the default) is a no-op.
+    pub video_effects: Vec<FilterStep>,
+    /// Ordered per-clip audio filter steps applied to the clip's audio track.
+    ///
+    /// Applied during the audio mix after the built-in speed and fade steps,
+    /// allowing callers to attach any audio [`FilterStep`] (e.g. `ACompressor`,
+    /// `ParametricEq`, `NoiseReduce`) to a single clip. An empty vec (the
+    /// default) is a no-op.
+    pub audio_effects: Vec<FilterStep>,
 }
 
 impl Clip {
@@ -157,7 +171,40 @@ impl Clip {
             blend_mode: BlendMode::Normal,
             speed: 1.0,
             proxy: None,
+            video_effects: Vec::new(),
+            audio_effects: Vec::new(),
         }
+    }
+
+    /// Attaches a video [`FilterStep`] to this clip and returns the updated clip.
+    ///
+    /// Steps are applied in the order added, after the built-in speed and
+    /// colour-correction steps, during `Timeline::render()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::FilterStep;
+    ///
+    /// let clip = Clip::new("scene.mp4")
+    ///     .with_video_effect(FilterStep::Lut3d { path: "look.cube".into() });
+    /// assert_eq!(clip.video_effects.len(), 1);
+    /// ```
+    #[must_use]
+    pub fn with_video_effect(mut self, step: FilterStep) -> Self {
+        self.video_effects.push(step);
+        self
+    }
+
+    /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
+    ///
+    /// Steps are applied in the order added, after the built-in speed and fade
+    /// steps, during the audio mix.
+    #[must_use]
+    pub fn with_audio_effect(mut self, step: FilterStep) -> Self {
+        self.audio_effects.push(step);
+        self
     }
 
     /// Sets a low-resolution proxy file to decode from and returns the updated clip.

@@ -286,6 +286,9 @@ impl Timeline {
                             saturation: clip.saturation,
                         });
                     }
+                    // Caller-attached per-clip video effects run last (after the
+                    // built-in speed/colour-correction steps).
+                    layer_effects.extend(clip.video_effects.iter().cloned());
 
                     // Per-clip opacity overrides the track-level animation when not 1.0.
                     #[allow(clippy::float_cmp)]
@@ -444,6 +447,10 @@ impl Timeline {
                             }
                         }
                     }
+
+                    // Caller-attached per-clip audio effects run last (after the
+                    // built-in speed/fade steps).
+                    effects.extend(clip.audio_effects.iter().cloned());
 
                     mixer = mixer.add_track(AudioTrack {
                         source: clip.source.clone(),
