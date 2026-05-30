@@ -141,8 +141,12 @@ pub(super) unsafe fn build_video_composition(
             let escaped = lavfi_str.replace('\\', "\\\\").replace(':', "\\:");
             format!("filename={escaped}:format_name=lavfi")
         } else {
-            let path = layer
-                .source
+            // Decode from the proxy file when one is set; otherwise the original source.
+            let decode_path = match &layer.proxy {
+                Some(p) => p.path.as_path(),
+                None => layer.source.as_path(),
+            };
+            let path = decode_path
                 .to_string_lossy()
                 .replace('\\', "/")
                 .replace(':', "\\:");
@@ -168,6 +172,43 @@ pub(super) unsafe fn build_video_composition(
         }
         log::debug!("video composition layer={idx} movie source");
         let mut chain_end = movie_ctx;
+
+        // ── Proxy upscale ─────────────────────────────────────────────────────
+        // When decoding from a proxy, scale the low-resolution frames up to the
+        // original source resolution immediately, so trim/effects/compositing
+        // all operate as if the original were used.
+        if let Some(proxy) = &layer.proxy {
+            let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+            if scale_filter.is_null() {
+                bail!(graph, "filter not found: scale");
+            }
+            let Ok(ps_name) = CString::new(format!("proxy_scale{idx}")) else {
+                bail!(graph, "CString::new failed for proxy scale name");
+            };
+            let Ok(ps_args) = CString::new(format!("{}:{}", proxy.width, proxy.height)) else {
+                bail!(graph, "CString::new failed for proxy scale args");
+            };
+            let mut ps_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut ps_ctx,
+                scale_filter,
+                ps_name.as_ptr(),
+                ps_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create proxy scale filter layer={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, ps_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: movie→proxy_scale layer={idx}"));
+            }
+            chain_end = ps_ctx;
+        }
 
         // ── Optional trim + setpts ────────────────────────────────────────────
         let trim_spec: Option<String> = match (layer.in_point, layer.out_point) {

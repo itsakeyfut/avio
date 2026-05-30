@@ -2650,6 +2650,31 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // Only audio-relevant simple steps reach the generic builder. The
+            // compound audio steps (Speed, ParametricEq, ReverbIr, …) are handled
+            // above with `continue`. Any step that reaches here and is NOT in this
+            // allow-list is video-only (e.g. Scale, Crop, Eq); applying a video
+            // filter to the audio buffersrc causes a "Media type mismatch" failure
+            // at graph config time, so skip it.
+            if !matches!(
+                step,
+                FilterStep::AFadeIn { .. }
+                    | FilterStep::AFadeOut { .. }
+                    | FilterStep::Volume(_)
+                    | FilterStep::Amix(_)
+                    | FilterStep::AReverse
+                    | FilterStep::ANoiseGate { .. }
+                    | FilterStep::ACompressor { .. }
+                    | FilterStep::StereoToMono
+                    | FilterStep::ChannelMap { .. }
+                    | FilterStep::ConcatAudio { .. }
+                    | FilterStep::NoiseReduce { .. }
+                    | FilterStep::NoiseReduceProfile { .. }
+            ) {
+                log::debug!("audio graph: skipping non-audio step {step:?}");
+                continue;
+            }
+
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
 
             // ConcatAudio consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.

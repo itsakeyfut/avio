@@ -13,7 +13,7 @@ use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
 use ff_filter::{
     AnimatedValue, AnimationTrack, AudioTrack, FilterStep, MultiTrackAudioMixer,
-    MultiTrackComposer, VideoLayer,
+    MultiTrackComposer, ProxySource, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
@@ -295,8 +295,30 @@ impl Timeline {
                         va(track_idx, "opacity", 1.0)
                     };
 
+                    // When a proxy is set, probe the original source resolution so
+                    // the decoded proxy frames can be scaled back up to full size.
+                    // If the probe fails the proxy is ignored (original used directly).
+                    let proxy =
+                        clip.proxy.as_ref().and_then(|proxy_path| {
+                            match VideoDecoder::open(&clip.source).build() {
+                                Ok(dec) => Some(ProxySource {
+                                    path: proxy_path.clone(),
+                                    width: dec.width(),
+                                    height: dec.height(),
+                                }),
+                                Err(e) => {
+                                    log::warn!(
+                                        "proxy ignored: cannot probe source {} resolution: {e}",
+                                        clip.source.display()
+                                    );
+                                    None
+                                }
+                            }
+                        });
+
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
+                        proxy,
                         input_format: None,
                         x: va(track_idx, "x", 0.0),
                         y: va(track_idx, "y", 0.0),
@@ -336,6 +358,7 @@ impl Timeline {
                 use ff_filter::BlendMode;
                 composer = composer.add_layer(VideoLayer {
                     source: std::path::PathBuf::from(lavfi_str),
+                    proxy: None,
                     input_format: Some("lavfi".to_string()),
                     x: AnimatedValue::Static(0.0),
                     y: AnimatedValue::Static(0.0),

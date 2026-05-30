@@ -115,6 +115,25 @@ pub struct Clip {
     /// assert_eq!(clip.speed, 2.0);
     /// ```
     pub speed: f64,
+    /// Optional low-resolution proxy file to decode from instead of `source`.
+    ///
+    /// When `Some`, `Timeline::render()` decodes video frames from this proxy and
+    /// scales them up to the original `source` resolution, producing full-resolution
+    /// output while rendering from a smaller, faster-to-decode file. The original
+    /// `source` must still be probeable so its resolution can be determined; if the
+    /// probe fails, the proxy is ignored and `source` is used directly.
+    ///
+    /// Defaults to `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("scene.mp4").proxy("scene_proxy_quarter.mp4");
+    /// assert!(clip.proxy.is_some());
+    /// ```
+    pub proxy: Option<PathBuf>,
 }
 
 impl Clip {
@@ -137,6 +156,19 @@ impl Clip {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             speed: 1.0,
+            proxy: None,
+        }
+    }
+
+    /// Sets a low-resolution proxy file to decode from and returns the updated clip.
+    ///
+    /// During `Timeline::render()` frames are decoded from `proxy` and scaled up to
+    /// the original `source` resolution. See [`Clip::proxy`](Self::proxy).
+    #[must_use]
+    pub fn proxy(self, proxy: impl AsRef<Path>) -> Self {
+        Self {
+            proxy: Some(proxy.as_ref().to_path_buf()),
+            ..self
         }
     }
 
