@@ -72,7 +72,7 @@ pub mod time;
 pub use channel::ChannelLayout;
 pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
-pub use color::{ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
+pub use color::{AlphaMode, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 pub use container::{ContainerInfo, ContainerInfoBuilder};
 pub use error::{FormatError, FrameError, SubtitleError};
 pub use ff_common::PooledBuffer;
