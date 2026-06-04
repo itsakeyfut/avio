@@ -26,8 +26,8 @@ use ff_format::SampleFormat;
 #[cfg(feature = "timeline")]
 use ff_pipeline::timeline::Timeline;
 
-use super::clock::MasterClock;
 use super::decode_buffer::{DecodeBuffer, FrameResult};
+use super::master_clock::MasterClock;
 use super::sink::FrameSink;
 use crate::audio::AudioMixer;
 use crate::cache::FrameCache;

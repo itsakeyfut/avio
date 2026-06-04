@@ -36,8 +36,8 @@ use crate::audio::{AudioMixer, AudioTrackHandle};
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
 use crate::playback::SwsRgbaConverter;
-use crate::playback::clock::MasterClock;
 use crate::playback::decode_buffer::{DecodeBuffer, FrameResult};
+use crate::playback::master_clock::MasterClock;
 use crate::playback::player::{PlayerCommand, PlayerHandle};
 use crate::playback::sink::FrameSink;
 

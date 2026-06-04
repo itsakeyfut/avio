@@ -5,7 +5,8 @@
 //!
 //! | Sub-module         | Contents |
 //! |--------------------|---------|
-//! | `clock`            | [`PlaybackClock`], internal `MasterClock` |
+//! | `clock`            | [`PlaybackClock`] |
+//! | `master_clock`     | Internal `MasterClock` |
 //! | `sink`             | [`FrameSink`] trait, [`RgbaFrame`], [`RgbaSink`] |
 //! | `decode_buffer`    | [`DecodeBuffer`], [`FrameResult`], [`SeekEvent`] |
 //! | `player`           | [`PreviewPlayer`] |
@@ -19,6 +20,7 @@ pub(crate) use playback_inner::SwsRgbaConverter;
 
 pub(crate) mod clock;
 pub(crate) mod decode_buffer;
+pub(crate) mod master_clock;
 pub(crate) mod player;
 pub(crate) mod sink;
 
