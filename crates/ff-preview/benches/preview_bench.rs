@@ -91,15 +91,17 @@ fn bench_1080p_sync_playback(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let buf = Arc::new(Mutex::new(Vec::<(Instant, Duration)>::new()));
-                let player = PreviewPlayer::open(&path).expect("failed to open player");
-                (player, buf)
+                let (runner, handle) = PreviewPlayer::open(&path)
+                    .expect("failed to open player")
+                    .split();
+                (runner, handle, buf)
             },
-            |(mut player, buf)| {
-                player.set_sink(Box::new(TimingSink {
+            |(mut runner, handle, buf)| {
+                runner.set_sink(Box::new(TimingSink {
                     buf: Arc::clone(&buf),
                 }));
-                player.play();
-                let _ = player.run();
+                handle.play();
+                let _ = runner.run();
 
                 // 30 fps → ~33 ms per frame
                 let frame_period = Duration::from_secs_f64(1.0 / 30.0);
@@ -151,16 +153,16 @@ fn bench_1080p_async_playback(c: &mut Criterion) {
                 let p = path.clone();
                 rt.block_on(async move {
                     let _ = tokio::task::spawn_blocking(move || {
-                        let mut player = match PreviewPlayer::open(&p) {
-                            Ok(player) => player,
+                        let (mut runner, handle) = match PreviewPlayer::open(&p) {
+                            Ok(player) => player.split(),
                             Err(e) => {
                                 println!("skip: {e}");
                                 return;
                             }
                         };
-                        player.set_sink(Box::new(TimingSink { buf: buf_inner }));
-                        player.play();
-                        let _ = player.run();
+                        runner.set_sink(Box::new(TimingSink { buf: buf_inner }));
+                        handle.play();
+                        let _ = runner.run();
                     })
                     .await;
                 });
