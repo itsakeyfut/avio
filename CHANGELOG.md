@@ -11,6 +11,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.4] - 2026-06-04
+
+### Added
+
+#### ff-pipeline
+- `Clip::opacity` and `Clip::with_opacity()`: per-clip video opacity applied during timeline compositing ([#1157](https://github.com/itsakeyfut/avio/issues/1157))
+- `Clip::blend_mode` and `Clip::with_blend_mode()`: per-clip photographic blend mode (Multiply, Screen, Overlay, etc.) for export compositing ([#1157](https://github.com/itsakeyfut/avio/issues/1157))
+- `Clip::proxy` and `Clip::proxy()`: low-resolution proxy file to decode from during export; frames are scaled up to the original source resolution automatically ([#1178](https://github.com/itsakeyfut/avio/issues/1178))
+- `Clip::video_effects` and `Clip::with_video_effect()`: per-clip ordered video filter chain (e.g. `Lut3d`, `ChromaKey`, `GBlur`) applied after built-in steps during `Timeline::render()` ([#1186](https://github.com/itsakeyfut/avio/issues/1186))
+- `Clip::audio_effects` and `Clip::with_audio_effect()`: per-clip ordered audio filter chain (e.g. `ACompressor`, `ParametricEq`, `NoiseReduce`) applied after built-in steps in the audio mix ([#1186](https://github.com/itsakeyfut/avio/issues/1186))
+
+#### ff-filter
+- `ProxySource { path, width, height }`: describes a low-resolution proxy substitute for a `VideoLayer` source; frames are decoded from `path` and scaled up to `width × height` before any processing ([#1178](https://github.com/itsakeyfut/avio/issues/1178))
+- `VideoLayer::proxy`: per-layer proxy support wired into the `movie` filter + immediate `scale` upscale node ([#1178](https://github.com/itsakeyfut/avio/issues/1178))
+- `VideoLayer::input_format`: optional FFmpeg input format name; when `Some("lavfi")`, `source` is interpreted as a `lavfi` filtergraph string (e.g. `drawtext`) instead of a file path ([#1162](https://github.com/itsakeyfut/avio/issues/1162))
+- `VideoLayer::blend_mode`: photographic blend modes on video layers use FFmpeg's `blend` filter; Normal mode continues to use `overlay` ([#1157](https://github.com/itsakeyfut/avio/issues/1157))
+- `AudioTrack::in_point` / `AudioTrack::out_point`: source-window trim fields; when set, an `atrim + asetpts` chain is inserted after the `amovie` node so the correct audio window is exported ([#1176](https://github.com/itsakeyfut/avio/issues/1176))
+- `TimelineBuilder::lavfi_overlay()`: composites a `lavfi` filtergraph string as the topmost video layer during rendering without requiring a pre-encoded title clip ([#1162](https://github.com/itsakeyfut/avio/issues/1162))
+- `escape_filter_path()` (internal): normalises Windows paths for FFmpeg's filter-argument parser; `FilterStep::Lut3d` now uses it to prevent drive-colon parse errors on Windows ([#1182](https://github.com/itsakeyfut/avio/issues/1182))
+
+#### avio
+- `ProxySource` re-exported from the `filter` feature block ([#1191](https://github.com/itsakeyfut/avio/pull/1191))
+
+### Fixed
+
+#### ff-preview
+- V2/V3 overlay layers were invisible when `Clip::opacity < 1.0`; root causes: inverted NLE track order (V1 rendered on top of V2), missing opacity wiring, and `SwsRgbaConverter` always outputting at source resolution so the size-equality guard silently skipped compositing ([#1157](https://github.com/itsakeyfut/avio/issues/1157), [#1158](https://github.com/itsakeyfut/avio/issues/1158), [#1159](https://github.com/itsakeyfut/avio/issues/1159), [#1160](https://github.com/itsakeyfut/avio/issues/1160))
+- `SwsRgbaConverter::convert_to()` added: accepts explicit `(dst_w, dst_h)` for bilinear scaling so overlay frames always match V1's canvas size ([#1160](https://github.com/itsakeyfut/avio/issues/1160))
+
+#### ff-filter
+- `build_audio_graph` applied video-only `FilterStep` variants (Scale, Crop, Eq, etc.) to the audio buffersrc, causing "Media type mismatch" failures; an audio-only allowlist now skips non-audio steps ([#1179](https://github.com/itsakeyfut/avio/issues/1179))
+- `FilterGraphInner::ensure_audio_graph` freed the audio `AVFilterGraph` while its `AVFilterContext` pointers were still live, causing `STATUS_ACCESS_VIOLATION` crashes; the audio graph is now stored in a separate `audio_graph` field and freed in `Drop` ([#1180](https://github.com/itsakeyfut/avio/issues/1180))
+- `FilterStep::Lut3d` generated unescaped Windows paths (e.g. `D:\luts\look.cube`) as filter arguments, causing parse failures; backslashes are now normalised to forward slashes and the drive colon is escaped ([#1182](https://github.com/itsakeyfut/avio/issues/1182))
+
+#### ff-pipeline
+- `Timeline::render()` did not forward `clip.in_point` / `clip.out_point` to `AudioTrack`, so audio always played from the beginning of the source file regardless of loop-region trim bounds ([#1176](https://github.com/itsakeyfut/avio/issues/1176))
+
+---
+
 ## [0.14.3] - 2026-05-05
 
 ### Added
