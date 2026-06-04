@@ -2,7 +2,7 @@
 
 Real-time video preview and proxy workflow for Rust. Provides frame-accurate seek, audio-master A/V sync, a `FrameSink` trait for custom renderers, RGBA pixel delivery, and proxy generation with transparent auto-substitution.
 
-> **Project status (as of 2026-04-28):** The library foundation is in place. Development is currently focused on [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`. Building the demo surfaces bugs and drives API improvements in this library. Questions, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
 
 ## Installation
 
