@@ -46,7 +46,6 @@ fn bench_encode_single_frame(c: &mut Criterion) {
             || {
                 let output_path = bench_output_path("bench_single_frame.mp4");
                 let encoder = VideoEncoder::create(&output_path)
-                    .expect("Failed to create encoder builder")
                     .video(640, 480, 30.0)
                     .video_codec(VideoCodec::Mpeg4)
                     .preset(Preset::Ultrafast)
@@ -81,7 +80,6 @@ fn bench_encode_multiple_frames(c: &mut Criterion) {
                         let output_path =
                             bench_output_path(&format!("bench_{}_frames.mp4", frame_count));
                         let encoder = VideoEncoder::create(&output_path)
-                            .expect("Failed to create encoder builder")
                             .video(640, 480, 30.0)
                             .video_codec(VideoCodec::Mpeg4)
                             .preset(Preset::Ultrafast)
@@ -121,12 +119,12 @@ fn bench_encode_resolutions(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(name),
             &(*width, *height),
-            |b, &(width, height)| {
+            |b, dims: &(u32, u32)| {
+                let (width, height) = *dims;
                 b.iter_batched(
                     || {
                         let output_path = bench_output_path(&format!("bench_{}.mp4", name));
                         let encoder = VideoEncoder::create(&output_path)
-                            .expect("Failed to create encoder builder")
                             .video(width, height, 30.0)
                             .video_codec(VideoCodec::Mpeg4)
                             .preset(Preset::Ultrafast)
@@ -169,7 +167,6 @@ fn bench_encode_presets(c: &mut Criterion) {
                 || {
                     let output_path = bench_output_path(&format!("bench_{}.mp4", name));
                     let encoder = VideoEncoder::create(&output_path)
-                        .expect("Failed to create encoder builder")
                         .video(640, 480, 30.0)
                         .video_codec(VideoCodec::Mpeg4)
                         .preset(preset)
@@ -202,7 +199,6 @@ fn bench_encoder_creation(c: &mut Criterion) {
         b.iter(|| {
             let output_path = bench_output_path("bench_creation.mp4");
             let encoder = VideoEncoder::create(black_box(&output_path))
-                .expect("Failed to create encoder builder")
                 .video(640, 480, 30.0)
                 .video_codec(VideoCodec::Mpeg4)
                 .preset(Preset::Ultrafast)
@@ -223,7 +219,6 @@ fn bench_complete_workflow(c: &mut Criterion) {
         b.iter(|| {
             let output_path = bench_output_path("bench_workflow.mp4");
             let mut encoder = VideoEncoder::create(black_box(&output_path))
-                .expect("Failed to create encoder builder")
                 .video(640, 480, 30.0)
                 .video_codec(VideoCodec::Mpeg4)
                 .preset(Preset::Ultrafast)
