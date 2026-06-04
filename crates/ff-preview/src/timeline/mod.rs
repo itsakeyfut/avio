@@ -439,6 +439,7 @@ impl TimelinePlayer {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::thread;
 
     fn test_video_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")
