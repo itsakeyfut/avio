@@ -5,7 +5,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::player::{PlayerHandle, PreviewPlayer};
+use super::player::PreviewPlayer;
+use super::player_handle::PlayerHandle;
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
 
