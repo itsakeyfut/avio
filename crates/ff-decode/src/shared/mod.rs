@@ -1,5 +1,6 @@
 //! Shared utility types for ff-decode.
 
+pub(crate) mod guards_inner;
 mod hardware;
 pub(crate) mod network;
 mod seek;
