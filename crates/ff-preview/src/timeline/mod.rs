@@ -14,7 +14,7 @@
 //!
 //! When any clip on the primary video track carries an audio stream,
 //! [`TimelinePlayer::open`] creates an [`AudioMixer`] with one track per
-//! audio-bearing clip.  A background [`AudioDecoder`] thread is started for
+//! audio-bearing clip.  A background [`AudioDecoder`](ff_decode::AudioDecoder) thread is started for
 //! the active clip and pushes mono samples via [`AudioTrackHandle`].  On clip
 //! transition or seek the old thread is cancelled and a new one is started.
 //! [`PlayerHandle::pop_audio_samples`] calls [`AudioMixer::mix`] and returns

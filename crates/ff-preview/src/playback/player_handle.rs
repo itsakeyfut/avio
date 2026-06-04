@@ -14,7 +14,7 @@ use crate::event::PlayerEvent;
 
 // ── PlayerHandle ─────────────────────────────────────────────────────────────
 
-/// Shared, cloneable handle to a running [`PlayerRunner`].
+/// Shared, cloneable handle to a running [`PlayerRunner`](super::player_runner::PlayerRunner).
 ///
 /// All methods are non-blocking. Commands that cannot be queued immediately
 /// (channel full) are silently dropped.
@@ -99,8 +99,8 @@ impl PlayerHandle {
     /// The `MasterClock` and `paused` / `stopped` atomics are unaffected.
     /// Drops silently if the command channel (capacity 64) is full.
     ///
-    /// No-op when called on a [`PlayerRunner`]-backed handle (single-track
-    /// player). Only `TimelineRunner` handles this command.
+    /// No-op when called on a [`PlayerRunner`](super::player_runner::PlayerRunner)-backed
+    /// handle (single-track player). Only `TimelineRunner` handles this command.
     #[cfg(feature = "timeline")]
     pub fn update_timeline(&self, timeline: Timeline) {
         let _ = self
