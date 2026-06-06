@@ -9,6 +9,8 @@
 
 // Tests are allowed to use unwrap() for simplicity
 #![allow(clippy::unwrap_used)]
+// Platform memory queries require the Win32 process API.
+#![allow(unsafe_code)]
 
 use std::path::PathBuf;
 use std::time::Duration;
