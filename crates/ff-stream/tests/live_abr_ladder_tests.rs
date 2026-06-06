@@ -12,7 +12,7 @@
 mod fixtures;
 
 use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
-use ff_stream::{AbrRendition, LiveAbrFormat, LiveAbrLadder, StreamError, StreamOutput};
+use ff_stream::{AbrRendition, LiveAbrLadder, StreamError, StreamOutput};
 use fixtures::{DirGuard, tmp_dir};
 use std::time::Duration;
 
