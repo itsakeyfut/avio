@@ -13,7 +13,7 @@ pub use composition::{
     AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoConcatenator, VideoLayer,
 };
-pub use filter_name::FilterName;
+pub use filter_name::FfmpegToken;
 pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
 pub use types::{

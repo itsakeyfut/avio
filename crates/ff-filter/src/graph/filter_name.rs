@@ -1,11 +1,11 @@
 use crate::{BlendMode, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode};
 
-pub trait FilterName {
-    fn filter_name(&self) -> &'static str;
+pub trait FfmpegToken {
+    fn ffmpeg_token(&self) -> &'static str;
 }
 
-impl FilterName for ScaleAlgorithm {
-    fn filter_name(&self) -> &'static str {
+impl FfmpegToken for ScaleAlgorithm {
+    fn ffmpeg_token(&self) -> &'static str {
         // https://ffmpeg.org/ffmpeg-filters.html#Scaling
         match self {
             Self::Fast => "fast_bilinear",
@@ -16,8 +16,8 @@ impl FilterName for ScaleAlgorithm {
     }
 }
 
-impl FilterName for ToneMap {
-    fn filter_name(&self) -> &'static str {
+impl FfmpegToken for ToneMap {
+    fn ffmpeg_token(&self) -> &'static str {
         // https://ffmpeg.org/ffmpeg-filters.html#Tone-mapping
         match self {
             Self::Hable => "hable",
@@ -27,8 +27,8 @@ impl FilterName for ToneMap {
     }
 }
 
-impl FilterName for YadifMode {
-    fn filter_name(&self) -> &'static str {
+impl FfmpegToken for YadifMode {
+    fn ffmpeg_token(&self) -> &'static str {
         // https://ffmpeg.org/ffmpeg-filters.html#yadif-1
         match self {
             Self::Frame => "0",
@@ -39,8 +39,8 @@ impl FilterName for YadifMode {
     }
 }
 
-impl FilterName for XfadeTransition {
-    fn filter_name(&self) -> &'static str {
+impl FfmpegToken for XfadeTransition {
+    fn ffmpeg_token(&self) -> &'static str {
         // https://ffmpeg.org/ffmpeg-filters.html#xfade
         match self {
             Self::Dissolve => "dissolve",
@@ -61,8 +61,8 @@ impl FilterName for XfadeTransition {
     }
 }
 
-impl FilterName for BlendMode {
-    fn filter_name(&self) -> &'static str {
+impl FfmpegToken for BlendMode {
+    fn ffmpeg_token(&self) -> &'static str {
         // https://ffmpeg.org/ffmpeg-filters.html#blend-1
         match self {
             Self::Normal => "normal",
