@@ -1,5 +1,7 @@
 use crate::{BlendMode, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode};
 
+mod format;
+
 pub trait FfmpegToken {
     fn ffmpeg_token(&self) -> &'static str;
 }
