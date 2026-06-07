@@ -1,3 +1,5 @@
+#![forbid(clippy::wildcard_enum_match_arm)]
+
 use ff_format::{ColorRange, ColorSpace, PixelFormat};
 
 use crate::graph::FfmpegToken;

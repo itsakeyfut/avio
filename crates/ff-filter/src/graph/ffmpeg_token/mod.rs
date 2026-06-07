@@ -1,3 +1,5 @@
+#![forbid(clippy::wildcard_enum_match_arm)]
+
 use crate::{BlendMode, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode};
 
 mod format;
