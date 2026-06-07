@@ -56,6 +56,18 @@ impl FilterGraphBuilder {
         &self.steps
     }
 
+    /// Appends a raw [`FilterStep`] to the chain.
+    ///
+    /// Lets callers build a graph from a `FilterStep` list they already hold —
+    /// e.g. the same per-clip effects passed to `Clip::with_video_effect` — so a
+    /// host can run the identical chain on a preview frame without reconstructing
+    /// it through the typed builder methods.
+    #[must_use]
+    pub fn add_step(mut self, step: FilterStep) -> Self {
+        self.steps.push(step);
+        self
+    }
+
     /// Enable hardware-accelerated filtering.
     ///
     /// When set, `hwupload` and `hwdownload` filters are inserted around the

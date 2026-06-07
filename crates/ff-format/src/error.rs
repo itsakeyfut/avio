@@ -281,6 +281,13 @@ pub enum FrameError {
         /// Actual number of planes provided.
         actual: usize,
     },
+    /// Pixel data length does not match the expected size for the dimensions/format.
+    InvalidDataSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length provided.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for FrameError {
@@ -306,6 +313,12 @@ impl fmt::Display for FrameError {
             }
             Self::InvalidPlaneCount { expected, actual } => {
                 write!(f, "invalid plane count: expected {expected}, got {actual}")
+            }
+            Self::InvalidDataSize { expected, actual } => {
+                write!(
+                    f,
+                    "invalid data size: expected {expected} bytes, got {actual}"
+                )
             }
         }
     }

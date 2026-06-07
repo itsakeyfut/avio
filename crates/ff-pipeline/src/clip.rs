@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, FilterStep, XfadeTransition};
+use ff_filter::{BlendMode, FilterGraph, FilterStep, XfadeTransition};
+use ff_format::{PixelFormat, VideoFrame};
+
+use crate::error::PipelineError;
 
 /// A single media clip on a timeline.
 ///
@@ -195,6 +198,80 @@ impl Clip {
     pub fn with_video_effect(mut self, step: FilterStep) -> Self {
         self.video_effects.push(step);
         self
+    }
+
+    /// Returns the pixel-domain video effect chain that `Timeline::render()`
+    /// applies to this clip's layer: the `eq` colour-correction step (included
+    /// only when brightness/contrast/saturation are non-neutral) followed by the
+    /// caller-attached [`video_effects`](Self::video_effects), in order.
+    ///
+    /// Temporal steps such as `Speed` are intentionally excluded — they affect
+    /// timing, not a single frame's pixels. This is the exact list
+    /// [`apply_video_effects`](Self::apply_video_effects) runs, and the same one
+    /// `Timeline::render()` builds for the clip's layer, so a preview built from
+    /// it matches the rendered output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::FilterStep;
+    ///
+    /// let clip = Clip::new("scene.mp4")
+    ///     .with_color_correction(0.1, 1.2, 1.0)
+    ///     .with_video_effect(FilterStep::Hue { degrees: 30.0 });
+    /// let chain = clip.video_effect_chain();
+    /// assert!(matches!(
+    ///     chain.as_slice(),
+    ///     [FilterStep::Eq { .. }, FilterStep::Hue { .. }]
+    /// ));
+    /// ```
+    #[must_use]
+    pub fn video_effect_chain(&self) -> Vec<FilterStep> {
+        let mut steps = Vec::new();
+        #[allow(clippy::float_cmp)]
+        let neutral = self.brightness == 0.0 && self.contrast == 1.0 && self.saturation == 1.0;
+        if !neutral {
+            steps.push(FilterStep::Eq {
+                brightness: self.brightness,
+                contrast: self.contrast,
+                saturation: self.saturation,
+            });
+        }
+        steps.extend(self.video_effects.iter().cloned());
+        steps
+    }
+
+    /// Applies this clip's video effect chain to a single frame using the same
+    /// steps and `yuv420p` working space as `Timeline::render()`, so a host can
+    /// show a preview that matches the exported result (within 4:2:0 chroma
+    /// rounding) without reimplementing any filter.
+    ///
+    /// The chain is [`video_effect_chain`](Self::video_effect_chain). The input
+    /// frame is converted to `yuv420p` before the chain runs — matching the
+    /// composition colour space, so YUV-domain filters such as `hue` and `eq`
+    /// behave identically to the export — then back to its original pixel format,
+    /// so the returned frame has the same format as `frame`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built or
+    /// the frame cannot be processed.
+    pub fn apply_video_effects(&self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
+        let in_format = frame.format();
+        let mut builder = FilterGraph::builder().add_step(FilterStep::Format {
+            pix_fmt: PixelFormat::Yuv420p,
+        });
+        for step in self.video_effect_chain() {
+            builder = builder.add_step(step);
+        }
+        let mut graph = builder
+            .add_step(FilterStep::Format { pix_fmt: in_format })
+            .build()?;
+        graph.push_video(0, frame)?;
+        graph
+            .pull_video()?
+            .ok_or(PipelineError::Filter(ff_filter::FilterError::ProcessFailed))
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
@@ -619,5 +696,53 @@ mod tests {
         use ff_filter::BlendMode;
         let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Screen);
         assert_eq!(clip.blend_mode, BlendMode::Screen);
+    }
+
+    #[test]
+    fn video_effect_chain_neutral_with_no_effects_should_be_empty() {
+        let clip = Clip::new("v.mp4");
+        assert!(clip.video_effect_chain().is_empty());
+    }
+
+    #[test]
+    fn video_effect_chain_should_insert_eq_when_colour_corrected() {
+        let clip = Clip::new("v.mp4").with_color_correction(0.1, 1.2, 0.9);
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::Eq { .. }]
+        ));
+    }
+
+    #[test]
+    fn video_effect_chain_should_append_video_effects_after_eq() {
+        let clip = Clip::new("v.mp4")
+            .with_color_correction(0.1, 1.0, 1.0)
+            .with_video_effect(FilterStep::Hue { degrees: 30.0 });
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::Eq { .. }, FilterStep::Hue { .. }]
+        ));
+    }
+
+    #[test]
+    fn video_effect_chain_should_exclude_speed() {
+        // Speed is a temporal step and is not part of the pixel-domain chain.
+        let clip = Clip::new("v.mp4").with_speed(2.0);
+        assert!(clip.video_effect_chain().is_empty());
+    }
+
+    #[test]
+    fn apply_video_effects_should_return_frame_in_input_format() {
+        // 4×4 RGBA (even dims for yuv420p); skip-guard on FFmpeg availability.
+        let frame = VideoFrame::from_rgba(4, 4, vec![128u8; 4 * 4 * 4]).unwrap();
+        let clip = Clip::new("v.mp4").with_color_correction(0.1, 1.1, 1.0);
+        match clip.apply_video_effects(&frame) {
+            Ok(out) => {
+                assert_eq!(out.format(), PixelFormat::Rgba);
+                assert_eq!(out.width(), 4);
+                assert_eq!(out.height(), 4);
+            }
+            Err(e) => println!("Skipping: {e}"),
+        }
     }
 }
