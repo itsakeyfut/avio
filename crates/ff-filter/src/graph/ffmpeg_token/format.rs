@@ -6,33 +6,37 @@ use crate::graph::FfmpegToken;
 
 impl FfmpegToken for ColorRange {
     // https://ffmpeg.org/ffmpeg-filters.html#colorspace
-    fn ffmpeg_token(&self) -> &'static str {
-        match self {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
+        Some(match self {
             Self::Limited => "tv",
             Self::Full => "pc",
-            Self::Unknown | _ => "unknown",
-        }
+            Self::Unknown | _ => {
+                return None;
+            }
+        })
     }
 }
 
 impl FfmpegToken for ColorSpace {
     // https://ffmpeg.org/ffmpeg-filters.html#colorspace
-    fn ffmpeg_token(&self) -> &'static str {
-        match self {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
+        Some(match self {
             Self::Bt709 => "bt709",
             Self::Bt601 => "bt601",
             Self::Bt2020 => "bt2020",
             Self::DciP3 => todo!(),
             Self::Srgb => todo!(),
-            Self::Unknown | _ => "unknown",
-        }
+            Self::Unknown | _ => {
+                return None;
+            }
+        })
     }
 }
 
 impl FfmpegToken for PixelFormat {
     // ffmpeg -pix_fmts
-    fn ffmpeg_token(&self) -> &'static str {
-        match self {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
+        Some(match self {
             Self::Rgb24 => "rgb24",
             Self::Rgba => "rgba",
             Self::Bgr24 => "bgr24",
@@ -50,7 +54,9 @@ impl FfmpegToken for PixelFormat {
             Self::Gray8 => "gray",
             Self::Gbrpf32le => "gbrpf32le",
             Self::Other(_) => todo!(),
-            _ => "unknown",
-        }
+            _ => {
+                return None;
+            }
+        })
     }
 }

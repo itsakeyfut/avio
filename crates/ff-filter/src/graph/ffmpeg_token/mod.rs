@@ -5,48 +5,48 @@ use crate::{BlendMode, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode};
 mod format;
 
 pub trait FfmpegToken {
-    fn ffmpeg_token(&self) -> &'static str;
+    fn ffmpeg_token(&self) -> Option<&'static str>;
 }
 
 impl FfmpegToken for ScaleAlgorithm {
-    fn ffmpeg_token(&self) -> &'static str {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
         // https://ffmpeg.org/ffmpeg-filters.html#Scaling
-        match self {
+        Some(match self {
             Self::Fast => "fast_bilinear",
             Self::Bilinear => "bilinear",
             Self::Bicubic => "bicubic",
             Self::Lanczos => "lanczos",
-        }
+        })
     }
 }
 
 impl FfmpegToken for ToneMap {
-    fn ffmpeg_token(&self) -> &'static str {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
         // https://ffmpeg.org/ffmpeg-filters.html#Tone-mapping
-        match self {
+        Some(match self {
             Self::Hable => "hable",
             Self::Reinhard => "reinhard",
             Self::Mobius => "mobius",
-        }
+        })
     }
 }
 
 impl FfmpegToken for YadifMode {
-    fn ffmpeg_token(&self) -> &'static str {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
         // https://ffmpeg.org/ffmpeg-filters.html#yadif-1
-        match self {
+        Some(match self {
             Self::Frame => "0",
             Self::Field => "1",
             Self::FrameNospatial => "2",
             Self::FieldNospatial => "3",
-        }
+        })
     }
 }
 
 impl FfmpegToken for XfadeTransition {
-    fn ffmpeg_token(&self) -> &'static str {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
         // https://ffmpeg.org/ffmpeg-filters.html#xfade
-        match self {
+        Some(match self {
             Self::Dissolve => "dissolve",
             Self::Fade => "fade",
             Self::WipeLeft => "wipeleft",
@@ -61,14 +61,14 @@ impl FfmpegToken for XfadeTransition {
             Self::CircleClose => "circleclose",
             Self::FadeGrays => "fadegrays",
             Self::Pixelize => "pixelize",
-        }
+        })
     }
 }
 
 impl FfmpegToken for BlendMode {
-    fn ffmpeg_token(&self) -> &'static str {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
         // https://ffmpeg.org/ffmpeg-filters.html#blend-1
-        match self {
+        Some(match self {
             Self::Normal => "normal",
             Self::Multiply => "multiply",
             Self::Screen => "screen",
@@ -93,6 +93,6 @@ impl FfmpegToken for BlendMode {
             Self::PorterDuffOut => todo!(),
             Self::PorterDuffAtop => todo!(),
             Self::PorterDuffXor => todo!(),
-        }
+        })
     }
 }
