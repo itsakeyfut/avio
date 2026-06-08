@@ -24,8 +24,8 @@ impl FfmpegToken for ColorSpace {
             Self::Bt709 => "bt709",
             Self::Bt601 => "bt601",
             Self::Bt2020 => "bt2020",
-            Self::DciP3 => todo!(),
-            Self::Srgb => todo!(),
+            Self::DciP3 => return None, // TODO
+            Self::Srgb => return None,  // TODO
             Self::Unknown | _ => {
                 return None;
             }
@@ -53,7 +53,7 @@ impl FfmpegToken for PixelFormat {
             Self::P010le => "p010le",
             Self::Gray8 => "gray",
             Self::Gbrpf32le => "gbrpf32le",
-            Self::Other(_) => todo!(),
+            Self::Other(_) => return None, // TODO
             _ => {
                 return None;
             }

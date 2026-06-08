@@ -83,16 +83,16 @@ impl FfmpegToken for BlendMode {
             Self::Exclusion => "exclusion",
             Self::Add => "addition",
             Self::Subtract => "subtract",
-            Self::Hue => todo!(),
-            Self::Saturation => todo!(),
-            Self::Color => todo!(),
-            Self::Luminosity => todo!(),
-            Self::PorterDuffOver => todo!(),
-            Self::PorterDuffUnder => todo!(),
-            Self::PorterDuffIn => todo!(),
-            Self::PorterDuffOut => todo!(),
-            Self::PorterDuffAtop => todo!(),
-            Self::PorterDuffXor => todo!(),
+            Self::Hue => return None,             // TODO
+            Self::Saturation => return None,      // TODO
+            Self::Color => return None,           // TODO
+            Self::Luminosity => return None,      // TODO
+            Self::PorterDuffOver => return None,  // TODO
+            Self::PorterDuffUnder => return None, // TODO
+            Self::PorterDuffIn => return None,    // TODO
+            Self::PorterDuffOut => return None,   // TODO
+            Self::PorterDuffAtop => return None,  // TODO
+            Self::PorterDuffXor => return None,   // TODO
         })
     }
 }
