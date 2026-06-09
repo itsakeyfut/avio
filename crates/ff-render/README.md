@@ -56,7 +56,7 @@ async fn example() -> Result<(), ff_render::RenderError> {
         .push(ColorGradeNode::new(0.1, 1.2, 1.0, 0.0, 0.0));
 
     let input_rgba = vec![128u8; 1920 * 1080 * 4];
-    let output = graph.process_gpu(&input_rgba, 1920, 1080).await?;
+    let output = graph.process_gpu(&input_rgba, 1920, 1080)?;
     Ok(())
 }
 ```
@@ -155,7 +155,7 @@ async fn compositor_example() -> Result<(), ff_render::RenderError> {
 
 `BlendModeNode` supports the following modes via `BlendMode`:
 
-`Normal` · `Multiply` · `Screen` · `Overlay` · `Darken` · `Lighten` · `ColorDodge` · `ColorBurn` · `HardLight` · `SoftLight` · `Difference` · `Exclusion`
+`Normal` · `Multiply` · `Screen` · `Overlay` · `SoftLight` · `HardLight` · `ColorDodge` · `ColorBurn` · `Difference` · `Exclusion` · `Add` · `Subtract` · `Darken` · `Lighten` · `Hue` · `Saturation` · `Color` · `Luminosity`
 
 ## YUV Upload
 
@@ -181,9 +181,9 @@ All fallible operations return `RenderError`:
 use ff_render::RenderError;
 
 match result {
-    Err(RenderError::Ffmpeg { code, message }) => { /* wgpu / FFmpeg error */ }
-    Err(RenderError::UnsupportedFormat)        => { /* pixel format not supported */ }
-    Err(RenderError::Composite { message })    => { /* compositor error */ }
+    Err(RenderError::DeviceCreation { message })     => { /* GPU device init failed */ }
+    Err(RenderError::UnsupportedFormat { format })   => { /* pixel format not supported */ }
+    Err(RenderError::Composite { message })          => { /* compositor error */ }
     Ok(output) => { /* process output */ }
 }
 ```

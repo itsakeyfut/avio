@@ -8,83 +8,90 @@ Apply video and audio transformations without writing FFmpeg filter-graph string
 
 ```toml
 [dependencies]
-ff-filter = "0.12"
+ff-filter = "0.14"
 ```
 
 ## Building a Filter Chain
 
 ```rust
-use ff_filter::FilterGraph;
+use ff_filter::{FilterGraph, ScaleAlgorithm};
 
 let graph = FilterGraph::builder()
-    .trim(10.0, 30.0)   // keep seconds 10–30
-    .scale(1280, 720)   // resize to 720p
-    .fade_in(0.5)       // 0.5-second fade in
-    .fade_out(0.5)      // 0.5-second fade out at end
+    .trim(10.0, 30.0)                           // keep seconds 10–30
+    .scale(1280, 720, ScaleAlgorithm::Fast)     // resize to 720p
+    .fade_in(0.0, 0.5)                           // 0.5-second fade in at the start
+    .fade_out(19.5, 0.5)                         // 0.5-second fade out
     .build()?;
 ```
 
-`build()` validates the graph before any frames are processed. An `Err` is returned if the combination is unsupported, not at the first `push_video` call.
+`build()` checks the configured steps and returns an `Err` if a value is out of range or the step set is empty. The underlying `FFmpeg` graph itself is constructed lazily on the first `push_video` / `push_audio` call, using the first frame's format.
 
 ## Available Video Operations
 
-| Method                     | Effect                                               |
-|----------------------------|------------------------------------------------------|
-| `trim(start, end)`         | Discard frames outside the given time range (secs)   |
-| `scale(w, h)`              | Resize frames, preserving aspect ratio if w or h is 0|
-| `crop(x, y, w, h)`         | Extract a rectangular region                         |
-| `overlay(x, y)`            | Composite a second video stream at (x, y)            |
-| `fade_in(duration)`        | Fade from black over the given duration in seconds   |
-| `fade_out(duration)`       | Fade to black over the given duration in seconds     |
-| `rotate(degrees)`          | Rotate by an arbitrary angle; edges are filled       |
-| `tone_map(ToneMap::Hable)` | HDR-to-SDR tone mapping with the selected curve      |
+This is a representative selection; see the API docs for the full set
+(colour grading, blurs, denoise, keying, transitions, text, and more).
+
+| Method                            | Effect                                               |
+|-----------------------------------|------------------------------------------------------|
+| `trim(start, end)`                | Discard frames outside the given time range (secs)   |
+| `scale(w, h, algorithm)`          | Resize frames using the given resampling algorithm   |
+| `fit_to_aspect(w, h, color)`      | Scale to fit `w × h`, preserving aspect (letterbox)  |
+| `crop(x, y, w, h)`                | Extract a rectangular region                         |
+| `overlay(x, y)`                   | Composite a second video stream at (x, y)            |
+| `fade_in(start, duration)`        | Fade from black, starting at `start` (secs)          |
+| `fade_out(start, duration)`       | Fade to black, starting at `start` (secs)            |
+| `rotate(degrees, fill_color)`     | Rotate clockwise; exposed corners filled with color  |
+| `tone_map(ToneMap::Hable)`        | HDR-to-SDR tone mapping with the selected curve      |
 
 ## Available Audio Operations
 
-| Method                        | Effect                                     |
-|-------------------------------|--------------------------------------------|
-| `volume(gain_db)`             | Adjust loudness by the given number of dB  |
-| `equalizer(band_hz, gain_db)` | Boost or cut a frequency band              |
-| `amix(inputs)`                | Mix multiple audio streams into one        |
+| Method                   | Effect                                            |
+|--------------------------|---------------------------------------------------|
+| `volume(gain_db)`        | Adjust loudness by the given number of dB         |
+| `equalizer(bands)`       | Apply a multi-band parametric EQ (`Vec<EqBand>`)  |
+| `amix(inputs)`           | Mix multiple audio streams into one               |
 
 ## Hardware Acceleration
 
 ```rust
-use ff_filter::{FilterGraph, HwAccel};
+use ff_filter::{FilterGraph, HwAccel, ScaleAlgorithm};
 
 let graph = FilterGraph::builder()
-    .scale(1920, 1080)
+    .scale(1920, 1080, ScaleAlgorithm::Fast)
     .hardware(HwAccel::Cuda)
     .build()?;
 ```
 
-If the requested device is unavailable, the graph falls back to CPU processing automatically.
+`HwAccel` selects the device type (`Cuda`, `VideoToolbox`, or `Vaapi`). When
+hardware is enabled, `hwupload` / `hwdownload` filters are inserted around the
+chain automatically.
 
 ## Using the Filter Graph
 
 ```rust
-// Push decoded frames in and pull transformed frames out.
+// Push decoded frames into input slot 0 and pull transformed frames out.
 while let Some(input_frame) = decoder.decode_frame()? {
-    graph.push_video(input_frame)?;
+    graph.push_video(0, &input_frame)?;
     while let Some(output_frame) = graph.pull_video()? {
         encoder.push_video(&output_frame)?;
     }
 }
-// Flush remaining frames from the graph.
-graph.flush()?;
-while let Some(output_frame) = graph.pull_video()? {
-    encoder.push_video(&output_frame)?;
-}
 ```
+
+Multi-input filters (such as `xfade` or `overlay`) read from additional slots:
+push clip A frames to slot 0 and clip B frames to slot 1.
 
 ## Error Handling
 
-| Variant                     | When it occurs                                          |
-|-----------------------------|---------------------------------------------------------|
-| `FilterError::InvalidGraph` | Filter combination is unsupported or self-contradictory |
-| `FilterError::HardwareInit` | Requested HwAccel device could not be initialised       |
-| `FilterError::Push`         | FFmpeg returned an error while buffering a frame        |
-| `FilterError::Pull`         | FFmpeg returned an error while retrieving a frame       |
+| Variant                          | When it occurs                                             |
+|----------------------------------|------------------------------------------------------------|
+| `FilterError::InvalidConfig`     | A configured value is out of range (returned by `build()`) |
+| `FilterError::BuildFailed`       | No steps were added, or the `FFmpeg` graph cannot be built |
+| `FilterError::InvalidInput`      | A frame was pushed to an out-of-range input slot           |
+| `FilterError::ProcessFailed`     | A push or pull operation failed                            |
+| `FilterError::Ffmpeg`            | An underlying `FFmpeg` function returned an error code     |
+| `FilterError::CompositionFailed` | A multi-track composition or mixing operation failed       |
+| `FilterError::AnalysisFailed`    | An analysis operation (e.g. loudness measurement) failed   |
 
 ## MSRV
 
