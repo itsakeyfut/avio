@@ -2,6 +2,7 @@
 
 pub mod builder;
 pub mod composition;
+mod ffmpeg_token;
 pub(crate) mod filter_step;
 #[allow(clippy::module_inception)]
 mod graph;
@@ -12,6 +13,7 @@ pub use composition::{
     AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoConcatenator, VideoLayer,
 };
+pub use ffmpeg_token::FfmpegToken;
 pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
 pub use types::{
