@@ -41,10 +41,11 @@ pipeline.run()?;
 
 `build()` validates the full configuration before allocating any FFmpeg context:
 
-| Error variant            | Condition                                     |
-|--------------------------|-----------------------------------------------|
-| `PipelineError::NoInput` | No input path was provided to the builder     |
-| `PipelineError::NoOutput`| No output path or encoder config was provided |
+| Error variant                              | Condition                                              |
+|--------------------------------------------|--------------------------------------------------------|
+| `PipelineError::NoInput`                   | No input path was provided to the builder              |
+| `PipelineError::NoOutput`                  | `output()` was not called                              |
+| `PipelineError::SecondaryInputWithoutFilter` | `secondary_input()` was called without a filter graph |
 
 These errors are returned from `build()`, not from `run()`.
 
@@ -66,7 +67,7 @@ Return `false` from the callback to stop processing. The pipeline will drain in-
 | Variant                    | When it occurs                                |
 |----------------------------|-----------------------------------------------|
 | `PipelineError::NoInput`   | Builder has no input path                     |
-| `PipelineError::NoOutput`  | Builder has no output path or encoder config  |
+| `PipelineError::NoOutput`  | `output()` was not called                     |
 | `PipelineError::Decode`    | Wrapped `DecodeError` from the decode stage   |
 | `PipelineError::Filter`    | Wrapped `FilterError` from the filter stage   |
 | `PipelineError::Encode`    | Wrapped `EncodeError` from the encode stage   |

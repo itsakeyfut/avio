@@ -6,7 +6,7 @@ Shared buffer-pooling abstractions for the ff-* crate family.
 
 ## Overview
 
-`ff-common` provides the `FramePool` trait and `PooledBuffer` type used internally across the `ff-*` crates. It has no external dependencies and does not link against FFmpeg.
+`ff-common` provides the `FramePool` trait, `PooledBuffer` type, and `VecPool` (a ready-to-use pool implementation) used internally across the `ff-*` crates. It has no external dependencies and does not link against FFmpeg.
 
 `PooledBuffer` wraps an allocated block of memory and returns it to the originating pool automatically when dropped — no manual free call is needed. If no pool is associated, the memory is simply deallocated. `FramePool` is `Send + Sync`, so pools can be shared across threads without additional locking.
 
@@ -17,9 +17,9 @@ Shared buffer-pooling abstractions for the ff-* crate family.
 ```rust
 use ff_common::PooledBuffer;
 
-// Allocate a 4096-byte buffer with no pool backing.
+// Wrap a 4096-byte buffer with no pool backing.
 // Memory is freed normally when `buf` is dropped.
-let buf = PooledBuffer::standalone(4096);
+let buf = PooledBuffer::standalone(vec![0u8; 4096]);
 assert_eq!(buf.len(), 4096);
 ```
 

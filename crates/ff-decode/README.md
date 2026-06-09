@@ -49,7 +49,7 @@ use ff_decode::AudioDecoder;
 use ff_format::SampleFormat;
 
 let mut decoder = AudioDecoder::open("audio.flac")
-    .output_format(SampleFormat::Fltp)
+    .output_format(SampleFormat::F32p)
     .output_sample_rate(44_100)
     .output_channels(2)   // downmix to stereo
     .build()?;
@@ -161,18 +161,18 @@ let mut decoder = VideoDecoder::open("video.mp4")
     .build()?;
 ```
 
-`HardwareAccel::Auto` probes for NVDEC, DXVA2, VideoToolbox, and VAAPI in that order, and falls back to software decoding if none is available.
+`HardwareAccel::Auto` probes for available accelerators — NVDEC, QSV, AMF, VideoToolbox, and VAAPI — and falls back to software decoding if none is available.
 
 ## Error Handling
 
-| Variant                              | When it occurs                                   |
-|--------------------------------------|--------------------------------------------------|
-| `DecodeError::FileNotFound`          | The input path does not exist                    |
-| `DecodeError::CannotOpen`            | FFmpeg could not open the container or codec     |
-| `DecodeError::UnsupportedCodec`      | No decoder available for the stream's codec      |
-| `DecodeError::DecoderUnavailable`    | Codec is known but not compiled into FFmpeg      |
-| `DecodeError::InvalidConfig`         | Builder options are inconsistent or unsupported  |
-| `DecodeError::Io`                    | Read error on the underlying file                |
+| Variant                                | When it occurs                                   |
+|----------------------------------------|--------------------------------------------------|
+| `DecodeError::FileNotFound`            | The input path does not exist                    |
+| `DecodeError::NoVideoStream`           | The container has no video stream                |
+| `DecodeError::UnsupportedCodec`        | No decoder available for the stream's codec      |
+| `DecodeError::DecoderUnavailable`      | Codec is known but not compiled into FFmpeg      |
+| `DecodeError::InvalidOutputDimensions` | Requested output width/height is invalid         |
+| `DecodeError::Ffmpeg`                  | An underlying FFmpeg call returned an error      |
 
 ## What the Crate Handles for You
 

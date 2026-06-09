@@ -21,14 +21,34 @@ ff-preview = { version = "0.14", features = ["proxy"] }
 
 ### Playback with a custom RGBA sink
 
+`PreviewPlayer::open` probes the file and prepares the pipeline. Call `split()`
+to obtain an exclusive `PlayerRunner` (owns the decode pipeline; register the
+sink and drive it with `run()`) and a cloneable `PlayerHandle` (non-blocking
+`play` / `pause` / `seek` / `stop` controls).
+
 ```rust
+use std::thread;
 use ff_preview::{PreviewPlayer, RgbaSink};
 
 fn main() -> Result<(), ff_preview::PreviewError> {
-    let mut player = PreviewPlayer::open("video.mp4")?;
-    player.set_sink(Box::new(RgbaSink::new()));
-    player.play();
-    player.run()?;
+    let (mut runner, handle) = PreviewPlayer::open("video.mp4")?.split();
+
+    let sink = RgbaSink::new();
+    let frames = sink.frame_handle(); // Arc<Mutex<Option<RgbaFrame>>> for the render thread
+    runner.set_sink(Box::new(sink));
+
+    thread::spawn(move || {
+        let _ = runner.run();
+    });
+
+    handle.play();
+
+    // In the render loop (any thread):
+    if let Some(frame) = frames.lock().unwrap().as_ref() {
+        // upload_to_gpu(&frame.data, frame.width, frame.height);
+        let _ = (&frame.data, frame.width, frame.height, frame.pts);
+    }
+
     Ok(())
 }
 ```
@@ -36,10 +56,11 @@ fn main() -> Result<(), ff_preview::PreviewError> {
 ### Frame-accurate seek
 
 ```rust
+use std::path::Path;
 use std::time::Duration;
 use ff_preview::{DecodeBuffer, FrameResult};
 
-let mut buf = DecodeBuffer::open("video.mp4").build()?;
+let mut buf = DecodeBuffer::open(Path::new("video.mp4")).build()?;
 buf.seek(Duration::from_secs(30))?;
 
 loop {
@@ -57,11 +78,12 @@ loop {
 ### Proxy generation
 
 ```rust
+use std::path::Path;
 use ff_preview::{ProxyGenerator, ProxyResolution};
 
-let proxy_path = ProxyGenerator::new("original_1080p.mp4")?
+let proxy_path = ProxyGenerator::new(Path::new("original_1080p.mp4"))?
     .resolution(ProxyResolution::Quarter)
-    .output_dir("/tmp")
+    .output_dir(Path::new("/tmp"))
     .generate()?;
 
 println!("proxy at {}", proxy_path.display());
@@ -71,9 +93,10 @@ println!("proxy at {}", proxy_path.display());
 
 | Feature | What it enables |
 |---------|----------------|
-| *(default)* | `PreviewPlayer`, `DecodeBuffer`, `PlaybackClock`, `FrameSink`, `RgbaSink`, `RgbaFrame`, seek |
+| *(default)* | `PreviewPlayer`, `PlayerRunner`, `PlayerHandle`, `DecodeBuffer`, `PlaybackClock`, `FrameSink`, `RgbaSink`, `RgbaFrame`, seek |
 | `tokio` | `AsyncPreviewPlayer` |
 | `proxy` | `ProxyGenerator`, `ProxyJob`, `ProxyResolution` |
+| `timeline` | `TimelinePlayer`, `TimelineRunner` |
 
 ## MSRV
 
