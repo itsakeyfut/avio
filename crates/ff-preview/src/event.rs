@@ -1,12 +1,12 @@
-//! Player event types emitted by [`PlayerRunner`](crate::playback::player::PlayerRunner).
+//! Player event types emitted by [`PlayerRunner`](crate::playback::player_runner::PlayerRunner).
 
 use std::time::Duration;
 
-/// Events emitted by [`PlayerRunner::run`](crate::playback::player::PlayerRunner::run)
+/// Events emitted by [`PlayerRunner::run`](crate::playback::player_runner::PlayerRunner::run)
 /// and delivered to callers via
-/// [`PlayerHandle::poll_event`](crate::playback::player::PlayerHandle::poll_event).
+/// [`PlayerHandle::poll_event`](crate::playback::player_handle::PlayerHandle::poll_event).
 pub enum PlayerEvent {
-    /// A seek initiated via [`PlayerHandle::seek`](crate::playback::player::PlayerHandle::seek)
+    /// A seek initiated via [`PlayerHandle::seek`](crate::playback::player_handle::PlayerHandle::seek)
     /// has completed.
     ///
     /// `pts` is the actual presentation timestamp of the first frame available

@@ -2,6 +2,9 @@
 //!
 //! This example shows which video encoders are available in the current FFmpeg build.
 
+// Querying FFmpeg for available encoders requires unsafe FFI calls.
+#![allow(unsafe_code)]
+
 fn main() {
     unsafe {
         ff_sys::ensure_initialized();
