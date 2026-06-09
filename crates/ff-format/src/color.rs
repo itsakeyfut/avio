@@ -195,25 +195,6 @@ impl ColorRange {
         }
     }
 
-    /// Returns the name of the color range used by the `format` filter.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_format::color::ColorRange;
-    ///
-    /// assert_eq!(ColorRange::Limited.format_name(), "tv");
-    /// assert_eq!(ColorRange::Full.format_name(), "pc");
-    /// ```
-    #[must_use]
-    pub const fn format_name(&self) -> &'static str {
-        match self {
-            Self::Limited => "tv",
-            Self::Full => "pc",
-            Self::Unknown => "unknown",
-        }
-    }
-
     /// Returns `true` if this is full (PC) range.
     ///
     /// # Examples
@@ -690,13 +671,6 @@ mod tests {
             assert_eq!(ColorRange::Limited.name(), "limited");
             assert_eq!(ColorRange::Full.name(), "full");
             assert_eq!(ColorRange::Unknown.name(), "unknown");
-        }
-
-        #[test]
-        fn test_format_names() {
-            assert_eq!(ColorRange::Limited.format_name(), "tv");
-            assert_eq!(ColorRange::Full.format_name(), "pc");
-            assert_eq!(ColorRange::Unknown.format_name(), "unknown");
         }
 
         #[test]
