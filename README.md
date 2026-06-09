@@ -1,6 +1,6 @@
 # avio
 
-Safe, high-level audio/video/image processing for Rust — decode, encode, probe, and filter without `unsafe` code.
+A safe, high-level Rust wrapper around FFmpeg for building video editors — decode, encode, filter, compose, and stream.
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
@@ -14,39 +14,40 @@ AI agents have been evolving remarkably in recent times, and large projects such
 
 At the same time, when an engineer designs the structs, traits, functions, variables, and overall architecture — deciding how to separate module responsibilities, how to connect them, which APIs to expose, and what to test — and then gives detailed instructions to an AI to generate code efficiently, the result is a dynamic where the engineer does the thinking and the AI does the work. I find this analogous to the relationship between an architect and a mid-level engineer. Of course, being the architect requires commensurate experience, technical depth, and judgment — but the structure of the relationship is similar.
 
-**Current phase (as of 2026-06-04):** The library foundation is in place. Active development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo) — a real-world video editing application built on `avio` — which remains the primary vehicle for surfacing bugs and driving API improvements. **Pull requests are welcome.** While the contributor base is small, or whenever rapid iteration is needed, AI assistance may be used to accelerate development — always with the engineer in the architectural role, reviewing and taking responsibility for every change. Questions, bug reports, and feature requests are equally welcome.
+**Current phase (as of 2026-06-10):** The library foundation is in place. Active development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo) — a real-world video editing application built on `avio` — which remains the primary vehicle for surfacing bugs and driving API improvements. **Pull requests are welcome.** While the contributor base is small, or whenever rapid iteration is needed, AI assistance may be used to accelerate development — always with the engineer in the architectural role, reviewing and taking responsibility for every change. Questions, bug reports, and feature requests are equally welcome.
 
 The goal of this project is to serve as the core foundation for video delivery services and video editing applications built in Rust — not to cover every FFmpeg feature. The fundamental motivation was simply a desire to build a video editing application in Rust.
+
+New contributors are very welcome — see [CONTRIBUTING](.github/CONTRIBUTING.md), and look for issues labeled [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22) to get started.
 
 If you have any questions or suggestions, I would be happy to hear them. Feel free to ask.
 
 ## Overview
 
-`avio` is a family of Rust crates that provide safe, ergonomic multimedia processing. All public APIs are **safe** — unsafe internals are fully encapsulated so you never need to write `unsafe` code in your application.
-
-Currently backed by FFmpeg, with planned support for GStreamer and other backends.
+`avio` is a **family of Rust crates for building video-editing and media applications** — a safe, ergonomic toolkit over FFmpeg. It spans low-level decode/encode up through timeline composition, real-time preview, and GPU rendering. All public APIs are **safe** — unsafe internals are fully encapsulated, so you never need to write `unsafe` code in your application.
 
 ```rust
 use ff_probe::open;
-use ff_decode::{VideoDecoder, SeekMode};
-use ff_encode::{VideoEncoder, VideoCodec, AudioCodec};
-use std::time::Duration;
+use ff_decode::VideoDecoder;
+use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode};
 
 // Inspect a media file
 let info = open("input.mp4")?;
-println!("{}x{} @ {:.2} fps", info.primary_video().unwrap().width(), ...);
+if let Some(v) = info.primary_video() {
+    println!("{}x{} @ {:.2} fps", v.width(), v.height(), v.fps());
+}
 
 // Decode frames
-let mut decoder = VideoDecoder::open("input.mp4")?.build()?;
-for frame in decoder.frames().take(100) {
-    let frame = frame?;
+let mut decoder = VideoDecoder::open("input.mp4").build()?;
+while let Some(frame) = decoder.decode_one()? {
     // process frame.planes() ...
 }
 
 // Re-encode
-let mut encoder = VideoEncoder::create("output.mp4")?
+let mut encoder = VideoEncoder::create("output.mp4")
     .video(1920, 1080, 30.0)
     .video_codec(VideoCodec::H264)
+    .bitrate_mode(BitrateMode::Crf(23))
     .audio(48000, 2)
     .audio_codec(AudioCodec::Aac)
     .build()?;
@@ -144,12 +145,11 @@ use ff_format::{PixelFormat, SampleFormat};
 use std::time::Duration;
 
 // Video
-let mut decoder = VideoDecoder::open("video.mp4")?
+let mut decoder = VideoDecoder::open("video.mp4")
     .output_format(PixelFormat::Rgba)
     .build()?;
 
-for frame in decoder.frames() {
-    let frame = frame?;
+while let Some(frame) = decoder.decode_one()? {
     // frame.planes() contains pixel data
 }
 
@@ -158,27 +158,26 @@ decoder.seek(Duration::from_secs(30), SeekMode::Exact)?;
 let frame = decoder.decode_one()?;
 
 // Audio
-let mut decoder = AudioDecoder::open("audio.mp3")?
+let mut decoder = AudioDecoder::open("audio.mp3")
     .output_format(SampleFormat::F32)
     .output_sample_rate(48000)
     .build()?;
 
-for frame in decoder.frames() {
-    let frame = frame?;
-    // frame.channel_data() contains audio samples
+while let Some(frame) = decoder.decode_one()? {
+    // frame.planes() contains audio samples
 }
 ```
 
 ### Encode
 
 ```rust
-use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, Preset};
+use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode, Preset};
 
 // Automatically selects an LGPL-compatible encoder (hardware or VP9/AV1 fallback)
-let mut encoder = VideoEncoder::create("output.mp4")?
+let mut encoder = VideoEncoder::create("output.mp4")
     .video(1920, 1080, 30.0)
     .video_codec(VideoCodec::H264)
-    .video_bitrate(8_000_000)
+    .bitrate_mode(BitrateMode::Crf(23))
     .preset(Preset::Fast)
     .audio(48000, 2)
     .audio_codec(AudioCodec::Aac)
@@ -197,18 +196,22 @@ use ff_decode::{VideoDecoder, HardwareAccel};
 use ff_encode::{VideoEncoder, HardwareEncoder};
 
 // Decode with GPU
-let decoder = VideoDecoder::open("video.mp4")?
+let decoder = VideoDecoder::open("video.mp4")
     .hardware_accel(HardwareAccel::Auto)
     .build()?;
 
 // Encode with GPU
-let encoder = VideoEncoder::create("output.mp4")?
+let encoder = VideoEncoder::create("output.mp4")
     .video(1920, 1080, 60.0)
     .hardware_encoder(HardwareEncoder::Auto)
     .build()?;
 ```
 
 ## Showcase
+
+The best way to see `avio` in action is to run these projects. If either interests you,
+**contributions to them are very welcome too** — they are where new requirements and rough edges
+surface first.
 
 ### [ascii-term](https://github.com/itsakeyfut/ascii-term) — Terminal ASCII Art Video Player
 
@@ -225,6 +228,20 @@ ASCII art in the terminal with synchronized audio playback, and was fully migrat
 
 This is a real-world proof that `avio` can replace `ffmpeg-next` / `ffmpeg-sys-next` in
 decode-heavy applications without any direct `unsafe` FFmpeg code in the application layer.
+
+### [avio-editor-demo](https://github.com/itsakeyfut/avio-editor-demo) — Non-Linear Video Editor
+
+A real-world non-linear video editor built on `avio`, and the primary driver of the library's
+API. It exercises the full **decode → timeline compose → real-time preview → export** path, and
+is where most bugs and API improvements originate.
+
+**What it demonstrates:**
+
+- `Timeline` / `Clip` multi-track composition with per-clip effects (colour correction, LUT, transitions)
+- Real-time monitor preview that matches the exported result (same `yuv420p` pipeline)
+- `ff-preview` proxy workflow and `ff-render` GPU compositing
+
+Give it a try — and if you'd like to help shape a real Rust video editor, jump in.
 
 ## Platform Support
 

@@ -133,7 +133,7 @@ use ff_encode::{
     AacOptions, AacProfile,
     Mp3Options, Mp3Quality,
     FlacOptions,
-    Container,
+    OutputContainer,
 };
 
 // Opus — application mode + frame duration, OGG container
@@ -145,7 +145,7 @@ let mut encoder = AudioEncoder::create("output.ogg")
     .audio(48_000, 2)
     .audio_codec(AudioCodec::Opus)
     .audio_bitrate(128_000)
-    .container(Container::Ogg)
+    .container(OutputContainer::Ogg)
     .codec_options(opts)
     .build()?;
 
@@ -167,7 +167,7 @@ let opts = AudioCodecOptions::Flac(FlacOptions {
 let mut encoder = AudioEncoder::create("output.flac")
     .audio(44_100, 2)
     .audio_codec(AudioCodec::Flac)
-    .container(Container::Flac)
+    .container(OutputContainer::Flac)
     .codec_options(opts)
     .build()?;
 ```
@@ -182,8 +182,8 @@ use ff_encode::{
     VideoEncoder, VideoCodec, VideoCodecOptions,
     ProResOptions, ProResProfile,
     DnxhdOptions, DnxhdVariant,
-    PixelFormat,
 };
+use ff_format::PixelFormat;
 
 // Apple ProRes HQ — yuv422p10le, .mov container
 let opts = VideoCodecOptions::ProRes(ProResOptions {
@@ -224,10 +224,12 @@ let mut encoder = VideoEncoder::create("output.mxf")
 ```rust
 use ff_encode::{
     VideoEncoder, VideoCodec, VideoCodecOptions,
-    H265Options, H265Profile,
+    H265Options, H265Profile, BitrateMode,
+};
+use ff_format::{
     Hdr10Metadata, MasteringDisplay,
     ColorTransfer, ColorSpace, ColorPrimaries,
-    PixelFormat, BitrateMode,
+    PixelFormat,
 };
 
 // HDR10 — static metadata (MaxCLL, MaxFALL, mastering display)
@@ -308,13 +310,13 @@ Enable the `gpl` feature to add libx264 and libx265. This changes the license te
 
 ## Error Handling
 
-| Variant                            | When it occurs                                     |
-|------------------------------------|----------------------------------------------------|
-| `EncodeError::InvalidConfig`       | Codec, resolution, or bitrate settings are invalid |
-| `EncodeError::UnsupportedCodec`    | Requested codec not available in this FFmpeg build |
-| `EncodeError::HardwareUnavailable` | Hardware encoder requested but no device found     |
-| `EncodeError::Io`                  | Write error on the output file                     |
-| `EncodeError::Encode`              | FFmpeg returned an error during frame encoding     |
+| Variant                              | When it occurs                                     |
+|--------------------------------------|----------------------------------------------------|
+| `EncodeError::InvalidConfig`         | Codec, resolution, or bitrate settings are invalid |
+| `EncodeError::UnsupportedCodec`      | Requested codec not available in this FFmpeg build |
+| `EncodeError::HwEncoderUnavailable`  | Hardware encoder requested but no device found     |
+| `EncodeError::Io`                    | Write error on the output file                     |
+| `EncodeError::EncodingFailed`        | FFmpeg returned an error during frame encoding     |
 
 ## Feature Flags
 

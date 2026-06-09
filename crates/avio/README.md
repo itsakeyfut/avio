@@ -13,13 +13,13 @@ to only the capabilities you need via feature flags.
 
 ```toml
 [dependencies]
-# Default: probe + decode + encode
+# Default: probe + decode + encode + hwaccel
 avio = "0.14"
 
 # Add filtering
 avio = { version = "0.14", features = ["filter"] }
 
-# Full stack (implies filter + pipeline)
+# Full streaming stack (implies pipeline, which implies filter)
 avio = { version = "0.14", features = ["stream"] }
 
 # Async decode/encode (requires tokio runtime)
@@ -28,15 +28,23 @@ avio = { version = "0.14", features = ["tokio"] }
 
 ## Feature Flags
 
-| Feature    | Enables                                        | Default |
-|------------|------------------------------------------------|---------|
-| `probe`    | `ff-probe` — read-only media metadata          | yes     |
-| `decode`   | `ff-decode` — video and audio decoding         | yes     |
-| `encode`   | `ff-encode` — video and audio encoding         | yes     |
-| `filter`   | `ff-filter` — filter graph operations          | no      |
-| `pipeline` | `ff-pipeline` — decode → filter → encode       | no      |
-| `stream`   | `ff-stream` — HLS / DASH streaming output      | no      |
-| `tokio`    | Async wrappers for decode and encode           | no      |
+| Feature         | Enables                                              | Default | Implies              |
+|-----------------|------------------------------------------------------|---------|----------------------|
+| `probe`         | `ff-probe` — read-only media metadata                | yes     | —                    |
+| `decode`        | `ff-decode` — video and audio decoding               | yes     | —                    |
+| `encode`        | `ff-encode` — video and audio encoding               | yes     | —                    |
+| `hwaccel`       | hardware-accelerated encoders (`ff-encode/hwaccel`)  | yes     | —                    |
+| `filter`        | `ff-filter` — filter graph operations                | no      | —                    |
+| `pipeline`      | `ff-pipeline` — decode → filter → encode             | no      | `filter`             |
+| `stream`        | `ff-stream` — HLS / DASH / live streaming output     | no      | `pipeline`           |
+| `preview`       | `ff-preview` — real-time playback and seek           | no      | —                    |
+| `preview-proxy` | proxy generation (`ff-preview/proxy`)                | no      | `preview`            |
+| `render`        | `ff-render` — GPU compositing pipeline               | no      | `preview`            |
+| `render-gpu`    | wgpu backend (`ff-render/wgpu`)                      | no      | `render`             |
+| `tokio`         | async wrappers for decode, encode, and preview       | no      | `decode` + `encode`  |
+| `gpl`           | GPL-licensed encoders (`ff-encode/gpl`)              | no      | —                    |
+| `srt`           | SRT input/output (`ff-decode/srt`, `ff-stream/srt`) | no      | —                    |
+| `serde`         | `serde` derives for filter types (`ff-filter/serde`) | no      | —                    |
 
 ## Quick Start
 
@@ -260,6 +268,8 @@ Pipeline::builder()
 | `ff-filter`   | Filter graph operations                        |
 | `ff-pipeline` | Decode → filter → encode pipeline              |
 | `ff-stream`   | HLS / DASH adaptive streaming output           |
+| `ff-preview`  | Real-time preview and proxy workflow           |
+| `ff-render`   | GPU compositing pipeline (wgpu)                |
 | `avio`        | Unified facade (this crate)                    |
 
 ## MSRV

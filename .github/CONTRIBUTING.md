@@ -10,6 +10,7 @@ If you're unsure where to start, feel free to open an issue and ask.
 - [Code of Conduct](#code-of-conduct)
 - [Prerequisites](#prerequisites)
 - [Ways to Contribute](#ways-to-contribute)
+- [Issue Labels](#issue-labels)
 - [Reporting Bugs](#reporting-bugs)
 - [Feature Requests](#feature-requests)
 - [Pull Requests](#pull-requests)
@@ -67,6 +68,26 @@ Verify: `ffmpeg -version` (must show `7.x`)
 - **Performance** — Profiling and reducing unnecessary copies or allocations
 
 Looking for a starting point? Check issues labeled [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22).
+
+---
+
+## Issue Labels
+
+Issues and PRs are organised with a single-letter prefix system. Each label belongs to one family:
+
+| Prefix | Meaning | Examples |
+|---|---|---|
+| `T-` | **Type** of work | `T-Bug`, `T-Feat`, `T-Doc`, `T-Perf`, `T-Refactor`, `T-Maintenance` |
+| `A-` | **Area** / affected crate | `A-ff-filter`, `A-ff-decode`, `A-avio`, `A-ci` |
+| `P-` | **Priority** | `P-Critical`, `P-High`, `P-Medium`, `P-Low` |
+| `S-` | **Status** in the workflow | `S-Needs-Triage`, `S-Needs-Design`, `S-Ready-For-Implementation`, `S-In-Progress`, `S-Blocked` |
+| `D-` | **Difficulty** / domain | `D-Trivial`, `D-Straightforward`, `D-Modest`, `D-Complex`, `D-Unsafe`, `D-FFmpeg` |
+
+Finding work to pick up:
+
+- New to the project? Start with [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22), [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22), `D-Trivial`, or `D-Straightforward`.
+- `S-Ready-For-Implementation` means the design is settled — safe to start an implementation PR. `S-Needs-Design` means it needs discussion first.
+- `D-Unsafe` (touches `unsafe` / FFmpeg FFI) and `D-FFmpeg` (requires FFmpeg / codec / container knowledge) flag issues that need deeper domain familiarity.
 
 ---
 
