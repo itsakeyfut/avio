@@ -1,6 +1,6 @@
 #![forbid(clippy::wildcard_enum_match_arm)]
 
-use ff_format::{ColorRange, ColorSpace, PixelFormat};
+use ff_format::{AlphaMode, ColorRange, ColorSpace, PixelFormat};
 
 use crate::graph::FfmpegToken;
 
@@ -55,6 +55,18 @@ impl FfmpegToken for PixelFormat {
             Self::Gbrpf32le => "gbrpf32le",
             Self::Other(_) => return None, // TODO
             _ => {
+                return None;
+            }
+        })
+    }
+}
+
+impl FfmpegToken for AlphaMode {
+    fn ffmpeg_token(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Straight => "straight",
+            Self::Premultiplied => "premultiplied",
+            Self::Unknown | _ => {
                 return None;
             }
         })
