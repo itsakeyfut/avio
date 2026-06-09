@@ -5,8 +5,8 @@ use ff_format::{AlphaMode, ColorRange, ColorSpace, PixelFormat};
 use crate::graph::FfmpegToken;
 
 impl FfmpegToken for ColorRange {
-    // https://ffmpeg.org/ffmpeg-filters.html#colorspace
     fn ffmpeg_token(&self) -> Option<&'static str> {
+        // https://ffmpeg.org/ffmpeg-filters.html#colorspace
         Some(match self {
             Self::Limited => "tv",
             Self::Full => "pc",
@@ -18,8 +18,8 @@ impl FfmpegToken for ColorRange {
 }
 
 impl FfmpegToken for ColorSpace {
-    // https://ffmpeg.org/ffmpeg-filters.html#colorspace
     fn ffmpeg_token(&self) -> Option<&'static str> {
+        // https://ffmpeg.org/ffmpeg-filters.html#colorspace
         Some(match self {
             Self::Bt709 => "bt709",
             Self::Bt601 => "bt601",
@@ -34,8 +34,8 @@ impl FfmpegToken for ColorSpace {
 }
 
 impl FfmpegToken for PixelFormat {
-    // ffmpeg -pix_fmts
     fn ffmpeg_token(&self) -> Option<&'static str> {
+        // ffmpeg -pix_fmts
         Some(match self {
             Self::Rgb24 => "rgb24",
             Self::Rgba => "rgba",
@@ -63,6 +63,7 @@ impl FfmpegToken for PixelFormat {
 
 impl FfmpegToken for AlphaMode {
     fn ffmpeg_token(&self) -> Option<&'static str> {
+        // https://ffmpeg.org/ffmpeg-filters.html#overlay-1
         Some(match self {
             Self::Straight => "straight",
             Self::Premultiplied => "premultiplied",
