@@ -7,6 +7,7 @@ mod color;
 mod compositing;
 mod core;
 mod effects;
+mod format;
 mod geometry;
 mod text;
 mod transitions;

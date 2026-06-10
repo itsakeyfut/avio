@@ -491,6 +491,94 @@ impl fmt::Display for ColorTransfer {
     }
 }
 
+/// Alpha modes.
+///
+/// The alpha mode defines how the alpha channel should be handled when
+/// converting video frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum AlphaMode {
+    /// Unassociated alpha.
+    #[default]
+    Straight,
+    /// Associated alpha.
+    Premultiplied,
+    /// Alpha mode is not specified or unknown
+    Unknown,
+}
+
+impl AlphaMode {
+    /// Returns the name of the alpha mode as a string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::AlphaMode;
+    ///
+    /// assert_eq!(AlphaMode::Straight.name(), "straight");
+    /// assert_eq!(AlphaMode::Premultiplied.name(), "premultiplied");
+    /// ```
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Straight => "straight",
+            Self::Premultiplied => "premultiplied",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Returns `true` if this is a straight alpha mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::AlphaMode;
+    ///
+    /// assert!(AlphaMode::Straight.is_straight());
+    /// assert!(!AlphaMode::Premultiplied.is_straight());
+    /// ```
+    #[must_use]
+    pub const fn is_straight(&self) -> bool {
+        matches!(self, Self::Straight)
+    }
+
+    /// Returns `true` if this is a premultiplied alpha mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::AlphaMode;
+    ///
+    /// assert!(AlphaMode::Premultiplied.is_premultiplied());
+    /// assert!(!AlphaMode::Straight.is_premultiplied());
+    /// ```
+    #[must_use]
+    pub const fn is_premultiplied(&self) -> bool {
+        matches!(self, Self::Premultiplied)
+    }
+
+    /// Returns `true` if the alpha mode is unknown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::AlphaMode;
+    ///
+    /// assert!(AlphaMode::Unknown.is_unknown());
+    /// assert!(!AlphaMode::Straight.is_unknown());
+    /// ```
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
+impl fmt::Display for AlphaMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,6 +843,63 @@ mod tests {
             set.insert(ColorTransfer::Pq);
             assert!(set.contains(&ColorTransfer::Hlg));
             assert!(!set.contains(&ColorTransfer::Bt709));
+        }
+    }
+
+    mod alpha_mode_tests {
+        use super::*;
+
+        #[test]
+        fn test_names() {
+            assert_eq!(AlphaMode::Straight.name(), "straight");
+            assert_eq!(AlphaMode::Premultiplied.name(), "premultiplied");
+            assert_eq!(AlphaMode::Unknown.name(), "unknown");
+        }
+
+        #[test]
+        fn test_display() {
+            assert_eq!(format!("{}", AlphaMode::Straight), "straight");
+            assert_eq!(format!("{}", AlphaMode::Premultiplied), "premultiplied");
+            assert_eq!(format!("{}", AlphaMode::Unknown), "unknown");
+        }
+
+        #[test]
+        fn test_default() {
+            assert_eq!(AlphaMode::default(), AlphaMode::Straight);
+        }
+
+        #[test]
+        fn is_straight_should_only_match_straight() {
+            assert!(AlphaMode::Straight.is_straight());
+            assert!(!AlphaMode::Premultiplied.is_straight());
+            assert!(!AlphaMode::Unknown.is_straight());
+        }
+
+        #[test]
+        fn is_premultiplied_should_only_match_premultiplied() {
+            assert!(AlphaMode::Premultiplied.is_premultiplied());
+            assert!(!AlphaMode::Straight.is_premultiplied());
+            assert!(!AlphaMode::Unknown.is_premultiplied());
+        }
+
+        #[test]
+        fn is_unknown_should_only_match_unknown() {
+            assert!(AlphaMode::Unknown.is_unknown());
+            assert!(!AlphaMode::Straight.is_unknown());
+            assert!(!AlphaMode::Premultiplied.is_unknown());
+        }
+
+        #[test]
+        fn test_equality_and_hash() {
+            use std::collections::HashSet;
+
+            assert_eq!(AlphaMode::Straight, AlphaMode::Straight);
+            assert_ne!(AlphaMode::Premultiplied, AlphaMode::Straight);
+
+            let mut set = HashSet::new();
+            set.insert(AlphaMode::Straight);
+            assert!(set.contains(&AlphaMode::Straight));
+            assert!(!set.contains(&AlphaMode::Premultiplied));
         }
     }
 }
