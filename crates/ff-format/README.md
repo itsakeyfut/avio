@@ -9,8 +9,8 @@ Shared data types for the ff-* crate family. No FFmpeg dependency — these type
 | Type              | Description                                                          |
 |-------------------|----------------------------------------------------------------------|
 | `PixelFormat`     | Enumeration of pixel formats (`Yuv420p`, `Rgba`, `Yuv420p10le`, `Yuv422p10le`, `Gbrpf32le`, …) |
-| `SampleFormat`    | Audio sample formats (`Fltp`, `S16`, …)                              |
-| `ChannelLayout`   | `Mono`, `Stereo`, `Surround51`, and others                           |
+| `SampleFormat`    | Audio sample formats (`F32`, `I16`, `F32p`, …)                       |
+| `ChannelLayout`   | `Mono`, `Stereo`, `Surround5_1`, and others                          |
 | `ColorSpace`      | `Bt601`, `Bt709`, `Bt2020`, and others                               |
 | `ColorRange`      | `Limited` (studio swing) or `Full` (PC swing)                        |
 | `ColorPrimaries`  | `Bt709`, `Bt2020`, `DciP3`, and others                               |
@@ -68,14 +68,17 @@ let meta = Hdr10Metadata {
 ```rust
 use ff_format::{Timestamp, Rational};
 
-// Create a timestamp at 2.5 seconds (5/2).
-let ts = Timestamp::new(5, 2);
+// A timestamp is a PTS value paired with a time base.
+// Here the time base is 1/1000 (milliseconds), so 2500 units = 2.5 seconds.
+let time_base = Rational::new(1, 1000);
+let ts = Timestamp::new(2500, time_base);
 
-// Arithmetic on rational timestamps stays exact.
-let one_second = Timestamp::new(1, 1);
-let three_seconds = ts + one_second * Rational::new(1, 1);
+// Timestamps add together (the result keeps the left operand's time base).
+let one_second = Timestamp::new(1000, time_base);
+let three_and_a_half = ts + one_second;
 
 assert_eq!(ts.as_secs_f64(), 2.5);
+assert_eq!(three_and_a_half.as_secs_f64(), 3.5);
 ```
 
 ## MSRV

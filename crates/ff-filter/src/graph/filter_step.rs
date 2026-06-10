@@ -1,5 +1,6 @@
 //! Internal filter step representation.
 
+use std::iter;
 use std::time::Duration;
 
 use super::builder::FilterGraphBuilder;
@@ -10,6 +11,7 @@ use ff_format::PixelFormat;
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
+use ff_format::{AlphaMode, ColorRange, ColorSpace, PixelFormat};
 
 /// Escapes a filesystem path for use as a value inside an `FFmpeg` filter
 /// argument string (e.g. `lut3d`'s `file=` option).
@@ -30,6 +32,14 @@ pub(crate) fn escape_filter_path(path: &str) -> String {
 /// [`crate::AudioTrack::effects`] to attach per-track effects in a multi-track mix.
 #[derive(Debug, Clone)]
 pub enum FilterStep {
+    /// Convert video to a suitable pixel format from the given options.
+    Format {
+        pix_fmts: Vec<PixelFormat>,
+        color_spaces: Vec<ColorSpace>,
+        color_ranges: Vec<ColorRange>,
+        alpha_modes: Vec<AlphaMode>,
+    },
+
     /// Trim: keep only frames in `[start, end)` seconds.
     Trim { start: f64, end: f64 },
     /// Scale to a new resolution using the given resampling algorithm.
@@ -873,6 +883,7 @@ impl FilterStep {
     /// Returns the libavfilter filter name for this step.
     pub(crate) fn filter_name(&self) -> &'static str {
         match self {
+            Self::Format { .. } => "format",
             Self::Trim { .. } => "trim",
             Self::Scale { .. } => "scale",
             Self::Crop { .. } => "crop",
@@ -992,6 +1003,63 @@ impl FilterStep {
     /// Returns the `args` string passed to `avfilter_graph_create_filter`.
     pub(crate) fn args(&self) -> String {
         match self {
+            Self::Format {
+                pix_fmts,
+                color_spaces,
+                color_ranges,
+                alpha_modes,
+            } => {
+                let mut parts = vec![];
+                if !pix_fmts.is_empty() {
+                    parts.push(
+                        iter::once("pix_fmts=")
+                            .chain(
+                                pix_fmts
+                                    .iter()
+                                    .flat_map(|pix_fmt| ["|", pix_fmt.name()])
+                                    .skip(1),
+                            )
+                            .collect::<String>(),
+                    );
+                }
+                if !color_spaces.is_empty() {
+                    parts.push(
+                        iter::once("color_spaces=")
+                            .chain(
+                                color_spaces
+                                    .iter()
+                                    .flat_map(|color_space| ["|", color_space.name()])
+                                    .skip(1),
+                            )
+                            .collect::<String>(),
+                    );
+                }
+                if !color_ranges.is_empty() {
+                    parts.push(
+                        iter::once("color_ranges=")
+                            .chain(
+                                color_ranges
+                                    .iter()
+                                    .flat_map(|color_range| ["|", color_range.name()])
+                                    .skip(1),
+                            )
+                            .collect::<String>(),
+                    );
+                }
+                if !alpha_modes.is_empty() {
+                    parts.push(
+                        iter::once("alpha_modes=")
+                            .chain(
+                                alpha_modes
+                                    .iter()
+                                    .flat_map(|alpha_mode| ["|", alpha_mode.name()])
+                                    .skip(1),
+                            )
+                            .collect::<String>(),
+                    );
+                }
+                parts.join(":")
+            }
             Self::Trim { start, end } => format!("start={start}:end={end}"),
             Self::Scale {
                 width,

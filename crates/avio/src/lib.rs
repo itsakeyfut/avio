@@ -200,10 +200,10 @@
 // in from ff-format anyway).
 pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
-    AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
-    ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, ContainerInfo, Hdr10Metadata,
-    MasteringDisplay, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat, Rational,
-    SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
+    AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo,
+    ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, ContainerInfo,
+    Hdr10Metadata, MasteringDisplay, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat,
+    Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
     VideoStreamInfo,
 };
 
