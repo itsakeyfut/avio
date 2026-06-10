@@ -259,14 +259,13 @@ impl Clip {
     /// the frame cannot be processed.
     pub fn apply_video_effects(&self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
         let in_format = frame.format();
-        let mut builder = FilterGraph::builder().add_step(FilterStep::Format {
-            pix_fmt: PixelFormat::Yuv420p,
-        });
+        let mut builder =
+            FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![], vec![]);
         for step in self.video_effect_chain() {
             builder = builder.add_step(step);
         }
         let mut graph = builder
-            .add_step(FilterStep::Format { pix_fmt: in_format })
+            .format(vec![in_format], vec![], vec![], vec![])
             .build()?;
         graph.push_video(0, frame)?;
         graph

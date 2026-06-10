@@ -7,7 +7,6 @@ use super::builder::FilterGraphBuilder;
 use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
-use ff_format::PixelFormat;
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
@@ -135,11 +134,6 @@ pub enum FilterStep {
     Hue { degrees: f32 },
     /// Per-channel gamma correction via `FFmpeg` `eq` filter.
     Gamma { r: f32, g: f32, b: f32 },
-    /// Convert the stream to a specific pixel format via `FFmpeg`'s `format` filter.
-    ///
-    /// Useful to force a known output format (e.g. `Rgba`) at the end of a chain
-    /// so the pulled frames can be read back directly. Video-only.
-    Format { pix_fmt: PixelFormat },
     /// Three-way colour corrector (lift / gamma / gain) via `FFmpeg` `curves` filter.
     ThreeWayCC {
         /// Affects shadows (blacks). Neutral: `Rgb::NEUTRAL`.
@@ -909,7 +903,6 @@ impl FilterStep {
             Self::WhiteBalance { .. } => "colorchannelmixer",
             Self::Hue { .. } => "hue",
             Self::Gamma { .. } => "eq",
-            Self::Format { .. } => "format",
             Self::ThreeWayCC { .. } => "curves",
             Self::Vignette { .. } => "vignette",
             Self::HFlip => "hflip",
@@ -1159,7 +1152,6 @@ impl FilterStep {
             }
             Self::Hue { degrees } => format!("h={degrees}"),
             Self::Gamma { r, g, b } => format!("gamma_r={r}:gamma_g={g}:gamma_b={b}"),
-            Self::Format { pix_fmt } => format!("pix_fmts={}", pix_fmt.name()),
             Self::Vignette { angle, x0, y0 } => {
                 let cx = if *x0 == 0.0 {
                     "w/2".to_string()
@@ -1586,15 +1578,6 @@ mod tests {
     #[test]
     fn escape_filter_path_should_leave_unix_path_unchanged() {
         assert_eq!(escape_filter_path("/home/u/look.cube"), "/home/u/look.cube");
-    }
-
-    #[test]
-    fn format_step_should_map_to_format_filter_with_pix_fmts() {
-        let step = FilterStep::Format {
-            pix_fmt: PixelFormat::Rgba,
-        };
-        assert_eq!(step.filter_name(), "format");
-        assert_eq!(step.args(), "pix_fmts=rgba");
     }
 
     #[test]
