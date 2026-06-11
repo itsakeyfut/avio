@@ -62,7 +62,7 @@ pub mod timeline;
 pub mod video_pipeline;
 
 pub use audio_pipeline::AudioPipeline;
-pub use clip::Clip;
+pub use clip::{Clip, VideoEffectRenderer};
 pub use encoder_config::{EncoderConfig, EncoderConfigBuilder};
 pub use error::PipelineError;
 pub use ff_filter::{BlendMode, XfadeTransition};

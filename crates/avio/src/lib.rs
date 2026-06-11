@@ -280,7 +280,7 @@ pub use ff_filter::{
 pub use ff_pipeline::{
     AudioPipeline, Clip, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder,
     PipelineError, Progress, ProgressCallback, ThumbnailPipeline, Timeline, TimelineBuilder,
-    VideoPipeline,
+    VideoEffectRenderer, VideoPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
