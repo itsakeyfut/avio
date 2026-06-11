@@ -11,6 +11,7 @@ keywords = ["video", "audio", "ffmpeg", "preview", "playback"]
 categories = ["multimedia::video", "multimedia::audio"]
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]

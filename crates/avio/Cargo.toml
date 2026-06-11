@@ -29,6 +29,7 @@ srt      = ["ff-decode/srt", "ff-stream/srt"]
 serde    = ["ff-filter/serde"]
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
