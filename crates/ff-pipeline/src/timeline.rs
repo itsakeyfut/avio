@@ -276,19 +276,10 @@ impl Timeline {
                     if (clip.speed - 1.0).abs() > 1e-9 {
                         layer_effects.push(FilterStep::Speed { factor: clip.speed });
                     }
-                    #[allow(clippy::float_cmp)]
-                    let neutral =
-                        clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
-                    if !neutral {
-                        layer_effects.push(FilterStep::Eq {
-                            brightness: clip.brightness,
-                            contrast: clip.contrast,
-                            saturation: clip.saturation,
-                        });
-                    }
-                    // Caller-attached per-clip video effects run last (after the
-                    // built-in speed/colour-correction steps).
-                    layer_effects.extend(clip.video_effects.iter().cloned());
+                    // Colour-correction (eq) + caller-attached per-clip video
+                    // effects, shared with `Clip::apply_video_effects` so a
+                    // single-frame preview matches this rendered layer.
+                    layer_effects.extend(clip.video_effect_chain());
 
                     // Per-clip opacity overrides the track-level animation when not 1.0.
                     #[allow(clippy::float_cmp)]

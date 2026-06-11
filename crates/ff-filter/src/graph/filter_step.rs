@@ -7,6 +7,7 @@ use super::builder::FilterGraphBuilder;
 use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
+
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
 use ff_format::{AlphaMode, ColorRange, ColorSpace, PixelFormat};

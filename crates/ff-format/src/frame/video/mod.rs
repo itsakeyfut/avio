@@ -200,6 +200,65 @@ impl VideoFrame {
         })
     }
 
+    /// Creates a packed [`PixelFormat::Rgba`] frame from tightly-packed pixel
+    /// data (`width * height * 4` bytes, no row padding).
+    ///
+    /// This is the inverse of [`to_rgba`](Self::to_rgba); together they let a
+    /// host move frames between an RGBA surface and avio's filter graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidDataSize`] if `rgba.len() != width * height * 4`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::{PixelFormat, VideoFrame};
+    ///
+    /// let frame = VideoFrame::from_rgba(2, 2, vec![0u8; 2 * 2 * 4]).unwrap();
+    /// assert_eq!(frame.format(), PixelFormat::Rgba);
+    /// assert_eq!(frame.num_planes(), 1);
+    /// ```
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, FrameError> {
+        let stride = width as usize * 4;
+        let expected = stride * height as usize;
+        if rgba.len() != expected {
+            return Err(FrameError::InvalidDataSize {
+                expected,
+                actual: rgba.len(),
+            });
+        }
+        Self::new(
+            vec![PooledBuffer::standalone(rgba)],
+            vec![stride],
+            width,
+            height,
+            PixelFormat::Rgba,
+            Timestamp::default(),
+            false,
+        )
+    }
+
+    /// Returns tightly-packed RGBA bytes (`width * height * 4`, row padding
+    /// stripped) when this frame is [`PixelFormat::Rgba`]; `None` otherwise.
+    ///
+    /// Inverse of [`from_rgba`](Self::from_rgba).
+    #[must_use]
+    pub fn to_rgba(&self) -> Option<Vec<u8>> {
+        if self.format != PixelFormat::Rgba {
+            return None;
+        }
+        let row_bytes = self.width as usize * 4;
+        let stride = self.stride(0)?;
+        let src = self.plane(0)?;
+        let mut out = Vec::with_capacity(row_bytes * self.height as usize);
+        for row in 0..self.height as usize {
+            let start = row * stride;
+            out.extend_from_slice(src.get(start..start + row_bytes)?);
+        }
+        Some(out)
+    }
+
     /// Creates a black YUV420P video frame.
     ///
     /// The Y plane is filled with `0x00`; U and V planes are filled with `0x80`
@@ -1104,5 +1163,29 @@ mod tests {
         let frame = VideoFrame::empty(1920, 1080, PixelFormat::Rgba).unwrap();
         let display = format!("{frame}");
         assert!(!display.contains("[KEY]"));
+    }
+
+    #[test]
+    fn from_rgba_then_to_rgba_should_round_trip() {
+        let pixels: Vec<u8> = (0..(2 * 2 * 4)).map(|i| i as u8).collect();
+        let frame = VideoFrame::from_rgba(2, 2, pixels.clone()).unwrap();
+        assert_eq!(frame.format(), PixelFormat::Rgba);
+        assert_eq!(frame.num_planes(), 1);
+        assert_eq!(frame.to_rgba(), Some(pixels));
+    }
+
+    #[test]
+    fn from_rgba_wrong_size_should_error() {
+        let err = VideoFrame::from_rgba(2, 2, vec![0u8; 3]);
+        assert!(matches!(
+            err,
+            Err(crate::error::FrameError::InvalidDataSize { .. })
+        ));
+    }
+
+    #[test]
+    fn to_rgba_non_rgba_should_return_none() {
+        let frame = VideoFrame::empty(4, 4, PixelFormat::Yuv420p).unwrap();
+        assert_eq!(frame.to_rgba(), None);
     }
 }
