@@ -11,6 +11,7 @@ keywords = ["video", "gpu", "wgpu", "compositing", "rendering"]
 categories = ["multimedia::video"]
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]

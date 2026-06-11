@@ -14,6 +14,7 @@ categories = ["multimedia::video", "multimedia::encoding"]
 srt = []
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
