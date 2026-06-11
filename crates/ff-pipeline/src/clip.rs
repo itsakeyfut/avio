@@ -253,24 +253,37 @@ impl Clip {
     /// behave identically to the export — then back to its original pixel format,
     /// so the returned frame has the same format as `frame`.
     ///
+    /// This is a one-shot convenience that builds a fresh [`VideoEffectRenderer`]
+    /// per call. For real-time preview, build a [`video_effect_renderer`] once and
+    /// reuse it across frames to avoid rebuilding the filter graph (and re-loading
+    /// any `lut3d` file) every frame.
+    ///
+    /// [`video_effect_renderer`]: Self::video_effect_renderer
+    ///
     /// # Errors
     ///
     /// Returns [`PipelineError::Filter`] if the filter graph cannot be built or
     /// the frame cannot be processed.
     pub fn apply_video_effects(&self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
-        let in_format = frame.format();
-        let mut builder =
-            FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![], vec![]);
-        for step in self.video_effect_chain() {
-            builder = builder.add_step(step);
-        }
-        let mut graph = builder
-            .format(vec![in_format], vec![], vec![], vec![])
-            .build()?;
-        graph.push_video(0, frame)?;
-        graph
-            .pull_video()?
-            .ok_or(PipelineError::Filter(ff_filter::FilterError::ProcessFailed))
+        self.video_effect_renderer(frame.format())?.render(frame)
+    }
+
+    /// Builds a reusable [`VideoEffectRenderer`] for this clip's effect chain.
+    ///
+    /// Hold the returned renderer and call [`VideoEffectRenderer::render`] per
+    /// frame to avoid rebuilding the filter graph (and re-loading any `lut3d`
+    /// file) on every frame — the right choice for real-time preview. Frames
+    /// passed to `render` must be in `input_format`. For a one-shot apply, use
+    /// [`apply_video_effects`](Self::apply_video_effects).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built.
+    pub fn video_effect_renderer(
+        &self,
+        input_format: PixelFormat,
+    ) -> Result<VideoEffectRenderer, PipelineError> {
+        VideoEffectRenderer::new(self, input_format)
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
@@ -519,6 +532,64 @@ impl Clip {
     }
 }
 
+/// Reusable single-frame renderer for a [`Clip`]'s video effect chain.
+///
+/// Built once via [`Clip::video_effect_renderer`]; holds one [`FilterGraph`]
+/// configured with the same `yuv420p` working space and [`Clip::video_effect_chain`]
+/// that `Timeline::render()` uses, so a host preview matches the exported result.
+/// Feed frames through [`render`](Self::render) repeatedly — the graph (and any
+/// `lut3d` `.cube` file it loads) is built once, not per frame, which is the right
+/// choice for real-time preview.
+///
+/// All frames passed to `render` must share the pixel format (the `input_format`
+/// given at construction) and the dimensions of the first rendered frame. Build a
+/// new renderer if the grade, format, or frame size changes.
+pub struct VideoEffectRenderer {
+    graph: FilterGraph,
+}
+
+impl VideoEffectRenderer {
+    /// Builds a renderer for `clip`'s current effect chain. Frames passed to
+    /// [`render`](Self::render) must be in `input_format`; the output is returned
+    /// in the same format.
+    ///
+    /// The graph itself is configured lazily from the first frame's dimensions on
+    /// the initial [`render`](Self::render) call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built.
+    pub fn new(clip: &Clip, input_format: PixelFormat) -> Result<Self, PipelineError> {
+        let mut builder =
+            FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![], vec![]);
+        for step in clip.video_effect_chain() {
+            builder = builder.add_step(step);
+        }
+        let graph = builder
+            .format(vec![input_format], vec![], vec![], vec![])
+            .build()?;
+        Ok(Self { graph })
+    }
+
+    /// Applies the effect chain to one frame, reusing the built graph.
+    ///
+    /// `frame` must match the `input_format` and dimensions established by the
+    /// first rendered frame. The returned frame has the same pixel format as the
+    /// input. The frame's own timestamp is forwarded to the graph (as
+    /// `Timeline::render()` does); the effect chain is pixel-domain and does not
+    /// depend on PTS ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Filter`] if the frame cannot be processed.
+    pub fn render(&mut self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
+        self.graph.push_video(0, frame)?;
+        self.graph
+            .pull_video()?
+            .ok_or(PipelineError::Filter(ff_filter::FilterError::ProcessFailed))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +813,34 @@ mod tests {
                 assert_eq!(out.height(), 4);
             }
             Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn video_effect_renderer_should_reuse_graph_across_frames() {
+        // One renderer built once, fed several frames — exercises graph reuse
+        // without rebuilding. Skip-guard on FFmpeg availability.
+        let clip = Clip::new("v.mp4").with_color_correction(0.1, 1.1, 1.0);
+        let mut renderer = match clip.video_effect_renderer(PixelFormat::Rgba) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        for _ in 0..3 {
+            let frame = VideoFrame::from_rgba(4, 4, vec![128u8; 4 * 4 * 4]).unwrap();
+            match renderer.render(&frame) {
+                Ok(out) => {
+                    assert_eq!(out.format(), PixelFormat::Rgba);
+                    assert_eq!(out.width(), 4);
+                    assert_eq!(out.height(), 4);
+                }
+                Err(e) => {
+                    println!("Skipping: {e}");
+                    return;
+                }
+            }
         }
     }
 }
