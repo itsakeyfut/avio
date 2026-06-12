@@ -11,6 +11,7 @@ use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
+use ff_format::AlphaMode;
 
 // ── Hardware acceleration helpers ─────────────────────────────────────────────
 
@@ -541,6 +542,18 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
 #[cfg(test)]
 mod tests {
     use super::decompose_atempo;
+    use super::overlay_alpha_suffix;
+    use ff_format::AlphaMode;
+
+    #[test]
+    fn overlay_alpha_suffix_should_append_only_for_premultiplied() {
+        assert_eq!(
+            overlay_alpha_suffix(AlphaMode::Premultiplied),
+            ":alpha=premultiplied"
+        );
+        assert_eq!(overlay_alpha_suffix(AlphaMode::Straight), "");
+        assert_eq!(overlay_alpha_suffix(AlphaMode::Unknown), "");
+    }
 
     #[test]
     fn decompose_atempo_should_return_single_value_for_factor_within_range() {
@@ -740,6 +753,15 @@ pub(super) unsafe fn add_overlay_image_step(
 
 // ── Blend Normal mode compound step ──────────────────────────────────────────
 
+/// Overlay `:alpha=` suffix for `alpha`. `Straight` is the `overlay` default (no extra arg);
+/// `Premultiplied` selects premultiplied alpha. Verified `vf_overlay.c` (7.1/8.0).
+fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
+    match alpha {
+        AlphaMode::Premultiplied => ":alpha=premultiplied",
+        _ => "",
+    }
+}
+
 /// Insert a Normal-mode blend compound step.
 ///
 /// The top layer's `top_steps` are first applied to `top_src_ctx` (the `in1`
@@ -763,6 +785,7 @@ pub(super) unsafe fn add_blend_normal_step(
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
     opacity: f32,
+    alpha: AlphaMode,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
@@ -835,7 +858,9 @@ pub(super) unsafe fn add_blend_normal_step(
     }
     let overlay_name =
         CString::new(format!("blend_overlay{index}")).map_err(|_| FilterError::BuildFailed)?;
-    let overlay_args = c"format=auto:shortest=1";
+    let overlay_args_str = format!("format=auto:shortest=1{}", overlay_alpha_suffix(alpha));
+    let overlay_args =
+        CString::new(overlay_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
     let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
     let ret = ff_sys::avfilter_graph_create_filter(
         &raw mut overlay_ctx,
@@ -846,14 +871,10 @@ pub(super) unsafe fn add_blend_normal_step(
         graph,
     );
     if ret < 0 {
-        log::warn!(
-            "filter creation failed name=overlay args=format=auto:shortest=1 (blend_normal)"
-        );
+        log::warn!("filter creation failed name=overlay args={overlay_args_str} (blend_normal)");
         return Err(FilterError::BuildFailed);
     }
-    log::debug!(
-        "filter added name=overlay args=format=auto:shortest=1 index={index} (blend_normal)"
-    );
+    log::debug!("filter added name=overlay args={overlay_args_str} index={index} (blend_normal)");
 
     // 4. Link: bottom → overlay[0], top → overlay[1].
     // SAFETY: bottom_ctx, top_ctx, overlay_ctx are all in the same graph.
@@ -989,6 +1010,7 @@ pub(super) unsafe fn add_blend_under_step(
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
     opacity: f32,
+    alpha: AlphaMode,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
@@ -1057,7 +1079,9 @@ pub(super) unsafe fn add_blend_under_step(
     }
     let overlay_name = CString::new(format!("blend_under_overlay{index}"))
         .map_err(|_| FilterError::BuildFailed)?;
-    let overlay_args = c"format=auto:shortest=1";
+    let overlay_args_str = format!("format=auto:shortest=1{}", overlay_alpha_suffix(alpha));
+    let overlay_args =
+        CString::new(overlay_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
     let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
     let ret = ff_sys::avfilter_graph_create_filter(
         &raw mut overlay_ctx,
@@ -1068,12 +1092,10 @@ pub(super) unsafe fn add_blend_under_step(
         graph,
     );
     if ret < 0 {
-        log::warn!("filter creation failed name=overlay args=format=auto:shortest=1 (blend_under)");
+        log::warn!("filter creation failed name=overlay args={overlay_args_str} (blend_under)");
         return Err(FilterError::BuildFailed);
     }
-    log::debug!(
-        "filter added name=overlay args=format=auto:shortest=1 index={index} (blend_under)"
-    );
+    log::debug!("filter added name=overlay args={overlay_args_str} index={index} (blend_under)");
 
     // 4. Link (swapped vs. Normal): top → overlay[0], bottom → overlay[1].
     // SAFETY: bottom_ctx, top_ctx, overlay_ctx are all in the same graph.
@@ -2105,6 +2127,7 @@ impl FilterGraphInner {
                 top,
                 mode: BlendMode::Normal | BlendMode::PorterDuffOver,
                 opacity,
+                alpha,
             } = step
             {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
@@ -2116,6 +2139,7 @@ impl FilterGraphInner {
                     top_src.as_ptr(),
                     top.steps(),
                     *opacity,
+                    *alpha,
                     i,
                 ) {
                     Ok(ctx) => ctx,
@@ -2146,6 +2170,7 @@ impl FilterGraphInner {
                     | BlendMode::Color
                     | BlendMode::Luminosity),
                 opacity,
+                ..
             } = step
             {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
@@ -2191,6 +2216,7 @@ impl FilterGraphInner {
                 top,
                 mode: BlendMode::PorterDuffUnder,
                 opacity,
+                alpha,
             } = step
             {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
@@ -2202,6 +2228,7 @@ impl FilterGraphInner {
                     top_src.as_ptr(),
                     top.steps(),
                     *opacity,
+                    *alpha,
                     i,
                 ) {
                     Ok(ctx) => ctx,

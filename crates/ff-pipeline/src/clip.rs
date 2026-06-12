@@ -560,14 +560,11 @@ impl VideoEffectRenderer {
     ///
     /// Returns [`PipelineError::Filter`] if the filter graph cannot be built.
     pub fn new(clip: &Clip, input_format: PixelFormat) -> Result<Self, PipelineError> {
-        let mut builder =
-            FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![], vec![]);
+        let mut builder = FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![]);
         for step in clip.video_effect_chain() {
             builder = builder.add_step(step);
         }
-        let graph = builder
-            .format(vec![input_format], vec![], vec![], vec![])
-            .build()?;
+        let graph = builder.format(vec![input_format], vec![], vec![]).build()?;
         Ok(Self { graph })
     }
 

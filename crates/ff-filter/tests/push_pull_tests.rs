@@ -13,7 +13,10 @@ use ff_filter::{
     BlendMode, DrawTextOptions, FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb,
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
-use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
+use ff_format::{
+    AlphaMode, AudioFrame, ColorRange, ColorSpace, PixelFormat, PooledBuffer, SampleFormat,
+    Timestamp, VideoFrame,
+};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
 fn make_yuv420p_frame(width: u32, height: u32) -> VideoFrame {
@@ -60,6 +63,94 @@ fn make_yuv_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
 /// Stereo packed F32 audio frame, 1024 samples @ 48 kHz.
 fn make_audio_frame() -> AudioFrame {
     AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap()
+}
+
+#[test]
+fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
+    // #1212/#1223: `format` args are built from `FfmpegToken`. The FFmpeg graph is built lazily on
+    // the first `push_video` (see `FilterGraph::build` docs), so the push — not `build()` — hands
+    // the args to the real `format` filter. Token *values* are guarded by the deterministic unit
+    // tests in `builder/video/format.rs`; this test additionally checks the linked FFmpeg ACCEPTS
+    // them. CI's Linux FFmpeg is built `--disable-everything` (no filters compiled in), so a
+    // baseline `format=pix_fmts=yuv420p` probe (universally valid, no conversion) separates "the
+    // `format` filter is unavailable" (skip) from "our tokens were rejected" (fail).
+    let frame = make_yuv420p_frame(64, 64);
+    {
+        let mut probe = FilterGraph::builder()
+            .format(vec![PixelFormat::Yuv420p], vec![], vec![])
+            .build()
+            .expect("non-empty format graph must build");
+        if probe.push_video(0, &frame).is_err() {
+            eprintln!("skipping: `format` filter not available in this FFmpeg build");
+            return;
+        }
+    }
+    // The `format` filter is available → the FfmpegToken args MUST be accepted (catches #1212).
+    let mut graph = FilterGraph::builder()
+        .format(
+            vec![PixelFormat::Yuv420p],
+            vec![ColorSpace::Bt2020],
+            vec![ColorRange::Limited],
+        )
+        .build()
+        .expect("non-empty format graph must build");
+    graph
+        .push_video(0, &frame)
+        .expect("FFmpeg must accept the FfmpegToken args (color_spaces=bt2020nc:color_ranges=tv)");
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after format push");
+    assert_eq!(out.width(), 64, "format must not change frame width");
+    assert_eq!(out.height(), 64, "format must not change frame height");
+}
+
+#[test]
+fn blend_with_premultiplied_alpha_should_be_accepted_by_ffmpeg() {
+    // #1225: the `overlay` `alpha=premultiplied` argument must be accepted by FFmpeg. The overlay
+    // filter is built lazily when frames are pushed, so both inputs must be pushed. A baseline
+    // blend (`AlphaMode::Straight`, which adds no `alpha=` arg) probes whether the overlay filter
+    // exists in this FFmpeg build (CI's Linux build has none): unavailable → skip; available → the
+    // `alpha=premultiplied` arg must be accepted.
+    let bottom = make_yuv420p_frame(64, 64);
+    let fg = make_yuv420p_frame(64, 64);
+    {
+        let mut probe = FilterGraph::builder()
+            .blend(
+                FilterGraphBuilder::new(),
+                BlendMode::Normal,
+                1.0,
+                AlphaMode::Straight,
+            )
+            .build()
+            .expect("non-empty blend graph must build");
+        if probe.push_video(0, &bottom).is_err() || probe.push_video(1, &fg).is_err() {
+            eprintln!("skipping: `overlay` filter not available in this FFmpeg build");
+            return;
+        }
+    }
+    // The overlay filter is available → `alpha=premultiplied` must be accepted (catches #1225).
+    let mut graph = FilterGraph::builder()
+        .blend(
+            FilterGraphBuilder::new(),
+            BlendMode::Normal,
+            1.0,
+            AlphaMode::Premultiplied,
+        )
+        .build()
+        .expect("non-empty blend graph must build");
+    graph
+        .push_video(0, &bottom)
+        .expect("bottom push must succeed");
+    graph
+        .push_video(1, &fg)
+        .expect("overlay must accept alpha=premultiplied");
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after blend push");
+    assert_eq!(out.width(), 64, "overlay must not change frame width");
+    assert_eq!(out.height(), 64, "overlay must not change frame height");
 }
 
 #[test]
@@ -1525,7 +1616,7 @@ fn blend_multiply_black_top_should_produce_black_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Multiply, 1.0)
+        .blend(top, BlendMode::Multiply, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1568,7 +1659,7 @@ fn blend_multiply_white_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Multiply, 1.0)
+        .blend(top, BlendMode::Multiply, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1611,7 +1702,7 @@ fn blend_screen_white_top_should_produce_white_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Screen, 1.0)
+        .blend(top, BlendMode::Screen, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1655,7 +1746,7 @@ fn blend_overlay_midgray_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Overlay, 1.0)
+        .blend(top, BlendMode::Overlay, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1698,7 +1789,7 @@ fn blend_colordodge_should_produce_brighter_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::ColorDodge, 1.0)
+        .blend(top, BlendMode::ColorDodge, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1741,7 +1832,7 @@ fn blend_colorburn_should_produce_darker_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::ColorBurn, 1.0)
+        .blend(top, BlendMode::ColorBurn, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1784,7 +1875,7 @@ fn blend_darken_black_top_should_produce_black_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Darken, 1.0)
+        .blend(top, BlendMode::Darken, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1827,7 +1918,7 @@ fn blend_lighten_white_top_should_produce_white_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Lighten, 1.0)
+        .blend(top, BlendMode::Lighten, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1870,7 +1961,7 @@ fn blend_difference_with_self_should_produce_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Difference, 1.0)
+        .blend(top, BlendMode::Difference, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1913,7 +2004,7 @@ fn blend_add_black_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Add, 1.0)
+        .blend(top, BlendMode::Add, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1956,7 +2047,7 @@ fn blend_subtract_white_top_should_produce_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Subtract, 1.0)
+        .blend(top, BlendMode::Subtract, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2001,7 +2092,7 @@ fn blend_luminosity_should_preserve_base_hue_and_saturation() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Luminosity, 1.0)
+        .blend(top, BlendMode::Luminosity, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2047,7 +2138,7 @@ fn porter_duff_over_opaque_top_should_cover_bottom() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 1.0)
+        .blend(top, BlendMode::PorterDuffOver, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2092,7 +2183,7 @@ fn porter_duff_over_semitransparent_should_blend_correctly() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 0.5)
+        .blend(top, BlendMode::PorterDuffOver, 0.5, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2135,7 +2226,7 @@ fn porter_duff_under_should_place_bottom_over_top() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffUnder, 1.0)
+        .blend(top, BlendMode::PorterDuffUnder, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2177,7 +2268,7 @@ fn porter_duff_in_should_produce_black_where_bottom_is_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffIn, 1.0)
+        .blend(top, BlendMode::PorterDuffIn, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2224,7 +2315,7 @@ fn porter_duff_atop_should_use_bottom_alpha_for_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffAtop, 1.0)
+        .blend(top, BlendMode::PorterDuffAtop, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2271,7 +2362,7 @@ fn porter_duff_xor_identical_shapes_should_produce_zero_alpha() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffXor, 1.0)
+        .blend(top, BlendMode::PorterDuffXor, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2317,7 +2408,7 @@ fn porter_duff_out_should_produce_black_where_bottom_is_white() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOut, 1.0)
+        .blend(top, BlendMode::PorterDuffOut, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
