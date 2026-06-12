@@ -753,6 +753,15 @@ pub(super) unsafe fn add_overlay_image_step(
 
 // ── Blend Normal mode compound step ──────────────────────────────────────────
 
+/// Overlay `:alpha=` suffix for `alpha`. `Straight` is the `overlay` default (no extra arg);
+/// `Premultiplied` selects premultiplied alpha. Verified `vf_overlay.c` (7.1/8.0).
+fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
+    match alpha {
+        AlphaMode::Premultiplied => ":alpha=premultiplied",
+        _ => "",
+    }
+}
+
 /// Insert a Normal-mode blend compound step.
 ///
 /// The top layer's `top_steps` are first applied to `top_src_ctx` (the `in1`
@@ -770,15 +779,6 @@ pub(super) unsafe fn add_overlay_image_step(
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
-/// Overlay `:alpha=` suffix for `alpha`. `Straight` is the `overlay` default (no extra arg);
-/// `Premultiplied` selects premultiplied alpha. Verified `vf_overlay.c` (7.1/8.0).
-fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
-    match alpha {
-        AlphaMode::Premultiplied => ":alpha=premultiplied",
-        _ => "",
-    }
-}
-
 pub(super) unsafe fn add_blend_normal_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,

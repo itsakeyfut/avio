@@ -14,7 +14,8 @@ use ff_filter::{
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 use ff_format::{
-    AlphaMode, AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame,
+    AlphaMode, AudioFrame, ColorRange, ColorSpace, PixelFormat, PooledBuffer, SampleFormat,
+    Timestamp, VideoFrame,
 };
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -62,6 +63,42 @@ fn make_yuv_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
 /// Stereo packed F32 audio frame, 1024 samples @ 48 kHz.
 fn make_audio_frame() -> AudioFrame {
     AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap()
+}
+
+#[test]
+fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
+    // #1212/#1223: `format` args are built from `FfmpegToken`, so the real `format` filter
+    // must accept `color_spaces=bt2020nc:color_ranges=tv:pix_fmts=yuv420p` at graph-config
+    // time. The old `.name()` path produced `color_spaces=bt2020/srgb` and `color_ranges=limited`,
+    // which `avfilter_graph_config` rejects. `build()` runs `avfilter_graph_config`, so an
+    // invalid token name fails here rather than passing a mere string-equality check.
+    let mut graph = FilterGraph::builder()
+        .format(
+            vec![PixelFormat::Yuv420p],
+            vec![ColorSpace::Bt2020],
+            vec![ColorRange::Limited],
+        )
+        .build()
+        .expect("format graph built from FfmpegToken args must configure on linked FFmpeg");
+    let frame = make_yuv420p_frame(64, 64);
+    if graph.push_video(0, &frame).is_ok() {
+        if let Some(out) = graph.pull_video().expect("pull_video must not fail") {
+            assert_eq!(out.width(), 64, "format must not change frame width");
+            assert_eq!(out.height(), 64, "format must not change frame height");
+        }
+    }
+}
+
+#[test]
+fn blend_with_premultiplied_alpha_should_be_accepted_by_ffmpeg() {
+    // #1225: the `overlay` `alpha=premultiplied` argument must be accepted by FFmpeg.
+    // `alpha` is an INT option parsed when the filter is created, so an invalid value
+    // fails `build()`.
+    let top = FilterGraphBuilder::new();
+    FilterGraph::builder()
+        .blend(top, BlendMode::Normal, 1.0, AlphaMode::Premultiplied)
+        .build()
+        .expect("blend(Premultiplied) must build — overlay must accept alpha=premultiplied");
 }
 
 #[test]
