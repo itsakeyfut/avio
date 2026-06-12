@@ -10,7 +10,7 @@ use super::types::{
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
-use ff_format::{AlphaMode, ColorRange, ColorSpace, PixelFormat};
+use ff_format::{AlphaMode, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat};
 
 /// Escapes a filesystem path for use as a value inside an `FFmpeg` filter
 /// argument string (e.g. `lut3d`'s `file=` option).
@@ -36,6 +36,19 @@ pub enum FilterStep {
         pix_fmts: Vec<PixelFormat>,
         color_spaces: Vec<ColorSpace>,
         color_ranges: Vec<ColorRange>,
+    },
+
+    /// Tag the stream's colour metadata via the `setparams` filter.
+    ///
+    /// Each field is emitted only when `Some` **and** its `FfmpegToken` is
+    /// `Some` (e.g. `Unknown` → skipped), so an all-`None` step yields empty
+    /// args. This is the consumer for `ColorPrimaries` / `ColorTransfer`, whose
+    /// tokens the `format` filter has no option for.
+    SetParams {
+        color_space: Option<ColorSpace>,
+        color_range: Option<ColorRange>,
+        color_primaries: Option<ColorPrimaries>,
+        color_trc: Option<ColorTransfer>,
     },
 
     /// Trim: keep only frames in `[start, end)` seconds.
@@ -880,6 +893,7 @@ impl FilterStep {
     pub(crate) fn filter_name(&self) -> &'static str {
         match self {
             Self::Format { .. } => "format",
+            Self::SetParams { .. } => "setparams",
             Self::Trim { .. } => "trim",
             Self::Scale { .. } => "scale",
             Self::Crop { .. } => "crop",
@@ -1016,6 +1030,30 @@ impl FilterStep {
                     render("pix_fmts", pix_fmts),
                     render("color_spaces", color_spaces),
                     render("color_ranges", color_ranges),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(":")
+            }
+            Self::SetParams {
+                color_space,
+                color_range,
+                color_primaries,
+                color_trc,
+            } => {
+                // Each option is emitted from the FFmpeg-canonical `FfmpegToken`, only when the
+                // value is `Some` and yields a token (`Unknown` → `None` → skipped). All-`None`
+                // renders to the empty string.
+                fn opt<T: FfmpegToken>(key: &str, v: Option<&T>) -> Option<String> {
+                    v.and_then(FfmpegToken::ffmpeg_token)
+                        .map(|tok| format!("{key}={tok}"))
+                }
+                [
+                    opt("colorspace", color_space.as_ref()),
+                    opt("range", color_range.as_ref()),
+                    opt("color_primaries", color_primaries.as_ref()),
+                    opt("color_trc", color_trc.as_ref()),
                 ]
                 .into_iter()
                 .flatten()
@@ -1561,5 +1599,65 @@ mod tests {
         );
         assert!(args.contains("D\\:/luts/look.cube"), "got: {args}");
         assert!(args.ends_with(":interp=trilinear"));
+    }
+
+    #[test]
+    fn setparams_filter_name_should_be_setparams() {
+        let step = FilterStep::SetParams {
+            color_space: None,
+            color_range: None,
+            color_primaries: None,
+            color_trc: None,
+        };
+        assert_eq!(step.filter_name(), "setparams");
+    }
+
+    #[test]
+    fn setparams_args_should_emit_all_canonical_tokens() {
+        let step = FilterStep::SetParams {
+            color_space: Some(ColorSpace::Bt2020Ncl),
+            color_range: Some(ColorRange::Limited),
+            color_primaries: Some(ColorPrimaries::Bt2020),
+            color_trc: Some(ColorTransfer::Hlg),
+        };
+        assert_eq!(
+            step.args(),
+            "colorspace=bt2020nc:range=tv:color_primaries=bt2020:color_trc=arib-std-b67"
+        );
+    }
+
+    #[test]
+    fn setparams_args_should_emit_only_provided_options() {
+        // HDR tagging often sets just primaries + transfer.
+        let step = FilterStep::SetParams {
+            color_space: None,
+            color_range: None,
+            color_primaries: Some(ColorPrimaries::Bt2020),
+            color_trc: Some(ColorTransfer::Pq),
+        };
+        assert_eq!(step.args(), "color_primaries=bt2020:color_trc=smpte2084");
+    }
+
+    #[test]
+    fn setparams_args_should_skip_values_without_ffmpeg_token() {
+        // `Unknown` renders to no token and must be skipped, not emitted as an invalid arg.
+        let step = FilterStep::SetParams {
+            color_space: Some(ColorSpace::Unknown),
+            color_range: Some(ColorRange::Full),
+            color_primaries: Some(ColorPrimaries::Unknown),
+            color_trc: Some(ColorTransfer::Bt709),
+        };
+        assert_eq!(step.args(), "range=pc:color_trc=bt709");
+    }
+
+    #[test]
+    fn setparams_args_should_be_empty_when_all_none() {
+        let step = FilterStep::SetParams {
+            color_space: None,
+            color_range: None,
+            color_primaries: None,
+            color_trc: None,
+        };
+        assert_eq!(step.args(), "");
     }
 }

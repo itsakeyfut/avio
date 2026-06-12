@@ -14,8 +14,8 @@ use ff_filter::{
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 use ff_format::{
-    AlphaMode, AudioFrame, ColorRange, ColorSpace, PixelFormat, PooledBuffer, SampleFormat,
-    Timestamp, VideoFrame,
+    AlphaMode, AudioFrame, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat,
+    PooledBuffer, SampleFormat, Timestamp, VideoFrame,
 };
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -103,6 +103,48 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
         .expect("expected Some(frame) after format push");
     assert_eq!(out.width(), 64, "format must not change frame width");
     assert_eq!(out.height(), 64, "format must not change frame height");
+}
+
+#[test]
+fn setparams_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
+    // #1227: `setparams` args (colorspace=/range=/color_primaries=/color_trc=) are built from
+    // `FfmpegToken`. The graph is built lazily on the first `push_video`, so the push — not
+    // `build()` — hands the args to the real `setparams` filter (RK-001). Token *values* are
+    // guarded by the deterministic unit tests in `filter_step.rs`; this additionally checks the
+    // linked FFmpeg ACCEPTS them. CI's Linux FFmpeg has no filters compiled in (RK-002), so a
+    // baseline `setparams=range=tv` probe (a universally valid arg) separates "the `setparams`
+    // filter is unavailable" (skip) from "our tokens were rejected" (fail).
+    let frame = make_yuv420p_frame(64, 64);
+    {
+        let mut probe = FilterGraph::builder()
+            .set_params(None, Some(ColorRange::Limited), None, None)
+            .build()
+            .expect("non-empty setparams graph must build");
+        if probe.push_video(0, &frame).is_err() {
+            eprintln!("skipping: `setparams` filter not available in this FFmpeg build");
+            return;
+        }
+    }
+    // The `setparams` filter is available → the FfmpegToken args MUST be accepted.
+    let mut graph = FilterGraph::builder()
+        .set_params(
+            Some(ColorSpace::Bt2020Ncl),
+            Some(ColorRange::Limited),
+            Some(ColorPrimaries::Bt2020),
+            Some(ColorTransfer::Hlg),
+        )
+        .build()
+        .expect("non-empty setparams graph must build");
+    graph.push_video(0, &frame).expect(
+        "FFmpeg must accept the FfmpegToken args \
+         (colorspace=bt2020nc:range=tv:color_primaries=bt2020:color_trc=arib-std-b67)",
+    );
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after setparams push");
+    assert_eq!(out.width(), 64, "setparams must not change frame width");
+    assert_eq!(out.height(), 64, "setparams must not change frame height");
 }
 
 #[test]
