@@ -3,6 +3,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::animation::{AnimationTrack, Keyframe};
+use ff_format::{ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 
 // ── Tuple-track projection helper ─────────────────────────────────────────────
 
@@ -48,6 +49,38 @@ fn push_tuple_track_entries(
 }
 
 impl FilterGraphBuilder {
+    /// Tag the stream's colour metadata via the `setparams` filter.
+    ///
+    /// Emits `colorspace=` / `range=` / `color_primaries=` / `color_trc=` from the colour enums
+    /// using their `FFmpeg`-canonical tokens. Each argument is included only when it is `Some`
+    /// **and** yields a token (`Unknown` → skipped); an all-`None` call is a no-op (no step added).
+    ///
+    /// Unlike the `format` filter, `setparams` carries `color_primaries` and `color_trc`, so this
+    /// is the step that actually applies [`ColorPrimaries`] / [`ColorTransfer`] to a graph.
+    #[must_use]
+    pub fn set_params(
+        mut self,
+        color_space: Option<ColorSpace>,
+        color_range: Option<ColorRange>,
+        color_primaries: Option<ColorPrimaries>,
+        color_trc: Option<ColorTransfer>,
+    ) -> Self {
+        // No point adding a no-op setparams step when nothing is set.
+        if color_space.is_some()
+            || color_range.is_some()
+            || color_primaries.is_some()
+            || color_trc.is_some()
+        {
+            self.steps.push(FilterStep::SetParams {
+                color_space,
+                color_range,
+                color_primaries,
+                color_trc,
+            });
+        }
+        self
+    }
+
     /// Apply HDR-to-SDR tone mapping using the given `algorithm`.
     #[must_use]
     pub fn tone_map(mut self, algorithm: ToneMap) -> Self {
