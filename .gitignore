@@ -1,3 +1,26 @@
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+.fleet/
+.zed/
+*.code-workspace
+
+# Vim / Emacs
+*.swp
+*.swo
+.*.sw[a-p]
+*~
+\#*\#
+.\#*
+
+# OS
+.DS_Store
+.AppleDouble
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
 # Ignore build artifacts and lock files
 **/target/
 
@@ -15,3 +38,6 @@
 # Claude Code — personal use only, not shared with contributors
 /CLAUDE.md
 /.claude/
+
+# Personal working notes (not shared with contributors)
+/TODO.md
