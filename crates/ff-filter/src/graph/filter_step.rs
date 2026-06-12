@@ -1005,7 +1005,6 @@ impl FilterStep {
             } => {
                 // Each option list uses the FFmpeg-canonical `FfmpegToken`, skipping values with no
                 // FFmpeg equivalent (`None`); an option is emitted only when a token survives.
-                // See docs/specs/ffmpeg-tokens.md.
                 fn render<T: FfmpegToken>(key: &str, values: &[T]) -> Option<String> {
                     let tokens: Vec<&str> = values
                         .iter()

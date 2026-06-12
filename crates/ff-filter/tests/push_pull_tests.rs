@@ -67,11 +67,12 @@ fn make_audio_frame() -> AudioFrame {
 
 #[test]
 fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
-    // #1212/#1223: `format` args are built from `FfmpegToken`, so the real `format` filter
-    // must accept `color_spaces=bt2020nc:color_ranges=tv:pix_fmts=yuv420p` at graph-config
-    // time. The old `.name()` path produced `color_spaces=bt2020/srgb` and `color_ranges=limited`,
-    // which `avfilter_graph_config` rejects. `build()` runs `avfilter_graph_config`, so an
-    // invalid token name fails here rather than passing a mere string-equality check.
+    // #1212/#1223: `format` args are built from `FfmpegToken`. The FFmpeg graph is constructed
+    // lazily on the first `push_video` (see `FilterGraph::build` docs), so it is the push — not
+    // `build()` — that hands the args to the real `format` filter. The old `.name()` path produced
+    // `color_spaces=bt2020/srgb` and `color_ranges=limited`, which the filter rejects at
+    // construction; with the FfmpegToken values (`bt2020nc`/`tv`/`yuv420p`) the push must succeed.
+    // Pushing unconditionally (no `is_ok()` guard) ensures an invalid arg fails the test.
     let mut graph = FilterGraph::builder()
         .format(
             vec![PixelFormat::Yuv420p],
@@ -79,26 +80,43 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
             vec![ColorRange::Limited],
         )
         .build()
-        .expect("format graph built from FfmpegToken args must configure on linked FFmpeg");
+        .expect("non-empty format graph must build");
     let frame = make_yuv420p_frame(64, 64);
-    if graph.push_video(0, &frame).is_ok() {
-        if let Some(out) = graph.pull_video().expect("pull_video must not fail") {
-            assert_eq!(out.width(), 64, "format must not change frame width");
-            assert_eq!(out.height(), 64, "format must not change frame height");
-        }
-    }
+    graph
+        .push_video(0, &frame)
+        .expect("format push must succeed — FFmpeg must accept the FfmpegToken args");
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after format push");
+    assert_eq!(out.width(), 64, "format must not change frame width");
+    assert_eq!(out.height(), 64, "format must not change frame height");
 }
 
 #[test]
 fn blend_with_premultiplied_alpha_should_be_accepted_by_ffmpeg() {
-    // #1225: the `overlay` `alpha=premultiplied` argument must be accepted by FFmpeg.
-    // `alpha` is an INT option parsed when the filter is created, so an invalid value
-    // fails `build()`.
+    // #1225: the `overlay` `alpha=premultiplied` argument must be accepted by FFmpeg. The overlay
+    // filter is constructed lazily when frames are pushed (not at `build()`), so BOTH inputs must
+    // be pushed to force its construction; an invalid `alpha` value would fail the push.
     let top = FilterGraphBuilder::new();
-    FilterGraph::builder()
+    let mut graph = FilterGraph::builder()
         .blend(top, BlendMode::Normal, 1.0, AlphaMode::Premultiplied)
         .build()
-        .expect("blend(Premultiplied) must build — overlay must accept alpha=premultiplied");
+        .expect("blend graph must build");
+    let bottom = make_yuv420p_frame(64, 64);
+    let fg = make_yuv420p_frame(64, 64);
+    graph
+        .push_video(0, &bottom)
+        .expect("bottom push must succeed");
+    graph
+        .push_video(1, &fg)
+        .expect("top push must succeed — overlay must accept alpha=premultiplied");
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after blend push");
+    assert_eq!(out.width(), 64, "overlay must not change frame width");
+    assert_eq!(out.height(), 64, "overlay must not change frame height");
 }
 
 #[test]

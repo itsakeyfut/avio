@@ -58,4 +58,17 @@ mod tests {
         };
         assert_eq!(step.args(), "pix_fmts=yuv420p:color_spaces=bt2020nc");
     }
+
+    #[test]
+    fn format_args_should_be_empty_when_all_values_lack_tokens() {
+        // Edge case: if every supplied value renders to `None` (e.g. `Other` pix fmt + `Bt601`
+        // colour space + `Unknown` range), `args()` is the empty string. Documented so the
+        // empty-args `format` step stays a visible, tested behaviour.
+        let step = FilterStep::Format {
+            pix_fmts: vec![PixelFormat::Other(1)],
+            color_spaces: vec![ColorSpace::Bt601],
+            color_ranges: vec![ColorRange::Unknown],
+        };
+        assert_eq!(step.args(), "");
+    }
 }
