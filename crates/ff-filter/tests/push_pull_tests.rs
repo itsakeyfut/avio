@@ -67,12 +67,25 @@ fn make_audio_frame() -> AudioFrame {
 
 #[test]
 fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
-    // #1212/#1223: `format` args are built from `FfmpegToken`. The FFmpeg graph is constructed
-    // lazily on the first `push_video` (see `FilterGraph::build` docs), so it is the push — not
-    // `build()` — that hands the args to the real `format` filter. The old `.name()` path produced
-    // `color_spaces=bt2020/srgb` and `color_ranges=limited`, which the filter rejects at
-    // construction; with the FfmpegToken values (`bt2020nc`/`tv`/`yuv420p`) the push must succeed.
-    // Pushing unconditionally (no `is_ok()` guard) ensures an invalid arg fails the test.
+    // #1212/#1223: `format` args are built from `FfmpegToken`. The FFmpeg graph is built lazily on
+    // the first `push_video` (see `FilterGraph::build` docs), so the push — not `build()` — hands
+    // the args to the real `format` filter. Token *values* are guarded by the deterministic unit
+    // tests in `builder/video/format.rs`; this test additionally checks the linked FFmpeg ACCEPTS
+    // them. CI's Linux FFmpeg is built `--disable-everything` (no filters compiled in), so a
+    // baseline `format=pix_fmts=yuv420p` probe (universally valid, no conversion) separates "the
+    // `format` filter is unavailable" (skip) from "our tokens were rejected" (fail).
+    let frame = make_yuv420p_frame(64, 64);
+    {
+        let mut probe = FilterGraph::builder()
+            .format(vec![PixelFormat::Yuv420p], vec![], vec![])
+            .build()
+            .expect("non-empty format graph must build");
+        if probe.push_video(0, &frame).is_err() {
+            eprintln!("skipping: `format` filter not available in this FFmpeg build");
+            return;
+        }
+    }
+    // The `format` filter is available → the FfmpegToken args MUST be accepted (catches #1212).
     let mut graph = FilterGraph::builder()
         .format(
             vec![PixelFormat::Yuv420p],
@@ -81,10 +94,9 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
         )
         .build()
         .expect("non-empty format graph must build");
-    let frame = make_yuv420p_frame(64, 64);
     graph
         .push_video(0, &frame)
-        .expect("format push must succeed — FFmpeg must accept the FfmpegToken args");
+        .expect("FFmpeg must accept the FfmpegToken args (color_spaces=bt2020nc:color_ranges=tv)");
     let out = graph
         .pull_video()
         .expect("pull_video must not fail")
@@ -96,21 +108,43 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
 #[test]
 fn blend_with_premultiplied_alpha_should_be_accepted_by_ffmpeg() {
     // #1225: the `overlay` `alpha=premultiplied` argument must be accepted by FFmpeg. The overlay
-    // filter is constructed lazily when frames are pushed (not at `build()`), so BOTH inputs must
-    // be pushed to force its construction; an invalid `alpha` value would fail the push.
-    let top = FilterGraphBuilder::new();
-    let mut graph = FilterGraph::builder()
-        .blend(top, BlendMode::Normal, 1.0, AlphaMode::Premultiplied)
-        .build()
-        .expect("blend graph must build");
+    // filter is built lazily when frames are pushed, so both inputs must be pushed. A baseline
+    // blend (`AlphaMode::Straight`, which adds no `alpha=` arg) probes whether the overlay filter
+    // exists in this FFmpeg build (CI's Linux build has none): unavailable → skip; available → the
+    // `alpha=premultiplied` arg must be accepted.
     let bottom = make_yuv420p_frame(64, 64);
     let fg = make_yuv420p_frame(64, 64);
+    {
+        let mut probe = FilterGraph::builder()
+            .blend(
+                FilterGraphBuilder::new(),
+                BlendMode::Normal,
+                1.0,
+                AlphaMode::Straight,
+            )
+            .build()
+            .expect("non-empty blend graph must build");
+        if probe.push_video(0, &bottom).is_err() || probe.push_video(1, &fg).is_err() {
+            eprintln!("skipping: `overlay` filter not available in this FFmpeg build");
+            return;
+        }
+    }
+    // The overlay filter is available → `alpha=premultiplied` must be accepted (catches #1225).
+    let mut graph = FilterGraph::builder()
+        .blend(
+            FilterGraphBuilder::new(),
+            BlendMode::Normal,
+            1.0,
+            AlphaMode::Premultiplied,
+        )
+        .build()
+        .expect("non-empty blend graph must build");
     graph
         .push_video(0, &bottom)
         .expect("bottom push must succeed");
     graph
         .push_video(1, &fg)
-        .expect("top push must succeed — overlay must accept alpha=premultiplied");
+        .expect("overlay must accept alpha=premultiplied");
     let out = graph
         .pull_video()
         .expect("pull_video must not fail")
