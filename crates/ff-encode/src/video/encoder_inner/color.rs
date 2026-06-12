@@ -79,9 +79,14 @@ pub(super) fn color_space_to_av(cs: ff_format::ColorSpace) -> ff_sys::AVColorSpa
     use ff_format::ColorSpace;
     match cs {
         ColorSpace::Bt709 => ff_sys::AVColorSpace_AVCOL_SPC_BT709,
-        ColorSpace::Bt601 => ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M,
-        ColorSpace::Bt2020 => ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL,
-        ColorSpace::DciP3 | ColorSpace::Srgb => ff_sys::AVColorSpace_AVCOL_SPC_RGB,
+        ColorSpace::Bt470bg => ff_sys::AVColorSpace_AVCOL_SPC_BT470BG,
+        ColorSpace::Smpte170m => ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M,
+        ColorSpace::Smpte240m => ff_sys::AVColorSpace_AVCOL_SPC_SMPTE240M,
+        ColorSpace::Fcc => ff_sys::AVColorSpace_AVCOL_SPC_FCC,
+        ColorSpace::Ycgco => ff_sys::AVColorSpace_AVCOL_SPC_YCGCO,
+        ColorSpace::Bt2020Ncl => ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL,
+        ColorSpace::Bt2020Cl => ff_sys::AVColorSpace_AVCOL_SPC_BT2020_CL,
+        ColorSpace::Rgb => ff_sys::AVColorSpace_AVCOL_SPC_RGB,
         ColorSpace::Unknown => ff_sys::AVColorSpace_AVCOL_SPC_UNSPECIFIED,
         _ => ff_sys::AVColorSpace_AVCOL_SPC_UNSPECIFIED,
     }
@@ -94,11 +99,16 @@ pub(super) fn color_transfer_to_av(
     use ff_format::ColorTransfer;
     match trc {
         ColorTransfer::Bt709 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT709,
+        ColorTransfer::Gamma22 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_GAMMA22,
+        ColorTransfer::Gamma28 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_GAMMA28,
+        ColorTransfer::Smpte170m => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTE170M,
+        ColorTransfer::Smpte240m => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTE240M,
+        ColorTransfer::Linear => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_LINEAR,
+        ColorTransfer::Srgb => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_IEC61966_2_1,
         ColorTransfer::Bt2020_10 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT2020_10,
         ColorTransfer::Bt2020_12 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT2020_12,
-        ColorTransfer::Hlg => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67,
         ColorTransfer::Pq => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084,
-        ColorTransfer::Linear => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_LINEAR,
+        ColorTransfer::Hlg => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67,
         ColorTransfer::Unknown => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED,
         _ => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED,
     }
@@ -109,7 +119,12 @@ pub(super) fn color_primaries_to_av(cp: ff_format::ColorPrimaries) -> ff_sys::AV
     use ff_format::ColorPrimaries;
     match cp {
         ColorPrimaries::Bt709 => ff_sys::AVColorPrimaries_AVCOL_PRI_BT709,
-        ColorPrimaries::Bt601 => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M,
+        ColorPrimaries::Bt470bg => ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG,
+        ColorPrimaries::Smpte170m => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M,
+        ColorPrimaries::Smpte240m => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE240M,
+        ColorPrimaries::Film => ff_sys::AVColorPrimaries_AVCOL_PRI_FILM,
+        ColorPrimaries::DciP3 => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE431,
+        ColorPrimaries::DisplayP3 => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE432,
         ColorPrimaries::Bt2020 => ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020,
         ColorPrimaries::Unknown => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,
         _ => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,

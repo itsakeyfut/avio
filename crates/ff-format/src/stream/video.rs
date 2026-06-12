@@ -451,7 +451,7 @@ mod tests {
             .duration(Duration::from_secs(120))
             .bitrate(50_000_000)
             .frame_count(7200)
-            .color_space(ColorSpace::Bt2020)
+            .color_space(ColorSpace::Bt2020Ncl)
             .color_range(ColorRange::Full)
             .color_primaries(ColorPrimaries::Bt2020)
             .build();
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(info.duration(), Some(Duration::from_secs(120)));
         assert_eq!(info.bitrate(), Some(50_000_000));
         assert_eq!(info.frame_count(), Some(7200));
-        assert_eq!(info.color_space(), ColorSpace::Bt2020);
+        assert_eq!(info.color_space(), ColorSpace::Bt2020Ncl);
         assert_eq!(info.color_range(), ColorRange::Full);
         assert_eq!(info.color_primaries(), ColorPrimaries::Bt2020);
     }

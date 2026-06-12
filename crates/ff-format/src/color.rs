@@ -27,24 +27,32 @@ use std::fmt;
 /// # Common Usage
 ///
 /// - **BT.709**: HD content (720p, 1080p)
-/// - **BT.601**: SD content (480i, 576i)
-/// - **BT.2020**: UHD/HDR content (4K, 8K)
-/// - **sRGB**: Computer graphics, web content
+/// - **BT.470BG / SMPTE-170M**: SD content (576i PAL / 480i NTSC)
+/// - **BT.2020 NCL / CL**: UHD/HDR content (4K, 8K)
+/// - **RGB**: Identity matrix for RGB/GBR content
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum ColorSpace {
-    /// ITU-R BT.709 - HD television standard (most common for HD video)
+    /// ITU-R BT.709 — HD television matrix (most common for HD video)
     #[default]
     Bt709,
-    /// ITU-R BT.601 - SD television standard
-    Bt601,
-    /// ITU-R BT.2020 - UHD/HDR television standard
-    Bt2020,
-    /// DCI-P3 - digital cinema wide color gamut
-    DciP3,
-    /// sRGB color space - computer graphics and web
-    Srgb,
-    /// Color space is not specified or unknown
+    /// ITU-R BT.470BG — BT.601 625-line (PAL/SECAM SD) matrix
+    Bt470bg,
+    /// SMPTE 170M — BT.601 525-line (NTSC SD) matrix
+    Smpte170m,
+    /// ITU-R BT.2020 non-constant luminance — UHD/HDR matrix
+    Bt2020Ncl,
+    /// ITU-R BT.2020 constant luminance — UHD/HDR matrix
+    Bt2020Cl,
+    /// Identity / RGB (GBR planar) — no YUV matrix
+    Rgb,
+    /// FCC — legacy NTSC 1953 matrix
+    Fcc,
+    /// SMPTE 240M — legacy HD matrix
+    Smpte240m,
+    /// `YCgCo` — reversible `YCgCo` matrix
+    Ycgco,
+    /// Color space matrix is not specified or unknown
     Unknown,
 }
 
@@ -57,21 +65,25 @@ impl ColorSpace {
     /// use ff_format::color::ColorSpace;
     ///
     /// assert_eq!(ColorSpace::Bt709.name(), "bt709");
-    /// assert_eq!(ColorSpace::Bt601.name(), "bt601");
+    /// assert_eq!(ColorSpace::Bt2020Ncl.name(), "bt2020ncl");
     /// ```
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Bt709 => "bt709",
-            Self::Bt601 => "bt601",
-            Self::Bt2020 => "bt2020",
-            Self::DciP3 => "dcip3",
-            Self::Srgb => "srgb",
+            Self::Bt470bg => "bt470bg",
+            Self::Smpte170m => "smpte170m",
+            Self::Bt2020Ncl => "bt2020ncl",
+            Self::Bt2020Cl => "bt2020cl",
+            Self::Rgb => "rgb",
+            Self::Fcc => "fcc",
+            Self::Smpte240m => "smpte240m",
+            Self::Ycgco => "ycgco",
             Self::Unknown => "unknown",
         }
     }
 
-    /// Returns `true` if this is an HD color space (BT.709).
+    /// Returns `true` if this is the HD matrix (BT.709).
     ///
     /// # Examples
     ///
@@ -79,56 +91,41 @@ impl ColorSpace {
     /// use ff_format::color::ColorSpace;
     ///
     /// assert!(ColorSpace::Bt709.is_hd());
-    /// assert!(!ColorSpace::Bt601.is_hd());
+    /// assert!(!ColorSpace::Smpte170m.is_hd());
     /// ```
     #[must_use]
     pub const fn is_hd(&self) -> bool {
         matches!(self, Self::Bt709)
     }
 
-    /// Returns `true` if this is an SD color space (BT.601).
+    /// Returns `true` if this is an SD matrix (BT.601: BT.470BG or SMPTE-170M).
     ///
     /// # Examples
     ///
     /// ```
     /// use ff_format::color::ColorSpace;
     ///
-    /// assert!(ColorSpace::Bt601.is_sd());
+    /// assert!(ColorSpace::Smpte170m.is_sd());
     /// assert!(!ColorSpace::Bt709.is_sd());
     /// ```
     #[must_use]
     pub const fn is_sd(&self) -> bool {
-        matches!(self, Self::Bt601)
+        matches!(self, Self::Bt470bg | Self::Smpte170m)
     }
 
-    /// Returns `true` if this is a UHD/HDR color space (BT.2020).
+    /// Returns `true` if this is a UHD/HDR matrix (BT.2020 NCL or CL).
     ///
     /// # Examples
     ///
     /// ```
     /// use ff_format::color::ColorSpace;
     ///
-    /// assert!(ColorSpace::Bt2020.is_uhd());
+    /// assert!(ColorSpace::Bt2020Ncl.is_uhd());
     /// assert!(!ColorSpace::Bt709.is_uhd());
     /// ```
     #[must_use]
     pub const fn is_uhd(&self) -> bool {
-        matches!(self, Self::Bt2020)
-    }
-
-    /// Returns `true` if this is a cinema/DCI color space (DCI-P3).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_format::color::ColorSpace;
-    ///
-    /// assert!(ColorSpace::DciP3.is_cinema());
-    /// assert!(!ColorSpace::Bt709.is_cinema());
-    /// ```
-    #[must_use]
-    pub const fn is_cinema(&self) -> bool {
-        matches!(self, Self::DciP3)
+        matches!(self, Self::Bt2020Ncl | Self::Bt2020Cl)
     }
 
     /// Returns `true` if the color space is unknown.
@@ -291,7 +288,8 @@ impl fmt::Display for ColorRange {
 /// # Common Usage
 ///
 /// - **BT.709**: HD content, same as sRGB primaries
-/// - **BT.601**: SD content (NTSC or PAL)
+/// - **BT.470BG / SMPTE-170M**: SD content (PAL/SECAM / NTSC)
+/// - **DCI-P3 / Display P3**: digital cinema and wide-gamut displays
 /// - **BT.2020**: Wide color gamut for UHD/HDR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
@@ -299,8 +297,18 @@ pub enum ColorPrimaries {
     /// ITU-R BT.709 primaries (same as sRGB, most common)
     #[default]
     Bt709,
-    /// ITU-R BT.601 primaries (SD video)
-    Bt601,
+    /// ITU-R BT.470BG primaries (PAL/SECAM SD video)
+    Bt470bg,
+    /// SMPTE 170M primaries (NTSC SD video)
+    Smpte170m,
+    /// SMPTE 240M primaries (legacy HD)
+    Smpte240m,
+    /// Generic film primaries (Illuminant C)
+    Film,
+    /// DCI-P3 primaries (SMPTE RP 431-2, digital cinema)
+    DciP3,
+    /// Display P3 primaries (SMPTE EG 432-1, wide-gamut displays)
+    DisplayP3,
     /// ITU-R BT.2020 primaries (wide color gamut for UHD/HDR)
     Bt2020,
     /// Color primaries are not specified or unknown
@@ -322,13 +330,18 @@ impl ColorPrimaries {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Bt709 => "bt709",
-            Self::Bt601 => "bt601",
+            Self::Bt470bg => "bt470bg",
+            Self::Smpte170m => "smpte170m",
+            Self::Smpte240m => "smpte240m",
+            Self::Film => "film",
+            Self::DciP3 => "dci-p3",
+            Self::DisplayP3 => "display-p3",
             Self::Bt2020 => "bt2020",
             Self::Unknown => "unknown",
         }
     }
 
-    /// Returns `true` if this uses wide color gamut (BT.2020).
+    /// Returns `true` if this uses a wide color gamut (BT.2020, DCI-P3, or Display P3).
     ///
     /// # Examples
     ///
@@ -336,11 +349,12 @@ impl ColorPrimaries {
     /// use ff_format::color::ColorPrimaries;
     ///
     /// assert!(ColorPrimaries::Bt2020.is_wide_gamut());
+    /// assert!(ColorPrimaries::DciP3.is_wide_gamut());
     /// assert!(!ColorPrimaries::Bt709.is_wide_gamut());
     /// ```
     #[must_use]
     pub const fn is_wide_gamut(&self) -> bool {
-        matches!(self, Self::Bt2020)
+        matches!(self, Self::Bt2020 | Self::DciP3 | Self::DisplayP3)
     }
 
     /// Returns `true` if the color primaries are unknown.
@@ -374,6 +388,9 @@ impl fmt::Display for ColorPrimaries {
 /// # Common Usage
 ///
 /// - **`Bt709`**: Standard SDR video (HD television)
+/// - **`Gamma22`** / **`Gamma28`**: Pure power-law gamma 2.2 / 2.8 (legacy SDR)
+/// - **`Smpte170m`** / **`Smpte240m`**: SD / legacy-HD transfer characteristics
+/// - **`Srgb`**: sRGB / IEC 61966-2-1 (computer graphics, web)
 /// - **`Pq`**: HDR10 and Dolby Vision (SMPTE ST 2084 / Perceptual Quantizer)
 /// - **`Hlg`**: Hybrid Log-Gamma — broadcast-compatible HDR (ARIB STD-B67)
 /// - **`Bt2020_10`** / **`Bt2020_12`**: BT.2020 SDR at 10/12-bit depth
@@ -384,16 +401,26 @@ pub enum ColorTransfer {
     /// ITU-R BT.709 transfer characteristic (standard SDR)
     #[default]
     Bt709,
+    /// Pure power-law gamma 2.2 (assumed display gamma)
+    Gamma22,
+    /// Pure power-law gamma 2.8 (BT.470 System B/G)
+    Gamma28,
+    /// SMPTE 170M transfer characteristic (SD)
+    Smpte170m,
+    /// SMPTE 240M transfer characteristic (legacy HD)
+    Smpte240m,
+    /// Linear light transfer (no gamma)
+    Linear,
+    /// sRGB / IEC 61966-2-1 transfer characteristic
+    Srgb,
     /// ITU-R BT.2020 for 10-bit content
     Bt2020_10,
     /// ITU-R BT.2020 for 12-bit content
     Bt2020_12,
-    /// Hybrid Log-Gamma (ARIB STD-B67) — broadcast HDR
-    Hlg,
     /// Perceptual Quantizer / SMPTE ST 2084 — HDR10
     Pq,
-    /// Linear light transfer (no gamma)
-    Linear,
+    /// Hybrid Log-Gamma (ARIB STD-B67) — broadcast HDR
+    Hlg,
     /// Transfer characteristic is not specified or unknown
     Unknown,
 }
@@ -414,11 +441,16 @@ impl ColorTransfer {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Bt709 => "bt709",
+            Self::Gamma22 => "gamma22",
+            Self::Gamma28 => "gamma28",
+            Self::Smpte170m => "smpte170m",
+            Self::Smpte240m => "smpte240m",
+            Self::Linear => "linear",
+            Self::Srgb => "srgb",
             Self::Bt2020_10 => "bt2020-10",
             Self::Bt2020_12 => "bt2020-12",
-            Self::Hlg => "hlg",
             Self::Pq => "pq",
-            Self::Linear => "linear",
+            Self::Hlg => "hlg",
             Self::Unknown => "unknown",
         }
     }
@@ -589,17 +621,21 @@ mod tests {
         #[test]
         fn test_names() {
             assert_eq!(ColorSpace::Bt709.name(), "bt709");
-            assert_eq!(ColorSpace::Bt601.name(), "bt601");
-            assert_eq!(ColorSpace::Bt2020.name(), "bt2020");
-            assert_eq!(ColorSpace::DciP3.name(), "dcip3");
-            assert_eq!(ColorSpace::Srgb.name(), "srgb");
+            assert_eq!(ColorSpace::Bt470bg.name(), "bt470bg");
+            assert_eq!(ColorSpace::Smpte170m.name(), "smpte170m");
+            assert_eq!(ColorSpace::Bt2020Ncl.name(), "bt2020ncl");
+            assert_eq!(ColorSpace::Bt2020Cl.name(), "bt2020cl");
+            assert_eq!(ColorSpace::Rgb.name(), "rgb");
+            assert_eq!(ColorSpace::Fcc.name(), "fcc");
+            assert_eq!(ColorSpace::Smpte240m.name(), "smpte240m");
+            assert_eq!(ColorSpace::Ycgco.name(), "ycgco");
             assert_eq!(ColorSpace::Unknown.name(), "unknown");
         }
 
         #[test]
         fn test_display() {
             assert_eq!(format!("{}", ColorSpace::Bt709), "bt709");
-            assert_eq!(format!("{}", ColorSpace::Bt2020), "bt2020");
+            assert_eq!(format!("{}", ColorSpace::Bt2020Ncl), "bt2020ncl");
         }
 
         #[test]
@@ -613,20 +649,15 @@ mod tests {
             assert!(!ColorSpace::Bt709.is_sd());
             assert!(!ColorSpace::Bt709.is_uhd());
 
-            assert!(!ColorSpace::Bt601.is_hd());
-            assert!(ColorSpace::Bt601.is_sd());
-            assert!(!ColorSpace::Bt601.is_uhd());
+            assert!(!ColorSpace::Smpte170m.is_hd());
+            assert!(ColorSpace::Smpte170m.is_sd());
+            assert!(ColorSpace::Bt470bg.is_sd());
+            assert!(!ColorSpace::Smpte170m.is_uhd());
 
-            assert!(!ColorSpace::Bt2020.is_hd());
-            assert!(!ColorSpace::Bt2020.is_sd());
-            assert!(ColorSpace::Bt2020.is_uhd());
-        }
-
-        #[test]
-        fn dcip3_is_cinema_should_return_true() {
-            assert!(ColorSpace::DciP3.is_cinema());
-            assert!(!ColorSpace::Bt709.is_cinema());
-            assert!(!ColorSpace::Bt2020.is_cinema());
+            assert!(!ColorSpace::Bt2020Ncl.is_hd());
+            assert!(!ColorSpace::Bt2020Ncl.is_sd());
+            assert!(ColorSpace::Bt2020Ncl.is_uhd());
+            assert!(ColorSpace::Bt2020Cl.is_uhd());
         }
 
         #[test]
@@ -638,7 +669,7 @@ mod tests {
         #[test]
         fn test_debug() {
             assert_eq!(format!("{:?}", ColorSpace::Bt709), "Bt709");
-            assert_eq!(format!("{:?}", ColorSpace::Srgb), "Srgb");
+            assert_eq!(format!("{:?}", ColorSpace::Rgb), "Rgb");
         }
 
         #[test]
@@ -646,13 +677,13 @@ mod tests {
             use std::collections::HashSet;
 
             assert_eq!(ColorSpace::Bt709, ColorSpace::Bt709);
-            assert_ne!(ColorSpace::Bt709, ColorSpace::Bt601);
+            assert_ne!(ColorSpace::Bt709, ColorSpace::Smpte170m);
 
             let mut set = HashSet::new();
             set.insert(ColorSpace::Bt709);
-            set.insert(ColorSpace::Bt601);
+            set.insert(ColorSpace::Smpte170m);
             assert!(set.contains(&ColorSpace::Bt709));
-            assert!(!set.contains(&ColorSpace::Bt2020));
+            assert!(!set.contains(&ColorSpace::Bt2020Ncl));
         }
 
         #[test]
@@ -732,7 +763,12 @@ mod tests {
         #[test]
         fn test_names() {
             assert_eq!(ColorPrimaries::Bt709.name(), "bt709");
-            assert_eq!(ColorPrimaries::Bt601.name(), "bt601");
+            assert_eq!(ColorPrimaries::Bt470bg.name(), "bt470bg");
+            assert_eq!(ColorPrimaries::Smpte170m.name(), "smpte170m");
+            assert_eq!(ColorPrimaries::Smpte240m.name(), "smpte240m");
+            assert_eq!(ColorPrimaries::Film.name(), "film");
+            assert_eq!(ColorPrimaries::DciP3.name(), "dci-p3");
+            assert_eq!(ColorPrimaries::DisplayP3.name(), "display-p3");
             assert_eq!(ColorPrimaries::Bt2020.name(), "bt2020");
             assert_eq!(ColorPrimaries::Unknown.name(), "unknown");
         }
@@ -751,8 +787,10 @@ mod tests {
         #[test]
         fn test_is_wide_gamut() {
             assert!(ColorPrimaries::Bt2020.is_wide_gamut());
+            assert!(ColorPrimaries::DciP3.is_wide_gamut());
+            assert!(ColorPrimaries::DisplayP3.is_wide_gamut());
             assert!(!ColorPrimaries::Bt709.is_wide_gamut());
-            assert!(!ColorPrimaries::Bt601.is_wide_gamut());
+            assert!(!ColorPrimaries::Smpte170m.is_wide_gamut());
         }
 
         #[test]
@@ -772,7 +810,7 @@ mod tests {
             set.insert(ColorPrimaries::Bt709);
             set.insert(ColorPrimaries::Bt2020);
             assert!(set.contains(&ColorPrimaries::Bt709));
-            assert!(!set.contains(&ColorPrimaries::Bt601));
+            assert!(!set.contains(&ColorPrimaries::Smpte170m));
         }
     }
 
@@ -782,11 +820,16 @@ mod tests {
         #[test]
         fn test_names() {
             assert_eq!(ColorTransfer::Bt709.name(), "bt709");
+            assert_eq!(ColorTransfer::Gamma22.name(), "gamma22");
+            assert_eq!(ColorTransfer::Gamma28.name(), "gamma28");
+            assert_eq!(ColorTransfer::Smpte170m.name(), "smpte170m");
+            assert_eq!(ColorTransfer::Smpte240m.name(), "smpte240m");
+            assert_eq!(ColorTransfer::Linear.name(), "linear");
+            assert_eq!(ColorTransfer::Srgb.name(), "srgb");
             assert_eq!(ColorTransfer::Bt2020_10.name(), "bt2020-10");
             assert_eq!(ColorTransfer::Bt2020_12.name(), "bt2020-12");
-            assert_eq!(ColorTransfer::Hlg.name(), "hlg");
             assert_eq!(ColorTransfer::Pq.name(), "pq");
-            assert_eq!(ColorTransfer::Linear.name(), "linear");
+            assert_eq!(ColorTransfer::Hlg.name(), "hlg");
             assert_eq!(ColorTransfer::Unknown.name(), "unknown");
         }
 
@@ -819,6 +862,11 @@ mod tests {
         #[test]
         fn sdr_transfers_are_not_hdr() {
             assert!(!ColorTransfer::Bt709.is_hdr());
+            assert!(!ColorTransfer::Gamma22.is_hdr());
+            assert!(!ColorTransfer::Gamma28.is_hdr());
+            assert!(!ColorTransfer::Smpte170m.is_hdr());
+            assert!(!ColorTransfer::Smpte240m.is_hdr());
+            assert!(!ColorTransfer::Srgb.is_hdr());
             assert!(!ColorTransfer::Bt2020_10.is_hdr());
             assert!(!ColorTransfer::Bt2020_12.is_hdr());
             assert!(!ColorTransfer::Linear.is_hdr());

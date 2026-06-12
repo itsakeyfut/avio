@@ -127,7 +127,7 @@ fn main() {
         println!("Mode:   HLG colour tags (no MaxCLL/MaxFALL side data)");
         enc_builder = enc_builder
             .color_transfer(ColorTransfer::Hlg)
-            .color_space(ColorSpace::Bt2020)
+            .color_space(ColorSpace::Bt2020Ncl)
             .color_primaries(ColorPrimaries::Bt2020);
     } else {
         // ── HDR10 static metadata ─────────────────────────────────────────────

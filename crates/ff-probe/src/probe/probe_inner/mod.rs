@@ -264,27 +264,27 @@ mod tests {
     }
 
     #[test]
-    fn test_map_color_space_bt601() {
+    fn test_map_color_space_sd() {
         let space = map_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT470BG);
-        assert_eq!(space, ColorSpace::Bt601);
+        assert_eq!(space, ColorSpace::Bt470bg);
 
         let space = map_color_space(ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M);
-        assert_eq!(space, ColorSpace::Bt601);
+        assert_eq!(space, ColorSpace::Smpte170m);
     }
 
     #[test]
     fn test_map_color_space_bt2020() {
         let space = map_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL);
-        assert_eq!(space, ColorSpace::Bt2020);
+        assert_eq!(space, ColorSpace::Bt2020Ncl);
 
         let space = map_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT2020_CL);
-        assert_eq!(space, ColorSpace::Bt2020);
+        assert_eq!(space, ColorSpace::Bt2020Cl);
     }
 
     #[test]
-    fn test_map_color_space_srgb() {
+    fn test_map_color_space_rgb() {
         let space = map_color_space(ff_sys::AVColorSpace_AVCOL_SPC_RGB);
-        assert_eq!(space, ColorSpace::Srgb);
+        assert_eq!(space, ColorSpace::Rgb);
     }
 
     #[test]
@@ -326,12 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn test_map_color_primaries_bt601() {
+    fn test_map_color_primaries_sd() {
         let primaries = map_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG);
-        assert_eq!(primaries, ColorPrimaries::Bt601);
+        assert_eq!(primaries, ColorPrimaries::Bt470bg);
 
         let primaries = map_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M);
-        assert_eq!(primaries, ColorPrimaries::Bt601);
+        assert_eq!(primaries, ColorPrimaries::Smpte170m);
     }
 
     #[test]

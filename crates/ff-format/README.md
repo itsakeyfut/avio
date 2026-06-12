@@ -34,7 +34,7 @@ use ff_format::{ColorTransfer, ColorSpace, ColorPrimaries, ColorRange};
 
 // Tag a stream as HLG broadcast HDR.
 let transfer  = ColorTransfer::Hlg;
-let space     = ColorSpace::Bt2020;
+let space     = ColorSpace::Bt2020Ncl;
 let primaries = ColorPrimaries::Bt2020;
 let range     = ColorRange::Limited;
 

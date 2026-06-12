@@ -61,13 +61,14 @@ pub(super) fn map_pixel_format(format: i32) -> PixelFormat {
 pub(super) fn map_color_space(color_space: ff_sys::AVColorSpace) -> ColorSpace {
     match color_space {
         ff_sys::AVColorSpace_AVCOL_SPC_BT709 => ColorSpace::Bt709,
-        ff_sys::AVColorSpace_AVCOL_SPC_BT470BG | ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M => {
-            ColorSpace::Bt601
-        }
-        ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL | ff_sys::AVColorSpace_AVCOL_SPC_BT2020_CL => {
-            ColorSpace::Bt2020
-        }
-        ff_sys::AVColorSpace_AVCOL_SPC_RGB => ColorSpace::Srgb,
+        ff_sys::AVColorSpace_AVCOL_SPC_BT470BG => ColorSpace::Bt470bg,
+        ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M => ColorSpace::Smpte170m,
+        ff_sys::AVColorSpace_AVCOL_SPC_SMPTE240M => ColorSpace::Smpte240m,
+        ff_sys::AVColorSpace_AVCOL_SPC_FCC => ColorSpace::Fcc,
+        ff_sys::AVColorSpace_AVCOL_SPC_YCGCO => ColorSpace::Ycgco,
+        ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL => ColorSpace::Bt2020Ncl,
+        ff_sys::AVColorSpace_AVCOL_SPC_BT2020_CL => ColorSpace::Bt2020Cl,
+        ff_sys::AVColorSpace_AVCOL_SPC_RGB => ColorSpace::Rgb,
         _ => {
             log::warn!(
                 "color_space has no mapping, using Unknown \
@@ -97,8 +98,12 @@ pub(super) fn map_color_range(color_range: ff_sys::AVColorRange) -> ColorRange {
 pub(super) fn map_color_primaries(color_primaries: ff_sys::AVColorPrimaries) -> ColorPrimaries {
     match color_primaries {
         ff_sys::AVColorPrimaries_AVCOL_PRI_BT709 => ColorPrimaries::Bt709,
-        ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG
-        | ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M => ColorPrimaries::Bt601,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG => ColorPrimaries::Bt470bg,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M => ColorPrimaries::Smpte170m,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE240M => ColorPrimaries::Smpte240m,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_FILM => ColorPrimaries::Film,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE431 => ColorPrimaries::DciP3,
+        ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE432 => ColorPrimaries::DisplayP3,
         ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 => ColorPrimaries::Bt2020,
         _ => {
             log::warn!(

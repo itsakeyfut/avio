@@ -49,12 +49,22 @@ impl VideoDecoderInner {
     pub(super) fn convert_color_space(space: AVColorSpace) -> ColorSpace {
         if space == ff_sys::AVColorSpace_AVCOL_SPC_BT709 {
             ColorSpace::Bt709
-        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT470BG
-            || space == ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M
-        {
-            ColorSpace::Bt601
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT470BG {
+            ColorSpace::Bt470bg
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M {
+            ColorSpace::Smpte170m
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_SMPTE240M {
+            ColorSpace::Smpte240m
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_FCC {
+            ColorSpace::Fcc
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_YCGCO {
+            ColorSpace::Ycgco
         } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL {
-            ColorSpace::Bt2020
+            ColorSpace::Bt2020Ncl
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_CL {
+            ColorSpace::Bt2020Cl
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_RGB {
+            ColorSpace::Rgb
         } else {
             log::warn!(
                 "color_space unsupported, falling back to Bt709 requested={space} fallback=Bt709"
@@ -81,10 +91,18 @@ impl VideoDecoderInner {
     pub(super) fn convert_color_primaries(primaries: AVColorPrimaries) -> ColorPrimaries {
         if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT709 {
             ColorPrimaries::Bt709
-        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG
-            || primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M
-        {
-            ColorPrimaries::Bt601
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG {
+            ColorPrimaries::Bt470bg
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M {
+            ColorPrimaries::Smpte170m
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE240M {
+            ColorPrimaries::Smpte240m
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_FILM {
+            ColorPrimaries::Film
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE431 {
+            ColorPrimaries::DciP3
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE432 {
+            ColorPrimaries::DisplayP3
         } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 {
             ColorPrimaries::Bt2020
         } else {

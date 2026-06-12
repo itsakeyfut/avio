@@ -37,7 +37,7 @@ mod tests {
     fn filter_step_format_should_produce_correct_args() {
         let step = FilterStep::Format {
             pix_fmts: vec![PixelFormat::Rgba, PixelFormat::Yuv420p],
-            color_spaces: vec![ColorSpace::Srgb],
+            color_spaces: vec![ColorSpace::Rgb],
             color_ranges: vec![ColorRange::Limited],
         };
         assert_eq!(step.filter_name(), "format");
@@ -49,11 +49,11 @@ mod tests {
 
     #[test]
     fn format_args_should_skip_values_without_ffmpeg_token() {
-        // `Other` (no static pix_fmt token), `Bt601` (needs the #1217 split) and `Unknown`
+        // `Other` (no static pix_fmt token), `Unknown` colour space and `Unknown`
         // range all return `None` and must be skipped rather than emitting invalid tokens.
         let step = FilterStep::Format {
             pix_fmts: vec![PixelFormat::Other(123), PixelFormat::Yuv420p],
-            color_spaces: vec![ColorSpace::Bt601, ColorSpace::Bt2020],
+            color_spaces: vec![ColorSpace::Unknown, ColorSpace::Bt2020Ncl],
             color_ranges: vec![ColorRange::Unknown],
         };
         assert_eq!(step.args(), "pix_fmts=yuv420p:color_spaces=bt2020nc");
@@ -61,12 +61,12 @@ mod tests {
 
     #[test]
     fn format_args_should_be_empty_when_all_values_lack_tokens() {
-        // Edge case: if every supplied value renders to `None` (e.g. `Other` pix fmt + `Bt601`
+        // Edge case: if every supplied value renders to `None` (e.g. `Other` pix fmt + `Unknown`
         // colour space + `Unknown` range), `args()` is the empty string. Documented so the
         // empty-args `format` step stays a visible, tested behaviour.
         let step = FilterStep::Format {
             pix_fmts: vec![PixelFormat::Other(1)],
-            color_spaces: vec![ColorSpace::Bt601],
+            color_spaces: vec![ColorSpace::Unknown],
             color_ranges: vec![ColorRange::Unknown],
         };
         assert_eq!(step.args(), "");
