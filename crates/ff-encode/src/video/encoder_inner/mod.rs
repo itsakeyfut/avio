@@ -915,17 +915,17 @@ mod tests {
     }
 
     #[test]
-    fn color_space_to_av_bt2020_should_return_bt2020_ncl() {
+    fn color_space_to_av_bt2020_ncl_should_return_bt2020_ncl() {
         assert_eq!(
-            color::color_space_to_av(ff_format::ColorSpace::Bt2020),
+            color::color_space_to_av(ff_format::ColorSpace::Bt2020Ncl),
             ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL
         );
     }
 
     #[test]
-    fn color_space_to_av_dcip3_should_return_rgb() {
+    fn color_space_to_av_rgb_should_return_rgb() {
         assert_eq!(
-            color::color_space_to_av(ff_format::ColorSpace::DciP3),
+            color::color_space_to_av(ff_format::ColorSpace::Rgb),
             ff_sys::AVColorSpace_AVCOL_SPC_RGB
         );
     }

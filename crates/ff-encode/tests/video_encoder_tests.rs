@@ -1886,7 +1886,7 @@ fn hlg_color_transfer_on_h265_should_produce_valid_output() {
         .video_codec(VideoCodec::H265)
         .bitrate_mode(BitrateMode::Crf(28))
         .preset(Preset::Ultrafast)
-        .color_space(ColorSpace::Bt2020)
+        .color_space(ColorSpace::Bt2020Ncl)
         .color_transfer(ColorTransfer::Hlg)
         .color_primaries(ColorPrimaries::Bt2020)
         .build();

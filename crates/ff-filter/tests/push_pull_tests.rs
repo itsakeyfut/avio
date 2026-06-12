@@ -89,7 +89,7 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
     let mut graph = FilterGraph::builder()
         .format(
             vec![PixelFormat::Yuv420p],
-            vec![ColorSpace::Bt2020],
+            vec![ColorSpace::Bt2020Ncl],
             vec![ColorRange::Limited],
         )
         .build()

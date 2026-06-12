@@ -542,12 +542,14 @@ fn test_probe_video_color_space_extraction() {
 
     // Verify color space is extracted (may be Unknown for some files)
     let color_space = video.color_space();
-    // Valid color spaces: BT.709 (HD), BT.601 (SD), BT.2020 (HDR), sRGB, or Unknown
+    // Valid color spaces: BT.709 (HD), BT.470BG/SMPTE-170M (SD), BT.2020 NCL/CL (HDR), RGB, or Unknown
     let valid_spaces = [
         ff_format::color::ColorSpace::Bt709,
-        ff_format::color::ColorSpace::Bt601,
-        ff_format::color::ColorSpace::Bt2020,
-        ff_format::color::ColorSpace::Srgb,
+        ff_format::color::ColorSpace::Bt470bg,
+        ff_format::color::ColorSpace::Smpte170m,
+        ff_format::color::ColorSpace::Bt2020Ncl,
+        ff_format::color::ColorSpace::Bt2020Cl,
+        ff_format::color::ColorSpace::Rgb,
         ff_format::color::ColorSpace::Unknown,
     ];
     assert!(
@@ -592,11 +594,14 @@ fn test_probe_video_color_primaries_extraction() {
 
     // Verify color primaries are extracted
     let color_primaries = video.color_primaries();
-    // Valid color primaries: BT.709, BT.601, BT.2020, or Unknown
+    // Valid color primaries: BT.709, BT.470BG/SMPTE-170M, BT.2020, DCI-P3, Display P3, or Unknown
     let valid_primaries = [
         ff_format::color::ColorPrimaries::Bt709,
-        ff_format::color::ColorPrimaries::Bt601,
+        ff_format::color::ColorPrimaries::Bt470bg,
+        ff_format::color::ColorPrimaries::Smpte170m,
         ff_format::color::ColorPrimaries::Bt2020,
+        ff_format::color::ColorPrimaries::DciP3,
+        ff_format::color::ColorPrimaries::DisplayP3,
         ff_format::color::ColorPrimaries::Unknown,
     ];
     assert!(
@@ -621,7 +626,7 @@ fn test_probe_video_color_info_consistency() {
 
     // Check for common consistency patterns (not strictly required, but good practice)
     // Note: Some encoders may not set all color parameters consistently
-    if color_space == ff_format::color::ColorSpace::Bt2020 {
+    if color_space.is_uhd() {
         // HDR content should have BT.2020 primaries
         // (or Unknown if encoder didn't set it)
         assert!(
@@ -647,8 +652,8 @@ fn test_probe_video_hdr_detection() {
     let color_primaries = video.color_primaries();
 
     // HDR content is indicated by BT.2020 color space or primaries
-    let is_hdr = color_space == ff_format::color::ColorSpace::Bt2020
-        || color_primaries == ff_format::color::ColorPrimaries::Bt2020;
+    let is_hdr =
+        color_space.is_uhd() || color_primaries == ff_format::color::ColorPrimaries::Bt2020;
 
     // For test files, we don't require HDR, just verify detection works
     // If HDR is detected, log it for manual verification

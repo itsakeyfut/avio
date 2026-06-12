@@ -337,7 +337,11 @@ pub const AVColorPrimaries_AVCOL_PRI_BT709: AVColorPrimaries = 1;
 pub const AVColorPrimaries_AVCOL_PRI_UNSPECIFIED: AVColorPrimaries = 2;
 pub const AVColorPrimaries_AVCOL_PRI_BT470BG: AVColorPrimaries = 5;
 pub const AVColorPrimaries_AVCOL_PRI_SMPTE170M: AVColorPrimaries = 6;
+pub const AVColorPrimaries_AVCOL_PRI_SMPTE240M: AVColorPrimaries = 7;
+pub const AVColorPrimaries_AVCOL_PRI_FILM: AVColorPrimaries = 8;
 pub const AVColorPrimaries_AVCOL_PRI_BT2020: AVColorPrimaries = 9;
+pub const AVColorPrimaries_AVCOL_PRI_SMPTE431: AVColorPrimaries = 11;
+pub const AVColorPrimaries_AVCOL_PRI_SMPTE432: AVColorPrimaries = 12;
 
 // AVColorRange
 pub const AVColorRange_AVCOL_RANGE_UNSPECIFIED: AVColorRange = 0;
@@ -348,15 +352,23 @@ pub const AVColorRange_AVCOL_RANGE_JPEG: AVColorRange = 2;
 pub const AVColorSpace_AVCOL_SPC_RGB: AVColorSpace = 0;
 pub const AVColorSpace_AVCOL_SPC_BT709: AVColorSpace = 1;
 pub const AVColorSpace_AVCOL_SPC_UNSPECIFIED: AVColorSpace = 2;
+pub const AVColorSpace_AVCOL_SPC_FCC: AVColorSpace = 4;
 pub const AVColorSpace_AVCOL_SPC_BT470BG: AVColorSpace = 5;
 pub const AVColorSpace_AVCOL_SPC_SMPTE170M: AVColorSpace = 6;
+pub const AVColorSpace_AVCOL_SPC_SMPTE240M: AVColorSpace = 7;
+pub const AVColorSpace_AVCOL_SPC_YCGCO: AVColorSpace = 8;
 pub const AVColorSpace_AVCOL_SPC_BT2020_NCL: AVColorSpace = 9;
 pub const AVColorSpace_AVCOL_SPC_BT2020_CL: AVColorSpace = 10;
 
 // AVColorTransferCharacteristic
 pub const AVColorTransferCharacteristic_AVCOL_TRC_BT709: AVColorTransferCharacteristic = 1;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED: AVColorTransferCharacteristic = 2;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_GAMMA22: AVColorTransferCharacteristic = 4;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_GAMMA28: AVColorTransferCharacteristic = 5;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_SMPTE170M: AVColorTransferCharacteristic = 6;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_SMPTE240M: AVColorTransferCharacteristic = 7;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_LINEAR: AVColorTransferCharacteristic = 8;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_IEC61966_2_1: AVColorTransferCharacteristic = 13;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_BT2020_10: AVColorTransferCharacteristic = 14;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_BT2020_12: AVColorTransferCharacteristic = 15;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084: AVColorTransferCharacteristic = 16;

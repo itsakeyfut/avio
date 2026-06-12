@@ -265,7 +265,7 @@ let mut encoder = VideoEncoder::create("output.mkv")
     .video_codec(VideoCodec::H265)
     .pixel_format(PixelFormat::Yuv420p10le)
     .color_transfer(ColorTransfer::Hlg)
-    .color_space(ColorSpace::Bt2020)
+    .color_space(ColorSpace::Bt2020Ncl)
     .color_primaries(ColorPrimaries::Bt2020)
     .build()?;
 ```

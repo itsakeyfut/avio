@@ -533,18 +533,18 @@ mod tests {
     }
 
     #[test]
-    fn color_space_bt470bg_yields_bt601() {
+    fn color_space_bt470bg_yields_bt470bg() {
         assert_eq!(
             VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT470BG),
-            ColorSpace::Bt601
+            ColorSpace::Bt470bg
         );
     }
 
     #[test]
-    fn color_space_smpte170m_yields_bt601() {
+    fn color_space_smpte170m_yields_smpte170m() {
         assert_eq!(
             VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M),
-            ColorSpace::Bt601
+            ColorSpace::Smpte170m
         );
     }
 
@@ -552,7 +552,7 @@ mod tests {
     fn color_space_bt2020_ncl() {
         assert_eq!(
             VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL),
-            ColorSpace::Bt2020
+            ColorSpace::Bt2020Ncl
         );
     }
 
@@ -605,20 +605,20 @@ mod tests {
     }
 
     #[test]
-    fn color_primaries_bt470bg_yields_bt601() {
+    fn color_primaries_bt470bg_yields_bt470bg() {
         assert_eq!(
             VideoDecoderInner::convert_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG),
-            ColorPrimaries::Bt601
+            ColorPrimaries::Bt470bg
         );
     }
 
     #[test]
-    fn color_primaries_smpte170m_yields_bt601() {
+    fn color_primaries_smpte170m_yields_smpte170m() {
         assert_eq!(
             VideoDecoderInner::convert_color_primaries(
                 ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M
             ),
-            ColorPrimaries::Bt601
+            ColorPrimaries::Smpte170m
         );
     }
 
