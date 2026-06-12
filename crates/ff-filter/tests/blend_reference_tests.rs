@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use image::RgbImage;
 
 use ff_filter::{BlendMode, FilterGraph, FilterGraphBuilder};
-use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
+use ff_format::{AlphaMode, PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
 // ── Synthetic input image generators ─────────────────────────────────────────
 
@@ -168,7 +168,7 @@ fn apply_blend(bottom: &VideoFrame, top_frame: &VideoFrame, mode: BlendMode) -> 
     let top_builder = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top_builder, mode, 1.0)
+        .blend(top_builder, mode, 1.0, AlphaMode::Straight)
         .build()
         .ok()?;
     graph.push_video(0, bottom).ok()?;

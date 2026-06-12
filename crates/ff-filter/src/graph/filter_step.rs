@@ -1,8 +1,8 @@
 //! Internal filter step representation.
 
-use std::iter;
 use std::time::Duration;
 
+use super::FfmpegToken;
 use super::builder::FilterGraphBuilder;
 use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
@@ -36,7 +36,6 @@ pub enum FilterStep {
         pix_fmts: Vec<PixelFormat>,
         color_spaces: Vec<ColorSpace>,
         color_ranges: Vec<ColorRange>,
-        alpha_modes: Vec<AlphaMode>,
     },
 
     /// Trim: keep only frames in `[start, end)` seconds.
@@ -472,6 +471,9 @@ pub enum FilterStep {
         mode: BlendMode,
         /// Opacity of the top layer in `[0.0, 1.0]`; 1.0 = fully opaque.
         opacity: f32,
+        /// How the top layer's alpha is interpreted by the `overlay` filter
+        /// (`alpha=`). [`AlphaMode::Straight`] is the `FFmpeg` default.
+        alpha: AlphaMode,
     },
 
     /// Remove pixels matching `color` using `FFmpeg`'s `chromakey` filter,
@@ -1000,58 +1002,26 @@ impl FilterStep {
                 pix_fmts,
                 color_spaces,
                 color_ranges,
-                alpha_modes,
             } => {
-                let mut parts = vec![];
-                if !pix_fmts.is_empty() {
-                    parts.push(
-                        iter::once("pix_fmts=")
-                            .chain(
-                                pix_fmts
-                                    .iter()
-                                    .flat_map(|pix_fmt| ["|", pix_fmt.name()])
-                                    .skip(1),
-                            )
-                            .collect::<String>(),
-                    );
+                // Each option list uses the FFmpeg-canonical `FfmpegToken`, skipping values with no
+                // FFmpeg equivalent (`None`); an option is emitted only when a token survives.
+                // See docs/specs/ffmpeg-tokens.md.
+                fn render<T: FfmpegToken>(key: &str, values: &[T]) -> Option<String> {
+                    let tokens: Vec<&str> = values
+                        .iter()
+                        .filter_map(FfmpegToken::ffmpeg_token)
+                        .collect();
+                    (!tokens.is_empty()).then(|| format!("{key}={}", tokens.join("|")))
                 }
-                if !color_spaces.is_empty() {
-                    parts.push(
-                        iter::once("color_spaces=")
-                            .chain(
-                                color_spaces
-                                    .iter()
-                                    .flat_map(|color_space| ["|", color_space.name()])
-                                    .skip(1),
-                            )
-                            .collect::<String>(),
-                    );
-                }
-                if !color_ranges.is_empty() {
-                    parts.push(
-                        iter::once("color_ranges=")
-                            .chain(
-                                color_ranges
-                                    .iter()
-                                    .flat_map(|color_range| ["|", color_range.name()])
-                                    .skip(1),
-                            )
-                            .collect::<String>(),
-                    );
-                }
-                if !alpha_modes.is_empty() {
-                    parts.push(
-                        iter::once("alpha_modes=")
-                            .chain(
-                                alpha_modes
-                                    .iter()
-                                    .flat_map(|alpha_mode| ["|", alpha_mode.name()])
-                                    .skip(1),
-                            )
-                            .collect::<String>(),
-                    );
-                }
-                parts.join(":")
+                [
+                    render("pix_fmts", pix_fmts),
+                    render("color_spaces", color_spaces),
+                    render("color_ranges", color_ranges),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(":")
             }
             Self::Trim { start, end } => format!("start={start}:end={end}"),
             Self::Scale {

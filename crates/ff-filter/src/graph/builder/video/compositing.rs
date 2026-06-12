@@ -2,12 +2,15 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use ff_format::AlphaMode;
 
 impl FilterGraphBuilder {
-    /// Blend a `top` layer over `self` (the bottom) using the given [`BlendMode`]
-    /// and `opacity`.
+    /// Blend a `top` layer over `self` (the bottom) using the given [`BlendMode`],
+    /// `opacity`, and [`AlphaMode`].
     ///
-    /// `opacity` is clamped to `[0.0, 1.0]` before being stored.
+    /// `opacity` is clamped to `[0.0, 1.0]` before being stored. `alpha` selects how
+    /// the top layer's alpha is interpreted by the `overlay` filter (`alpha=`);
+    /// [`AlphaMode::Straight`] matches `FFmpeg`'s default and adds no extra argument.
     ///
     /// # Normal mode
     ///
@@ -30,12 +33,19 @@ impl FilterGraphBuilder {
     /// unimplemented mode returns
     /// [`FilterError::InvalidConfig`].
     #[must_use]
-    pub fn blend(mut self, top: FilterGraphBuilder, mode: BlendMode, opacity: f32) -> Self {
+    pub fn blend(
+        mut self,
+        top: FilterGraphBuilder,
+        mode: BlendMode,
+        opacity: f32,
+        alpha: AlphaMode,
+    ) -> Self {
         let opacity = opacity.clamp(0.0, 1.0);
         self.steps.push(FilterStep::Blend {
             top: Box::new(top),
             mode,
             opacity,
+            alpha,
         });
         self
     }

@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use ff_filter::{BlendMode, FilterGraph, FilterGraphBuilder};
-use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
+use ff_format::{AlphaMode, PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
 /// YUV420p frame filled with a solid colour.
 fn make_yuv420p_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
@@ -56,7 +56,12 @@ fn garbage_matte_chromakey_blend_over_background_should_composite_correctly() {
         .chromakey("0x00FF00", 0.3, 0.0);
 
     let mut graph = match FilterGraph::builder()
-        .blend(fg_builder, BlendMode::PorterDuffOver, 1.0)
+        .blend(
+            fg_builder,
+            BlendMode::PorterDuffOver,
+            1.0,
+            AlphaMode::Straight,
+        )
         .build()
     {
         Ok(g) => g,

@@ -727,6 +727,7 @@ impl FilterGraphBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ff_format::AlphaMode;
 
     #[test]
     fn builder_empty_steps_should_return_error() {
@@ -802,7 +803,7 @@ mod tests {
         let top = FilterGraphBuilder::new().trim(0.0, 5.0);
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .blend(top, BlendMode::Normal, 1.0)
+            .blend(top, BlendMode::Normal, 1.0, AlphaMode::Straight)
             .build();
         assert!(
             result.is_ok(),
@@ -817,7 +818,7 @@ mod tests {
         let top = FilterGraphBuilder::new().trim(0.0, 5.0);
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .blend(top, BlendMode::Normal, 0.5)
+            .blend(top, BlendMode::Normal, 0.5, AlphaMode::Straight)
             .build();
         assert!(
             result.is_ok(),
@@ -831,7 +832,7 @@ mod tests {
         let top = FilterGraphBuilder::new().trim(0.0, 5.0);
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .blend(top, BlendMode::Normal, 2.5)
+            .blend(top, BlendMode::Normal, 2.5, AlphaMode::Straight)
             .build();
         assert!(
             result.is_ok(),

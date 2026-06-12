@@ -13,7 +13,9 @@ use ff_filter::{
     BlendMode, DrawTextOptions, FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb,
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
-use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
+use ff_format::{
+    AlphaMode, AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame,
+};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
 fn make_yuv420p_frame(width: u32, height: u32) -> VideoFrame {
@@ -1525,7 +1527,7 @@ fn blend_multiply_black_top_should_produce_black_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Multiply, 1.0)
+        .blend(top, BlendMode::Multiply, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1568,7 +1570,7 @@ fn blend_multiply_white_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Multiply, 1.0)
+        .blend(top, BlendMode::Multiply, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1611,7 +1613,7 @@ fn blend_screen_white_top_should_produce_white_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Screen, 1.0)
+        .blend(top, BlendMode::Screen, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1655,7 +1657,7 @@ fn blend_overlay_midgray_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Overlay, 1.0)
+        .blend(top, BlendMode::Overlay, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1698,7 +1700,7 @@ fn blend_colordodge_should_produce_brighter_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::ColorDodge, 1.0)
+        .blend(top, BlendMode::ColorDodge, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1741,7 +1743,7 @@ fn blend_colorburn_should_produce_darker_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::ColorBurn, 1.0)
+        .blend(top, BlendMode::ColorBurn, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1784,7 +1786,7 @@ fn blend_darken_black_top_should_produce_black_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Darken, 1.0)
+        .blend(top, BlendMode::Darken, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1827,7 +1829,7 @@ fn blend_lighten_white_top_should_produce_white_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Lighten, 1.0)
+        .blend(top, BlendMode::Lighten, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1870,7 +1872,7 @@ fn blend_difference_with_self_should_produce_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Difference, 1.0)
+        .blend(top, BlendMode::Difference, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1913,7 +1915,7 @@ fn blend_add_black_top_should_be_identity() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Add, 1.0)
+        .blend(top, BlendMode::Add, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -1956,7 +1958,7 @@ fn blend_subtract_white_top_should_produce_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Subtract, 1.0)
+        .blend(top, BlendMode::Subtract, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2001,7 +2003,7 @@ fn blend_luminosity_should_preserve_base_hue_and_saturation() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::Luminosity, 1.0)
+        .blend(top, BlendMode::Luminosity, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2047,7 +2049,7 @@ fn porter_duff_over_opaque_top_should_cover_bottom() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 1.0)
+        .blend(top, BlendMode::PorterDuffOver, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2092,7 +2094,7 @@ fn porter_duff_over_semitransparent_should_blend_correctly() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 0.5)
+        .blend(top, BlendMode::PorterDuffOver, 0.5, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2135,7 +2137,7 @@ fn porter_duff_under_should_place_bottom_over_top() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffUnder, 1.0)
+        .blend(top, BlendMode::PorterDuffUnder, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2177,7 +2179,7 @@ fn porter_duff_in_should_produce_black_where_bottom_is_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffIn, 1.0)
+        .blend(top, BlendMode::PorterDuffIn, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2224,7 +2226,7 @@ fn porter_duff_atop_should_use_bottom_alpha_for_output() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffAtop, 1.0)
+        .blend(top, BlendMode::PorterDuffAtop, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2271,7 +2273,7 @@ fn porter_duff_xor_identical_shapes_should_produce_zero_alpha() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffXor, 1.0)
+        .blend(top, BlendMode::PorterDuffXor, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,
@@ -2317,7 +2319,7 @@ fn porter_duff_out_should_produce_black_where_bottom_is_white() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOut, 1.0)
+        .blend(top, BlendMode::PorterDuffOut, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,

@@ -10,7 +10,7 @@ pub trait FfmpegToken {
 
 impl FfmpegToken for ScaleAlgorithm {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // https://ffmpeg.org/ffmpeg-filters.html#Scaling
+        // sws_flags unit: https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libswscale/options.c
         Some(match self {
             Self::Fast => "fast_bilinear",
             Self::Bilinear => "bilinear",
@@ -22,7 +22,7 @@ impl FfmpegToken for ScaleAlgorithm {
 
 impl FfmpegToken for ToneMap {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // https://ffmpeg.org/ffmpeg-filters.html#Tone-mapping
+        // tonemap unit: https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_tonemap.c
         Some(match self {
             Self::Hable => "hable",
             Self::Reinhard => "reinhard",
@@ -33,7 +33,7 @@ impl FfmpegToken for ToneMap {
 
 impl FfmpegToken for YadifMode {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // https://ffmpeg.org/ffmpeg-filters.html#yadif-1
+        // mode unit (AV_OPT_TYPE_INT, range 0-3): https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/yadif_common.c
         Some(match self {
             Self::Frame => "0",
             Self::Field => "1",
@@ -45,7 +45,7 @@ impl FfmpegToken for YadifMode {
 
 impl FfmpegToken for XfadeTransition {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // https://ffmpeg.org/ffmpeg-filters.html#xfade
+        // transition unit: https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_xfade.c
         Some(match self {
             Self::Dissolve => "dissolve",
             Self::Fade => "fade",
@@ -67,7 +67,7 @@ impl FfmpegToken for XfadeTransition {
 
 impl FfmpegToken for BlendMode {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // https://ffmpeg.org/ffmpeg-filters.html#blend-1
+        // all_mode unit: https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_blend.c
         Some(match self {
             Self::Normal => "normal",
             Self::Multiply => "multiply",
