@@ -1242,35 +1242,31 @@ pub(super) unsafe fn add_composite_step(
     alpha: AlphaMode,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
-    match op {
-        CompositeOp::Over => add_blend_normal_step(
-            graph,
-            bottom_ctx,
-            top_src_ctx,
-            top_steps,
-            opacity,
-            alpha,
-            index,
-        ),
-        CompositeOp::Under => add_blend_under_step(
-            graph,
-            bottom_ctx,
-            top_src_ctx,
-            top_steps,
-            opacity,
-            alpha,
-            index,
-        ),
-        CompositeOp::In | CompositeOp::Out | CompositeOp::Atop | CompositeOp::Xor => {
-            let expr = match op {
-                CompositeOp::In => "B*A/255",
-                CompositeOp::Out => "B*(255-A)/255",
-                CompositeOp::Atop => "B*A/255 + A*(255-B)/255",
-                CompositeOp::Xor => "B*(255-A)/255 + A*(255-B)/255",
-                _ => unreachable!(),
-            };
-            add_blend_expr_step(graph, bottom_ctx, top_src_ctx, top_steps, expr, index)
-        }
+    // `blend_all_expr` is `Some` for In/Out/Atop/Xor (built via `blend all_expr`),
+    // `None` for Over/Under (built via the `overlay` filter).
+    match op.blend_all_expr() {
+        Some(expr) => add_blend_expr_step(graph, bottom_ctx, top_src_ctx, top_steps, expr, index),
+        None => match op {
+            CompositeOp::Under => add_blend_under_step(
+                graph,
+                bottom_ctx,
+                top_src_ctx,
+                top_steps,
+                opacity,
+                alpha,
+                index,
+            ),
+            // Over (overlay=format=auto:shortest=1).
+            _ => add_blend_normal_step(
+                graph,
+                bottom_ctx,
+                top_src_ctx,
+                top_steps,
+                opacity,
+                alpha,
+                index,
+            ),
+        },
     }
 }
 

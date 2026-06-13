@@ -14,6 +14,7 @@ use ff_format::ChannelLayout;
 
 use crate::animation::{AnimatedValue, AnimationEntry};
 use crate::blend::BlendMode;
+use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 use crate::graph::FfmpegToken;
@@ -388,7 +389,12 @@ pub(super) unsafe fn build_video_composition(
         let opacity_initial = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0);
         // True for any Normal-mode layer whose opacity may be < 1.0 (static or animated).
         // Both cases require yuva420p + colorchannelmixer so the overlay can use alpha blending.
-        let needs_alpha = !use_blend_filter && (is_animated_opacity || opacity_initial < 1.0);
+        // Only the default overlay path (composite_op == Over, Normal blend) needs the
+        // colorchannelmixer alpha pre-step; a non-Over Porter-Duff op handles its own
+        // opacity (via `all_opacity` for the expression operators) in its own branch.
+        let needs_alpha = !use_blend_filter
+            && matches!(layer.composite_op, CompositeOp::Over)
+            && (is_animated_opacity || opacity_initial < 1.0);
 
         if needs_alpha {
             // ── format=yuva420p: add alpha plane before colorchannelmixer ─────
@@ -588,6 +594,224 @@ pub(super) unsafe fn build_video_composition(
         if skip_overlay[idx] {
             // The next layer will xfade from this one; defer the overlay.
             saved_chain = chain_end;
+        } else if layer.composite_op != CompositeOp::Over {
+            // ── Porter-Duff alpha compositing (#1222) ─────────────────────────────
+            //
+            // A non-`Over` composite op drives this layer's compositing; the colour
+            // `blend_mode` is not additionally applied. `A` = bottom (canvas) = pad 0,
+            // `B` = top (layer) = pad 1.
+            if let Some(expr) = layer.composite_op.blend_all_expr() {
+                // In/Out/Atop/Xor → `blend all_expr=<expr>`. Normalise the layer to
+                // yuv420p so both blend inputs share a format (as the photographic
+                // blend branch does). Opacity is forwarded via `all_opacity`.
+                let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+                if fmt_filter.is_null() {
+                    bail!(graph, "filter not found: format (composite pre-norm)");
+                }
+                let Ok(cfmt_name) = CString::new(format!("composite_fmt{idx}")) else {
+                    bail!(graph, "CString::new failed for composite format name");
+                };
+                let mut cfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut cfmt_ctx,
+                    fmt_filter,
+                    cfmt_name.as_ptr(),
+                    c"yuv420p".as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("failed to create composite format filter layer={idx} code={ret}")
+                    );
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, cfmt_ctx, 0);
+                if ret < 0 {
+                    bail!(graph, format!("link failed: →composite_fmt layer={idx}"));
+                }
+                chain_end = cfmt_ctx;
+
+                let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
+                if blend_filter.is_null() {
+                    bail!(graph, "filter not found: blend (composite)");
+                }
+                let Ok(cbl_name) = CString::new(format!("composite_blend{idx}")) else {
+                    bail!(graph, "CString::new failed for composite blend name");
+                };
+                let cbl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
+                    format!("all_expr={expr}")
+                } else {
+                    format!("all_expr={expr}:all_opacity={opacity_initial:.6}")
+                };
+                let Ok(cbl_args) = CString::new(cbl_args_str.as_str()) else {
+                    bail!(graph, "CString::new failed for composite blend args");
+                };
+                let mut cblend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut cblend_ctx,
+                    blend_filter,
+                    cbl_name.as_ptr(),
+                    cbl_args.as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!(
+                            "failed to create composite blend layer={idx} args={cbl_args_str} code={ret}"
+                        )
+                    );
+                }
+                let ret = ff_sys::avfilter_link(prev_ctx, 0, cblend_ctx, 0);
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("link failed: base→composite_blend[0] layer={idx}")
+                    );
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, cblend_ctx, 1);
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("link failed: layer→composite_blend[1] layer={idx}")
+                    );
+                }
+                log::debug!(
+                    "video composition layer={idx} composite_op={:?} opacity={opacity_initial:.3}",
+                    layer.composite_op
+                );
+                prev_ctx = cblend_ctx;
+            } else {
+                // Under → `overlay` with swapped pads: layer = pad 0 (bottom),
+                // canvas = pad 1 (top), so the canvas composites over the layer.
+                //
+                // When opacity < 1.0, attenuate the layer's (pad 0) alpha via
+                // colorchannelmixer before the swapped overlay — mirroring
+                // `add_blend_under_step` so both Under paths handle opacity the
+                // same way. The overlay below must use `format=auto` (not the
+                // `yuv420` default, which carries no alpha) for the attenuated
+                // alpha to survive. Animated opacity on a non-Over layer is not
+                // tracked here; the initial value is used, consistent with the
+                // expression operators above.
+                if opacity_initial < 1.0 {
+                    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+                    if fmt_filter.is_null() {
+                        bail!(graph, "filter not found: format (composite under opacity)");
+                    }
+                    let Ok(ufmt_name) = CString::new(format!("composite_under_fmt{idx}")) else {
+                        bail!(graph, "CString::new failed for composite under format name");
+                    };
+                    let mut ufmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                    let ret = ff_sys::avfilter_graph_create_filter(
+                        &raw mut ufmt_ctx,
+                        fmt_filter,
+                        ufmt_name.as_ptr(),
+                        c"yuva420p".as_ptr(),
+                        std::ptr::null_mut(),
+                        graph,
+                    );
+                    if ret < 0 {
+                        bail!(
+                            graph,
+                            format!(
+                                "failed to create composite under format filter layer={idx} code={ret}"
+                            )
+                        );
+                    }
+                    let ret = ff_sys::avfilter_link(chain_end, 0, ufmt_ctx, 0);
+                    if ret < 0 {
+                        bail!(
+                            graph,
+                            format!("link failed: →composite_under_fmt layer={idx}")
+                        );
+                    }
+                    chain_end = ufmt_ctx;
+
+                    let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
+                    if ccm_filter.is_null() {
+                        bail!(
+                            graph,
+                            "filter not found: colorchannelmixer (composite under)"
+                        );
+                    }
+                    let Ok(uccm_name) = CString::new(format!("composite_under_ccm{idx}")) else {
+                        bail!(graph, "CString::new failed for composite under ccm name");
+                    };
+                    let Ok(uccm_args) = CString::new(format!("aa={opacity_initial:.6}")) else {
+                        bail!(graph, "CString::new failed for composite under ccm args");
+                    };
+                    let mut uccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                    let ret = ff_sys::avfilter_graph_create_filter(
+                        &raw mut uccm_ctx,
+                        ccm_filter,
+                        uccm_name.as_ptr(),
+                        uccm_args.as_ptr(),
+                        std::ptr::null_mut(),
+                        graph,
+                    );
+                    if ret < 0 {
+                        bail!(
+                            graph,
+                            format!(
+                                "failed to create composite under colorchannelmixer layer={idx} code={ret}"
+                            )
+                        );
+                    }
+                    let ret = ff_sys::avfilter_link(chain_end, 0, uccm_ctx, 0);
+                    if ret < 0 {
+                        bail!(
+                            graph,
+                            format!("link failed: →composite_under_ccm layer={idx}")
+                        );
+                    }
+                    chain_end = uccm_ctx;
+                }
+
+                let eof_action = if is_last { "endall" } else { "pass" };
+                let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
+                if overlay_filter.is_null() {
+                    bail!(graph, "filter not found: overlay (composite under)");
+                }
+                let Ok(uov_name) = CString::new(format!("composite_under{idx}")) else {
+                    bail!(graph, "CString::new failed for composite under name");
+                };
+                let Ok(uov_args) = CString::new(format!("0:0:eof_action={eof_action}:format=auto"))
+                else {
+                    bail!(graph, "CString::new failed for composite under args");
+                };
+                let mut uov_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut uov_ctx,
+                    overlay_filter,
+                    uov_name.as_ptr(),
+                    uov_args.as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("failed to create composite under overlay layer={idx} code={ret}")
+                    );
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, uov_ctx, 0);
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("link failed: layer→under_overlay[0] layer={idx}")
+                    );
+                }
+                let ret = ff_sys::avfilter_link(prev_ctx, 0, uov_ctx, 1);
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("link failed: base→under_overlay[1] layer={idx}")
+                    );
+                }
+                prev_ctx = uov_ctx;
+            }
         } else if use_blend_filter {
             // ── Photographic blend mode (Multiply, Screen, Overlay, etc.) ────────
             //

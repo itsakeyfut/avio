@@ -104,6 +104,7 @@ fn main() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -122,6 +123,7 @@ fn main() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .build()

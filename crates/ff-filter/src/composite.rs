@@ -44,3 +44,53 @@ pub enum CompositeOp {
     /// Built via `blend` with `c0_expr='B*(255-A)/255 + A*(255-B)/255'`.
     Xor,
 }
+
+impl CompositeOp {
+    /// Returns the `FFmpeg` `blend` `all_expr` formula for the expression-based
+    /// operators (`In`/`Out`/`Atop`/`Xor`), or `None` for `Over`/`Under` which
+    /// are built with the `overlay` filter rather than `blend`.
+    ///
+    /// In the formula, `A` is the bottom pixel and `B` is the top pixel. This is
+    /// the single source of these formulas, shared by the `Composite` filter step
+    /// and the `MultiTrackComposer` canvas compositing.
+    #[must_use]
+    pub(crate) fn blend_all_expr(self) -> Option<&'static str> {
+        match self {
+            Self::Over | Self::Under => None,
+            Self::In => Some("B*A/255"),
+            Self::Out => Some("B*(255-A)/255"),
+            Self::Atop => Some("B*A/255 + A*(255-B)/255"),
+            Self::Xor => Some("B*(255-A)/255 + A*(255-B)/255"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompositeOp;
+
+    #[test]
+    fn blend_all_expr_should_be_none_for_overlay_built_operators() {
+        assert_eq!(CompositeOp::Over.blend_all_expr(), None);
+        assert_eq!(CompositeOp::Under.blend_all_expr(), None);
+    }
+
+    #[test]
+    fn blend_all_expr_should_return_porter_duff_formula_for_expression_operators() {
+        assert_eq!(CompositeOp::In.blend_all_expr(), Some("B*A/255"));
+        assert_eq!(CompositeOp::Out.blend_all_expr(), Some("B*(255-A)/255"));
+        assert_eq!(
+            CompositeOp::Atop.blend_all_expr(),
+            Some("B*A/255 + A*(255-B)/255")
+        );
+        assert_eq!(
+            CompositeOp::Xor.blend_all_expr(),
+            Some("B*(255-A)/255 + A*(255-B)/255")
+        );
+    }
+
+    #[test]
+    fn composite_op_should_default_to_over() {
+        assert_eq!(CompositeOp::default(), CompositeOp::Over);
+    }
+}
