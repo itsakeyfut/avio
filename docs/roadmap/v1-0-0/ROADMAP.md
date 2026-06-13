@@ -2,7 +2,7 @@
 
 **Goal**: Semver-stable public API suitable for production use across all crates.
 
-**Prerequisite**: v0.16.0 complete, with demonstrated real-world adoption (at least one publicly released application built on this library).
+**Prerequisite**: v0.17.0 complete, with demonstrated real-world adoption (at least one publicly released application built on this library).
 
 ---
 
