@@ -67,7 +67,7 @@ impl FfmpegToken for XfadeTransition {
 
 impl FfmpegToken for BlendMode {
     fn ffmpeg_token(&self) -> Option<&'static str> {
-        // all_mode unit: https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_blend.c
+        // all_mode unit (every BlendMode maps 1:1 to a token): https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_blend.c
         Some(match self {
             Self::Normal => "normal",
             Self::Multiply => "multiply",
@@ -83,16 +83,94 @@ impl FfmpegToken for BlendMode {
             Self::Exclusion => "exclusion",
             Self::Add => "addition",
             Self::Subtract => "subtract",
-            Self::Hue => return None,             // TODO
-            Self::Saturation => return None,      // TODO
-            Self::Color => return None,           // TODO
-            Self::Luminosity => return None,      // TODO
-            Self::PorterDuffOver => return None,  // TODO
-            Self::PorterDuffUnder => return None, // TODO
-            Self::PorterDuffIn => return None,    // TODO
-            Self::PorterDuffOut => return None,   // TODO
-            Self::PorterDuffAtop => return None,  // TODO
-            Self::PorterDuffXor => return None,   // TODO
+            Self::And => "and",
+            Self::Average => "average",
+            Self::Bleach => "bleach",
+            Self::Divide => "divide",
+            Self::Extremity => "extremity",
+            Self::Freeze => "freeze",
+            Self::Geometric => "geometric",
+            Self::Glow => "glow",
+            Self::GrainExtract => "grainextract",
+            Self::GrainMerge => "grainmerge",
+            Self::HardMix => "hardmix",
+            Self::HardOverlay => "hardoverlay",
+            Self::Harmonic => "harmonic",
+            Self::Heat => "heat",
+            Self::Interpolate => "interpolate",
+            Self::LinearLight => "linearlight",
+            Self::Multiply128 => "multiply128",
+            Self::Negation => "negation",
+            Self::Or => "or",
+            Self::Phoenix => "phoenix",
+            Self::PinLight => "pinlight",
+            Self::Reflect => "reflect",
+            Self::SoftDifference => "softdifference",
+            Self::Stain => "stain",
+            Self::VividLight => "vividlight",
+            Self::Xor => "xor",
         })
+    }
+}
+
+#[cfg(test)]
+mod blend_mode_token_tests {
+    use super::*;
+
+    /// Every `BlendMode` variant must emit its exact FFmpeg `blend all_mode` token
+    /// (verified against pinned `vf_blend.c`; the `all_mode` set is identical in
+    /// release/7.1 and release/8.0). No variant returns `None`.
+    #[test]
+    fn blend_mode_should_emit_all_mode_token_for_every_variant() {
+        let cases = [
+            (BlendMode::Normal, "normal"),
+            (BlendMode::Multiply, "multiply"),
+            (BlendMode::Screen, "screen"),
+            (BlendMode::Overlay, "overlay"),
+            (BlendMode::SoftLight, "softlight"),
+            (BlendMode::HardLight, "hardlight"),
+            (BlendMode::ColorDodge, "dodge"),
+            (BlendMode::ColorBurn, "burn"),
+            (BlendMode::Darken, "darken"),
+            (BlendMode::Lighten, "lighten"),
+            (BlendMode::Difference, "difference"),
+            (BlendMode::Exclusion, "exclusion"),
+            (BlendMode::Add, "addition"),
+            (BlendMode::Subtract, "subtract"),
+            (BlendMode::And, "and"),
+            (BlendMode::Average, "average"),
+            (BlendMode::Bleach, "bleach"),
+            (BlendMode::Divide, "divide"),
+            (BlendMode::Extremity, "extremity"),
+            (BlendMode::Freeze, "freeze"),
+            (BlendMode::Geometric, "geometric"),
+            (BlendMode::Glow, "glow"),
+            (BlendMode::GrainExtract, "grainextract"),
+            (BlendMode::GrainMerge, "grainmerge"),
+            (BlendMode::HardMix, "hardmix"),
+            (BlendMode::HardOverlay, "hardoverlay"),
+            (BlendMode::Harmonic, "harmonic"),
+            (BlendMode::Heat, "heat"),
+            (BlendMode::Interpolate, "interpolate"),
+            (BlendMode::LinearLight, "linearlight"),
+            (BlendMode::Multiply128, "multiply128"),
+            (BlendMode::Negation, "negation"),
+            (BlendMode::Or, "or"),
+            (BlendMode::Phoenix, "phoenix"),
+            (BlendMode::PinLight, "pinlight"),
+            (BlendMode::Reflect, "reflect"),
+            (BlendMode::SoftDifference, "softdifference"),
+            (BlendMode::Stain, "stain"),
+            (BlendMode::VividLight, "vividlight"),
+            (BlendMode::Xor, "xor"),
+        ];
+        assert_eq!(cases.len(), 40, "BlendMode must have exactly 40 modes");
+        for (mode, token) in cases {
+            assert_eq!(
+                mode.ffmpeg_token(),
+                Some(token),
+                "{mode:?} must emit token {token:?}"
+            );
+        }
     }
 }

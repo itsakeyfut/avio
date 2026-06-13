@@ -2127,372 +2127,51 @@ fn blend_subtract_white_top_should_produce_black() {
 }
 
 #[test]
-fn blend_luminosity_should_preserve_base_hue_and_saturation() {
-    // Luminosity applies the top's luminance to the base's hue+saturation.
-    // With a brighter grey top (Y=200) over a darker grey bottom (Y=128),
-    // the output luma should shift toward the top's luminance (200).
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::Luminosity, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 128);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg > 160.0,
-        "Luminosity with brighter top should increase output luma toward top's value (avg={avg})"
-    );
-}
-
-// ── Porter-Duff Over ──────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_over_opaque_top_should_cover_bottom() {
-    // PorterDuffOver with opacity=1.0: opaque YUV420p top covers the bottom.
-    // Uses overlay=format=auto:shortest=1 — opaque top always wins.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
+fn blend_new_modes_should_be_accepted_by_ffmpeg() {
+    // #1219: the 26 added BlendMode modes share the single generic
+    // `blend all_mode=<token>` dispatch with the 14 standard modes (the only
+    // per-mode difference is the token string). A few representatives are pushed
+    // through a real graph to confirm FFmpeg accepts their tokens. Probe-gated:
+    // CI's Linux FFmpeg has no filters, so a build/push failure → skip (RK-002).
     let bottom = make_solid_yuv_frame(64, 64, 100);
     let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
+    for mode in [
+        BlendMode::Bleach,
+        BlendMode::VividLight,
+        BlendMode::GrainMerge,
+        BlendMode::Phoenix,
+        BlendMode::HardOverlay,
+    ] {
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let mut graph = match FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .blend(top, mode, 1.0, AlphaMode::Straight)
+            .build()
+        {
+            Ok(g) => g,
+            Err(e) => {
+                println!("Skipping {mode:?}: {e}");
+                return;
+            }
+        };
+        if graph.push_video(0, &bottom).is_err() || graph.push_video(1, &top_frame).is_err() {
+            println!("Skipping {mode:?}: blend filter unavailable");
             return;
         }
+        let out = graph
+            .pull_video()
+            .expect("pull_video must not fail")
+            .expect("expected Some(frame)");
+        assert_eq!(out.width(), 64, "{mode:?} must not change frame width");
+        assert_eq!(out.height(), 64, "{mode:?} must not change frame height");
     }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg > 160.0,
-        "PorterDuffOver with opaque top should cover the bottom (avg={avg})"
-    );
-}
-
-#[test]
-fn porter_duff_over_semitransparent_should_blend_correctly() {
-    // PorterDuffOver with opacity=0.5 inserts colorchannelmixer=aa=0.5 on the top
-    // layer, making it semi-transparent so the bottom shows through.
-    // Verifies the graph constructs and runs without error.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOver, 0.5, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 100);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    assert_eq!(out.width(), 64, "output width must match input");
-    assert_eq!(out.height(), 64, "output height must match input");
-}
-
-// ── Porter-Duff Under ─────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_under_should_place_bottom_over_top() {
-    // PorterDuffUnder reverses overlay input order (bottom→pad1, top→pad0), so
-    // the bottom layer composites over the top. Verify the graph builds and
-    // produces a frame with the expected dimensions.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffUnder, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 200);
-    let top_frame = make_solid_yuv_frame(64, 64, 100);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    assert_eq!(out.width(), 64, "output width must match input");
-    assert_eq!(out.height(), 64, "output height must match input");
-}
-
-// ── Porter-Duff In ────────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_in_should_produce_black_where_bottom_is_black() {
-    // PorterDuffIn uses all_expr=B*A/255, so when the bottom luma (A) is 0,
-    // the output is 0 regardless of the top value.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffIn, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 0);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg < 10.0,
-        "PorterDuffIn with black bottom should produce black output (avg={avg})"
-    );
-}
-
-// ── Porter-Duff Atop ─────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_atop_should_use_bottom_alpha_for_output() {
-    // Atop formula: B*A/255 + A*(255-B)/255 = A*(B + 255 - B)/255 = A.
-    // The output luma always equals the bottom luma regardless of the top value.
-    // bottom=Y100, top=Y200 → avg ≈ 100 (within ±15).
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffAtop, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 100);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg > 85.0 && avg < 115.0,
-        "PorterDuffAtop output luma should equal bottom luma (~100), got avg={avg}"
-    );
-}
-
-// ── Porter-Duff XOR ───────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_xor_identical_shapes_should_produce_zero_alpha() {
-    // XOR formula with A=B=255: 255*(255-255)/255 + 255*(255-255)/255 = 0.
-    // Two fully-opaque identical layers cancel each other out.
-    // bottom=Y255, top=Y255 → avg ≈ 0.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffXor, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 255);
-    let top_frame = make_solid_yuv_frame(64, 64, 255);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg < 10.0,
-        "PorterDuffXor of identical full-luma shapes should produce black (avg={avg})"
-    );
-}
-
-// ── Porter-Duff Out ───────────────────────────────────────────────────────────
-
-#[test]
-fn porter_duff_out_should_produce_black_where_bottom_is_white() {
-    // PorterDuffOut uses all_expr=B*(255-A)/255, so when the bottom luma (A) is
-    // 255, the output is 0 regardless of the top value.
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .blend(top, BlendMode::PorterDuffOut, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 255);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg < 10.0,
-        "PorterDuffOut with white bottom should produce black output (avg={avg})"
-    );
 }
 
 // ── CompositeOp (Porter-Duff via the new Composite step) ──────────────────────
 //
-// These mirror the `porter_duff_*` tests above but drive the new
-// `FilterGraphBuilder::composite()` path. Both paths share `add_composite_step`,
-// so identical assertions confirm the Composite step builds the same graphs as
-// the legacy `BlendMode::PorterDuff*` arms (#1221 acceptance criterion).
+// Porter-Duff alpha compositing is driven via `FilterGraphBuilder::composite()`
+// (the `CompositeOp` API, #1221); these behavioural tests cover each operator.
+// The former `BlendMode::PorterDuff*` variants were removed in #1219.
 
 #[test]
 fn composite_over_opaque_top_should_cover_bottom() {

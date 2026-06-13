@@ -69,28 +69,40 @@ holds the correct token, or `want to remove` for variants with no FFmpeg equival
 
 **Reference:** `libavfilter/vf_blend.c` (`all_mode` / `mode` unit) — [7.1](https://github.com/FFmpeg/FFmpeg/blob/release/7.1/libavfilter/vf_blend.c) · [8.0](https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_blend.c)
 
-| avio variant | FFmpeg token | status | expected |
-|---|---|---|---|
-| Normal | normal | OK | - |
-| Multiply | multiply | OK | - |
-| Screen | screen | OK | - |
-| Overlay | overlay | OK | - |
-| SoftLight | softlight | OK | - |
-| HardLight | hardlight | OK | - |
-| ColorDodge | dodge | OK | - |
-| ColorBurn | burn | OK | - |
-| Darken | darken | OK | - |
-| Lighten | lighten | OK | - |
-| Difference | difference | OK | - |
-| Exclusion | exclusion | OK | - |
-| Add | addition | OK | - |
-| Subtract | subtract | OK | - |
-| Hue | None | NG | want to remove |
-| Saturation | None | NG | want to remove |
-| Color | None | NG | want to remove |
-| Luminosity | None | NG | want to remove |
+`BlendMode` corresponds **1:1** to the `all_mode` set (40 distinct modes; `addition128`/`difference128` are
+aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219). `Normal` is built via the
+`overlay` filter (alpha compositing) but its canonical token is `normal`.
 
-> `PorterDuffOver/Under/In/Out/Atop/Xor` are separated into `CompositeOp` (below) — #1218.
+| avio variant | FFmpeg token | status | | avio variant | FFmpeg token | status |
+|---|---|---|---|---|---|---|
+| Normal | normal | OK | | HardMix | hardmix | OK |
+| Multiply | multiply | OK | | HardOverlay | hardoverlay | OK |
+| Screen | screen | OK | | Harmonic | harmonic | OK |
+| Overlay | overlay | OK | | Heat | heat | OK |
+| SoftLight | softlight | OK | | Interpolate | interpolate | OK |
+| HardLight | hardlight | OK | | LinearLight | linearlight | OK |
+| ColorDodge | dodge | OK | | Multiply128 | multiply128 | OK |
+| ColorBurn | burn | OK | | Negation | negation | OK |
+| Darken | darken | OK | | Or | or | OK |
+| Lighten | lighten | OK | | Phoenix | phoenix | OK |
+| Difference | difference | OK | | PinLight | pinlight | OK |
+| Exclusion | exclusion | OK | | Reflect | reflect | OK |
+| Add | addition | OK | | SoftDifference | softdifference | OK |
+| Subtract | subtract | OK | | Stain | stain | OK |
+| And | and | OK | | VividLight | vividlight | OK |
+| Average | average | OK | | Xor | xor | OK |
+| Bleach | bleach | OK | | | | |
+| Divide | divide | OK | | | | |
+| Extremity | extremity | OK | | | | |
+| Freeze | freeze | OK | | | | |
+| Geometric | geometric | OK | | | | |
+| Glow | glow | OK | | | | |
+| GrainExtract | grainextract | OK | | | | |
+| GrainMerge | grainmerge | OK | | | | |
+
+> Porter-Duff (`PorterDuffOver/Under/In/Out/Atop/Xor`) and HSL (`Hue/Saturation/Color/Luminosity`) were **removed**
+> from `BlendMode`: Porter-Duff moved to `CompositeOp` (below, #1221); HSL had no `all_mode` token (#1219). Note
+> `BlendMode::Xor` is the arithmetic `xor` blend, distinct from the Porter-Duff `CompositeOp::Xor`.
 
 ## CompositeOp
 

@@ -1,4 +1,7 @@
-//! Golden-image regression tests for all 18 photographic blend modes.
+//! Golden-image regression tests for the 14 standard photographic blend modes.
+//!
+//! (The 4 HSL modes were removed in #1219; golden fixtures for the 26 added
+//! FFmpeg blend modes are future work.)
 //!
 //! ## Running
 //!
@@ -10,7 +13,7 @@
 //! BLEND_GENERATE_REFS=1 cargo test -p ff-filter blend_mode_reference -- --include-ignored
 //! ```
 //! This writes `tests/fixtures/blend/bottom.png`, `top.png`, and
-//! `tests/fixtures/blend/expected/<mode>.png` for all 18 modes.
+//! `tests/fixtures/blend/expected/<mode>.png` for all 14 modes.
 //!
 //! **Verify against committed references** (normal CI):
 //! ```text
@@ -207,7 +210,7 @@ fn assert_within_tolerance(actual: &RgbImage, expected: &RgbImage, tolerance: u8
 
 // ── Main test ─────────────────────────────────────────────────────────────────
 
-/// All 18 photographic blend modes verified against committed reference PNGs.
+/// The 14 standard photographic blend modes verified against committed reference PNGs.
 ///
 /// The test is marked `#[ignore]` so the base `cargo test` suite does not
 /// require fixture files to be present.  Run explicitly:
@@ -283,10 +286,6 @@ fn blend_mode_reference_images_should_match_within_tolerance() {
         ("exclusion", BlendMode::Exclusion),
         ("add", BlendMode::Add),
         ("subtract", BlendMode::Subtract),
-        ("hue", BlendMode::Hue),
-        ("saturation", BlendMode::Saturation),
-        ("color", BlendMode::Color),
-        ("luminosity", BlendMode::Luminosity),
     ];
 
     // ── Per-mode generate or compare ──────────────────────────────────────────

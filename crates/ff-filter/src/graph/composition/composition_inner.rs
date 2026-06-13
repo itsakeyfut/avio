@@ -16,6 +16,7 @@ use crate::animation::{AnimatedValue, AnimationEntry};
 use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
+use crate::graph::FfmpegToken;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::Rgb;
 
@@ -24,28 +25,11 @@ use super::multi_track_mixer::AudioTrack;
 
 /// Maps a `BlendMode` to the `FFmpeg` `blend` filter `all_mode` name.
 ///
-/// `BlendMode::Normal` is not handled here; it uses the `overlay` filter instead.
+/// Delegates to [`FfmpegToken`] (the single source of the 40-mode mapping).
+/// `BlendMode::Normal` is not normally routed here (it uses the `overlay` filter);
+/// the `"normal"` fallback is a defensive default.
 fn blend_mode_to_ffmpeg(mode: BlendMode) -> &'static str {
-    match mode {
-        BlendMode::Multiply => "multiply",
-        BlendMode::Screen => "screen",
-        BlendMode::Overlay => "overlay",
-        BlendMode::SoftLight => "softlight",
-        BlendMode::HardLight => "hardlight",
-        BlendMode::ColorDodge => "dodge",
-        BlendMode::ColorBurn => "burn",
-        BlendMode::Darken => "darken",
-        BlendMode::Lighten => "lighten",
-        BlendMode::Difference => "difference",
-        BlendMode::Exclusion => "exclusion",
-        BlendMode::Add => "addition",
-        BlendMode::Subtract => "subtract",
-        BlendMode::Hue => "hue",
-        BlendMode::Saturation => "saturation",
-        BlendMode::Color => "color",
-        BlendMode::Luminosity => "luminosity",
-        _ => "normal",
-    }
+    mode.ffmpeg_token().unwrap_or("normal")
 }
 
 // ── Video composition graph builder ──────────────────────────────────────────
