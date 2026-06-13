@@ -23,7 +23,7 @@
 use std::{path::PathBuf, process};
 
 use avio::{
-    AlphaMode, BlendMode, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
+    AlphaMode, CompositeOp, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
 };
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -140,12 +140,7 @@ fn main() {
     );
 
     let mut graph = match FilterGraph::builder()
-        .blend(
-            title_builder,
-            BlendMode::PorterDuffOver,
-            1.0,
-            AlphaMode::Straight,
-        )
+        .composite(title_builder, CompositeOp::Over, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,

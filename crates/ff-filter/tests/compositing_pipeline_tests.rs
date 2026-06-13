@@ -1,12 +1,12 @@
 //! End-to-end integration test for the compositing pipeline:
-//! polygon garbage matte → chroma key → Porter-Duff Over blend.
+//! polygon garbage matte → chroma key → Porter-Duff Over composite.
 //!
 //! All frames are generated synthetically using `push_video` / `pull_video`;
 //! no fixture files are required.
 
 #![allow(clippy::unwrap_used)]
 
-use ff_filter::{BlendMode, FilterGraph, FilterGraphBuilder};
+use ff_filter::{CompositeOp, FilterGraph, FilterGraphBuilder};
 use ff_format::{AlphaMode, PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
 /// YUV420p frame filled with a solid colour.
@@ -31,7 +31,7 @@ fn make_yuv420p_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFram
 }
 
 /// End-to-end compositing pipeline:
-///   polygon_matte → chromakey → blend(PorterDuffOver, background)
+///   polygon_matte → chromakey → composite(CompositeOp::Over, background)
 ///
 /// Setup:
 /// - Foreground (slot 1): solid green frame (Y=150, U=44, V=21 ≈ 0x00FF00 in BT.601)
@@ -56,12 +56,7 @@ fn garbage_matte_chromakey_blend_over_background_should_composite_correctly() {
         .chromakey("0x00FF00", 0.3, 0.0);
 
     let mut graph = match FilterGraph::builder()
-        .blend(
-            fg_builder,
-            BlendMode::PorterDuffOver,
-            1.0,
-            AlphaMode::Straight,
-        )
+        .composite(fg_builder, CompositeOp::Over, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,

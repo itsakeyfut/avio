@@ -5,7 +5,7 @@
 //! coloured background (default: `0x00FF00` green).  The `chromakey` filter
 //! removes that colour, turning matching pixels transparent.  The keyed
 //! foreground is then blended over the background using
-//! [`BlendMode::PorterDuffOver`].
+//! [`CompositeOp::Over`].
 //!
 //! Both input videos must have the same resolution; the output inherits the
 //! background dimensions.
@@ -21,7 +21,7 @@
 use std::{path::PathBuf, process};
 
 use avio::{
-    AlphaMode, BlendMode, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
+    AlphaMode, CompositeOp, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
 };
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -130,12 +130,7 @@ fn main() {
         FilterGraphBuilder::new().chromakey(&args.color, args.similarity, args.blend_factor);
 
     let mut graph = match FilterGraph::builder()
-        .blend(
-            fg_builder,
-            BlendMode::PorterDuffOver,
-            1.0,
-            AlphaMode::Straight,
-        )
+        .composite(fg_builder, CompositeOp::Over, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,

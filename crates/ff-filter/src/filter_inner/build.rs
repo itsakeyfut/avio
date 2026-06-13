@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::blend::BlendMode;
 use crate::composite::CompositeOp;
 use crate::error::FilterError;
+use crate::graph::FfmpegToken;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
 use ff_format::AlphaMode;
@@ -1222,9 +1223,8 @@ pub(super) unsafe fn add_blend_expr_step(
 /// `AVFilterGraph`.
 // ── Composite compound step ───────────────────────────────────────────────────
 /// Builds a Porter-Duff composite step from a [`CompositeOp`], dispatching to the
-/// shared blend construction helpers. This is the single `CompositeOp`-keyed
-/// construction site, used by both [`FilterStep::Composite`] and the legacy
-/// `BlendMode::PorterDuff*` arms (so the two paths build identical graphs).
+/// shared blend construction helpers (`overlay` for `Over`/`Under`, `blend` with
+/// a per-channel expression for the rest). Consumed by [`FilterStep::Composite`].
 ///
 /// # Safety
 ///
@@ -2203,54 +2203,19 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (photographic modes: Multiply, Screen, Overlay, SoftLight, HardLight)
+            // Blend (all non-Normal modes) — built via `blend all_mode=<token>`.
+            // Normal is handled by the `overlay` arm above; every other BlendMode
+            // maps 1:1 to an all_mode token via FfmpegToken (the single source of
+            // the 40-mode mapping). Porter-Duff alpha compositing lives in the
+            // separate Composite step below.
             if let FilterStep::Blend {
-                top,
-                mode:
-                    mode @ (BlendMode::Multiply
-                    | BlendMode::Screen
-                    | BlendMode::Overlay
-                    | BlendMode::SoftLight
-                    | BlendMode::HardLight
-                    | BlendMode::ColorDodge
-                    | BlendMode::ColorBurn
-                    | BlendMode::Darken
-                    | BlendMode::Lighten
-                    | BlendMode::Difference
-                    | BlendMode::Exclusion
-                    | BlendMode::Add
-                    | BlendMode::Subtract
-                    | BlendMode::Hue
-                    | BlendMode::Saturation
-                    | BlendMode::Color
-                    | BlendMode::Luminosity),
-                opacity,
-                ..
+                top, mode, opacity, ..
             } = step
             {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
                     bail!(FilterError::BuildFailed)
                 };
-                let mode_name = match mode {
-                    BlendMode::Multiply => "multiply",
-                    BlendMode::Screen => "screen",
-                    BlendMode::Overlay => "overlay",
-                    BlendMode::SoftLight => "softlight",
-                    BlendMode::HardLight => "hardlight",
-                    BlendMode::ColorDodge => "dodge",
-                    BlendMode::ColorBurn => "burn",
-                    BlendMode::Darken => "darken",
-                    BlendMode::Lighten => "lighten",
-                    BlendMode::Difference => "difference",
-                    BlendMode::Exclusion => "exclusion",
-                    BlendMode::Add => "addition",
-                    BlendMode::Subtract => "subtract",
-                    BlendMode::Hue => "hue",
-                    BlendMode::Saturation => "saturation",
-                    BlendMode::Color => "color",
-                    BlendMode::Luminosity => "luminosity",
-                    _ => unreachable!(),
-                };
+                let mode_name = mode.ffmpeg_token().unwrap_or("normal");
                 prev_ctx = match add_blend_photographic_step(
                     graph,
                     prev_ctx,
@@ -2258,50 +2223,6 @@ impl FilterGraphInner {
                     top.steps(),
                     mode_name,
                     *opacity,
-                    i,
-                ) {
-                    Ok(ctx) => ctx,
-                    Err(e) => bail!(e),
-                };
-                continue;
-            }
-
-            // Blend (Porter-Duff modes) — delegate to the shared CompositeOp
-            // construction so the legacy BlendMode path and the new Composite path
-            // build identical graphs (#1221). BlendMode itself is left untouched.
-            if let FilterStep::Blend {
-                top,
-                mode:
-                    mode @ (BlendMode::PorterDuffOver
-                    | BlendMode::PorterDuffUnder
-                    | BlendMode::PorterDuffIn
-                    | BlendMode::PorterDuffOut
-                    | BlendMode::PorterDuffAtop
-                    | BlendMode::PorterDuffXor),
-                opacity,
-                alpha,
-            } = step
-            {
-                let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
-                    bail!(FilterError::BuildFailed)
-                };
-                let op = match mode {
-                    BlendMode::PorterDuffOver => CompositeOp::Over,
-                    BlendMode::PorterDuffUnder => CompositeOp::Under,
-                    BlendMode::PorterDuffIn => CompositeOp::In,
-                    BlendMode::PorterDuffOut => CompositeOp::Out,
-                    BlendMode::PorterDuffAtop => CompositeOp::Atop,
-                    BlendMode::PorterDuffXor => CompositeOp::Xor,
-                    _ => unreachable!(),
-                };
-                prev_ctx = match add_composite_step(
-                    graph,
-                    prev_ctx,
-                    top_src.as_ptr(),
-                    top.steps(),
-                    op,
-                    *opacity,
-                    *alpha,
                     i,
                 ) {
                     Ok(ctx) => ctx,

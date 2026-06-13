@@ -494,9 +494,8 @@ pub enum FilterStep {
     /// Porter-Duff alpha-compositing [`CompositeOp`].
     ///
     /// This is a compound, two-input step (slot 0 = bottom, slot 1 = top with
-    /// the `top` builder's steps applied). It shares its `FFmpeg` construction with
-    /// the legacy `BlendMode::PorterDuff*` arms: `Over`/`Under` use `overlay`,
-    /// the rest use `blend` with a per-channel expression.
+    /// the `top` builder's steps applied). `Over`/`Under` are built with the
+    /// `overlay` filter; the rest use `blend` with a per-channel expression.
     ///
     /// `Box<FilterGraphBuilder>` breaks the otherwise-recursive type, following
     /// the same pattern as [`FilterStep::Blend`].

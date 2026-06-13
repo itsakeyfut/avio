@@ -10,7 +10,7 @@
 //!    the foreground video (slot 0) with the grayscale matte (slot 1), producing
 //!    an YUVA frame where the matte's luma drives the alpha channel.
 //!
-//! 2. **Composite stage**: `FilterGraphBuilder::blend(BlendMode::PorterDuffOver)`
+//! 2. **Composite stage**: `FilterGraphBuilder::composite(CompositeOp::Over)`
 //!    places the alpha-matted foreground (slot 1) over the background (slot 0).
 //!
 //! All three inputs must share the same resolution.  The output inherits the
@@ -26,7 +26,7 @@
 use std::{path::PathBuf, process};
 
 use avio::{
-    AlphaMode, BlendMode, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
+    AlphaMode, CompositeOp, FilterGraph, FilterGraphBuilder, VideoCodec, VideoDecoder, VideoEncoder,
 };
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ fn main() {
         }
     };
 
-    // ── 3. Build stage-2 graph: blend(PorterDuffOver) ─────────────────────────
+    // ── 3. Build stage-2 graph: composite(Over) ───────────────────────────────
     //
     // Stage 2 composites the alpha-matted foreground over the background:
     //   slot 0 → background video
@@ -157,12 +157,7 @@ fn main() {
     let top_builder = FilterGraphBuilder::new();
 
     let mut blend_graph = match FilterGraph::builder()
-        .blend(
-            top_builder,
-            BlendMode::PorterDuffOver,
-            1.0,
-            AlphaMode::Straight,
-        )
+        .composite(top_builder, CompositeOp::Over, 1.0, AlphaMode::Straight)
         .build()
     {
         Ok(g) => g,

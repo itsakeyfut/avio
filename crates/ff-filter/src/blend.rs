@@ -4,150 +4,101 @@
 
 /// Specifies how two video layers are combined during compositing.
 ///
-/// Variants are grouped into two families:
+/// Each variant corresponds **1:1** to a mode of `FFmpeg`'s `blend` filter
+/// `all_mode` option (40 modes total, matching `vf_blend.c`). [`BlendMode::Normal`]
+/// is the standard alpha-over composite, built via the `overlay` filter; every
+/// other variant is built via `blend all_mode=<token>`. The canonical token for
+/// each variant is provided by `FfmpegToken` (all variants map to a valid token).
 ///
-/// - **Photographic blend modes** (18) — operate on pixel values; both layers
-///   are typically opaque.  Implemented via `FFmpeg`'s `blend` filter with the
-///   `all_mode` option, except [`BlendMode::Normal`] which uses `overlay`.
-///
-/// - **Porter-Duff alpha compositing** (6) — operate on the alpha channel;
-///   at least the top layer must carry an alpha channel (e.g. `rgba` or
-///   `yuva420p` pixel format).
-///
-/// # Implementation status
-///
-/// All 14 arithmetic photographic modes and all 6 Porter-Duff operations are
-/// fully implemented and covered by regression tests (issues #327–#347).
-///
-/// The four HSL-space modes — [`BlendMode::Hue`], [`BlendMode::Saturation`],
-/// [`BlendMode::Color`], and [`BlendMode::Luminosity`] — are accepted by the
-/// builder but produce no output at runtime: `FFmpeg`'s `blend` filter does not
-/// include these mode names in the bundled version.  The builder returns
-/// [`FilterError::BuildFailed`](crate::FilterError) when the filter graph
-/// cannot be configured for these modes.
+/// For **Porter-Duff alpha compositing** (over / under / in / out / atop / xor)
+/// use [`CompositeOp`](crate::CompositeOp) instead — that is a separate concept
+/// (alpha channel operators, not pixel-value blend modes). Note `BlendMode::Xor`
+/// is the *arithmetic* `xor` blend, distinct from `CompositeOp::Xor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
-    // ── Photographic blend modes ──────────────────────────────────────────
-    /// Standard alpha-over composite (top * opacity + bottom * (1 − opacity)).
-    ///
-    /// Implemented via `FFmpeg`'s `overlay=format=auto:shortest=1`.
+    // ── Standard modes ────────────────────────────────────────────────────
+    /// Standard alpha-over composite (`top * opacity + bottom * (1 − opacity)`).
+    /// Built via `overlay=format=auto:shortest=1` (token: `normal`).
     Normal,
-
-    /// Multiply per-channel pixel values; darkens the result.
-    ///
-    /// Maps to `blend all_mode=multiply`.
+    /// Multiply per-channel pixel values; darkens. `blend all_mode=multiply`.
     Multiply,
-
-    /// Inverse of multiply; lightens the result.
-    ///
-    /// Maps to `blend all_mode=screen`.
+    /// Inverse of multiply; lightens. `blend all_mode=screen`.
     Screen,
-
-    /// Combines Multiply and Screen based on base-layer luminance.
-    ///
-    /// Maps to `blend all_mode=overlay`.
+    /// Multiply/Screen by base luminance. `blend all_mode=overlay`.
     Overlay,
-
-    /// Gentle contrast enhancement; 50 % gray top layer is identity.
-    ///
-    /// Maps to `blend all_mode=softlight`.
+    /// Gentle contrast enhancement. `blend all_mode=softlight`.
     SoftLight,
-
-    /// Harsher version of Overlay; driven by the top layer's luminance.
-    ///
-    /// Maps to `blend all_mode=hardlight`.
+    /// Harsher Overlay driven by the top layer. `blend all_mode=hardlight`.
     HardLight,
-
-    /// Brightens the base by dividing it by the inverse of the blend.
-    ///
-    /// Maps to `blend all_mode=dodge`.
+    /// Brightens the base. `blend all_mode=dodge`.
     ColorDodge,
-
-    /// Darkens the base; inverse of Color Dodge.
-    ///
-    /// Maps to `blend all_mode=burn`.
+    /// Darkens the base. `blend all_mode=burn`.
     ColorBurn,
-
-    /// Retains the darker of the two pixels per channel.
-    ///
-    /// Maps to `blend all_mode=darken`.
+    /// Keeps the darker pixel per channel. `blend all_mode=darken`.
     Darken,
-
-    /// Retains the lighter of the two pixels per channel.
-    ///
-    /// Maps to `blend all_mode=lighten`.
+    /// Keeps the lighter pixel per channel. `blend all_mode=lighten`.
     Lighten,
-
-    /// Per-channel absolute difference.  Useful for alignment verification.
-    ///
-    /// Maps to `blend all_mode=difference`.
+    /// Per-channel absolute difference. `blend all_mode=difference`.
     Difference,
-
-    /// Similar to Difference but with lower contrast in mid-tones.
-    ///
-    /// Maps to `blend all_mode=exclusion`.
+    /// Lower-contrast Difference. `blend all_mode=exclusion`.
     Exclusion,
-
-    /// Linear addition, clamped at maximum.
-    ///
-    /// Maps to `blend all_mode=addition`.
+    /// Linear addition, clamped. `blend all_mode=addition`.
     Add,
-
-    /// Linear subtraction, clamped at minimum.
-    ///
-    /// Maps to `blend all_mode=subtract`.
+    /// Linear subtraction, clamped. `blend all_mode=subtract`.
     Subtract,
 
-    /// Applies the top layer's hue to the base's saturation and luminance.
-    ///
-    /// Maps to `blend all_mode=hue`.
-    ///
-    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
-    /// construction succeeds but no output frame is produced at runtime.
-    Hue,
-
-    /// Applies the top layer's saturation to the base's hue and luminance.
-    ///
-    /// Maps to `blend all_mode=saturation`.
-    ///
-    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
-    /// construction succeeds but no output frame is produced at runtime.
-    Saturation,
-
-    /// Applies the top layer's hue + saturation to the base's luminance.
-    ///
-    /// Maps to `blend all_mode=color`.
-    ///
-    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
-    /// construction succeeds but no output frame is produced at runtime.
-    Color,
-
-    /// Applies the top layer's luminance to the base's hue and saturation.
-    ///
-    /// Maps to `blend all_mode=luminosity`.
-    ///
-    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
-    /// construction succeeds but no output frame is produced at runtime.
-    Luminosity,
-
-    // ── Porter-Duff alpha compositing ─────────────────────────────────────
-    /// Top layer rendered over the bottom (standard alpha compositing).
-    ///
-    /// Implemented via `overlay=format=auto:shortest=1`.
-    PorterDuffOver,
-
-    /// Bottom layer rendered over the top; equivalent to `Over` with inputs swapped.
-    PorterDuffUnder,
-
-    /// Top layer masked by the bottom layer's alpha (intersection).
-    PorterDuffIn,
-
-    /// Top layer visible only where the bottom layer is transparent.
-    PorterDuffOut,
-
-    /// Top layer placed atop the bottom; visible only where the bottom is opaque.
-    PorterDuffAtop,
-
-    /// Pixels from exactly one layer (XOR of opaque regions).
-    PorterDuffXor,
+    // ── Additional FFmpeg blend modes ─────────────────────────────────────
+    /// Bitwise AND of the two pixels. `blend all_mode=and`.
+    And,
+    /// Arithmetic mean of the two pixels. `blend all_mode=average`.
+    Average,
+    /// Bleach-bypass look. `blend all_mode=bleach`.
+    Bleach,
+    /// Per-channel division. `blend all_mode=divide`.
+    Divide,
+    /// Extremity (distance from mid-grey). `blend all_mode=extremity`.
+    Extremity,
+    /// Freeze. `blend all_mode=freeze`.
+    Freeze,
+    /// Geometric mean. `blend all_mode=geometric`.
+    Geometric,
+    /// Glow. `blend all_mode=glow`.
+    Glow,
+    /// Grain extract (alias of `difference128`). `blend all_mode=grainextract`.
+    GrainExtract,
+    /// Grain merge (alias of `addition128`). `blend all_mode=grainmerge`.
+    GrainMerge,
+    /// Hard mix. `blend all_mode=hardmix`.
+    HardMix,
+    /// Hard overlay. `blend all_mode=hardoverlay`.
+    HardOverlay,
+    /// Harmonic mean. `blend all_mode=harmonic`.
+    Harmonic,
+    /// Heat. `blend all_mode=heat`.
+    Heat,
+    /// Linear interpolation. `blend all_mode=interpolate`.
+    Interpolate,
+    /// Linear light. `blend all_mode=linearlight`.
+    LinearLight,
+    /// Multiply scaled by 128. `blend all_mode=multiply128`.
+    Multiply128,
+    /// Negation. `blend all_mode=negation`.
+    Negation,
+    /// Bitwise OR of the two pixels. `blend all_mode=or`.
+    Or,
+    /// Phoenix. `blend all_mode=phoenix`.
+    Phoenix,
+    /// Pin light. `blend all_mode=pinlight`.
+    PinLight,
+    /// Reflect. `blend all_mode=reflect`.
+    Reflect,
+    /// Soft difference. `blend all_mode=softdifference`.
+    SoftDifference,
+    /// Stain. `blend all_mode=stain`.
+    Stain,
+    /// Vivid light. `blend all_mode=vividlight`.
+    VividLight,
+    /// Arithmetic XOR of the two pixels. `blend all_mode=xor`.
+    /// Distinct from the Porter-Duff [`CompositeOp::Xor`](crate::CompositeOp).
+    Xor,
 }
