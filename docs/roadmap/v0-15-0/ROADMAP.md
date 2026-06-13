@@ -1,50 +1,38 @@
-# v0.15.0 — 音MAD Support (Pitch Shift & BPM Detection)
+# v0.15.0 — FFmpeg Token Canonicalization (Color Types & Compositing)
 
-**Goal**: Extend audio processing capabilities to cover the key primitives required for Oto-MAD production on Niconico Douga: a wider pitch-shift range for mapping voice clips to musical notes across two octaves, and a BPM/beat detector that returns per-beat timestamps suitable for direct placement of clips on a `Timeline`.
+**Goal**: Make avio's public enums map exactly to the canonical filter-argument tokens FFmpeg accepts, closing the gap between human-readable `name()` labels and the strings emitted into filter graphs. Two enum families are redesigned: the colour metadata types (`ColorSpace` / `ColorPrimaries` / `ColorTransfer`) become FFmpeg-canonical, and the conflated `BlendMode` enum is split along its two orthogonal axes — colour blend modes (`BlendMode` = `blend all_mode`) and Porter-Duff alpha-compositing operators (a new `CompositeOp` type).
 
 **Prerequisite**: v0.14.0 complete.
 
-**Crates in scope**: `ff-filter`, `ff-decode`, `avio`
+**Crates in scope**: `ff-format`, `ff-filter`, `ff-pipeline`, `avio`
 
 ---
 
 ## Requirements
 
-### Pitch Shift — ±24 Semitone Range
+### FfmpegToken — canonical token vs human-readable name
 
-- `FilterGraph::pitch_shift(semitones)` accepts values in `[-24.0, 24.0]` (±2 octaves).
-- Pitch shifting is performed without changing playback duration (pitch-only, not tape-speed).
-- The implementation chains multiple `atempo` filter instances when the compensation factor falls outside the single-instance range `[0.5, 2.0]`, reusing the same `add_atempo_chain` helper used by `TimeStretch`.
-- Values outside `[-24.0, 24.0]` return `Err(FilterError::Ffmpeg { .. })`.
-- Audio quality is comparable to the existing ±12 semitone range (WSOLA via `atempo`).
+- Public enums emitted into FFmpeg filter arguments expose a canonical token via an `FfmpegToken` trait, kept distinct from the human-readable `name()`.
+- The `format` / `setparams` / `blend` / `overlay` filter-argument builders use `ffmpeg_token()`, never `name()`, so every generated graph string is one FFmpeg actually accepts.
+- A token audit records, per enum, the FFmpeg source of truth (pinned C such as `vf_blend.c`, the `AVColorSpace` / `AVColorPrimaries` / `AVColorTransferCharacteristic` tables) so future variants can be verified against it.
 
-### BPM Detection and Beat Timestamps
+### Colour metadata types — FFmpeg-canonical
 
-- A `BpmDetector` struct detects the tempo and per-beat timestamps from an audio file.
-- The public API follows the consuming-builder pattern used by `SilenceDetector`:
+- `ColorSpace`, `ColorPrimaries`, and `ColorTransfer` cover the curated set of FFmpeg-canonical variants used in real footage, each with a 1:1 `FfmpegToken`.
+- Variant names follow FFmpeg's canonical naming: a conflated `Bt601` is split into `Bt470bg` / `Smpte170m`; `Bt2020` into `Bt2020Ncl` / `Bt2020Cl`; transfer uses `arib-std-b67` (HLG) and `smpte2084` (PQ) tokens.
+- A `setparams` filter step consumes `ColorPrimaries` / `ColorTransfer` (and colorspace / range) so colour metadata can be tagged on a stream; the `format` filter no longer emits options it does not support.
 
-  ```rust
-  BpmDetector::new("track.mp3")
-      .bpm_range(60.0, 200.0)
-      .run()  →  Result<BpmResult, DecodeError>
-  ```
+### BlendMode — colour blend only, exact `blend all_mode`
 
-- `BpmResult` contains:
-  - `bpm: f64` — detected tempo in beats per minute
-  - `beats: Vec<Duration>` — timestamp of each detected beat from the start of the file
-  - `confidence: f32` — detection confidence in `[0.0, 1.0]`; values below `0.4` indicate ambiguous rhythm
+- `BlendMode` maps 1:1 onto FFmpeg's `blend` `all_mode` token set (full canonical coverage) with an all-`Some` `FfmpegToken` (no unmapped variants).
+- Photographic-only: the Porter-Duff operators and the unimplemented HSL modes are removed from `BlendMode`.
 
-- The algorithm is pure Rust (no additional C dependencies):
-  1. Decode the audio file to mono f32 PCM at 22 050 Hz via the existing FFmpeg decode path
-  2. Detect onsets using **spectral flux** (half-wave rectified frame-energy derivative with adaptive threshold)
-  3. Estimate BPM via **normalized autocorrelation** of the onset envelope, searching within `[bpm_min, bpm_max]`
-  4. Generate beat timestamps by stepping forward from the first onset at the estimated interval, snapping to nearby onset peaks
+### CompositeOp — Porter-Duff alpha compositing
 
-- If the pure-Rust implementation does not meet the ±2 BPM accuracy threshold established by the integration tests, the algorithm internals (`detect_onsets`, `estimate_bpm`) are replaced with `aubio` C library bindings. The public API (`BpmDetector` / `BpmResult`) remains unchanged.
-
-- `BpmDetector` and `BpmResult` are re-exported from `avio` under the `decode` feature flag.
-
-- Primary use case: map detected beat timestamps to `Clip::timeline_offset` values for beat-synchronized video cutting.
+- A new `CompositeOp` enum (`Over`, `Under`, `In`, `Out`, `Atop`, `Xor`) expresses alpha-coverage compositing, which has no `all_mode` token and is built via `overlay` / expression-based `blend`.
+- `Over` is the default and preserves existing behaviour (the previous `Normal` / `PorterDuffOver` redundancy is resolved).
+- A `Composite` filter step plus `Clip::composite_op` / `VideoLayer::composite_op` route the operator through the `Timeline` → `MultiTrackComposer` compositing path, orthogonal to the colour `blend_mode`.
+- `CompositeOp` and `BlendMode` are re-exported from `avio`.
 
 ---
 
@@ -52,21 +40,20 @@
 
 | Topic | Decision |
 |---|---|
-| Pitch shift range | ±24 semitones (2 octaves); covers typical Oto-MAD note range without needing external quality libraries |
-| Pitch shift implementation | Extend existing `asetrate` + `add_atempo_chain` path; no rubberband dependency |
-| BPM algorithm | Pure Rust spectral flux + autocorrelation; no C dependency beyond FFmpeg |
-| BPM fallback | If accuracy < ±2 BPM on reference track, migrate internals to aubio (API unchanged) |
-| BPM output granularity | `bpm` + `Vec<Duration>` beats + `confidence`; beat array enables direct `Timeline` placement |
-| Analysis sample rate | 22 050 Hz mono f32; sufficient for onset detection, reduces memory and CPU vs 44 100 Hz |
+| name vs token | `name()` stays human-readable; a separate `FfmpegToken::ffmpeg_token()` provides the canonical FFmpeg string used in filter args |
+| Colour enum scope | Curated FFmpeg-canonical variants (not the full pixfmt table); names follow FFmpeg's canonical spelling |
+| Colour tagging | `setparams` carries primaries / transfer / colorspace / range; `format` is restricted to options it actually supports |
+| Blend vs composite | Two orthogonal axes: `BlendMode` = colour (`blend all_mode`), `CompositeOp` = alpha coverage (`overlay` / `all_expr`) |
+| Default compositing | `CompositeOp::Over` is the default and is byte-identical to the prior overlay path |
+| Breaking change | Accepted pre-1.0; existing graphs for retained modes are unchanged |
 
 ---
 
 ## Definition of Done
 
-- `pitch_shift(24.0)` and `pitch_shift(-24.0)` succeed; `pitch_shift(24.5)` returns `Err`
-- Integration test: `pitch_shift(+24.0)` on a 220 Hz sine wave produces output frequency within ±5% of 880 Hz
-- `BpmDetector` returns BPM within ±2 on a reference 120 BPM click-track fixture
-- `BpmDetector::run()` returns `Err(DecodeError::BpmDetectionFailed { .. })` for a missing file
-- `avio::BpmDetector` and `avio::BpmResult` are accessible under the `decode` feature flag
+- Every `format` / `setparams` / `blend` / `overlay` argument string is built from `ffmpeg_token()` and accepted by a probe-gated real-FFmpeg test
+- `ColorSpace` / `ColorPrimaries` / `ColorTransfer` expose canonical `FfmpegToken` values verified against pinned FFmpeg C source
+- `BlendMode` covers the full `blend all_mode` set with an all-`Some` `FfmpegToken`; Porter-Duff and HSL removed
+- `CompositeOp` (`Over` default) routes through `Clip` / `Timeline` and is re-exported from `avio`; the default path stays byte-identical
 - `cargo clippy --workspace -- -D warnings` clean
 - `cargo test --workspace` passes

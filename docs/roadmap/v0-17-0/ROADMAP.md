@@ -1,77 +1,66 @@
-# v0.17.0 — API Finalization
+# v0.17.0 — Professional Interchange & GPU Acceleration
 
-**Goal**: Freeze the public API surface across all crates, eliminate all remaining design debt, complete documentation and examples, and establish performance baselines — making the library ready for v1.0.0 declaration once real-world adoption has been validated.
+**Goal**: Enable round-trip interoperability with industry-standard NLE tools (Final Cut Pro, Premiere Pro, DaVinci Resolve, Avid) via EDL and FCPXML, add OMF/AAF audio project support, and provide GPU-accelerated filter processing for real-time capable throughput.
 
 **Prerequisite**: v0.16.0 complete.
 
-**Crates in scope**: All crates
+**Crates in scope**: `ff-interchange` (new crate), `ff-filter`, `ff-decode`, `ff-encode`
 
 ---
 
 ## Requirements
 
-### API Freeze Preparation
+### EDL (Edit Decision List) Support
 
-- All public enums and error types that may gain new variants in future versions carry `#[non_exhaustive]`.
-  - Applied to: `VideoCodec`, `AudioCodec`, `PixelFormat`, `SampleFormat`, `ChannelLayout`, `ColorSpace`, `HwAccel`, `GpuAccel`, `EncodeError`, `DecodeError`, `FilterError`, `StreamError`, `PreviewError`, `InterchangeError`.
-  - Excluded from: small, closed enums where exhaustive matching is part of the contract (e.g., `BitrateMode`, `H264Profile`, `BlendMode`).
-- Every public API that was superseded or renamed during v0.x carries `#[deprecated]` with a `/// Use [replacement] instead.` doc comment.
-- The MSRV is pinned to Rust 1.85.0 (minimum for edition 2024) and recorded in every crate's `[package] rust-version` field.
-- `Cargo.toml` `[package] edition = "2024"` is confirmed for all crates.
-- A breaking-change policy is documented in `CONTRIBUTING.md`: semver minor for additive changes, semver major for removals or signature changes, `#[deprecated]` with one minor-version grace period before removal.
+- An EDL file (CMX 3600 format) can be parsed into a Rust data structure representing the cut list: clip source, in/out points, record in/out points, and transition type.
+- An EDL can be exported from a clip list assembled in the library.
+- EDL round-trip: import → reconstruct timeline → export produces a semantically equivalent EDL.
+- Supported EDL event types: cut, dissolve, wipe (basic).
+- Reel names are preserved through import/export.
+- Common use case: conforming an offline edit (proxy) to online (full-res) material.
 
-### Documentation
+### Final Cut Pro XML (FCPXML) Support
 
-- `#![warn(missing_docs)]` is enabled on all crates and produces zero warnings.
-- Every `pub` function, type, field, and variant has a doc comment.
-- Every primary API entry point has a `# Examples` section with a working, tested code snippet (`cargo test --doc`).
-- All `# Safety` sections on `unsafe fn` items and `unsafe impl` blocks are present and accurate.
-- `cargo doc --workspace --no-deps` produces zero warnings.
-- `docs.rs` renders all public items with no missing sections.
+- An FCPXML file (version 1.9 and 1.10) can be parsed into a Rust data structure representing the project: sequences, clips, asset references, basic effects, and markers.
+- An FCPXML can be exported from a project assembled in the library.
+- Asset references (file paths) are resolved relative to a configurable media root.
+- Supported FCPXML elements: `project`, `sequence`, `clip`, `audio-clip`, `title` (basic), `marker`, `chapter-marker`, `transition`.
+- Common use case: exporting a cut list from a Rust application for finishing in Final Cut Pro.
 
-### Cookbook Examples
+### Premiere Pro / DaVinci Resolve XML
 
-The following end-to-end examples are provided under the workspace `examples/` directory, each covering a distinct real-world use case:
+- A Premiere Pro-compatible XML (based on the Final Cut Pro 7 XML schema) can be exported, enabling import into Premiere Pro and DaVinci Resolve.
+- Supported elements: sequences, video/audio tracks, clips, in/out points, basic transitions.
 
-- `examples/transcode.rs` — re-encode a file to a different codec and container
-- `examples/thumbnails.rs` — extract thumbnails at regular intervals
-- `examples/sprite_sheet.rs` — generate a thumbnail sprite sheet for a video player scrub bar
-- `examples/filter_trim_scale.rs` — trim a clip to a time range and resize it
-- `examples/filter_overlay.rs` — composite a logo PNG over a video with opacity
-- `examples/two_pass_encode.rs` — two-pass H.264 encode for accurate bitrate targeting
-- `examples/metadata_chapters.rs` — read and write container metadata and chapter marks
-- `examples/subtitle_passthrough.rs` — copy a subtitle stream into a new output file
-- `examples/hls_output.rs` — package a video file as a static HLS stream
-- `examples/abr_ladder.rs` — produce a multi-rendition HLS ABR ladder
-- `examples/live_stream.rs` — ingest from RTSP and push to an RTMP server
-- `examples/color_grade.rs` — apply a 3D LUT and primary color correction
-- `examples/concat_clips.rs` — join multiple clips with a cross-dissolve transition
-- `examples/green_screen.rs` — chroma key composite over a background
-- `examples/keyframe_fade.rs` — animate opacity and position with Bezier easing
-- `examples/realtime_preview.rs` — drive a real-time preview loop using `ff-preview`
-- `examples/proxy_workflow.rs` — generate proxies, edit with them, export with originals
-- `examples/stabilize.rs` — two-pass video stabilization
-- `examples/mix_audio.rs` — mix a voice-over with background music, with ducking
-- `examples/export_fcpxml.rs` — export a clip list as FCPXML for Final Cut Pro
-- `examples/full_pipeline.rs` — decode → color grade → composite → encode end-to-end
+### OMF / AAF (Audio Post-Production)
 
-### Performance Benchmarks
+- An OMF (Open Media Framework) or AAF (Advanced Authoring Format) file can be exported containing the audio tracks from a project, suitable for delivery to a Pro Tools or Nuendo audio post session.
+- Clip metadata (reel name, timecode, sample rate) is preserved.
+- Audio media can be embedded in the OMF or referenced externally.
+- Common use case: sending a picture-locked timeline's audio to a mixer for final audio post.
 
-- `benches/decode_bench.rs` — 1080p decode throughput (fps) for H.264, H.265, AV1, ProRes.
-- `benches/encode_bench.rs` — 1080p encode throughput (fps) and file size for H.264, H.265, AV1.
-- `benches/filter_bench.rs` — processing time per frame for: scale, crop, overlay, 3D LUT, chroma key, blur.
-- `benches/preview_bench.rs` — `ff-preview` playback loop: frames delivered on time at 1080p/30.
-- `benches/animation_bench.rs` — keyframe interpolation throughput (evaluations/sec for a 100-keyframe track).
-- A baseline result table is committed to `benches/README.md` and updated with each release.
+### GPU-Accelerated Filter Processing
 
-### API Consistency Audit
+- The following commonly used filters can be executed on the GPU when a compatible device is available, falling back to CPU when not:
+  - Scale / resize
+  - Color correction (brightness, contrast, saturation, curves)
+  - 3D LUT application
+  - Overlay / composite
+  - Blur (Gaussian)
+- GPU acceleration is available via:
+  - **CUDA** (NVIDIA): requires FFmpeg built with `--enable-cuda-llvm`
+  - **VideoToolbox** (Apple Silicon / macOS): hardware-native
+  - **VAAPI** (Linux / Intel / AMD): requires `--enable-vaapi`
+- GPU acceleration is opt-in: enabled by passing `GpuAccel::Cuda` / `GpuAccel::VideoToolbox` / `GpuAccel::Vaapi` to the filter graph builder.
+- When the selected GPU device is unavailable, the library transparently falls back to the CPU path and logs `log::warn!("gpu_accel unavailable, falling back to cpu device={:?}")`.
+- GPU texture output: a `GpuFrameSink` variant allows delivering decoded + filtered frames as GPU-resident textures (CUDA device memory or Metal textures) to avoid a GPU→CPU→GPU round-trip in render pipelines.
 
-- The builder pattern is confirmed uniform across all crates: consuming builders (`self`), all validation in `build()`.
-- Error type hierarchy is audited against `docs/dev/error-handling.md`: no `anyhow` in library code, all FFmpeg errors wrapped with context.
-- Every `*Inner` type that may cross thread boundaries carries an explicit `unsafe impl Send` (and `unsafe impl Sync` where appropriate) with a `// SAFETY:` comment.
-- No `unwrap()` or `expect()` remains in library source (`src/`); only in tests and examples.
-- `cargo clippy --workspace -- -D warnings` is clean on stable Rust.
-- `cargo fmt --check` passes.
+### Hardware-Accelerated Encode with GPU Filters
+
+- A pipeline of GPU-decoded → GPU-filtered → GPU-encoded is supported end-to-end without any CPU round-trip for the pixel data, using:
+  - NVIDIA: `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` after CUDA filter graph
+  - Apple: `h264_videotoolbox` / `hevc_videotoolbox` after VideoToolbox decode
+- This enables real-time 4K transcoding with filter application on supported hardware.
 
 ---
 
@@ -79,21 +68,20 @@ The following end-to-end examples are provided under the workspace `examples/` d
 
 | Topic | Decision |
 |---|---|
-| `#[non_exhaustive]` scope | Error types and major enums; excluded from small closed enums where exhaustive matching is useful |
-| MSRV | Rust 1.85.0 — minimum for edition 2024 |
-| Benchmarks | criterion (already a dev-dep); results committed to repo |
-| Examples | Workspace root `examples/`; all examples compile in CI |
-| Doc tests | `cargo test --doc --workspace` runs all `# Examples` blocks in CI |
+| New crate | `ff-interchange`: pure-Rust parser/writer for EDL, FCPXML, Premiere XML, OMF/AAF; no FFmpeg dependency |
+| EDL format | CMX 3600 (industry standard); additional formats added if demand arises |
+| FCPXML version | 1.9 and 1.10 (current as of 2025); older versions handled on best-effort basis |
+| OMF/AAF | Export-only at this stage; import is complex and deferred |
+| GPU filter backend | libavfilter CUDA/VAAPI graph; VideoToolbox via `vf_scale_vt` |
+| GPU fallback | Silent CPU fallback with `log::warn!`; no error returned for missing GPU |
+| GPU texture sink | Optional; behind `gpu-sink` feature flag |
 
 ---
 
 ## Definition of Done
 
-- All requirements above fulfilled
-- `cargo doc --workspace --no-deps` emits zero warnings
-- All 21 cookbook examples compile and run successfully against sample media files in CI
-- `cargo test --doc --workspace` passes
-- Benchmark baseline recorded in `benches/README.md`
-- MSRV verified: `cargo +1.85.0 build --workspace` succeeds
-- `cargo clippy --workspace -- -D warnings` clean
-- `cargo fmt --check` clean
+- EDL round-trip test: CMX 3600 file imported, timeline reconstructed, re-exported, and diff'd against original (ignoring whitespace)
+- FCPXML export test: exported file opens in Final Cut Pro without errors
+- Premiere XML import tested in DaVinci Resolve
+- GPU scale filter (CUDA or VAAPI) produces pixel-identical output to CPU path on a test frame
+- GPU end-to-end pipeline (decode → filter → encode, no CPU copy) completes a 1080p transcode in CI
