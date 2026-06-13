@@ -96,6 +96,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -114,6 +115,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -132,6 +134,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .build()
@@ -584,6 +587,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .add_layer(VideoLayer {
@@ -602,6 +606,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .build()
@@ -860,6 +865,7 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
             out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
         })
         .build()
@@ -889,4 +895,107 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
         "composition graph must deliver yuv420p frames; got {:?}",
         frame.format()
     );
+}
+
+// ── #1222: non-Over CompositeOp layer compositing ──────────────────────────────
+
+/// A layer with a non-`Over` `composite_op` (here `In`) composites via the
+/// Porter-Duff `blend all_expr` construction. Uses a `lavfi` source so no fixture
+/// file is needed. Probe-gated: CI's Linux FFmpeg has no filters compiled in, so
+/// `build`/`pull` failure → skip (RK-002).
+#[test]
+fn composite_op_in_layer_should_build_and_produce_frame() {
+    let layer = VideoLayer {
+        source: "color=c=white:s=64x64:r=25:d=1".into(),
+        proxy: None,
+        input_format: Some("lavfi".to_string()),
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(1.0),
+        z_order: 0,
+        time_offset: Duration::ZERO,
+        in_point: None,
+        out_point: None,
+        in_transition: None,
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::In,
+        effects: vec![],
+    };
+    let mut graph = match MultiTrackComposer::new(64, 64).add_layer(layer).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+    match graph.pull_video() {
+        Ok(Some(frame)) => {
+            assert_eq!(
+                frame.width(),
+                64,
+                "composite In must not change frame width"
+            );
+            assert_eq!(
+                frame.height(),
+                64,
+                "composite In must not change frame height"
+            );
+        }
+        Ok(None) => println!("Skipping: composite graph produced no frame"),
+        Err(e) => println!("Skipping: pull_video failed: {e}"),
+    }
+}
+
+/// A layer with `composite_op = Under` composites via the swapped-pad `overlay`
+/// construction (canvas over layer) — a distinct code path from the `blend
+/// all_expr` operators. `opacity = 0.5` additionally exercises the
+/// colorchannelmixer alpha pre-step and `format=auto` overlay. Probe-gated like
+/// the `In` test above (RK-002).
+#[test]
+fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
+    let layer = VideoLayer {
+        source: "color=c=white:s=64x64:r=25:d=1".into(),
+        proxy: None,
+        input_format: Some("lavfi".to_string()),
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(0.5),
+        z_order: 0,
+        time_offset: Duration::ZERO,
+        in_point: None,
+        out_point: None,
+        in_transition: None,
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::Under,
+        effects: vec![],
+    };
+    let mut graph = match MultiTrackComposer::new(64, 64).add_layer(layer).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+    match graph.pull_video() {
+        Ok(Some(frame)) => {
+            assert_eq!(
+                frame.width(),
+                64,
+                "composite Under must not change frame width"
+            );
+            assert_eq!(
+                frame.height(),
+                64,
+                "composite Under must not change frame height"
+            );
+        }
+        Ok(None) => println!("Skipping: composite Under graph produced no frame"),
+        Err(e) => println!("Skipping: pull_video failed: {e}"),
+    }
 }

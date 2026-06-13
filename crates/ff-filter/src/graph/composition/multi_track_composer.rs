@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
+use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::{Rgb, XfadeTransition};
@@ -104,7 +105,23 @@ pub struct VideoLayer {
     /// [`BlendMode::Normal`] uses the `FFmpeg` `overlay` filter (standard alpha-over composite).
     /// All other modes use the `FFmpeg` `blend` filter with the corresponding `all_mode`.
     /// Defaults to [`BlendMode::Normal`].
+    ///
+    /// Colour blend only — applies when [`composite_op`](Self::composite_op) is
+    /// [`CompositeOp::Over`]. For a non-`Over` composite op the layer is composited
+    /// by the Porter-Duff operator and `blend_mode` is not additionally applied.
     pub blend_mode: BlendMode,
+    /// Porter-Duff alpha-compositing operator for placing this layer over the
+    /// canvas. Defaults to [`CompositeOp::Over`] (standard alpha-over).
+    ///
+    /// `Over` keeps the existing [`blend_mode`](Self::blend_mode) compositing
+    /// (overlay / `blend all_mode`). `Under`/`In`/`Out`/`Atop`/`Xor` composite the
+    /// layer via the corresponding Porter-Duff construction (the colour
+    /// `blend_mode` is not applied in that case).
+    ///
+    /// For a non-`Over` op, [`opacity`](Self::opacity) uses its initial value
+    /// only — animated opacity is not tracked per-frame on these paths (the
+    /// `blend all_opacity` / `overlay` alpha is set once at build time).
+    pub composite_op: CompositeOp,
     /// Per-layer video filter steps applied to this layer's decoded stream before compositing.
     ///
     /// Applied in order after trim/setpts/scale/rotate/opacity and before the `overlay` node.
@@ -145,6 +162,7 @@ pub struct VideoLayer {
 ///         out_point: None,
 ///         in_transition: None,
 ///         blend_mode: BlendMode::Normal,
+///         composite_op: CompositeOp::Over,
 ///         effects: vec![],
 ///     })
 ///     .build()?;
@@ -308,6 +326,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();
@@ -334,6 +353,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();
@@ -368,6 +388,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();
@@ -415,6 +436,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();
@@ -448,6 +470,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();
@@ -480,6 +503,7 @@ mod tests {
                 out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 effects: vec![],
             })
             .build();

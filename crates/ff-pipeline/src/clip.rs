@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, FilterGraph, FilterStep, XfadeTransition};
+use ff_filter::{BlendMode, CompositeOp, FilterGraph, FilterStep, XfadeTransition};
 use ff_format::{PixelFormat, VideoFrame};
 
 use crate::error::PipelineError;
@@ -102,7 +102,17 @@ pub struct Clip {
     ///
     /// [`BlendMode::Normal`] uses `FFmpeg`'s `overlay` filter. All other variants use `FFmpeg`'s
     /// `blend` filter with the corresponding `all_mode`.
+    ///
+    /// Colour blend only — applies when [`composite_op`](Self::composite_op) is
+    /// [`CompositeOp::Over`] (the default).
     pub blend_mode: BlendMode,
+    /// Porter-Duff alpha-compositing operator for placing this clip over the layer(s) below.
+    /// Default: [`CompositeOp::Over`] (standard alpha-over).
+    ///
+    /// Independent of [`blend_mode`](Self::blend_mode): `Over` keeps the colour-blend
+    /// compositing, while `Under`/`In`/`Out`/`Atop`/`Xor` composite the clip via the
+    /// corresponding Porter-Duff operator (the colour `blend_mode` is not applied then).
+    pub composite_op: CompositeOp,
     /// Per-clip playback speed multiplier. Range: 0.1..=100.0. Default: 1.0 (normal speed).
     ///
     /// Applied via `setpts=PTS/{speed}` on the video stream and a chain of `atempo` filters
@@ -172,6 +182,7 @@ impl Clip {
             saturation: 1.0,
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             speed: 1.0,
             proxy: None,
             video_effects: Vec::new(),
@@ -500,6 +511,28 @@ impl Clip {
         }
     }
 
+    /// Sets the Porter-Duff [`CompositeOp`] for this clip and returns the updated clip.
+    ///
+    /// Independent of [`with_blend_mode`](Self::with_blend_mode); the default is
+    /// [`CompositeOp::Over`] (standard alpha-over).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::CompositeOp;
+    ///
+    /// let clip = Clip::new("overlay.mp4").with_composite_op(CompositeOp::Atop);
+    /// assert_eq!(clip.composite_op, CompositeOp::Atop);
+    /// ```
+    #[must_use]
+    pub fn with_composite_op(self, op: CompositeOp) -> Self {
+        Self {
+            composite_op: op,
+            ..self
+        }
+    }
+
     /// Sets the per-clip playback speed multiplier and returns the updated clip.
     ///
     /// Values greater than `1.0` produce fast motion; values less than `1.0` produce slow
@@ -742,6 +775,30 @@ mod tests {
     fn clip_with_opacity_should_clamp_below_zero() {
         let clip = Clip::new("overlay.mp4").with_opacity(-0.5);
         assert_eq!(clip.opacity, 0.0);
+    }
+
+    #[test]
+    fn clip_new_should_default_composite_op_to_over() {
+        use ff_filter::CompositeOp;
+        let clip = Clip::new("video.mp4");
+        assert_eq!(clip.composite_op, CompositeOp::Over);
+    }
+
+    #[test]
+    fn clip_with_composite_op_should_set_composite_op() {
+        use ff_filter::CompositeOp;
+        let clip = Clip::new("overlay.mp4").with_composite_op(CompositeOp::Atop);
+        assert_eq!(clip.composite_op, CompositeOp::Atop);
+    }
+
+    #[test]
+    fn clip_blend_mode_and_composite_op_are_independent() {
+        use ff_filter::{BlendMode, CompositeOp};
+        let clip = Clip::new("overlay.mp4")
+            .with_blend_mode(BlendMode::Multiply)
+            .with_composite_op(CompositeOp::Atop);
+        assert_eq!(clip.blend_mode, BlendMode::Multiply);
+        assert_eq!(clip.composite_op, CompositeOp::Atop);
     }
 
     #[test]

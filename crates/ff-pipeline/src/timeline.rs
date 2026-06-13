@@ -321,6 +321,7 @@ impl Timeline {
                         rotation: va(track_idx, "rotation", 0.0),
                         opacity: clip_opacity,
                         blend_mode: clip.blend_mode,
+                        composite_op: clip.composite_op,
                         z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
                         time_offset: clip.timeline_offset,
                         in_point: clip.in_point,
@@ -349,7 +350,7 @@ impl Timeline {
             }
             // Lavfi overlay sits above all regular tracks.
             if let Some(ref lavfi_str) = lavfi_overlay {
-                use ff_filter::BlendMode;
+                use ff_filter::{BlendMode, CompositeOp};
                 composer = composer.add_layer(VideoLayer {
                     source: std::path::PathBuf::from(lavfi_str),
                     proxy: None,
@@ -361,6 +362,7 @@ impl Timeline {
                     rotation: AnimatedValue::Static(0.0),
                     opacity: AnimatedValue::Static(1.0),
                     blend_mode: BlendMode::Normal,
+                    composite_op: CompositeOp::Over,
                     z_order: u32::try_from(nv).unwrap_or(u32::MAX),
                     time_offset: Duration::ZERO,
                     in_point: None,

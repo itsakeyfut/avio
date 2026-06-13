@@ -65,7 +65,7 @@ pub use audio_pipeline::AudioPipeline;
 pub use clip::{Clip, VideoEffectRenderer};
 pub use encoder_config::{EncoderConfig, EncoderConfigBuilder};
 pub use error::PipelineError;
-pub use ff_filter::{BlendMode, XfadeTransition};
+pub use ff_filter::{BlendMode, CompositeOp, XfadeTransition};
 pub use pipeline::{Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;
