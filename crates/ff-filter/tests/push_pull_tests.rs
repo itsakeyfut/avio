@@ -10,8 +10,8 @@
 #![allow(clippy::unwrap_used)]
 
 use ff_filter::{
-    BlendMode, DrawTextOptions, FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb,
-    ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    BlendMode, CompositeOp, DrawTextOptions, FilterError, FilterGraph, FilterGraphBuilder, HwAccel,
+    Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 use ff_format::{
     AlphaMode, AudioFrame, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat,
@@ -2484,6 +2484,301 @@ fn porter_duff_out_should_produce_black_where_bottom_is_white() {
     assert!(
         avg < 10.0,
         "PorterDuffOut with white bottom should produce black output (avg={avg})"
+    );
+}
+
+// ── CompositeOp (Porter-Duff via the new Composite step) ──────────────────────
+//
+// These mirror the `porter_duff_*` tests above but drive the new
+// `FilterGraphBuilder::composite()` path. Both paths share `add_composite_step`,
+// so identical assertions confirm the Composite step builds the same graphs as
+// the legacy `BlendMode::PorterDuff*` arms (#1221 acceptance criterion).
+
+#[test]
+fn composite_over_opaque_top_should_cover_bottom() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Over, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 160.0,
+        "Composite Over with opaque top should cover the bottom (avg={avg})"
+    );
+}
+
+#[test]
+fn composite_over_semitransparent_should_blend_correctly() {
+    // opacity=0.5 inserts colorchannelmixer=aa=0.5 on the top layer — same graph
+    // as blend(PorterDuffOver, 0.5).
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Over, 0.5, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+}
+
+#[test]
+fn composite_under_should_place_bottom_over_top() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Under, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 200);
+    let top_frame = make_solid_yuv_frame(64, 64, 100);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+}
+
+#[test]
+fn composite_in_should_produce_black_where_bottom_is_black() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::In, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 0);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Composite In with black bottom should produce black output (avg={avg})"
+    );
+}
+
+#[test]
+fn composite_atop_should_use_bottom_alpha_for_output() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Atop, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 85.0 && avg < 115.0,
+        "Composite Atop output luma should equal bottom luma (~100), got avg={avg}"
+    );
+}
+
+#[test]
+fn composite_xor_identical_shapes_should_produce_zero_alpha() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Xor, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 255);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Composite Xor of identical full-luma shapes should produce black (avg={avg})"
+    );
+}
+
+#[test]
+fn composite_out_should_produce_black_where_bottom_is_white() {
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .composite(top, CompositeOp::Out, 1.0, AlphaMode::Straight)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 255);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Composite Out with white bottom should produce black output (avg={avg})"
     );
 }
 

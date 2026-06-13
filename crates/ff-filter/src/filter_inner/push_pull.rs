@@ -254,6 +254,7 @@ impl FilterGraphInner {
                     | FilterStep::XFade { .. }
                     | FilterStep::JoinWithDissolve { .. }
                     | FilterStep::Blend { .. }
+                    | FilterStep::Composite { .. }
                     | FilterStep::AlphaMatte { .. }
             ) {
                 return 2;
