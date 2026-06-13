@@ -2,9 +2,40 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::composite::CompositeOp;
 use ff_format::AlphaMode;
 
 impl FilterGraphBuilder {
+    /// Composite a `top` layer over `self` (the bottom) using a Porter-Duff
+    /// [`CompositeOp`], `opacity`, and [`AlphaMode`].
+    ///
+    /// The bottom stream is `self`; the top stream is pushed on input slot 1.
+    /// `opacity` is clamped to `[0.0, 1.0]`; it affects only `Over`/`Under`
+    /// (the expression operators ignore it). `alpha` selects how the top layer's
+    /// alpha is interpreted by the `overlay` filter (`alpha=`);
+    /// [`AlphaMode::Straight`] matches `FFmpeg`'s default.
+    ///
+    /// This is the dedicated alpha-compositing entry point, separate from
+    /// [`blend`](FilterGraphBuilder::blend) (which carries the pixel-value
+    /// [`BlendMode`] modes); both build the same graphs for the Porter-Duff cases.
+    #[must_use]
+    pub fn composite(
+        mut self,
+        top: FilterGraphBuilder,
+        op: CompositeOp,
+        opacity: f32,
+        alpha: AlphaMode,
+    ) -> Self {
+        let opacity = opacity.clamp(0.0, 1.0);
+        self.steps.push(FilterStep::Composite {
+            op,
+            top: Box::new(top),
+            opacity,
+            alpha,
+        });
+        self
+    }
+
     /// Blend a `top` layer over `self` (the bottom) using the given [`BlendMode`],
     /// `opacity`, and [`AlphaMode`].
     ///

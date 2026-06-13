@@ -8,6 +8,7 @@ use std::ptr::NonNull;
 use std::time::Duration;
 
 use crate::blend::BlendMode;
+use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
@@ -1219,6 +1220,60 @@ pub(super) unsafe fn add_blend_expr_step(
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
+// ── Composite compound step ───────────────────────────────────────────────────
+/// Builds a Porter-Duff composite step from a [`CompositeOp`], dispatching to the
+/// shared blend construction helpers. This is the single `CompositeOp`-keyed
+/// construction site, used by both [`FilterStep::Composite`] and the legacy
+/// `BlendMode::PorterDuff*` arms (so the two paths build identical graphs).
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+// One more argument (`op`) than the 7-arg blend helpers it forwards to.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn add_composite_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    top_src_ctx: *mut ff_sys::AVFilterContext,
+    top_steps: &[FilterStep],
+    op: CompositeOp,
+    opacity: f32,
+    alpha: AlphaMode,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    match op {
+        CompositeOp::Over => add_blend_normal_step(
+            graph,
+            bottom_ctx,
+            top_src_ctx,
+            top_steps,
+            opacity,
+            alpha,
+            index,
+        ),
+        CompositeOp::Under => add_blend_under_step(
+            graph,
+            bottom_ctx,
+            top_src_ctx,
+            top_steps,
+            opacity,
+            alpha,
+            index,
+        ),
+        CompositeOp::In | CompositeOp::Out | CompositeOp::Atop | CompositeOp::Xor => {
+            let expr = match op {
+                CompositeOp::In => "B*A/255",
+                CompositeOp::Out => "B*(255-A)/255",
+                CompositeOp::Atop => "B*A/255 + A*(255-B)/255",
+                CompositeOp::Xor => "B*(255-A)/255 + A*(255-B)/255",
+                _ => unreachable!(),
+            };
+            add_blend_expr_step(graph, bottom_ctx, top_src_ctx, top_steps, expr, index)
+        }
+    }
+}
+
 // ── Glow compound step ────────────────────────────────────────────────────────
 /// Insert the glow / bloom compound step.
 ///
@@ -2119,13 +2174,13 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (Normal / PorterDuffOver) — both use overlay=format=auto:shortest=1.
+            // Blend (Normal) — overlay=format=auto:shortest=1.
             //   prev → [bottom]overlay=format=auto:shortest=1 ← [top][ccm]
             // where [top] is in1 with the top builder's steps applied.
-            // Unimplemented modes are caught by build() before reaching here.
+            // Porter-Duff modes are routed through the Composite-shared arm below.
             if let FilterStep::Blend {
                 top,
-                mode: BlendMode::Normal | BlendMode::PorterDuffOver,
+                mode: BlendMode::Normal,
                 opacity,
                 alpha,
             } = step
@@ -2211,10 +2266,18 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (PorterDuffUnder) — overlay with swapped input order.
+            // Blend (Porter-Duff modes) — delegate to the shared CompositeOp
+            // construction so the legacy BlendMode path and the new Composite path
+            // build identical graphs (#1221). BlendMode itself is left untouched.
             if let FilterStep::Blend {
                 top,
-                mode: BlendMode::PorterDuffUnder,
+                mode:
+                    mode @ (BlendMode::PorterDuffOver
+                    | BlendMode::PorterDuffUnder
+                    | BlendMode::PorterDuffIn
+                    | BlendMode::PorterDuffOut
+                    | BlendMode::PorterDuffAtop
+                    | BlendMode::PorterDuffXor),
                 opacity,
                 alpha,
             } = step
@@ -2222,11 +2285,21 @@ impl FilterGraphInner {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
                     bail!(FilterError::BuildFailed)
                 };
-                prev_ctx = match add_blend_under_step(
+                let op = match mode {
+                    BlendMode::PorterDuffOver => CompositeOp::Over,
+                    BlendMode::PorterDuffUnder => CompositeOp::Under,
+                    BlendMode::PorterDuffIn => CompositeOp::In,
+                    BlendMode::PorterDuffOut => CompositeOp::Out,
+                    BlendMode::PorterDuffAtop => CompositeOp::Atop,
+                    BlendMode::PorterDuffXor => CompositeOp::Xor,
+                    _ => unreachable!(),
+                };
+                prev_ctx = match add_composite_step(
                     graph,
                     prev_ctx,
                     top_src.as_ptr(),
                     top.steps(),
+                    op,
                     *opacity,
                     *alpha,
                     i,
@@ -2237,33 +2310,25 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (PorterDuffIn / PorterDuffOut / PorterDuffAtop / PorterDuffXor) — expression-based blend.
-            if let FilterStep::Blend {
+            // Composite — Porter-Duff alpha compositing via the shared construction.
+            if let FilterStep::Composite {
+                op,
                 top,
-                mode:
-                    mode @ (BlendMode::PorterDuffIn
-                    | BlendMode::PorterDuffOut
-                    | BlendMode::PorterDuffAtop
-                    | BlendMode::PorterDuffXor),
-                ..
+                opacity,
+                alpha,
             } = step
             {
                 let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
                     bail!(FilterError::BuildFailed)
                 };
-                let expr = match mode {
-                    BlendMode::PorterDuffIn => "B*A/255",
-                    BlendMode::PorterDuffOut => "B*(255-A)/255",
-                    BlendMode::PorterDuffAtop => "B*A/255 + A*(255-B)/255",
-                    BlendMode::PorterDuffXor => "B*(255-A)/255 + A*(255-B)/255",
-                    _ => unreachable!(),
-                };
-                prev_ctx = match add_blend_expr_step(
+                prev_ctx = match add_composite_step(
                     graph,
                     prev_ctx,
                     top_src.as_ptr(),
                     top.steps(),
-                    expr,
+                    *op,
+                    *opacity,
+                    *alpha,
                     i,
                 ) {
                     Ok(ctx) => ctx,

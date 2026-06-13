@@ -34,6 +34,7 @@
 pub mod analysis;
 pub mod animation;
 pub mod blend;
+pub mod composite;
 pub mod effects;
 pub mod error;
 mod filter_inner;
@@ -42,6 +43,7 @@ pub mod graph;
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
 pub use animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe, Lerp};
 pub use blend::BlendMode;
+pub use composite::CompositeOp;
 pub use effects::{
     AnalyzeOptions, Interpolation, LensProfile, NoiseType, StabilizeOptions, Stabilizer,
 };

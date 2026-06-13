@@ -10,6 +10,7 @@ use super::types::{
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
+use crate::composite::CompositeOp;
 use ff_format::{AlphaMode, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat};
 
 /// Escapes a filesystem path for use as a value inside an `FFmpeg` filter
@@ -483,6 +484,29 @@ pub enum FilterStep {
         /// How the two layers are combined.
         mode: BlendMode,
         /// Opacity of the top layer in `[0.0, 1.0]`; 1.0 = fully opaque.
+        opacity: f32,
+        /// How the top layer's alpha is interpreted by the `overlay` filter
+        /// (`alpha=`). [`AlphaMode::Straight`] is the `FFmpeg` default.
+        alpha: AlphaMode,
+    },
+
+    /// Composite a `top` layer over the current stream (bottom) using a
+    /// Porter-Duff alpha-compositing [`CompositeOp`].
+    ///
+    /// This is a compound, two-input step (slot 0 = bottom, slot 1 = top with
+    /// the `top` builder's steps applied). It shares its `FFmpeg` construction with
+    /// the legacy `BlendMode::PorterDuff*` arms: `Over`/`Under` use `overlay`,
+    /// the rest use `blend` with a per-channel expression.
+    ///
+    /// `Box<FilterGraphBuilder>` breaks the otherwise-recursive type, following
+    /// the same pattern as [`FilterStep::Blend`].
+    Composite {
+        /// The Porter-Duff operator combining the two layers.
+        op: CompositeOp,
+        /// Filter pipeline for the top (foreground) layer.
+        top: Box<FilterGraphBuilder>,
+        /// Opacity of the top layer in `[0.0, 1.0]`; 1.0 = fully opaque.
+        /// Only affects `Over`/`Under` (the expression operators ignore it).
         opacity: f32,
         /// How the top layer's alpha is interpreted by the `overlay` filter
         /// (`alpha=`). [`AlphaMode::Straight`] is the `FFmpeg` default.
@@ -965,6 +989,15 @@ impl FilterStep {
             // for validate_filter_steps.  Unimplemented modes are caught by
             // build() before validate_filter_steps is reached.
             Self::Blend { .. } => "overlay",
+            // Composite shares the Blend construction: Over/Under use overlay,
+            // the expression operators use blend. validate_filter_steps only
+            // needs a real filter name to probe existence.
+            Self::Composite { op, .. } => match op {
+                CompositeOp::Over | CompositeOp::Under => "overlay",
+                CompositeOp::In | CompositeOp::Out | CompositeOp::Atop | CompositeOp::Xor => {
+                    "blend"
+                }
+            },
             Self::ChromaKey { .. } => "chromakey",
             Self::ColorKey { .. } => "colorkey",
             Self::SpillSuppress { .. } => "hue",
@@ -1293,6 +1326,10 @@ impl FilterStep {
             // bypassed in favour of add_blend_normal_step).  Provided for
             // completeness using the Normal-mode overlay args.
             Self::Blend { .. } => "format=auto:shortest=1".to_string(),
+            // args() for Composite is not consumed by add_and_link_step (bypassed
+            // for this compound two-input step); provided here only to satisfy the
+            // exhaustive match.
+            Self::Composite { .. } => String::new(),
             Self::ChromaKey {
                 color,
                 similarity,
