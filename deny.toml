@@ -1,0 +1,54 @@
+# cargo-deny configuration — supply-chain checks for the avio workspace.
+#
+# Run locally with `cargo deny check`; CI runs it on PRs, pushes to main, and
+# weekly (.github/workflows/audit.yml). cargo-deny reads `cargo metadata` only —
+# it never builds, so no FFmpeg is required.
+
+[graph]
+# Check the full feature surface — render-gpu / tokio / stream pull extra deps
+# that the default feature set would miss.
+all-features = true
+
+[advisories]
+version = 2
+# RustSec advisory DB (default source). Vulnerabilities fail the check.
+# `unmaintained = "workspace"` flags only unmaintained crates that are direct
+# workspace dependencies, not transitive ones — pinning the policy explicitly so
+# it doesn't drift with cargo-deny's default and avoiding surprise CI failures
+# from abandoned-but-stable transitive deps. Yanked crates only warn: they are
+# often yanked for non-security reasons and Cargo.lock is regenerated fresh in CI.
+yanked = "warn"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses compatible with the project's dual MIT-OR-Apache-2.0
+# license. Anything not listed (GPL / LGPL / MPL / AGPL / …) is denied. This set
+# is derived from the current all-features dependency tree: it includes the
+# single-option licenses Zlib / BSD-3-Clause / ISC / CC0-1.0 and Unicode-3.0,
+# which the clause `(MIT OR Apache-2.0) AND Unicode-3.0` makes mandatory.
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+
+[bans]
+# Transitive duplicate versions are unavoidable in this tree (libc, regex,
+# hashbrown, itertools, memchr, foldhash, rustc-hash) — warn rather than fail.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
