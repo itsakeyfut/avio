@@ -1,0 +1,38 @@
+# Dependabot: weekly, grouped update PRs for Rust deps and GitHub Actions.
+# Minor + patch updates are grouped per ecosystem to reduce PR noise; major
+# updates open individual PRs so they get reviewed. Targets the default branch
+# (main). See #1204.
+version: 2
+updates:
+  # Rust workspace dependencies
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - T-Maintenance
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used across .github/workflows/. Dependabot updates both tag
+  # refs (e.g. @v4) and SHA pins (bumping the `# vX` comment).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    labels:
+      - T-Maintenance
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
