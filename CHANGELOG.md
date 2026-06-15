@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.0] - 2026-06-13
+
+This release canonicalizes avio's public enums to FFmpeg's filter-argument tokens. **Breaking:** the colour metadata types and `BlendMode` are redesigned, and Porter-Duff compositing is separated into a new `CompositeOp` type.
+
+### Changed
+
+#### ff-format
+- **Breaking:** `ColorSpace`, `ColorPrimaries`, and `ColorTransfer` redesigned to curated FFmpeg-canonical variants, each with a 1:1 `FfmpegToken` (e.g. `Bt601` split into `Bt470bg` / `Smpte170m`, `Bt2020` into `Bt2020Ncl` / `Bt2020Cl`, transfer `arib-std-b67` for HLG and `smpte2084` for PQ) ([#1217](https://github.com/itsakeyfut/avio/issues/1217), [#1198](https://github.com/itsakeyfut/avio/issues/1198))
+
+#### ff-filter
+- **Breaking:** `BlendMode` now maps 1:1 onto FFmpeg's `blend` `all_mode` token set (40 modes, `FfmpegToken` all-`Some`); the Porter-Duff operators and the unimplemented HSL modes are removed (Porter-Duff moves to `CompositeOp`) ([#1219](https://github.com/itsakeyfut/avio/issues/1219), [#1218](https://github.com/itsakeyfut/avio/issues/1218), [#1220](https://github.com/itsakeyfut/avio/issues/1220))
+
+### Added
+
+#### ff-filter
+- `CompositeOp` enum (`Over` / `Under` / `In` / `Out` / `Atop` / `Xor`) and `FilterStep::Composite` for Porter-Duff alpha compositing (built via `overlay` / expression-based `blend`) ([#1221](https://github.com/itsakeyfut/avio/issues/1221))
+- `FilterStep::SetParams` to tag colorspace / primaries / transfer / range on a stream from `ColorPrimaries` / `ColorTransfer` tokens ([#1227](https://github.com/itsakeyfut/avio/issues/1227))
+- `AlphaMode` wired to the `overlay` `alpha=` option for compositing alpha format selection ([#1225](https://github.com/itsakeyfut/avio/issues/1225))
+
+#### ff-pipeline
+- `Clip::composite_op` and `Clip::with_composite_op()` (default `Over`), routed through `Timeline` compositing; orthogonal to the colour `blend_mode` ([#1222](https://github.com/itsakeyfut/avio/issues/1222))
+- `VideoEffectRenderer`: reusable per-clip effect-chain renderer that avoids rebuilding the filter graph every frame during preview ([#1213](https://github.com/itsakeyfut/avio/issues/1213))
+- preview-render path (`Clip::apply_video_effects()`) matching `Timeline::render()` so a host can apply a clip's effect chain to a single frame ([#1202](https://github.com/itsakeyfut/avio/issues/1202))
+
+#### avio
+- `CompositeOp` and `BlendMode` re-exported; `ClipTransition` added to the `filter` feature re-export block ([#1169](https://github.com/itsakeyfut/avio/issues/1169))
+
+### Fixed
+
+#### ff-filter
+- `format` filter emitted human-readable `name()` values instead of canonical `ffmpeg_token()`, producing invalid filter arguments ([#1212](https://github.com/itsakeyfut/avio/issues/1212))
+- `format()` emitted an unsupported `alpha_modes=` option into the `format` filter; alpha is now wired to the `overlay` filter instead ([#1223](https://github.com/itsakeyfut/avio/issues/1223))
+
+### Internal
+- ff-decode: deduplicate RAII guards across the audio, image, and video `decoder_inner` files ([#1168](https://github.com/itsakeyfut/avio/issues/1168))
+- ff-render: split oversized `nodes/composite.rs` into per-node-type submodules ([#1166](https://github.com/itsakeyfut/avio/issues/1166))
+- ff-preview: split oversized player, timeline, and clock files ([#1165](https://github.com/itsakeyfut/avio/issues/1165))
+- ff-encode / ff-preview: fix bench compilation against updated APIs ([#1189](https://github.com/itsakeyfut/avio/issues/1189), [#1190](https://github.com/itsakeyfut/avio/issues/1190))
+- docs.rs: build documentation with all features enabled ([#1206](https://github.com/itsakeyfut/avio/issues/1206))
+
+---
+
 ## [0.14.4] - 2026-06-04
 
 ### Added
