@@ -1,0 +1,30 @@
+name: Audit
+
+# Supply-chain checks via cargo-deny: RustSec advisories, license policy,
+# banned/duplicate crates, and allowed sources (config in deny.toml). Runs on
+# PRs, pushes to main, and weekly. cargo-deny reads `cargo metadata` only — no
+# build and no FFmpeg required.
+#
+# Third-party actions are pinned to a full commit SHA (tag noted in a comment).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 0 * * 1" # Mondays 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+        with:
+          command: check
