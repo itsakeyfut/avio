@@ -39,7 +39,7 @@ jobs:
         run: sudo apt-get install -y nasm pkg-config libclang-dev
       - name: Cache FFmpeg 7.x
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.FFMPEG_PREFIX }}
           key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
@@ -101,7 +101,7 @@ jobs:
       - name: Cache FFmpeg 7.x (Linux)
         if: runner.os == 'Linux'
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.FFMPEG_PREFIX }}
           key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
@@ -162,7 +162,7 @@ jobs:
         run: sudo apt-get install -y nasm pkg-config libclang-dev
       - name: Cache FFmpeg 7.x
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.FFMPEG_PREFIX }}
           key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
