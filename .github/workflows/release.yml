@@ -4,9 +4,16 @@ name: Release
 # no long-lived API token. Triggered by pushing a version tag (e.g. v0.15.0),
 # or manually via workflow_dispatch (publish only, no GitHub Release).
 #
-# Prerequisite: each crate must have a Trusted Publisher configured on crates.io
-# (crate Settings → Trusted Publishing) pointing at:
-#   owner: itsakeyfut   repo: avio   workflow: release.yml
+# Prerequisites:
+#   - Each crate must have a Trusted Publisher configured on crates.io
+#     (crate Settings -> Trusted Publishing): owner itsakeyfut, repo avio,
+#     workflow release.yml, environment crates-io.
+#   - A GitHub environment named "crates-io" (optionally with required
+#     reviewers) gates the publish job — a workflow_dispatch run then waits
+#     for approval before any crate is published.
+#
+# Third-party actions are pinned to a full commit SHA (tag noted in a comment)
+# because this workflow holds the crates.io OIDC token and contents:write.
 
 on:
   push:
@@ -18,6 +25,7 @@ env:
   CARGO_TERM_COLOR: always
   FFMPEG_VERSION: "7.1"
   FFMPEG_PREFIX: /opt/ffmpeg7
+  FFMPEG_SHA256: 40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
 
 permissions:
   contents: write # create the GitHub Release
@@ -27,23 +35,29 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    # Defense-in-depth: scopes the OIDC token to this environment and lets a
+    # maintainer require manual approval for any (e.g. dispatched) run.
+    environment: crates-io
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install build dependencies
         run: sudo apt-get install -y nasm pkg-config libclang-dev
 
       - name: Cache FFmpeg 7.x
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          # Keyed on the verified tarball hash so a poisoned cache cannot
+          # substitute a different FFmpeg build.
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ env.FFMPEG_SHA256 }}-ubuntu-${{ runner.arch }}
 
       - name: Build FFmpeg 7.x from source
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
           wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          echo "${FFMPEG_SHA256}  ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz" | sha256sum -c -
           tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
           cd ffmpeg-${{ env.FFMPEG_VERSION }}
           ./configure \
@@ -73,11 +87,11 @@ jobs:
           echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: "1.93.0"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # Verify the whole workspace builds once, up front. This lets the publish
       # step use --no-verify so all 12 uploads finish inside the 30-minute OIDC
@@ -87,7 +101,7 @@ jobs:
 
       - name: Authenticate to crates.io (Trusted Publishing)
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1
 
       - name: Publish crates in dependency order
         env:
