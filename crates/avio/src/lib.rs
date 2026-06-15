@@ -24,13 +24,13 @@
 //! ```toml
 //! # Default: probe + decode + encode
 //! [dependencies]
-//! avio = "0.14"
+//! avio = "0.15"
 //!
 //! # Add filtering
-//! avio = { version = "0.14", features = ["filter"] }
+//! avio = { version = "0.15", features = ["filter"] }
 //!
 //! # Full stack (implies filter + pipeline)
-//! avio = { version = "0.14", features = ["stream"] }
+//! avio = { version = "0.15", features = ["stream"] }
 //! ```
 //!
 //! # Quick Start

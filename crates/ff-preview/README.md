@@ -8,13 +8,13 @@ Real-time video preview and proxy workflow for Rust. Provides frame-accurate see
 
 ```toml
 [dependencies]
-ff-preview = "0.14"
+ff-preview = "0.15"
 
 # Enable async support
-ff-preview = { version = "0.14", features = ["tokio"] }
+ff-preview = { version = "0.15", features = ["tokio"] }
 
 # Enable proxy generation
-ff-preview = { version = "0.14", features = ["proxy"] }
+ff-preview = { version = "0.15", features = ["proxy"] }
 ```
 
 ## Quick Start
