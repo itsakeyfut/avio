@@ -8,7 +8,7 @@ Apply video and audio transformations without writing FFmpeg filter-graph string
 
 ```toml
 [dependencies]
-ff-filter = "0.14"
+ff-filter = "0.15"
 ```
 
 ## Building a Filter Chain

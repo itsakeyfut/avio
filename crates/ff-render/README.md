@@ -8,10 +8,10 @@ GPU compositing pipeline for real-time video preview, built on [wgpu]. Apply per
 
 ```toml
 [dependencies]
-ff-render = "0.14"
+ff-render = "0.15"
 
 # Enable GPU processing (requires wgpu-compatible hardware)
-ff-render = { version = "0.14", features = ["wgpu"] }
+ff-render = { version = "0.15", features = ["wgpu"] }
 ```
 
 ## Feature Flags

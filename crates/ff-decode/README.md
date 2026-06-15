@@ -8,8 +8,8 @@ Decode video and audio frames without managing codec contexts, packet queues, or
 
 ```toml
 [dependencies]
-ff-decode = "0.14"
-ff-format = "0.14"
+ff-decode = "0.15"
+ff-format = "0.15"
 ```
 
 ## Video Decoding
@@ -191,7 +191,7 @@ let mut decoder = VideoDecoder::open("video.mp4")
 
 ```toml
 [dependencies]
-ff-decode = { version = "0.14", features = ["tokio"] }
+ff-decode = { version = "0.15", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoDecoder` and `AudioDecoder` APIs are compiled. No tokio dependency is pulled in.
