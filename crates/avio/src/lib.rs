@@ -330,6 +330,32 @@ pub use ff_preview::AsyncPreviewPlayer;
 #[cfg(feature = "preview-proxy")]
 pub use ff_preview::{ProxyGenerator, ProxyJob, ProxyResolution};
 
+// ── render feature ────────────────────────────────────────────────────────────
+//
+// GPU compositing (`ff-render`). Namespaced under `avio::render` rather than
+// re-exported flat because several node types share names with the `filter`
+// feature (`BlendMode`, `ScaleAlgorithm`); a flat re-export would collide.
+// Enabling `render` also enables `preview` (see Cargo.toml).
+#[cfg(feature = "render")]
+pub mod render {
+    //! GPU compositing pipeline (`ff-render`).
+    //!
+    //! These types are namespaced (`avio::render::*`) because `BlendMode` and
+    //! `ScaleAlgorithm` would otherwise collide with the `filter` feature's
+    //! re-exports of the same names.
+    pub use ff_render::{
+        AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
+        GpuFrameSink, LumaMaskNode, OverlayNode, RenderError, RenderGraph, RenderNodeCpu,
+        ScaleAlgorithm, ScaleNode, ShapeMaskNode, TransformNode, YuvFormat, YuvUploadNode,
+    };
+
+    // wgpu-gated in ff-render → reachable only with avio's `render-gpu` feature.
+    #[cfg(feature = "render-gpu")]
+    pub use ff_render::{
+        Compositor, FrameLayer, LayerTransform, RenderContext, RenderNode, TextureHandle,
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,5 +708,37 @@ mod tests {
         let _: ProxyResolution = ProxyResolution::Half;
         let _: ProxyResolution = ProxyResolution::Quarter;
         let _: ProxyResolution = ProxyResolution::Eighth;
+    }
+
+    // ── render feature ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn render_core_types_should_be_accessible() {
+        // The ungated ff-render surface is namespaced under `avio::render`.
+        let _: render::RenderError = render::RenderError::Composite {
+            message: "test".into(),
+        };
+        let _: render::RenderGraph = render::RenderGraph::new_cpu();
+        let _: render::BlendMode = render::BlendMode::Normal;
+        let _: render::ScaleAlgorithm = render::ScaleAlgorithm::Bilinear;
+    }
+
+    // BlendMode / ScaleAlgorithm exist under both `filter` and `render`; with both
+    // features on, the namespacing must keep them distinct (no collision).
+    #[cfg(all(feature = "render", feature = "filter"))]
+    #[test]
+    fn render_and_filter_blend_mode_should_not_collide() {
+        let _: BlendMode = BlendMode::Normal;
+        let _: render::BlendMode = render::BlendMode::Normal;
+    }
+
+    #[cfg(feature = "render-gpu")]
+    #[test]
+    fn render_gpu_types_should_be_accessible() {
+        // wgpu-gated types are reachable only under `render-gpu`; verify name
+        // resolution without constructing a GPU device.
+        let _ = std::mem::size_of::<render::Compositor>();
+        let _ = std::mem::size_of::<render::RenderContext>();
     }
 }
