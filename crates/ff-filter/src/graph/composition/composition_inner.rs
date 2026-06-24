@@ -18,8 +18,9 @@ use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 use crate::graph::FfmpegToken;
+use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
-use crate::graph::types::Rgb;
+use crate::graph::types::{Rgb, ScaleAlgorithm};
 
 use super::multi_track_composer::VideoLayer;
 use super::multi_track_mixer::AudioTrack;
@@ -1127,18 +1128,31 @@ pub(super) unsafe fn build_realtime_composition(
         };
     }
 
+    // Canvas dimensions are defined by the base layer; every other layer is
+    // scaled to match so the `overlay`/`blend` inputs share the same size (the
+    // `blend` filter requires identical input dimensions).
+    let (canvas_w, canvas_h) = (layers[0].width, layers[0].height);
+
     // ── Composite layers 1.. onto the accumulator ─────────────────────────────
     for idx in 1..layers.len() {
         let layer = &layers[idx];
         let Some(top_src) = src_ctxs[idx] else {
             bail!(graph, format!("missing buffersrc for layer={idx}"));
         };
+        // Scale the top layer to the canvas size first, then apply its effects.
+        let mut top_steps: Vec<FilterStep> = Vec::with_capacity(layer.effects.len() + 1);
+        top_steps.push(FilterStep::Scale {
+            width: canvas_w,
+            height: canvas_h,
+            algorithm: ScaleAlgorithm::Fast,
+        });
+        top_steps.extend(layer.effects.iter().cloned());
         acc = if layer.blend_mode == BlendMode::Normal {
             match crate::filter_inner::add_blend_normal_step(
                 graph,
                 acc,
                 top_src.as_ptr(),
-                &layer.effects,
+                &top_steps,
                 layer.opacity,
                 ff_format::AlphaMode::Straight,
                 idx,
@@ -1152,7 +1166,7 @@ pub(super) unsafe fn build_realtime_composition(
                 graph,
                 acc,
                 top_src.as_ptr(),
-                &layer.effects,
+                &top_steps,
                 mode_name,
                 layer.opacity,
                 idx,

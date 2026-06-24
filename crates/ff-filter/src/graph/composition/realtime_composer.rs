@@ -149,4 +149,49 @@ mod tests {
             Err(e) => println!("Skipping: {e}"),
         }
     }
+
+    #[test]
+    fn differently_sized_layers_with_blend_mode_should_composite() {
+        // Regression: the `blend` filter (Screen/Multiply/…) requires equal-sized
+        // inputs, so the composer must scale each layer to the base size. Base 4×4,
+        // overlay 8×6, Screen. Output is the base size.
+        let base = RealtimeLayer {
+            width: 4,
+            height: 4,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let top = RealtimeLayer {
+            width: 8,
+            height: 6,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Screen,
+        };
+        let mut composer = match RealtimeComposer::new(&[base, top]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let bf = VideoFrame::from_rgba(4, 4, vec![80u8; 4 * 4 * 4]).unwrap();
+        let tf = VideoFrame::from_rgba(8, 6, vec![80u8; 8 * 6 * 4]).unwrap();
+        if composer.push_layer(0, &bf).is_err() || composer.push_layer(1, &tf).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.format(), PixelFormat::Rgba);
+                assert_eq!(out.width(), 4);
+                assert_eq!(out.height(), 4);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
 }
