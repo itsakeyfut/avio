@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use ff_filter::{RealtimeComposer, RealtimeLayer};
+use ff_format::{PixelFormat, VideoFrame};
+
 use crate::audio::AudioMixer;
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
@@ -74,6 +77,13 @@ pub struct TimelineRunner {
     pub(super) active_audio_cancel: Option<Arc<AtomicBool>>,
     /// Handle to the currently running audio decode thread.
     pub(super) active_audio_thread: Option<JoinHandle<()>>,
+    /// Cached real-time compositor that applies per-clip effects + blend modes
+    /// (the same chain as export). Rebuilt only when the active clip set or frame
+    /// geometry changes; `None` until the first composite.
+    pub(super) composer: Option<RealtimeComposer>,
+    /// Identifies the composer's current configuration as
+    /// `(layer_id, active_clip_idx, width, height)` per layer. Rebuild on change.
+    pub(super) composer_key: Vec<(usize, usize, u32, u32)>,
 }
 
 impl TimelineRunner {
@@ -693,8 +703,9 @@ impl TimelineRunner {
 
                     let a_ok = self.sws_a.convert(&frame, &mut self.rgba_a);
 
-                    // Apply per-clip opacity for V1: blend with black background before compositing.
                     if a_ok {
+                        // V1 per-clip opacity: pre-multiply toward black (producer-side;
+                        // the composer ignores base-layer opacity).
                         let v1_op = self.clips[active].opacity;
                         if (v1_op - 1.0).abs() > 1e-6 {
                             for chunk in self.rgba_a.chunks_exact_mut(4) {
@@ -706,22 +717,44 @@ impl TimelineRunner {
                                 }
                             }
                         }
-                    }
 
-                    // ── Composite overlay layers: V1 is background, V2/V3… are composited on top ──
-                    // Phase 1: drain each overlay layer to update its decoded rgba buffer.
-                    if a_ok {
-                        for layer in &mut self.overlay_layers {
+                        // Transition crossfade (producer-side): blend the incoming clip
+                        // into rgba_a so the composer grades the crossfaded V1 frame.
+                        if in_trans
+                            && let FrameResult::Frame(next_frame) =
+                                self.clips[next_idx].decode_buf.pop_frame()
+                            && self.sws_b.convert(&next_frame, &mut self.rgba_b)
+                        {
+                            let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
+                                / trans_dur.as_secs_f32())
+                            .clamp(0.0, 1.0);
+                            timeline_inner::blend_rgba(
+                                &self.rgba_a,
+                                &self.rgba_b,
+                                alpha,
+                                &mut self.blend_buf,
+                            );
+                            std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
+                        }
+
+                        // Decode each overlay layer's synced frame to rgba at its native
+                        // size (no stretch — matches the export overlay placement).
+                        let mut active_overlays: Vec<(usize, u32, u32)> = Vec::new();
+                        for (li, layer) in self.overlay_layers.iter_mut().enumerate() {
                             let maybe_cidx = layer.clips.iter().position(|c| {
                                 timeline_pts >= c.timeline_start && timeline_pts < c.timeline_end
                             });
-                            let Some(cidx) = maybe_cidx else { continue };
+                            let Some(cidx) = maybe_cidx else {
+                                layer.rgba.clear();
+                                continue;
+                            };
                             if cidx != layer.active {
                                 let local = layer.clips[cidx].in_point
                                     + timeline_pts.saturating_sub(layer.clips[cidx].timeline_start);
                                 let _ = layer.clips[cidx].decode_buf.seek(local);
                                 layer.active = cidx;
                             }
+                            let mut got: Option<(u32, u32)> = None;
                             while let FrameResult::Frame(f) =
                                 layer.clips[cidx].decode_buf.pop_frame()
                             {
@@ -730,79 +763,79 @@ impl TimelineRunner {
                                 let tl_start = layer.clips[cidx].timeline_start;
                                 let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
                                 if v2_pts + Duration::from_millis(50) >= timeline_pts {
-                                    // Scale overlay to V1's canvas size so composite_over
-                                    // works even when V1 and V2 have different resolutions.
-                                    layer.sws.convert_to(
-                                        &f,
-                                        &mut layer.rgba,
-                                        self.last_frame_w,
-                                        self.last_frame_h,
-                                    );
-                                    // Apply per-clip opacity to the alpha channel so that
-                                    // composite_over() blends at the correct transparency.
-                                    let op = layer.clips[cidx].opacity;
-                                    if (op - 1.0).abs() > 1e-6 {
-                                        for chunk in layer.rgba.chunks_exact_mut(4) {
-                                            #[allow(
-                                                clippy::cast_possible_truncation,
-                                                clippy::cast_sign_loss
-                                            )]
-                                            {
-                                                chunk[3] = (f32::from(chunk[3]) * op).round() as u8;
-                                            }
-                                        }
+                                    if layer.sws.convert(&f, &mut layer.rgba) {
+                                        got = Some((f.width(), f.height()));
                                     }
                                     break;
                                 }
                             }
-                        }
-                    }
-                    // Phase 2: V1 is background; overlay layers (V2, V3, …) are composited on top.
-                    if a_ok && self.overlay_layers.iter().any(|l| !l.rgba.is_empty()) {
-                        self.blend_buf.resize(self.rgba_a.len(), 0);
-                        self.blend_buf.copy_from_slice(&self.rgba_a);
-                        for layer in &self.overlay_layers {
-                            if !layer.rgba.is_empty() && layer.rgba.len() == self.blend_buf.len() {
-                                let layer_rgba = layer.rgba.clone();
-                                timeline_inner::composite_over(&mut self.blend_buf, &layer_rgba);
+                            match got {
+                                Some((ow, oh)) => active_overlays.push((li, ow, oh)),
+                                None => layer.rgba.clear(),
                             }
                         }
-                        std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
-                    }
 
-                    if in_trans && a_ok {
-                        let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
-                            / trans_dur.as_secs_f32())
-                        .clamp(0.0, 1.0);
-
-                        let next_pop = self.clips[next_idx].decode_buf.pop_frame();
-
-                        let blended = if let FrameResult::Frame(next_frame) = next_pop {
-                            if self.sws_b.convert(&next_frame, &mut self.rgba_b) {
-                                timeline_inner::blend_rgba(
-                                    &self.rgba_a,
-                                    &self.rgba_b,
-                                    alpha,
-                                    &mut self.blend_buf,
-                                );
-                                true
+                        // Build the layer specs + key, and (re)build the composer when
+                        // the active clip set or geometry changes.
+                        let mut specs: Vec<RealtimeLayer> = vec![
+                            self.clips[active]
+                                .clip
+                                .realtime_layer(w, h, PixelFormat::Rgba),
+                        ];
+                        let mut key: Vec<(usize, usize, u32, u32)> = vec![(0, active, w, h)];
+                        for &(li, ow, oh) in &active_overlays {
+                            let oc = &self.overlay_layers[li];
+                            specs.push(oc.clips[oc.active].clip.realtime_layer(
+                                ow,
+                                oh,
+                                PixelFormat::Rgba,
+                            ));
+                            key.push((li + 1, oc.active, ow, oh));
+                        }
+                        if self.composer.is_none() || self.composer_key != key {
+                            self.composer = RealtimeComposer::new(&specs).ok();
+                            self.composer_key = if self.composer.is_some() {
+                                key
                             } else {
-                                false
+                                Vec::new()
+                            };
+                        }
+
+                        // Push one frame per layer and pull the composited result.
+                        let composited: Option<Vec<u8>> = match self.composer.as_mut() {
+                            Some(composer) => {
+                                let mut ok = VideoFrame::from_rgba(w, h, self.rgba_a.clone())
+                                    .is_ok_and(|vf| composer.push_layer(0, &vf).is_ok());
+                                for (slot, &(li, ow, oh)) in active_overlays.iter().enumerate() {
+                                    if !ok {
+                                        break;
+                                    }
+                                    ok = VideoFrame::from_rgba(
+                                        ow,
+                                        oh,
+                                        self.overlay_layers[li].rgba.clone(),
+                                    )
+                                    .is_ok_and(|vf| composer.push_layer(slot + 1, &vf).is_ok());
+                                }
+                                if ok {
+                                    composer.pull().ok().flatten().and_then(|f| f.to_rgba())
+                                } else {
+                                    None
+                                }
                             }
-                        } else {
-                            false
+                            None => None,
                         };
 
+                        // Deliver: the composited frame, or the raw V1 as a fallback.
                         if let Some(sink) = self.sink.as_mut() {
-                            let pixels = if blended {
-                                &self.blend_buf
-                            } else {
-                                &self.rgba_a
-                            };
-                            sink.push_frame(pixels, w, h, timeline_pts);
+                            match &composited {
+                                Some(rgba) => sink.push_frame(rgba, w, h, timeline_pts),
+                                None => sink.push_frame(&self.rgba_a, w, h, timeline_pts),
+                            }
                         }
 
-                        if timeline_pts >= trans_start + trans_dur {
+                        // Advance past a completed transition.
+                        if in_trans && timeline_pts >= trans_start + trans_dur {
                             let old_active = self.active;
                             self.transition = None;
                             self.active = next_idx;
@@ -811,8 +844,6 @@ impl TimelineRunner {
                                 self.restart_audio_at(self.active, in_pt);
                             }
                         }
-                    } else if a_ok && let Some(sink) = self.sink.as_mut() {
-                        sink.push_frame(&self.rgba_a, w, h, timeline_pts);
                     }
 
                     let _ = self

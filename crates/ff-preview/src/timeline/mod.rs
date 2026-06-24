@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use ff_pipeline::Clip;
 use ff_pipeline::timeline::Timeline;
 
 use crate::audio::{AudioMixer, AudioTrackHandle};
@@ -113,6 +114,7 @@ impl TimelinePlayer {
             video_h: u32,
             speed: f64,
             opacity: f32,
+            clip: Clip,
         }
 
         let tracks = timeline.video_tracks();
@@ -172,6 +174,7 @@ impl TimelinePlayer {
                 video_h,
                 speed,
                 opacity: clip.opacity.clamp(0.0, 1.0),
+                clip: clip.clone(),
             });
         }
 
@@ -220,6 +223,7 @@ impl TimelinePlayer {
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
                 opacity: p.opacity,
+                clip: p.clip.clone(),
             });
         }
 
@@ -280,6 +284,7 @@ impl TimelinePlayer {
                     audio_track: None,
                     speed: clip.speed.max(0.01),
                     opacity: clip.opacity.clamp(0.0, 1.0),
+                    clip: clip.clone(),
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -417,6 +422,8 @@ impl TimelinePlayer {
             audio_mixer: mixer_arc.clone(),
             active_audio_cancel: initial_audio_cancel,
             active_audio_thread: initial_audio_thread,
+            composer: None,
+            composer_key: Vec::new(),
         };
 
         let handle = PlayerHandle::for_timeline(

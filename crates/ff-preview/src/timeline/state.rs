@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ff_pipeline::Clip;
+
 use crate::audio::AudioTrackHandle;
 use crate::playback::SwsRgbaConverter;
 use crate::playback::decode_buffer::DecodeBuffer;
@@ -39,9 +41,12 @@ pub(super) struct ClipState {
     /// Used to remap source-file PTS → timeline PTS in `run()`.
     pub(super) speed: f64,
     /// Per-clip opacity for overlay compositing (`1.0` = fully opaque).
-    /// Applied to the RGBA alpha channel after SWS conversion so that
-    /// `composite_over` blends at the correct transparency level.
+    /// V1 base opacity is pre-multiplied host-side; overlay opacity is applied by
+    /// the composer via [`Clip::realtime_layer`].
     pub(super) opacity: f32,
+    /// The source clip — provides the per-clip effect chain and blend mode for
+    /// the real-time compositor via [`Clip::realtime_layer`].
+    pub(super) clip: Clip,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
