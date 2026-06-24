@@ -40,9 +40,16 @@ pub(super) unsafe fn build_video_composition(
     canvas_width: u32,
     canvas_height: u32,
     background: Rgb,
+    frame_rate: f64,
     layers: &[VideoLayer],
 ) -> Result<FilterGraph, FilterError> {
     use std::ffi::CString;
+
+    // The canvas and every per-layer `fps` conform are generated at this rate.
+    // It must equal the rate the caller encodes at, or the composited video is
+    // stretched/compressed relative to the audio. `{}` keeps full f64 precision
+    // (FFmpeg parses it via av_d2q, matching the encoder's rational).
+    let fps_str = format!("{frame_rate}");
 
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
@@ -66,7 +73,7 @@ pub(super) unsafe fn build_video_composition(
     let g_ch = (background.g.clamp(0.0, 1.0) * 255.0) as u8;
     let b = (background.b.clamp(0.0, 1.0) * 255.0) as u8;
     let color_args_str =
-        format!("c=#{r:02x}{g_ch:02x}{b:02x}:s={canvas_width}x{canvas_height}:r=30");
+        format!("c=#{r:02x}{g_ch:02x}{b:02x}:s={canvas_width}x{canvas_height}:r={fps_str}");
     let Ok(color_args) = CString::new(color_args_str.as_str()) else {
         bail!(graph, "CString::new failed for color filter args");
     };
@@ -499,12 +506,15 @@ pub(super) unsafe fn build_video_composition(
                             bail!(graph, "CString::new failed for fps_spd name");
                         };
                         let mut fps_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-                        // Canvas is hardcoded to r=30; fps must match.
+                        // Must match the canvas rate (`fps_str`), not a hardcoded 30.
+                        let Ok(fps_args) = CString::new(format!("fps={fps_str}")) else {
+                            bail!(graph, "CString::new failed for fps args");
+                        };
                         let ret = ff_sys::avfilter_graph_create_filter(
                             &raw mut fps_ctx,
                             fps_filter,
                             fps_name.as_ptr(),
-                            c"fps=30".as_ptr(),
+                            fps_args.as_ptr(),
                             std::ptr::null_mut(),
                             graph,
                         );
