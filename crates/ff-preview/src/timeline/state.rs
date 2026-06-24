@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ff_format::VideoFrame;
 use ff_pipeline::Clip;
 
 use crate::audio::AudioTrackHandle;
@@ -69,6 +70,13 @@ pub(super) struct OverlayLayer {
     pub(super) active: usize,
     pub(super) sws: SwsRgbaConverter,
     pub(super) rgba: Vec<u8>,
+    /// Dimensions of the frame currently held in `rgba`, or `None` when nothing is
+    /// being shown. Lets the layer hold its current frame across presents (so a
+    /// low-fps overlay is not advanced once per present, which would speed it up).
+    pub(super) cur_dims: Option<(u32, u32)>,
+    /// A frame popped ahead of its presentation time, held until `timeline_pts`
+    /// reaches it. Decouples decode order from the present rate.
+    pub(super) pending: Option<VideoFrame>,
 }
 
 // ── AudioFadeConfig ───────────────────────────────────────────────────────────

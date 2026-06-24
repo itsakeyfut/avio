@@ -737,8 +737,10 @@ impl TimelineRunner {
                             std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
                         }
 
-                        // Decode each overlay layer's synced frame to rgba at its native
-                        // size (no stretch — matches the export overlay placement).
+                        // Update each overlay layer to the frame whose presentation
+                        // time has arrived, holding the current frame otherwise. This
+                        // advances overlays by PTS (not once per present), so a layer
+                        // whose fps differs from the timeline plays at the right speed.
                         let mut active_overlays: Vec<(usize, u32, u32)> = Vec::new();
                         for (li, layer) in self.overlay_layers.iter_mut().enumerate() {
                             let maybe_cidx = layer.clips.iter().position(|c| {
@@ -746,6 +748,8 @@ impl TimelineRunner {
                             });
                             let Some(cidx) = maybe_cidx else {
                                 layer.rgba.clear();
+                                layer.cur_dims = None;
+                                layer.pending = None;
                                 continue;
                             };
                             if cidx != layer.active {
@@ -753,23 +757,32 @@ impl TimelineRunner {
                                     + timeline_pts.saturating_sub(layer.clips[cidx].timeline_start);
                                 let _ = layer.clips[cidx].decode_buf.seek(local);
                                 layer.active = cidx;
+                                layer.cur_dims = None;
+                                layer.pending = None;
                             }
-                            let mut got: Option<(u32, u32)> = None;
-                            while let FrameResult::Frame(f) =
-                                layer.clips[cidx].decode_buf.pop_frame()
-                            {
-                                let f_pts = f.timestamp().as_duration();
-                                let clip_in = layer.clips[cidx].in_point;
-                                let tl_start = layer.clips[cidx].timeline_start;
-                                let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
-                                if v2_pts + Duration::from_millis(50) >= timeline_pts {
-                                    if layer.sws.convert(&f, &mut layer.rgba) {
-                                        got = Some((f.width(), f.height()));
-                                    }
+                            let clip_in = layer.clips[cidx].in_point;
+                            let tl_start = layer.clips[cidx].timeline_start;
+                            // Advance to the latest frame whose v2_pts <= timeline_pts.
+                            loop {
+                                let f = match layer.pending.take() {
+                                    Some(pf) => pf,
+                                    None => match layer.clips[cidx].decode_buf.pop_frame() {
+                                        FrameResult::Frame(f) => f,
+                                        _ => break,
+                                    },
+                                };
+                                let v2_pts =
+                                    tl_start + f.timestamp().as_duration().saturating_sub(clip_in);
+                                if v2_pts > timeline_pts {
+                                    // Not due yet — hold it for a later present.
+                                    layer.pending = Some(f);
                                     break;
                                 }
+                                if layer.sws.convert(&f, &mut layer.rgba) {
+                                    layer.cur_dims = Some((f.width(), f.height()));
+                                }
                             }
-                            match got {
+                            match layer.cur_dims {
                                 Some((ow, oh)) => active_overlays.push((li, ow, oh)),
                                 None => layer.rgba.clear(),
                             }

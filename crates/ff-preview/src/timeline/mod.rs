@@ -292,6 +292,8 @@ impl TimelinePlayer {
                 active: 0,
                 sws: SwsRgbaConverter::new(),
                 rgba: Vec::new(),
+                cur_dims: None,
+                pending: None,
             });
         }
 
