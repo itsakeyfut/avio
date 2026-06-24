@@ -640,10 +640,16 @@ pub(super) unsafe fn build_video_composition(
                 let Ok(cbl_name) = CString::new(format!("composite_blend{idx}")) else {
                     bail!(graph, "CString::new failed for composite blend name");
                 };
+                // `endall` on the last layer terminates output when its finite input
+                // EOFs (see the photographic blend branch); without it the blend runs
+                // forever against the infinite canvas.
+                let eof_action = if is_last { "endall" } else { "pass" };
                 let cbl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
-                    format!("all_expr={expr}")
+                    format!("all_expr={expr}:eof_action={eof_action}")
                 } else {
-                    format!("all_expr={expr}:all_opacity={opacity_initial:.6}")
+                    format!(
+                        "all_expr={expr}:all_opacity={opacity_initial:.6}:eof_action={eof_action}"
+                    )
                 };
                 let Ok(cbl_args) = CString::new(cbl_args_str.as_str()) else {
                     bail!(graph, "CString::new failed for composite blend args");
@@ -859,10 +865,18 @@ pub(super) unsafe fn build_video_composition(
                 bail!(graph, "CString::new failed for blend name");
             };
             let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
+            // Terminate the composition like the `overlay` path: `endall` on the
+            // last layer ends output when its (finite) input EOFs. Without this the
+            // `blend` filter's framesync defaults to `repeat` and runs forever
+            // against the infinite `color` canvas that earlier `pass` overlays
+            // forward — hanging the render.
+            let eof_action = if is_last { "endall" } else { "pass" };
             let bl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
-                format!("all_mode={mode_name}")
+                format!("all_mode={mode_name}:eof_action={eof_action}")
             } else {
-                format!("all_mode={mode_name}:all_opacity={opacity_initial:.6}")
+                format!(
+                    "all_mode={mode_name}:all_opacity={opacity_initial:.6}:eof_action={eof_action}"
+                )
             };
             let Ok(bl_args) = CString::new(bl_args_str.as_str()) else {
                 bail!(graph, "CString::new failed for blend args");
