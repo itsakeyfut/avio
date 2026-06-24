@@ -175,6 +175,7 @@ pub struct MultiTrackComposer {
     canvas_width: u32,
     canvas_height: u32,
     background: Rgb,
+    frame_rate: f64,
     layers: Vec<VideoLayer>,
     pending_transition: Option<ClipTransition>,
 }
@@ -190,6 +191,7 @@ impl MultiTrackComposer {
                 g: 0.0,
                 b: 0.0,
             },
+            frame_rate: 30.0,
             layers: Vec::new(),
             pending_transition: None,
         }
@@ -204,6 +206,21 @@ impl MultiTrackComposer {
         }
     }
 
+    /// Sets the output frame rate (frames per second) of the composition.
+    ///
+    /// The background canvas and the per-layer `fps` conform are generated at
+    /// this rate, so it MUST match the rate the caller encodes/muxes at —
+    /// otherwise the composited video is stretched or compressed by
+    /// `this_rate / encode_rate` while the audio stays correct, desyncing A/V.
+    /// Defaults to `30.0`.
+    #[must_use]
+    pub fn frame_rate(self, fps: f64) -> Self {
+        Self {
+            frame_rate: if fps > 0.0 { fps } else { 30.0 },
+            ..self
+        }
+    }
+
     /// Appends a video layer and returns the updated composer.
     ///
     /// If [`join_with_dissolve`](Self::join_with_dissolve) was called immediately before this,
@@ -214,6 +231,7 @@ impl MultiTrackComposer {
             canvas_width,
             canvas_height,
             background,
+            frame_rate,
             mut layers,
             pending_transition,
         } = self;
@@ -223,6 +241,7 @@ impl MultiTrackComposer {
             canvas_width,
             canvas_height,
             background,
+            frame_rate,
             layers,
             pending_transition: None,
         }
@@ -295,6 +314,7 @@ impl MultiTrackComposer {
                 self.canvas_width,
                 self.canvas_height,
                 self.background,
+                self.frame_rate,
                 &layers,
             )
         }

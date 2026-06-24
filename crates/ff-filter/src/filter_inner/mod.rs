@@ -19,6 +19,8 @@ mod push_pull;
 
 pub(crate) use build::add_and_link_step;
 pub(crate) use build::add_asetrate_resample_chain;
+pub(crate) use build::{add_blend_normal_step, add_blend_photographic_step, video_buffersrc_args};
+pub(crate) use convert::pixel_format_to_av;
 
 use std::ptr::NonNull;
 
@@ -200,6 +202,39 @@ impl FilterGraphInner {
             graph: Some(graph),
             audio_graph: None,
             src_ctxs: Vec::new(),
+            vsink_ctx: Some(vsink_ctx),
+            asink_ctx: None,
+            steps: Vec::new(),
+            hw: None,
+            hw_device_ctx: None,
+            loudness_buf: Vec::new(),
+            loudness_output: Vec::new(),
+            loudness_output_idx: 0,
+            loudness_pass2_done: false,
+            peak_buf: Vec::new(),
+            peak_output: Vec::new(),
+            peak_output_idx: 0,
+            peak_pass2_done: false,
+        }
+    }
+
+    /// Creates a pre-initialised inner for a video graph that has external
+    /// `buffersrc` inputs (one per `src_ctxs` slot) as well as a configured sink.
+    ///
+    /// Unlike [`with_prebuilt_video_graph`](Self::with_prebuilt_video_graph),
+    /// callers feed frames via [`push_video`] into the supplied buffersrc
+    /// contexts and pull composited frames from `vsink_ctx`. Used by
+    /// [`RealtimeComposer`](crate::RealtimeComposer). All pointers are owned by
+    /// the returned struct and freed on drop.
+    pub(crate) fn with_prebuilt_video_inputs(
+        graph: NonNull<ff_sys::AVFilterGraph>,
+        src_ctxs: Vec<Option<NonNull<ff_sys::AVFilterContext>>>,
+        vsink_ctx: NonNull<ff_sys::AVFilterContext>,
+    ) -> Self {
+        Self {
+            graph: Some(graph),
+            audio_graph: None,
+            src_ctxs,
             vsink_ctx: Some(vsink_ctx),
             asink_ctx: None,
             steps: Vec::new(),

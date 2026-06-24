@@ -51,6 +51,6 @@ pub use error::FilterError;
 pub use graph::{
     AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, DrawTextOptions, EqBand,
     FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, MultiTrackAudioMixer, MultiTrackComposer,
-    ProxySource, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator, VideoLayer, XfadeTransition,
-    YadifMode,
+    ProxySource, RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator,
+    VideoLayer, XfadeTransition, YadifMode,
 };

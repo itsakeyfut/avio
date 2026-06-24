@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ff_format::VideoFrame;
+use ff_pipeline::Clip;
+
 use crate::audio::AudioTrackHandle;
 use crate::playback::SwsRgbaConverter;
 use crate::playback::decode_buffer::DecodeBuffer;
@@ -39,9 +42,12 @@ pub(super) struct ClipState {
     /// Used to remap source-file PTS → timeline PTS in `run()`.
     pub(super) speed: f64,
     /// Per-clip opacity for overlay compositing (`1.0` = fully opaque).
-    /// Applied to the RGBA alpha channel after SWS conversion so that
-    /// `composite_over` blends at the correct transparency level.
+    /// V1 base opacity is pre-multiplied host-side; overlay opacity is applied by
+    /// the composer via [`Clip::realtime_layer`].
     pub(super) opacity: f32,
+    /// The source clip — provides the per-clip effect chain and blend mode for
+    /// the real-time compositor via [`Clip::realtime_layer`].
+    pub(super) clip: Clip,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
@@ -64,6 +70,13 @@ pub(super) struct OverlayLayer {
     pub(super) active: usize,
     pub(super) sws: SwsRgbaConverter,
     pub(super) rgba: Vec<u8>,
+    /// Dimensions of the frame currently held in `rgba`, or `None` when nothing is
+    /// being shown. Lets the layer hold its current frame across presents (so a
+    /// low-fps overlay is not advanced once per present, which would speed it up).
+    pub(super) cur_dims: Option<(u32, u32)>,
+    /// A frame popped ahead of its presentation time, held until `timeline_pts`
+    /// reaches it. Decouples decode order from the present rate.
+    pub(super) pending: Option<VideoFrame>,
 }
 
 // ── AudioFadeConfig ───────────────────────────────────────────────────────────

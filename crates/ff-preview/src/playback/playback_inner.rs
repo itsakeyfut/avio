@@ -72,8 +72,8 @@ impl SwsRgbaConverter {
     /// [`convert`](Self::convert). When the dimensions differ, `libswscale` performs
     /// bilinear rescaling so the output always matches the requested canvas size.
     ///
-    /// This is used by overlay layers (V2, V3, …) to match the primary video track's
-    /// resolution before `composite_over` is applied.
+    /// Rescales a frame to an explicit target size (used where a fixed canvas
+    /// resolution is required).
     pub(crate) fn convert_to(
         &mut self,
         frame: &VideoFrame,
