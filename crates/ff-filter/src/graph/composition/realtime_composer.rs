@@ -50,8 +50,9 @@ pub struct RealtimeLayer {
 /// Composites externally-decoded frames from several layers into one frame,
 /// reusing a single built filter graph across frames.
 ///
-/// Build once with [`new`](Self::new); then per output frame, [`push_layer`] one
-/// frame for every layer and [`pull`] the composited result. The output frame is
+/// Build once with [`new`](Self::new); then per output frame,
+/// [`push_layer`](Self::push_layer) one frame for every layer and
+/// [`pull`](Self::pull) the composited result. The output frame is
 /// `rgba`. The graph (and any `lut3d` file its effects load) is built once, so it
 /// is suitable for real-time playback.
 pub struct RealtimeComposer {
