@@ -3,29 +3,6 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 
-/// Alpha-composite `overlay` (RGBA) over `base` (RGBA) in place.
-///
-/// Uses straight-alpha blending: for each pixel `b[i] = (1 − a) · base[i] + a · overlay[i]`
-/// where `a = overlay_alpha / 255`. If the buffers differ in length (different frame
-/// resolutions), `base` is returned unchanged — the caller should ensure both frames have
-/// been scaled to the same canvas size.
-#[allow(clippy::cast_possible_truncation)]
-pub(super) fn composite_over(base: &mut [u8], overlay: &[u8]) {
-    if base.len() != overlay.len() {
-        return;
-    }
-    for (b, o) in base.chunks_exact_mut(4).zip(overlay.chunks_exact(4)) {
-        let a = f32::from(o[3]) / 255.0;
-        if a > 0.0 {
-            let ia = 1.0_f32 - a;
-            b[0] = (f32::from(b[0]) * ia + f32::from(o[0]) * a) as u8;
-            b[1] = (f32::from(b[1]) * ia + f32::from(o[1]) * a) as u8;
-            b[2] = (f32::from(b[2]) * ia + f32::from(o[2]) * a) as u8;
-            b[3] = 255;
-        }
-    }
-}
-
 /// Blend two packed-RGBA buffers: `dst[i] = (1 − alpha) · a[i] + alpha · b[i]`.
 ///
 /// If `a` and `b` have different lengths, `dst` is set to a copy of `a`.
