@@ -262,7 +262,11 @@ impl Timeline {
             // the xfade `offset` arg when the next clip has a transition.
             let mut prev_end_by_track: HashMap<usize, f64> = HashMap::new();
 
-            let mut composer = MultiTrackComposer::new(canvas_width, canvas_height);
+            // Generate the canvas/conform at the timeline rate — the same rate
+            // the encoder uses below. A hardcoded mismatch stretches the video
+            // relative to the audio for non-30fps timelines.
+            let mut composer =
+                MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
             for (track_idx, track) in video_tracks.iter().enumerate() {
                 for clip in track {
                     // Wire xfade from the preceding clip on this track.
