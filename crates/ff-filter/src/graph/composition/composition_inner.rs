@@ -1037,6 +1037,189 @@ pub(super) unsafe fn build_video_composition(
     }
 }
 
+// ── Real-time composition graph builder ───────────────────────────────────────
+
+/// Builds a `buffersrc`-fed composition graph for real-time preview.
+///
+/// Unlike [`build_video_composition`] (which decodes internally via `movie`
+/// sources and is pulled to completion), this creates one `buffersrc` per layer
+/// so a host feeds externally-decoded frames per layer per tick. Layer 0 is the
+/// base (its [`effects`](super::realtime_composer::RealtimeLayer::effects) are
+/// applied directly); layers 1.. are composited on top via the **same**
+/// `add_blend_normal_step` / `add_blend_photographic_step` primitives the export
+/// path uses, so the per-clip effects and blend modes match the rendered output.
+/// Output is `rgba` for direct read-back.
+///
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as [`build_video_composition`].
+pub(super) unsafe fn build_realtime_composition(
+    layers: &[super::realtime_composer::RealtimeLayer],
+) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    if layers.is_empty() {
+        return Err(FilterError::CompositionFailed {
+            reason: "no layers".to_string(),
+        });
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // ── One buffersrc per layer ───────────────────────────────────────────────
+    let buffer_filter = ff_sys::avfilter_get_by_name(c"buffer".as_ptr());
+    if buffer_filter.is_null() {
+        bail!(graph, "filter not found: buffer");
+    }
+    let mut src_ctxs: Vec<Option<NonNull<ff_sys::AVFilterContext>>> =
+        Vec::with_capacity(layers.len());
+    for (idx, layer) in layers.iter().enumerate() {
+        let pix = crate::filter_inner::pixel_format_to_av(layer.pixel_format);
+        let args_str = crate::filter_inner::video_buffersrc_args(layer.width, layer.height, pix);
+        let Ok(args) = CString::new(args_str.as_str()) else {
+            bail!(graph, "CString::new failed for buffersrc args");
+        };
+        let Ok(name) = CString::new(format!("in{idx}")) else {
+            bail!(graph, "CString::new failed for buffersrc name");
+        };
+        let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut ctx,
+            buffer_filter,
+            name.as_ptr(),
+            args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create buffersrc layer={idx} code={ret}")
+            );
+        }
+        src_ctxs.push(Some(NonNull::new_unchecked(ctx)));
+    }
+
+    // ── Base = layer 0's buffersrc with its effects applied ───────────────────
+    let Some(base_src) = src_ctxs[0] else {
+        bail!(graph, "layer 0 buffersrc missing");
+    };
+    let mut acc = base_src.as_ptr();
+    for (j, step) in layers[0].effects.iter().enumerate() {
+        acc = match crate::filter_inner::add_and_link_step(graph, acc, step, j, "rt_base") {
+            Ok(c) => c,
+            Err(e) => bail!(graph, format!("base layer effect failed: {e:?}")),
+        };
+    }
+
+    // ── Composite layers 1.. onto the accumulator ─────────────────────────────
+    for idx in 1..layers.len() {
+        let layer = &layers[idx];
+        let Some(top_src) = src_ctxs[idx] else {
+            bail!(graph, format!("missing buffersrc for layer={idx}"));
+        };
+        acc = if layer.blend_mode == BlendMode::Normal {
+            match crate::filter_inner::add_blend_normal_step(
+                graph,
+                acc,
+                top_src.as_ptr(),
+                &layer.effects,
+                layer.opacity,
+                ff_format::AlphaMode::Straight,
+                idx,
+            ) {
+                Ok(c) => c,
+                Err(e) => bail!(graph, format!("normal blend failed layer={idx}: {e:?}")),
+            }
+        } else {
+            let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
+            match crate::filter_inner::add_blend_photographic_step(
+                graph,
+                acc,
+                top_src.as_ptr(),
+                &layer.effects,
+                mode_name,
+                layer.opacity,
+                idx,
+            ) {
+                Ok(c) => c,
+                Err(e) => bail!(graph, format!("blend failed layer={idx}: {e:?}")),
+            }
+        };
+    }
+
+    // ── format=rgba: constrain output for direct read-back ────────────────────
+    let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if vfmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut vfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vfmt_ctx,
+        vfmt_filter,
+        c"rtformat".as_ptr(),
+        c"pix_fmts=rgba".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(acc, 0, vfmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: last→format");
+    }
+
+    // ── Video buffersink ──────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"vsink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create buffersink code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(vfmt_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: format→buffersink");
+    }
+
+    // ── Configure graph ───────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_video_inputs(graph_nn, src_ctxs, sink_nn);
+    log::info!("realtime composition graph built layers={}", layers.len());
+    Ok(FilterGraph::from_prebuilt(inner))
+}
+
 // ── Audio mix graph builder ───────────────────────────────────────────────────
 
 pub(super) unsafe fn build_audio_mix(

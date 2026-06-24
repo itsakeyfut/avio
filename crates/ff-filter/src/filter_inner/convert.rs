@@ -76,7 +76,7 @@ pub(super) fn audio_ticks_to_timestamp(pts_raw: i64, sample_rate: u32) -> Timest
 // ── Format conversion helpers ─────────────────────────────────────────────────
 
 /// Convert a [`PixelFormat`] to the corresponding `AVPixelFormat` integer.
-pub(super) fn pixel_format_to_av(fmt: PixelFormat) -> c_int {
+pub(crate) fn pixel_format_to_av(fmt: PixelFormat) -> c_int {
     match fmt {
         PixelFormat::Yuv420p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P,
         PixelFormat::Rgb24 => ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24,

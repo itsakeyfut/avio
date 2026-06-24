@@ -781,7 +781,7 @@ fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
-pub(super) unsafe fn add_blend_normal_step(
+pub(crate) unsafe fn add_blend_normal_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
@@ -909,7 +909,7 @@ pub(super) unsafe fn add_blend_normal_step(
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
-pub(super) unsafe fn add_blend_photographic_step(
+pub(crate) unsafe fn add_blend_photographic_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
@@ -1676,7 +1676,7 @@ pub(super) unsafe fn add_alphamerge_step(
 ///
 /// The format follows libavfilter's `buffer` filter parameter syntax:
 /// `video_size=WxH:pix_fmt=N:time_base=NUM/DEN:pixel_aspect=1/1`.
-pub(super) fn video_buffersrc_args(
+pub(crate) fn video_buffersrc_args(
     width: u32,
     height: u32,
     pix_fmt: std::os::raw::c_int,

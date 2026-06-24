@@ -13,10 +13,12 @@ mod clip_joiner;
 pub(super) mod composition_inner;
 mod multi_track_composer;
 mod multi_track_mixer;
+mod realtime_composer;
 mod video_concatenator;
 
 pub use audio_concatenator::AudioConcatenator;
 pub use clip_joiner::ClipJoiner;
 pub use multi_track_composer::{ClipTransition, MultiTrackComposer, ProxySource, VideoLayer};
 pub use multi_track_mixer::{AudioTrack, MultiTrackAudioMixer};
+pub use realtime_composer::{RealtimeComposer, RealtimeLayer};
 pub use video_concatenator::VideoConcatenator;
