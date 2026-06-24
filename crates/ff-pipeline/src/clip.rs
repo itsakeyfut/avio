@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, CompositeOp, FilterGraph, FilterStep, XfadeTransition};
+use ff_filter::{BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer, XfadeTransition};
 use ff_format::{PixelFormat, VideoFrame};
 
 use crate::error::PipelineError;
@@ -295,6 +295,35 @@ impl Clip {
         input_format: PixelFormat,
     ) -> Result<VideoEffectRenderer, PipelineError> {
         VideoEffectRenderer::new(self, input_format)
+    }
+
+    /// Builds a [`RealtimeLayer`] for compositing this clip in a
+    /// [`RealtimeComposer`](ff_filter::RealtimeComposer), at the given
+    /// decoded-frame dimensions and pixel format.
+    ///
+    /// The layer's effect chain is [`video_effect_chain`](Self::video_effect_chain)
+    /// — the same per-clip steps `Timeline::render()` applies — and its `opacity`
+    /// and `blend_mode` come straight from this clip, so a preview composited from
+    /// these layers matches the exported result. This is the single source of the
+    /// clip-to-layer mapping for the real-time preview path.
+    ///
+    /// Temporal `Speed` is intentionally excluded (the caller selects frames by
+    /// presentation time); see [`video_effect_chain`](Self::video_effect_chain).
+    #[must_use]
+    pub fn realtime_layer(
+        &self,
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+    ) -> RealtimeLayer {
+        RealtimeLayer {
+            width,
+            height,
+            pixel_format,
+            effects: self.video_effect_chain(),
+            opacity: self.opacity,
+            blend_mode: self.blend_mode,
+        }
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
@@ -896,5 +925,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn realtime_layer_should_map_clip_fields() {
+        use ff_filter::BlendMode;
+        let clip = Clip::new("v.mp4")
+            .with_color_correction(0.1, 1.0, 1.0)
+            .with_video_effect(FilterStep::Hue { degrees: 30.0 })
+            .with_opacity(0.5)
+            .with_blend_mode(BlendMode::Screen);
+        let layer = clip.realtime_layer(640, 480, PixelFormat::Yuv420p);
+        assert_eq!(layer.width, 640);
+        assert_eq!(layer.height, 480);
+        assert_eq!(layer.pixel_format, PixelFormat::Yuv420p);
+        assert!((layer.opacity - 0.5).abs() < 1e-6);
+        assert_eq!(layer.blend_mode, BlendMode::Screen);
+        // The layer's effects are exactly `video_effect_chain()` (Eq + Hue).
+        assert!(matches!(
+            layer.effects.as_slice(),
+            [FilterStep::Eq { .. }, FilterStep::Hue { .. }]
+        ));
     }
 }
