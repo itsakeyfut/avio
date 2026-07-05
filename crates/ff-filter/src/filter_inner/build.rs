@@ -108,6 +108,32 @@ pub(crate) unsafe fn add_and_link_step(
     index: usize,
     prefix: &str,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    // Single-stream compound steps expand to a multi-filter subgraph and must be
+    // dispatched to their dedicated builders. The single-filter path below would
+    // otherwise pass the whole subgraph string as one filter's args (e.g. create
+    // a `split` filter named "split" with args `split=2[base][hl];curves…;blend…`,
+    // failing with "No such option: split"). Callers that build a graph from a
+    // step list (single-source `FilterGraphInner`) special-case these before
+    // reaching here; callers that drive steps directly (e.g. the realtime
+    // compositor) rely on this dispatch.
+    match step {
+        FilterStep::Glow {
+            threshold,
+            radius,
+            intensity,
+        } => return add_glow_step(graph, prev_ctx, *threshold, *radius, *intensity, index),
+        FilterStep::FeatherMask { radius } => {
+            return add_feather_mask_step(graph, prev_ctx, *radius, index);
+        }
+        FilterStep::OverlayImage {
+            path,
+            x,
+            y,
+            opacity,
+        } => return add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, index),
+        _ => {}
+    }
+
     let filter_name =
         std::ffi::CString::new(step.filter_name()).map_err(|_| FilterError::BuildFailed)?;
     let filter = ff_sys::avfilter_get_by_name(filter_name.as_ptr());
