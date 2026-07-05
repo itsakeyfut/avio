@@ -123,6 +123,25 @@ mod tests {
         // `add_and_link_step`, which must dispatch compound steps to their builders
         // rather than create a single `split` filter with the whole subgraph as
         // args (which failed with "No such option: split").
+        //
+        // Probe-gate: a no-effect base layer needs only `buffer`/`format`/
+        // `buffersink`. CI's Linux FFmpeg is built with no filters, so even that
+        // fails to build there — skip. Where it builds, the filter set is present,
+        // so the `Glow` layer *must* also build; that is the regression assertion
+        // (it fails before the fix, on any host with filters).
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
         let layer = RealtimeLayer {
             width: 8,
             height: 8,
@@ -136,7 +155,7 @@ mod tests {
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[layer])
-            .expect("Glow-effect layer graph should build once compound steps dispatch");
+            .expect("Glow compound step must dispatch and build once FFmpeg filters exist");
         let frame = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
         if composer.push_layer(0, &frame).is_err() {
             println!("Skipping: push failed (FFmpeg unavailable?)");
