@@ -150,7 +150,14 @@ impl TimelineRunner {
     /// through the cached [`RealtimeComposer`], applying each layer's effects and
     /// blend mode. `base_id` identifies the base for cache invalidation — the V1
     /// clip index, or `usize::MAX` for the gap-fill black base. Returns the
-    /// composited RGBA frame, or `None` on failure.
+    /// composited RGBA frame together with its actual `(width, height)`, or `None`
+    /// on failure.
+    ///
+    /// The composited size can differ from `base_w`/`base_h` when the base layer's
+    /// effect chain resizes the frame (`Crop`, `Scale`, `Pad`, `FitToAspect`), so
+    /// callers must push the returned dimensions to the sink rather than the
+    /// decoded ones — otherwise the buffer length no longer matches the reported
+    /// size and the frame is dropped.
     fn composite_frame(
         &mut self,
         base_layer: RealtimeLayer,
@@ -159,7 +166,7 @@ impl TimelineRunner {
         base_w: u32,
         base_h: u32,
         overlays: &[(usize, u32, u32)],
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, u32, u32)> {
         let mut specs = vec![base_layer];
         let mut key: Vec<(usize, usize, u32, u32)> = vec![(0, base_id, base_w, base_h)];
         for &(li, ow, oh) in overlays {
@@ -189,7 +196,9 @@ impl TimelineRunner {
                 return None;
             }
         }
-        composer.pull().ok().flatten().and_then(|f| f.to_rgba())
+        let f = composer.pull().ok().flatten()?;
+        let (w, h) = (f.width(), f.height());
+        f.to_rgba().map(|rgba| (rgba, w, h))
     }
 
     /// A/V sync presentation loop.
@@ -727,7 +736,9 @@ impl TimelineRunner {
                                     self.event_tx.try_send(PlayerEvent::PositionUpdate(gap_pts));
                                 if let Some(sink) = self.sink.as_mut() {
                                     match &gap_composited {
-                                        Some(rgba) => sink.push_frame(rgba, gw, gh, gap_pts),
+                                        Some((rgba, cw, ch)) => {
+                                            sink.push_frame(rgba, *cw, *ch, gap_pts)
+                                        }
                                         None => sink.push_frame(&self.gap_buf, gw, gh, gap_pts),
                                     }
                                 }
@@ -836,7 +847,9 @@ impl TimelineRunner {
                         // Deliver: the composited frame, or the raw V1 as a fallback.
                         if let Some(sink) = self.sink.as_mut() {
                             match &composited {
-                                Some(rgba) => sink.push_frame(rgba, w, h, timeline_pts),
+                                Some((rgba, cw, ch)) => {
+                                    sink.push_frame(rgba, *cw, *ch, timeline_pts)
+                                }
                                 None => sink.push_frame(&self.rgba_a, w, h, timeline_pts),
                             }
                         }

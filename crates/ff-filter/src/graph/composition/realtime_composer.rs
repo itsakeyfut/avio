@@ -247,4 +247,47 @@ mod tests {
             Err(e) => println!("Skipping: {e}"),
         }
     }
+
+    #[test]
+    fn base_layer_crop_resizes_the_output_frame() {
+        // A base-layer `Crop` shrinks the composited frame: the output must carry
+        // the cropped dimensions (not the pushed 8×8), and its RGBA buffer length
+        // must equal `width * height * 4`. Consumers that report the decoded size
+        // instead of this one would mis-tag the buffer and drop the frame.
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::Crop {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 6,
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let frame = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 4);
+                assert_eq!(out.height(), 6);
+                let rgba = out.to_rgba().expect("rgba");
+                assert_eq!(rgba.len(), 4 * 6 * 4);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
 }
