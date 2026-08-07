@@ -15,8 +15,8 @@ mod fixtures;
 use ff_encode::{
     AudioCodec, Av1Options, Av1Usage, BitrateMode, DnxhdOptions, DnxhdVariant, EncodeError,
     H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
-    OutputContainer, Preset, ProResOptions, ProResProfile, SvtAv1Options, VideoCodec,
-    VideoCodecOptions, VideoEncoder, Vp9Options,
+    HardwareEncoder, OutputContainer, Preset, ProResOptions, ProResProfile, SvtAv1Options,
+    VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 use ff_format::PixelFormat;
 use fixtures::{
@@ -307,6 +307,7 @@ fn crf_h264_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23)) // CRF 23 — default quality for H.264
         .preset(Preset::Ultrafast)
         .build();
@@ -1138,6 +1139,7 @@ fn pixel_format_yuv420p10le_on_h264_should_be_accepted() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23))
         .pixel_format(PixelFormat::Yuv420p10le)
         .build();
@@ -1608,6 +1610,7 @@ fn h264_high_profile_level41_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .preset(Preset::Ultrafast)
         .codec_options(opts)
         .build();
@@ -1692,6 +1695,7 @@ fn h264_veryslow_preset_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(opts)
         .build();
 
@@ -1733,6 +1737,7 @@ fn h264_zerolatency_tune_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(opts)
         .build();
 
@@ -1847,6 +1852,7 @@ fn hdr10_metadata_on_h264_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23))
         .hdr10_metadata(hdr)
         .build();
@@ -1920,6 +1926,7 @@ fn color_transfer_bt709_on_h264_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23))
         .color_space(ColorSpace::Bt709)
         .color_transfer(ColorTransfer::Bt709)
@@ -2137,6 +2144,7 @@ fn avi_h264_mp3_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23))
         .preset(Preset::Ultrafast)
         .audio(44100, 2)
@@ -2224,6 +2232,7 @@ fn mov_h264_aac_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .bitrate_mode(BitrateMode::Crf(23))
         .preset(Preset::Ultrafast)
         .audio(44100, 2)
