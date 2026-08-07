@@ -273,6 +273,46 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_fit_to_aspect_is_scaled_and_padded() {
+        // Regression: `FitToAspect` is a compound scale+pad. The realtime compositor
+        // used to apply only the scale, so the frame was never padded to the target
+        // canvas. A 640×360 (16:9) base fitted to 1080×1920 (9:16) must be scaled to
+        // fit (1080×608) *and* padded to the full 1080×1920, not left at 1080×608.
+        let base = RealtimeLayer {
+            width: 640,
+            height: 360,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::FitToAspect {
+                width: 1080,
+                height: 1920,
+                color: "black".to_string(),
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let frame = VideoFrame::from_rgba(640, 360, vec![120u8; 640 * 360 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 1080);
+                assert_eq!(out.height(), 1920);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn two_layer_composite_should_produce_rgba_frame() {
         // 4×4 RGBA base + overlay; skip-guard on FFmpeg availability.
         let layer = |op: f32| RealtimeLayer {

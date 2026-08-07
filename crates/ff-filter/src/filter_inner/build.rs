@@ -131,6 +131,11 @@ pub(crate) unsafe fn add_and_link_step(
             y,
             opacity,
         } => return add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, index),
+        FilterStep::FitToAspect {
+            width,
+            height,
+            color,
+        } => return add_fit_to_aspect_step(graph, prev_ctx, *width, *height, color, index),
         _ => {}
     }
 
@@ -318,6 +323,56 @@ pub(super) unsafe fn add_fit_to_aspect_pad(
         return Err(FilterError::BuildFailed);
     }
     Ok(ctx)
+}
+
+/// Build the full [`FilterStep::FitToAspect`] compound: a `scale`
+/// (`force_original_aspect_ratio=decrease`, preserving the source aspect) followed
+/// by a centre-[`pad`](add_fit_to_aspect_pad) onto the `width × height` canvas.
+///
+/// Dispatched from [`add_and_link_step`] so every caller — the single-source graph
+/// builder and the real-time compositor alike — gets both filters. (The compositor
+/// previously received only the `scale`, so the frame was never padded to the canvas.)
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same `AVFilterGraph`.
+pub(super) unsafe fn add_fit_to_aspect_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    width: u32,
+    height: u32,
+    color: &str,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+    if scale_filter.is_null() {
+        log::warn!("filter not found name=scale (fit_to_aspect)");
+        return Err(FilterError::BuildFailed);
+    }
+    let name =
+        std::ffi::CString::new(format!("fitscale{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let args_str = format!("w={width}:h={height}:force_original_aspect_ratio=decrease");
+    let args = std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut scale_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut scale_ctx,
+        scale_filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=scale args={args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, scale_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    add_fit_to_aspect_pad(graph, scale_ctx, width, height, color, index)
 }
 
 // ── Speed (atempo chain) ──────────────────────────────────────────────────────
@@ -2329,20 +2384,8 @@ impl FilterGraphInner {
                 };
             }
 
-            // FitToAspect is a compound step: the scale filter (added by
-            // add_and_link_step above) preserves the source aspect ratio; the
-            // pad filter added here centres the scaled frame on the target canvas.
-            if let FilterStep::FitToAspect {
-                width,
-                height,
-                color,
-            } = step
-            {
-                prev_ctx = match add_fit_to_aspect_pad(graph, prev_ctx, *width, *height, color, i) {
-                    Ok(ctx) => ctx,
-                    Err(e) => bail!(e),
-                };
-            }
+            // FitToAspect (scale + centre-pad) is built as a single compound step
+            // by `add_and_link_step` above, so no extra pad is added here.
 
             // LumaKey with invert=true appends a geq filter that negates the
             // alpha channel, turning the "key out pixels matching threshold"
