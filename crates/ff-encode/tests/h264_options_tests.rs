@@ -7,7 +7,8 @@
 mod fixtures;
 
 use ff_encode::{
-    H264Options, H264Preset, H264Profile, H264Tune, VideoCodec, VideoCodecOptions, VideoEncoder,
+    H264Options, H264Preset, H264Profile, H264Tune, HardwareEncoder, VideoCodec, VideoCodecOptions,
+    VideoEncoder,
 };
 use ff_format::codec::VideoCodec as FmtVideoCodec;
 use fixtures::{
@@ -54,6 +55,7 @@ fn h264_high_profile_level41_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(1920, 1080, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(opts)
         .build();
 
@@ -107,6 +109,7 @@ fn h264_veryslow_preset_should_produce_output_no_larger_than_ultrafast() {
     let result = VideoEncoder::create(&veryslow_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(VideoCodecOptions::H264(H264Options {
             preset: Some(H264Preset::Veryslow),
             ..H264Options::default()
@@ -135,6 +138,7 @@ fn h264_veryslow_preset_should_produce_output_no_larger_than_ultrafast() {
     let mut enc_uf = VideoEncoder::create(&ultrafast_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(VideoCodecOptions::H264(H264Options {
             preset: Some(H264Preset::Ultrafast),
             ..H264Options::default()
@@ -178,6 +182,7 @@ fn h264_tune_grain_should_be_accepted_without_error() {
     let result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(opts)
         .build();
 
@@ -222,6 +227,7 @@ fn h264_invalid_level_should_not_panic() {
     let build_result = VideoEncoder::create(&output_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
         .codec_options(opts)
         .build();
 
