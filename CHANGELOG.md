@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.1] - 2026-08-07
+
+This release unifies the preview and export compositing paths on a single `RealtimeComposer` and ships the fixes uncovered along the way, plus the `wgpu` 30 upgrade for the GPU renderer.
+
+### Changed
+
+#### ff-render
+- Update `wgpu` from 29 to 30: `RequestAdapterOptions` gains an `apply_limit_buckets` field and `BufferSlice::get_mapped_range` now returns a `Result` ([#1256](https://github.com/itsakeyfut/avio/issues/1256))
+
+### Added
+
+#### ff-filter / ff-pipeline / ff-preview
+- Unify preview and export compositing on a single `RealtimeComposer`, so `Timeline::render()` and the timeline preview no longer drift between two independent multi-track compositor implementations ([#1215](https://github.com/itsakeyfut/avio/issues/1215))
+
+#### avio
+- Re-export the `render` feature surface on the `avio` facade under the `render` namespace ([#1170](https://github.com/itsakeyfut/avio/issues/1170))
+
+### Fixed
+
+#### ff-filter
+- `add_and_link_step` failed on compound `FilterStep`s, so the realtime compositor could not build `Glow` ([#1252](https://github.com/itsakeyfut/avio/issues/1252))
+- `MultiTrackComposer` non-`Normal` blend modes failed to configure when layers differed in size ([#1248](https://github.com/itsakeyfut/avio/issues/1248))
+- Multi-track export hung forever because `blend`/`composite` layers omitted `eof_action` against the infinite canvas ([#1250](https://github.com/itsakeyfut/avio/issues/1250))
+- `MultiTrackComposer` canvas was hardcoded to 30 fps, stretching non-30fps exports and desyncing audio and video ([#1251](https://github.com/itsakeyfut/avio/issues/1251))
+
+#### ff-preview
+- Timeline preview dropped dimension-changing base-layer effects (`Crop` / `Scale` / `Pad`) by pushing the decoded `width` / `height` for a resized frame, freezing the monitor while audio kept playing ([#1260](https://github.com/itsakeyfut/avio/issues/1260))
+- Timeline preview overlay and gap-fill layers played too fast — one source frame was consumed per present instead of by PTS ([#1249](https://github.com/itsakeyfut/avio/issues/1249))
+
+---
+
 ## [0.15.0] - 2026-06-13
 
 This release canonicalizes avio's public enums to FFmpeg's filter-argument tokens. **Breaking:** the colour metadata types and `BlendMode` are redesigned, and Porter-Duff compositing is separated into a new `CompositeOp` type.
