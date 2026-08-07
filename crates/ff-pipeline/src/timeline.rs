@@ -53,6 +53,10 @@ use crate::progress::Progress;
 pub struct Timeline {
     pub(crate) canvas_width: u32,
     pub(crate) canvas_height: u32,
+    /// `true` when the caller set the canvas via [`TimelineBuilder::canvas`] (as
+    /// opposed to it being auto-probed from the first clip). Lets consumers such
+    /// as the real-time preview know a deliberate output aspect was requested.
+    pub(crate) canvas_explicit: bool,
     pub(crate) frame_rate: f64,
     /// `video_tracks[track_idx][clip_idx]`; track 0 = bottom layer.
     pub(crate) video_tracks: Vec<Vec<Clip>>,
@@ -94,6 +98,18 @@ impl Timeline {
     /// Returns the canvas height in pixels.
     pub fn canvas_height(&self) -> u32 {
         self.canvas_height
+    }
+
+    /// Returns the canvas dimensions **only when explicitly set** via
+    /// [`TimelineBuilder::canvas`], or `None` when they were auto-probed from the
+    /// first clip. Consumers that reframe to a deliberate output aspect (e.g. the
+    /// real-time preview) use this to distinguish an intended canvas from a default.
+    pub fn explicit_canvas(&self) -> Option<(u32, u32)> {
+        if self.canvas_explicit {
+            Some((self.canvas_width, self.canvas_height))
+        } else {
+            None
+        }
     }
 
     /// Returns the frame rate in frames per second.
@@ -190,6 +206,7 @@ impl Timeline {
         let Timeline {
             canvas_width,
             canvas_height,
+            canvas_explicit: _,
             frame_rate,
             video_tracks,
             audio_tracks,
@@ -683,11 +700,13 @@ impl TimelineBuilder {
             return Err(PipelineError::NoInput);
         }
 
+        let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
         let (canvas_width, canvas_height, frame_rate) = self.resolve_canvas_and_fps()?;
 
         Ok(Timeline {
             canvas_width,
             canvas_height,
+            canvas_explicit,
             frame_rate,
             video_tracks: self.video_tracks,
             audio_tracks: self.audio_tracks,
