@@ -249,6 +249,77 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_crop_then_scale_zooms_into_the_cropped_region() {
+        // Crop the right half then scale back to full size ("crop & zoom"). The
+        // top-left output pixel (black in the source's left half) must become the
+        // white of the cropped right half — proving crop+scale actually resamples.
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![
+                FilterStep::Crop {
+                    x: 4,
+                    y: 0,
+                    width: 4,
+                    height: 8,
+                },
+                FilterStep::Scale {
+                    width: 8,
+                    height: 8,
+                    algorithm: crate::graph::types::ScaleAlgorithm::Bilinear,
+                },
+            ],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        // Left half (cols 0..4) black, right half (cols 4..8) white.
+        let mut data = vec![0u8; 8 * 8 * 4];
+        for row in 0..8 {
+            for col in 4..8 {
+                let p = (row * 8 + col) * 4;
+                data[p] = 255;
+                data[p + 1] = 255;
+                data[p + 2] = 255;
+                data[p + 3] = 255;
+            }
+        }
+        for row in 0..8 {
+            for col in 0..4 {
+                data[(row * 8 + col) * 4 + 3] = 255; // opaque black
+            }
+        }
+        let frame = VideoFrame::from_rgba(8, 8, data).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 8);
+                assert_eq!(out.height(), 8);
+                let rgba = out.to_rgba().expect("rgba");
+                // Top-left pixel: source left half was black; after cropping to the
+                // right (white) half and scaling up it must be near-white.
+                assert!(
+                    rgba[0] > 200,
+                    "expected top-left to be white after crop+zoom, got {}",
+                    rgba[0]
+                );
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn base_layer_crop_resizes_the_output_frame() {
         // A base-layer `Crop` shrinks the composited frame: the output must carry
         // the cropped dimensions (not the pushed 8×8), and its RGBA buffer length

@@ -737,7 +737,7 @@ impl TimelineRunner {
                                 if let Some(sink) = self.sink.as_mut() {
                                     match &gap_composited {
                                         Some((rgba, cw, ch)) => {
-                                            sink.push_frame(rgba, *cw, *ch, gap_pts)
+                                            sink.push_frame(rgba, *cw, *ch, gap_pts);
                                         }
                                         None => sink.push_frame(&self.gap_buf, gw, gh, gap_pts),
                                     }
@@ -848,7 +848,7 @@ impl TimelineRunner {
                         if let Some(sink) = self.sink.as_mut() {
                             match &composited {
                                 Some((rgba, cw, ch)) => {
-                                    sink.push_frame(rgba, *cw, *ch, timeline_pts)
+                                    sink.push_frame(rgba, *cw, *ch, timeline_pts);
                                 }
                                 None => sink.push_frame(&self.rgba_a, w, h, timeline_pts),
                             }
