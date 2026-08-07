@@ -68,11 +68,28 @@ impl RealtimeComposer {
     /// Returns [`FilterError::CompositionFailed`] when `layers` is empty or the
     /// underlying `FFmpeg` graph cannot be built.
     pub fn new(layers: &[RealtimeLayer]) -> Result<Self, FilterError> {
+        Self::with_canvas(layers, None)
+    }
+
+    /// Like [`new`](Self::new), but composites onto a fixed project canvas: the
+    /// output is letterboxed/pillarboxed to `canvas = (width, height)` so the
+    /// composited frame matches the project's output aspect. `None` composites at
+    /// the base layer's own size (identical to [`new`](Self::new)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::CompositionFailed`] when `layers` is empty or the
+    /// underlying `FFmpeg` graph cannot be built.
+    pub fn with_canvas(
+        layers: &[RealtimeLayer],
+        canvas: Option<(u32, u32)>,
+    ) -> Result<Self, FilterError> {
         let layer_count = layers.len();
         // SAFETY: all raw-pointer operations in `build_realtime_composition`
         // follow the avfilter ownership rules; the returned graph owns every
         // context it created.
-        let graph = unsafe { super::composition_inner::build_realtime_composition(layers)? };
+        let graph =
+            unsafe { super::composition_inner::build_realtime_composition(layers, canvas)? };
         Ok(Self { graph, layer_count })
     }
 
@@ -163,6 +180,42 @@ mod tests {
         }
         match composer.pull() {
             Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn with_canvas_letterboxes_output_to_canvas_size() {
+        // A 640×360 (16:9) base composited onto a 1080×1920 (9:16) canvas must
+        // produce a 1080×1920 frame (letterboxed), not the base's own size.
+        let base = RealtimeLayer {
+            width: 640,
+            height: 360,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::with_canvas(&[base], Some((1080, 1920))) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let frame = VideoFrame::from_rgba(640, 360, vec![120u8; 640 * 360 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 1080);
+                assert_eq!(out.height(), 1920);
+                let rgba = out.to_rgba().expect("rgba");
+                assert_eq!(rgba.len(), 1080 * 1920 * 4);
+            }
             Ok(None) => println!("Skipping: no frame produced"),
             Err(e) => println!("Skipping: {e}"),
         }

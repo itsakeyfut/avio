@@ -84,6 +84,11 @@ pub struct TimelineRunner {
     /// Identifies the composer's current configuration as
     /// `(layer_id, active_clip_idx, width, height)` per layer. Rebuild on change.
     pub(super) composer_key: Vec<(usize, usize, u32, u32)>,
+    /// Project output canvas, when the timeline set one explicitly. When `Some`,
+    /// every composited frame is letterboxed to these dimensions so the preview
+    /// matches the project's output aspect. `None` composites at the base clip's
+    /// own size (legacy behaviour).
+    pub(super) canvas: Option<(u32, u32)>,
 }
 
 impl TimelineRunner {
@@ -179,7 +184,7 @@ impl TimelineRunner {
             key.push((li + 1, oc.active, ow, oh));
         }
         if self.composer.is_none() || self.composer_key != key {
-            self.composer = RealtimeComposer::new(&specs).ok();
+            self.composer = RealtimeComposer::with_canvas(&specs, self.canvas).ok();
             self.composer_key = if self.composer.is_some() {
                 key
             } else {
@@ -628,8 +633,11 @@ impl TimelineRunner {
                             // composited with overlay-layer content for every missing
                             // frame period so that V2 overlays and audio-only tracks
                             // remain live during the gap.
-                            let gw = self.last_frame_w;
-                            let gh = self.last_frame_h;
+                            // With an explicit canvas, fill gaps at the canvas size so
+                            // the preview frame size stays constant across gaps.
+                            let (gw, gh) = self
+                                .canvas
+                                .unwrap_or((self.last_frame_w, self.last_frame_h));
                             let n = (gw * gh * 4) as usize;
                             'gap: loop {
                                 // Drain incoming commands.

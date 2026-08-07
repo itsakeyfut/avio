@@ -1080,6 +1080,7 @@ pub(super) unsafe fn build_video_composition(
 /// Follows the same avfilter ownership rules as [`build_video_composition`].
 pub(super) unsafe fn build_realtime_composition(
     layers: &[super::realtime_composer::RealtimeLayer],
+    canvas: Option<(u32, u32)>,
 ) -> Result<FilterGraph, FilterError> {
     use std::ffi::CString;
 
@@ -1199,6 +1200,73 @@ pub(super) unsafe fn build_realtime_composition(
                 Err(e) => bail!(graph, format!("blend failed layer={idx}: {e:?}")),
             }
         };
+    }
+
+    // ── Optional fit-to-canvas ────────────────────────────────────────────────
+    // When a project canvas is set, letterbox/pillarbox the composited result to
+    // exactly `canvas_w × canvas_h` so the preview frame matches the project's
+    // output aspect. Runtime expressions (`force_original_aspect_ratio`,
+    // `(ow-iw)/2`) keep this correct regardless of the accumulator's actual size
+    // (per-clip effects may have resized it).
+    if let Some((canvas_w, canvas_h)) = canvas {
+        let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+        if scale_filter.is_null() {
+            bail!(graph, "filter not found: scale (fit-to-canvas)");
+        }
+        let Ok(fit_args) = CString::new(format!(
+            "w={canvas_w}:h={canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+        )) else {
+            bail!(graph, "CString::new failed for fit-to-canvas scale args");
+        };
+        let mut fit_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut fit_ctx,
+            scale_filter,
+            c"canvas_fit".as_ptr(),
+            fit_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create fit-to-canvas scale code={ret}")
+            );
+        }
+        let ret = ff_sys::avfilter_link(acc, 0, fit_ctx, 0);
+        if ret < 0 {
+            bail!(graph, "link failed: composite→canvas_fit");
+        }
+
+        let pad_filter = ff_sys::avfilter_get_by_name(c"pad".as_ptr());
+        if pad_filter.is_null() {
+            bail!(graph, "filter not found: pad (fit-to-canvas)");
+        }
+        let Ok(pad_args) = CString::new(format!(
+            "{canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )) else {
+            bail!(graph, "CString::new failed for fit-to-canvas pad args");
+        };
+        let mut pad_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut pad_ctx,
+            pad_filter,
+            c"canvas_pad".as_ptr(),
+            pad_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create fit-to-canvas pad code={ret}")
+            );
+        }
+        let ret = ff_sys::avfilter_link(fit_ctx, 0, pad_ctx, 0);
+        if ret < 0 {
+            bail!(graph, "link failed: canvas_fit→canvas_pad");
+        }
+        acc = pad_ctx;
     }
 
     // ── format=rgba: constrain output for direct read-back ────────────────────

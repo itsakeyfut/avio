@@ -426,6 +426,7 @@ impl TimelinePlayer {
             active_audio_thread: initial_audio_thread,
             composer: None,
             composer_key: Vec::new(),
+            canvas: timeline.explicit_canvas(),
         };
 
         let handle = PlayerHandle::for_timeline(
