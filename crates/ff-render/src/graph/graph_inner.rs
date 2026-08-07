@@ -137,7 +137,11 @@ pub(super) fn run_gpu(
         })?;
 
     // Strip row padding from the staged data.
-    let raw = staging_slice.get_mapped_range();
+    let raw = staging_slice
+        .get_mapped_range()
+        .map_err(|e| RenderError::Composite {
+            message: format!("staging buffer get_mapped_range failed: {e}"),
+        })?;
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h as usize {
         let row_start = y * bytes_per_row_padded as usize;
