@@ -714,6 +714,14 @@ pub unsafe fn av_buffersink_get_time_base(_ctx: *const AVFilterContext) -> AVRat
     AVRational { num: 0, den: 1 }
 }
 
+pub unsafe fn av_image_get_linesize(
+    _pix_fmt: AVPixelFormat,
+    _width: c_int,
+    _plane: c_int,
+) -> c_int {
+    0
+}
+
 /// Stub `avformat` wrapper module.
 pub mod avformat {
     use std::os::raw::c_int;

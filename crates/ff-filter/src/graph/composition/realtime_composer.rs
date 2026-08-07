@@ -222,6 +222,57 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_large_scale_then_offset_crop_does_not_overrun() {
+        // Regression: a large up-`Scale` followed by a `Crop` with a large centre
+        // offset used to segfault when reading back the composited frame — the crop
+        // view's `data[i]` is offset into the scaled buffer while its linesize stays
+        // the parent's, so copying `stride * rows` overran the buffer by the offset.
+        // 640×360 → scale 3412×1920 → crop 1080×1920 at x=1166 (centre).
+        let base = RealtimeLayer {
+            width: 640,
+            height: 360,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![
+                FilterStep::Scale {
+                    width: 3412,
+                    height: 1920,
+                    algorithm: crate::graph::types::ScaleAlgorithm::Bicubic,
+                },
+                FilterStep::Crop {
+                    x: 1166,
+                    y: 0,
+                    width: 1080,
+                    height: 1920,
+                },
+            ],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let frame = VideoFrame::from_rgba(640, 360, vec![120u8; 640 * 360 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 1080);
+                assert_eq!(out.height(), 1920);
+                let rgba = out.to_rgba().expect("rgba");
+                assert_eq!(rgba.len(), 1080 * 1920 * 4);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn two_layer_composite_should_produce_rgba_frame() {
         // 4×4 RGBA base + overlay; skip-guard on FFmpeg availability.
         let layer = |op: f32| RealtimeLayer {
