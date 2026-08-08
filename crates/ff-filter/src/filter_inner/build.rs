@@ -130,7 +130,21 @@ pub(crate) unsafe fn add_and_link_step(
             x,
             y,
             opacity,
-        } => return add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, index),
+            width,
+            height,
+        } => {
+            return add_overlay_image_step(
+                graph,
+                prev_ctx,
+                path,
+                x,
+                y,
+                *opacity,
+                width.as_deref(),
+                height.as_deref(),
+                index,
+            );
+        }
         FilterStep::FitToAspect {
             width,
             height,
@@ -625,8 +639,19 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
 #[cfg(test)]
 mod tests {
     use super::decompose_atempo;
+    use super::escape_movie_path;
     use super::overlay_alpha_suffix;
     use ff_format::AlphaMode;
+
+    #[test]
+    fn escape_movie_path_escapes_windows_drive_and_backslashes() {
+        // Windows absolute path: backslashes → '/', drive colon escaped as '\:'.
+        assert_eq!(escape_movie_path(r"D:\dir\logo.png"), r"D\:/dir/logo.png");
+        // POSIX path is unchanged (no backslashes, no colon).
+        assert_eq!(escape_movie_path("/home/u/logo.png"), "/home/u/logo.png");
+        // Relative path is unchanged.
+        assert_eq!(escape_movie_path("logo.png"), "logo.png");
+    }
 
     #[test]
     fn overlay_alpha_suffix_should_append_only_for_premultiplied() {
@@ -710,6 +735,17 @@ mod tests {
 
 // ── Overlay image compound step ───────────────────────────────────────────────
 
+/// Escapes a filesystem path for a `movie` filter `filename=` argument.
+///
+/// The `movie` filter's arguments are a `:`-separated option list, so a raw
+/// Windows path (`D:\dir\logo.png`) would be split at the drive colon and fail
+/// to parse. Normalise backslashes to `/` (accepted on Windows) and escape any
+/// remaining `:` as `\:`. Mirrors the convention used for regular-file `movie`
+/// sources in `composition_inner`.
+fn escape_movie_path(path: &str) -> String {
+    path.replace('\\', "/").replace(':', "\\:")
+}
+
 /// Insert the compound `movie → lut → overlay` filter chain for an
 /// [`FilterStep::OverlayImage`] step.
 ///
@@ -726,6 +762,7 @@ mod tests {
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
+#[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn add_overlay_image_step(
     graph: *mut ff_sys::AVFilterGraph,
     prev_ctx: *mut ff_sys::AVFilterContext,
@@ -733,6 +770,8 @@ pub(super) unsafe fn add_overlay_image_step(
     x: &str,
     y: &str,
     opacity: f32,
+    width: Option<&str>,
+    height: Option<&str>,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
@@ -744,8 +783,11 @@ pub(super) unsafe fn add_overlay_image_step(
         return Err(FilterError::BuildFailed);
     }
     let movie_name = CString::new(format!("movie{index}")).map_err(|_| FilterError::BuildFailed)?;
+    // Escape the path for the `movie` filter's `:`-separated option parser: a raw
+    // Windows path (`D:\dir\logo.png`) would otherwise break at the drive colon.
+    let escaped_path = escape_movie_path(path);
     let movie_args =
-        CString::new(format!("filename={path}")).map_err(|_| FilterError::BuildFailed)?;
+        CString::new(format!("filename={escaped_path}")).map_err(|_| FilterError::BuildFailed)?;
     let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
     let ret = ff_sys::avfilter_graph_create_filter(
         &raw mut movie_ctx,
@@ -756,10 +798,10 @@ pub(super) unsafe fn add_overlay_image_step(
         graph,
     );
     if ret < 0 {
-        log::warn!("filter creation failed name=movie args=filename={path}");
+        log::warn!("filter creation failed name=movie args=filename={escaped_path}");
         return Err(FilterError::BuildFailed);
     }
-    log::debug!("filter added name=movie args=filename={path} index={index}");
+    log::debug!("filter added name=movie args=filename={escaped_path} index={index}");
 
     // 2. lut filter — scale the alpha channel: a = val * opacity.
     //    For 8-bit RGBA the `lut` filter operates per-channel; `val` is the
@@ -787,8 +829,47 @@ pub(super) unsafe fn add_overlay_image_step(
     }
     log::debug!("filter added name=lut args={lut_args_str} index={index}");
 
-    // Link: movie → lut (alpha scaling).
-    let ret = ff_sys::avfilter_link(movie_ctx, 0, lut_ctx, 0);
+    // Optional scale on the image branch: movie → scale → lut. When neither
+    // width nor height is set, link movie → lut directly (native size — the
+    // original, unscaled behaviour). When either is set, the missing dimension
+    // defaults to `-1` so the `scale` filter preserves aspect ratio.
+    let image_src_ctx = if width.is_some() || height.is_some() {
+        let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+        if scale_filter.is_null() {
+            log::warn!("filter not found name=scale (overlay_image)");
+            return Err(FilterError::BuildFailed);
+        }
+        let scale_name =
+            CString::new(format!("ovscale{index}")).map_err(|_| FilterError::BuildFailed)?;
+        let scale_args_str = format!("w={}:h={}", width.unwrap_or("-1"), height.unwrap_or("-1"));
+        let scale_args =
+            CString::new(scale_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+        let mut scale_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut scale_ctx,
+            scale_filter,
+            scale_name.as_ptr(),
+            scale_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!("filter creation failed name=scale args={scale_args_str} (overlay_image)");
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=scale args={scale_args_str} index={index} (overlay_image)");
+        // Link: movie → scale.
+        let ret = ff_sys::avfilter_link(movie_ctx, 0, scale_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        scale_ctx
+    } else {
+        movie_ctx
+    };
+
+    // Link: image source (movie, or movie → scale) → lut (alpha scaling).
+    let ret = ff_sys::avfilter_link(image_src_ctx, 0, lut_ctx, 0);
     if ret < 0 {
         return Err(FilterError::BuildFailed);
     }
@@ -2169,9 +2250,21 @@ impl FilterGraphInner {
                 x,
                 y,
                 opacity,
+                width,
+                height,
             } = step
             {
-                prev_ctx = match add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, i) {
+                prev_ctx = match add_overlay_image_step(
+                    graph,
+                    prev_ctx,
+                    path,
+                    x,
+                    y,
+                    *opacity,
+                    width.as_deref(),
+                    height.as_deref(),
+                    i,
+                ) {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),
                 };
