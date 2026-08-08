@@ -1,0 +1,81 @@
+name: Setup FFmpeg (Linux)
+description: >
+  Install build dependencies and a cached, source-built FFmpeg 7.x on Linux,
+  then export PKG_CONFIG_PATH / LD_LIBRARY_PATH so ff-sys can link against it.
+  The tarball is verified against a pinned SHA-256 so a poisoned cache or
+  mirror cannot substitute a different FFmpeg build. Linux-only: macOS uses
+  Homebrew and Windows uses vcpkg, handled inline by the calling jobs.
+
+inputs:
+  version:
+    description: FFmpeg release version to build.
+    required: false
+    default: "7.1"
+  prefix:
+    description: Install prefix for the built FFmpeg.
+    required: false
+    default: /opt/ffmpeg7
+  sha256:
+    description: Expected SHA-256 of the FFmpeg source tarball.
+    required: false
+    default: 40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: sudo apt-get install -y nasm pkg-config libclang-dev
+
+    - name: Cache FFmpeg ${{ inputs.version }}
+      id: cache-ffmpeg
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.prefix }}
+        # Keyed on the verified tarball hash so a poisoned cache cannot
+        # substitute a different FFmpeg build.
+        key: ffmpeg-${{ inputs.version }}-${{ inputs.sha256 }}-ubuntu-${{ runner.arch }}
+
+    - name: Build FFmpeg ${{ inputs.version }} from source
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        FFMPEG_VERSION: ${{ inputs.version }}
+        FFMPEG_PREFIX: ${{ inputs.prefix }}
+        FFMPEG_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        # Retry: on a cold cache several jobs fetch concurrently and ffmpeg.org
+        # occasionally refuses a connection (wget exits 4). Back off and retry.
+        wget -q --tries=5 --retry-connrefused --waitretry=15 --timeout=30 \
+          "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+        echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c -
+        tar xf "ffmpeg-${FFMPEG_VERSION}.tar.xz"
+        cd "ffmpeg-${FFMPEG_VERSION}"
+        ./configure \
+          --prefix="${FFMPEG_PREFIX}" \
+          --disable-programs \
+          --disable-doc \
+          --disable-everything \
+          --enable-avcodec \
+          --enable-avformat \
+          --enable-avutil \
+          --enable-swscale \
+          --enable-swresample \
+          --enable-avfilter \
+          --enable-decoder=h264,aac,mp3,flac,vorbis,opus,pcm_s16le,pcm_f32le \
+          --enable-encoder=aac,pcm_s16le,mpeg4 \
+          --enable-demuxer=mov,mp4,matroska,mp3,flac,ogg,wav,srt \
+          --enable-muxer=ipod,mp4,mov,matroska \
+          --enable-parser=h264,aac,mpegaudio,flac,vorbis,opus \
+          --enable-protocol=file \
+          --enable-shared \
+          --disable-static
+        make -j"$(nproc)"
+        sudo make install
+
+    - name: Export FFmpeg environment
+      shell: bash
+      run: |
+        echo "PKG_CONFIG_PATH=${{ inputs.prefix }}/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=${{ inputs.prefix }}/lib" >> "$GITHUB_ENV"

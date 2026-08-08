@@ -30,7 +30,7 @@ ff-pipeline = { workspace = true, optional = true }
 default  = []
 tokio    = ["dep:tokio"]
 proxy    = ["dep:ff-encode", "dep:ff-filter", "dep:ff-pipeline"]
-timeline = ["dep:ff-pipeline"]
+timeline = ["dep:ff-pipeline", "dep:ff-filter"]
 
 [dev-dependencies]
 criterion = { workspace = true }
