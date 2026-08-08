@@ -205,12 +205,10 @@ impl ProxyGenerator {
         let handle = std::thread::spawn(move || {
             self.generate_with_callback(move |p: &Progress| {
                 let v = p.total_frames.map_or(0u32, |total| {
-                    if total == 0 {
-                        0
-                    } else {
-                        let raw = p.frames_processed.saturating_mul(1000) / total;
+                    match p.frames_processed.saturating_mul(1000).checked_div(total) {
                         // raw is in 0..=1000 after the saturating division — fits in u32.
-                        u32::try_from(raw.min(1000)).unwrap_or(1000)
+                        Some(raw) => u32::try_from(raw.min(1000)).unwrap_or(1000),
+                        None => 0,
                     }
                 });
                 progress_clone.store(v, Ordering::Relaxed);

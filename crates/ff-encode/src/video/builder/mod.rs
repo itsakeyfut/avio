@@ -771,10 +771,9 @@ impl VideoEncoder {
         #[allow(clippy::cast_precision_loss)]
         let current_bitrate = if !elapsed.is_zero() {
             let elapsed_secs = elapsed.as_secs();
-            if elapsed_secs > 0 {
-                (bytes_written * 8) / elapsed_secs
-            } else {
-                ((bytes_written * 8) as f64 / elapsed.as_secs_f64()) as u64
+            match (bytes_written * 8).checked_div(elapsed_secs) {
+                Some(bitrate) => bitrate,
+                None => ((bytes_written * 8) as f64 / elapsed.as_secs_f64()) as u64,
             }
         } else {
             0

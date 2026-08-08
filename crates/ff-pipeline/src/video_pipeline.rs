@@ -214,11 +214,7 @@ impl VideoPipeline {
 
             let mut last_frame_end_secs: f64 = pts_offset_secs;
 
-            loop {
-                let Some(mut raw_frame) = vdec.decode_one()? else {
-                    break;
-                };
-
+            while let Some(mut raw_frame) = vdec.decode_one()? {
                 // Rebase timestamp so this clip follows the previous one.
                 let ts = raw_frame.timestamp();
                 let new_pts_secs = pts_offset_secs + ts.as_secs_f64();

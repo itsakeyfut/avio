@@ -654,11 +654,9 @@ impl TimelineRunner {
                                         PlayerCommand::Stop => {
                                             self.stopped.store(true, Ordering::Release);
                                         }
-                                        PlayerCommand::SetRate(r) => {
-                                            if r > 0.0 {
-                                                self.rate = r;
-                                                self.clock.set_rate(r);
-                                            }
+                                        PlayerCommand::SetRate(r) if r > 0.0 => {
+                                            self.rate = r;
+                                            self.clock.set_rate(r);
                                         }
                                         _ => {}
                                     }
