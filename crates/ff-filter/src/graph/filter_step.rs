@@ -1414,8 +1414,11 @@ impl FilterStep {
                     let max_y = ay.max(by);
                     let dx = bx - ax;
                     // x_intersect = ax*iw + (Y - ay*ih) * dx*iw / (dy*ih)
+                    // `dx`/`dy` can be negative; parenthesise them so the emitted
+                    // expression never contains a bare `*-`/`/-` (e.g. `*-0.75*iw`),
+                    // which FFmpeg's `eval` rejects. `*(-0.75)*iw` / `((-1)*ih)` parse.
                     edge_exprs.push(format!(
-                        "if(gte(Y,{min_y}*ih)*lt(Y,{max_y}*ih)*gt({ax}*iw+(Y-{ay}*ih)*{dx}*iw/({dy}*ih),X),1,0)"
+                        "if(gte(Y,{min_y}*ih)*lt(Y,{max_y}*ih)*gt({ax}*iw+(Y-{ay}*ih)*({dx})*iw/(({dy})*ih),X),1,0)"
                     ));
                 }
                 let sum = if edge_exprs.is_empty() {

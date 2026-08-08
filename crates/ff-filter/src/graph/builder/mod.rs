@@ -1003,6 +1003,22 @@ mod tests {
     }
 
     #[test]
+    fn polygon_matte_diagonal_edges_emit_no_bare_star_minus() {
+        // Regression: a diagonal edge has negative `dx`/`dy`; the geq expression
+        // must parenthesise them (`*(-0.6)*iw`) so it never contains a bare `*-`
+        // / `/-`, which FFmpeg's `eval` rejects (filter creation failed name=geq).
+        let steps = FilterGraph::builder()
+            .polygon_matte(vec![(0.2, 0.1), (0.9, 0.5), (0.3, 0.9)], false)
+            .steps()
+            .to_vec();
+        let args = steps[0].args();
+        assert!(
+            !args.contains("*-") && !args.contains("/-"),
+            "geq expression must not contain a bare '*-'/'/-': {args}"
+        );
+    }
+
+    #[test]
     fn chromakey_out_of_range_similarity_should_return_invalid_config() {
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
