@@ -7,9 +7,9 @@ on:
     - cron: '0 3 * * 1'   # weekly on Monday at 03:00 UTC
   workflow_dispatch:
 
-env:
-  FFMPEG_VERSION: "7.1"
-  FFMPEG_PREFIX: /opt/ffmpeg7
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fuzz:
@@ -25,46 +25,8 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
-      - name: Install build dependencies
-        run: sudo apt-get install -y nasm pkg-config libclang-dev
-
-      - name: Cache FFmpeg 7.x
-        id: cache-ffmpeg
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/fuzz.yml') }}
-
-      - name: Build FFmpeg 7.x from source
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          cd ffmpeg-${{ env.FFMPEG_VERSION }}
-          ./configure \
-            --prefix=${{ env.FFMPEG_PREFIX }} \
-            --disable-programs \
-            --disable-doc \
-            --disable-everything \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avutil \
-            --enable-swscale \
-            --enable-swresample \
-            --enable-avfilter \
-            --enable-decoder=h264,aac,mp3,flac,vorbis,opus,pcm_s16le,pcm_f32le \
-            --enable-demuxer=mov,mp4,matroska,mp3,flac,ogg,wav,srt \
-            --enable-parser=h264,aac,mpegaudio,flac,vorbis,opus \
-            --enable-protocol=file \
-            --enable-shared \
-            --disable-static
-          make -j$(nproc)
-          sudo make install
-
-      - name: Set FFmpeg environment
-        run: |
-          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
+      - name: Setup FFmpeg
+        uses: ./.github/actions/setup-ffmpeg
 
       - name: Fuzz ff-decode open_video
         run: cargo +nightly fuzz run open_video -- -max_total_time=60

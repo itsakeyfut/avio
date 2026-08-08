@@ -36,11 +36,13 @@ Before contributing, make sure you have the following installed:
 **Rust toolchain**
 
 ```sh
-rustup toolchain install 1.93.0
+rustup toolchain install stable
 rustup component add rustfmt clippy
 ```
 
-The MSRV (Minimum Supported Rust Version) is **1.93.0**.
+Develop on the current stable toolchain. The MSRV (Minimum Supported Rust
+Version) is **1.93.0**; CI verifies the workspace still compiles on it, so
+avoid APIs newer than 1.93.0.
 
 **FFmpeg development libraries** (version **7.x required**)
 

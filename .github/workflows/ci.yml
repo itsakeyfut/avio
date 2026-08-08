@@ -6,11 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same PR/branch; never cancel pushes to main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  FFMPEG_VERSION: "7.1"
-  FFMPEG_PREFIX: /opt/ffmpeg7
 
 jobs:
   # --------------------------------------------------------------------------
@@ -21,68 +24,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.93.0"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
   # --------------------------------------------------------------------------
-  # Clippy (FFmpeg headers required for bindgen)
+  # Clippy on the full feature set (FFmpeg headers required for bindgen)
   # --------------------------------------------------------------------------
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install build dependencies
-        run: sudo apt-get install -y nasm pkg-config libclang-dev
-      - name: Cache FFmpeg 7.x
-        id: cache-ffmpeg
-        uses: actions/cache@v6
+      - uses: ./.github/actions/setup-ffmpeg
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
-      - name: Build FFmpeg 7.x from source
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          cd ffmpeg-${{ env.FFMPEG_VERSION }}
-          ./configure \
-            --prefix=${{ env.FFMPEG_PREFIX }} \
-            --disable-programs \
-            --disable-doc \
-            --disable-everything \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avutil \
-            --enable-swscale \
-            --enable-swresample \
-            --enable-avfilter \
-            --enable-decoder=h264,aac,mp3,flac,vorbis,opus,pcm_s16le,pcm_f32le \
-            --enable-encoder=aac,pcm_s16le,mpeg4 \
-            --enable-demuxer=mov,mp4,matroska,mp3,flac,ogg,wav,srt \
-            --enable-muxer=ipod,mp4,mov,matroska \
-            --enable-parser=h264,aac,mpegaudio,flac,vorbis,opus \
-            --enable-protocol=file \
-            --enable-shared \
-            --disable-static
-          make -j$(nproc)
-          sudo make install
-      - name: Set FFmpeg environment
-        run: |
-          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all --all-features -- -D warnings
 
   # --------------------------------------------------------------------------
-  # Tests
+  # Tests on Linux + macOS (full feature set)
   # --------------------------------------------------------------------------
   test:
     name: Test (${{ matrix.os }})
@@ -94,117 +57,86 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install build dependencies (Linux)
+      - name: Setup FFmpeg (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y nasm pkg-config libclang-dev
+        uses: ./.github/actions/setup-ffmpeg
 
-      - name: Cache FFmpeg 7.x (Linux)
-        if: runner.os == 'Linux'
-        id: cache-ffmpeg
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
-
-      - name: Build FFmpeg 7.x from source (Linux)
-        if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          cd ffmpeg-${{ env.FFMPEG_VERSION }}
-          ./configure \
-            --prefix=${{ env.FFMPEG_PREFIX }} \
-            --disable-programs \
-            --disable-doc \
-            --disable-everything \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avutil \
-            --enable-swscale \
-            --enable-swresample \
-            --enable-avfilter \
-            --enable-decoder=h264,aac,mp3,flac,vorbis,opus,pcm_s16le,pcm_f32le \
-            --enable-encoder=aac,pcm_s16le,mpeg4 \
-            --enable-demuxer=mov,mp4,matroska,mp3,flac,ogg,wav,srt \
-            --enable-muxer=ipod,mp4,mov,matroska \
-            --enable-parser=h264,aac,mpegaudio,flac,vorbis,opus \
-            --enable-protocol=file \
-            --enable-shared \
-            --disable-static
-          make -j$(nproc)
-          sudo make install
-
-      - name: Set FFmpeg environment (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
-
-      - name: Install FFmpeg 7.x (macOS)
+      - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg pkg-config
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93.0"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all --all-features
 
   # --------------------------------------------------------------------------
-  # Sync-only build: verify the tokio feature can be disabled cleanly
+  # Tests on Windows (MSVC). FFmpeg comes from vcpkg, matching ff-sys's
+  # documented Windows build path; libclang comes from the runner's LLVM.
+  # Default features only: the GPL (libx264/x265) and GPU (wgpu) features need
+  # libraries not present in the default vcpkg FFmpeg build.
   # --------------------------------------------------------------------------
-  no-tokio-feature:
-    name: No tokio feature (sync API only)
+  test-windows:
+    name: Test (windows)
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache vcpkg FFmpeg
+        id: cache-vcpkg
+        uses: actions/cache@v6
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-ffmpeg-x64-windows-v1
+
+      - name: Install FFmpeg via vcpkg
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        run: vcpkg install ffmpeg:x64-windows
+
+      - name: Add FFmpeg DLLs to PATH
+        shell: bash
+        run: echo 'C:\vcpkg\installed\x64-windows\bin' >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  # --------------------------------------------------------------------------
+  # MSRV: verify the crate still compiles on the declared minimum (Cargo.toml
+  # `rust-version`). Default features only — this is the core promise; the
+  # optional wgpu/gpl features may depend on crates with a newer MSRV. `check`
+  # only: clippy lints are version-specific and belong on the stable job.
+  # --------------------------------------------------------------------------
+  msrv:
+    name: MSRV (1.93.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install build dependencies
-        run: sudo apt-get install -y nasm pkg-config libclang-dev
-      - name: Cache FFmpeg 7.x
-        id: cache-ffmpeg
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
-      - name: Build FFmpeg 7.x from source
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
-          cd ffmpeg-${{ env.FFMPEG_VERSION }}
-          ./configure \
-            --prefix=${{ env.FFMPEG_PREFIX }} \
-            --disable-programs \
-            --disable-doc \
-            --disable-everything \
-            --enable-avcodec \
-            --enable-avformat \
-            --enable-avutil \
-            --enable-swscale \
-            --enable-swresample \
-            --enable-avfilter \
-            --enable-decoder=h264,aac,mp3,flac,vorbis,opus,pcm_s16le,pcm_f32le \
-            --enable-encoder=aac,pcm_s16le,mpeg4 \
-            --enable-demuxer=mov,mp4,matroska,mp3,flac,ogg,wav,srt \
-            --enable-muxer=ipod,mp4,mov,matroska \
-            --enable-parser=h264,aac,mpegaudio,flac,vorbis,opus \
-            --enable-protocol=file \
-            --enable-shared \
-            --disable-static
-          make -j$(nproc)
-          sudo make install
-      - name: Set FFmpeg environment
-        run: |
-          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
+      - uses: ./.github/actions/setup-ffmpeg
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
-          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --no-default-features
-      - run: cargo test --workspace --no-default-features
-      - run: cargo clippy --workspace --no-default-features -- -D warnings
+      - run: cargo check --workspace
+
+  # --------------------------------------------------------------------------
+  # Feature isolation: verify every crate feature compiles on its own (and the
+  # no-default-features baseline). Replaces the ad-hoc "no tokio feature" job.
+  # --------------------------------------------------------------------------
+  features:
+    name: Feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-ffmpeg
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo hack check --workspace --each-feature --no-dev-deps
 
   # --------------------------------------------------------------------------
   # docs.rs stubs: verify docsrs_stubs.rs compiles for all workspace crates.
@@ -217,9 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93.0"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build workspace with DOCS_RS=1 (no FFmpeg needed)
         run: cargo build --workspace
@@ -239,11 +169,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93.0"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --all-features --no-deps
         env:
           DOCS_RS: "1"
           RUSTDOCFLAGS: -D warnings
+
+  # --------------------------------------------------------------------------
+  # Aggregation gate: a single required check for branch protection. Passes
+  # only if every job above succeeded. Referencing just this check keeps branch
+  # protection stable as jobs are added or renamed.
+  # --------------------------------------------------------------------------
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - fmt
+      - clippy
+      - test
+      - test-windows
+      - msrv
+      - features
+      - docsrs-stubs
+      - docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - name: Success
+        run: exit 0
