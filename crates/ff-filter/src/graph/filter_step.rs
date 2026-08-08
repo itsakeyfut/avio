@@ -1413,12 +1413,14 @@ impl FilterStep {
                     let min_y = ay.min(by);
                     let max_y = ay.max(by);
                     let dx = bx - ax;
-                    // x_intersect = ax*iw + (Y - ay*ih) * dx*iw / (dy*ih)
-                    // `dx`/`dy` can be negative; parenthesise them so the emitted
-                    // expression never contains a bare `*-`/`/-` (e.g. `*-0.75*iw`),
-                    // which FFmpeg's `eval` rejects. `*(-0.75)*iw` / `((-1)*ih)` parse.
+                    // x_intersect = ax*W + (Y - ay*H) * dx*W / (dy*H)
+                    // NOTE: the `geq` filter's dimension constants are `W`/`H` (plane
+                    // width/height) — it has no `iw`/`ih` (those belong to scale/overlay),
+                    // so using them makes `geq` fail with "Undefined constant".
+                    // `dx`/`dy` can be negative; parenthesise them so the expression
+                    // never contains a bare `*-`/`/-`.
                     edge_exprs.push(format!(
-                        "if(gte(Y,{min_y}*ih)*lt(Y,{max_y}*ih)*gt({ax}*iw+(Y-{ay}*ih)*({dx})*iw/(({dy})*ih),X),1,0)"
+                        "if(gte(Y,{min_y}*H)*lt(Y,{max_y}*H)*gt({ax}*W+(Y-{ay}*H)*({dx})*W/(({dy})*H),X),1,0)"
                     ));
                 }
                 let sum = if edge_exprs.is_empty() {

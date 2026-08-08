@@ -557,4 +557,44 @@ mod tests {
             Err(e) => panic!("pull failed for subtitles layer: {e}"),
         }
     }
+
+    #[test]
+    fn base_layer_with_diagonal_polygon_matte_builds_and_pulls() {
+        // Regression (real end-to-end check): a diagonal `PolygonMatte` must build
+        // its `geq` filter and pull a frame. This catches invalid geq expressions
+        // (e.g. using `iw`/`ih`, which geq lacks → "Undefined constant") that a
+        // string-only test would miss.
+        let base = RealtimeLayer {
+            width: 320,
+            height: 240,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::PolygonMatte {
+                vertices: vec![(0.2, 0.1), (0.9, 0.5), (0.3, 0.9)],
+                invert: false,
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                // A geq build failure surfaces here — that is the bug this guards.
+                panic!("realtime composer failed to build polygon-matte layer: {e}");
+            }
+        };
+        let frame = VideoFrame::from_rgba(320, 240, vec![90u8; 320 * 240 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.format(), PixelFormat::Rgba);
+                assert_eq!(out.width(), 320);
+                assert_eq!(out.height(), 240);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => panic!("pull failed for polygon-matte layer: {e}"),
+        }
+    }
 }
