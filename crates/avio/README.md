@@ -4,10 +4,9 @@
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-`avio` is the unified facade for the `ff-*` crate family. Depend on a single crate and opt in
-to only the capabilities you need via feature flags.
+Safe Rust bindings over FFmpeg: decode, encode, filter, compose, and stream.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+`avio` is the facade crate for the `ff-*` crate family. Depend on a single crate and opt into the capabilities you need via feature flags. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
 
 ## Installation
 
@@ -28,23 +27,23 @@ avio = { version = "0.15", features = ["tokio"] }
 
 ## Feature Flags
 
-| Feature         | Enables                                              | Default | Implies              |
-|-----------------|------------------------------------------------------|---------|----------------------|
-| `probe`         | `ff-probe` — read-only media metadata                | yes     | —                    |
-| `decode`        | `ff-decode` — video and audio decoding               | yes     | —                    |
-| `encode`        | `ff-encode` — video and audio encoding               | yes     | —                    |
-| `hwaccel`       | hardware-accelerated encoders (`ff-encode/hwaccel`)  | yes     | —                    |
-| `filter`        | `ff-filter` — filter graph operations                | no      | —                    |
-| `pipeline`      | `ff-pipeline` — decode → filter → encode             | no      | `filter`             |
-| `stream`        | `ff-stream` — HLS / DASH / live streaming output     | no      | `pipeline`           |
-| `preview`       | `ff-preview` — real-time playback and seek           | no      | —                    |
-| `preview-proxy` | proxy generation (`ff-preview/proxy`)                | no      | `preview`            |
-| `render`        | `ff-render` — GPU compositing pipeline               | no      | `preview`            |
-| `render-gpu`    | wgpu backend (`ff-render/wgpu`)                      | no      | `render`             |
-| `tokio`         | async wrappers for decode, encode, and preview       | no      | `decode` + `encode`  |
-| `gpl`           | GPL-licensed encoders (`ff-encode/gpl`)              | no      | —                    |
-| `srt`           | SRT input/output (`ff-decode/srt`, `ff-stream/srt`) | no      | —                    |
-| `serde`         | `serde` derives for filter types (`ff-filter/serde`) | no      | —                    |
+| Feature         | Enables                                        | Default | Implies             |
+|-----------------|------------------------------------------------|---------|---------------------|
+| `probe`         | `ff-probe`, read-only media metadata           | yes     |                     |
+| `decode`        | `ff-decode`, video and audio decoding          | yes     |                     |
+| `encode`        | `ff-encode`, video and audio encoding          | yes     |                     |
+| `hwaccel`       | hardware-accelerated encoders                  | yes     |                     |
+| `filter`        | `ff-filter`, filter graph operations           | no      |                     |
+| `pipeline`      | `ff-pipeline`, decode/filter/encode            | no      | `filter`            |
+| `stream`        | `ff-stream`, HLS / DASH / live streaming       | no      | `pipeline`          |
+| `preview`       | `ff-preview`, real-time playback and seek      | no      |                     |
+| `preview-proxy` | proxy generation                               | no      | `preview`           |
+| `render`        | `ff-render`, GPU compositing pipeline          | no      | `preview`           |
+| `render-gpu`    | wgpu backend                                   | no      | `render`            |
+| `tokio`         | async wrappers for decode, encode, and preview | no      | `decode` + `encode` |
+| `gpl`           | GPL-licensed encoders                          | no      |                     |
+| `srt`           | SRT input/output                               | no      |                     |
+| `serde`         | `serde` derives for filter types               | no      |                     |
 
 ## Quick Start
 
@@ -64,7 +63,7 @@ if let Some(video) = info.primary_video() {
 ```rust
 use avio::{VideoDecoder, AudioDecoder, PixelFormat, SampleFormat};
 
-// Video — request RGB24 output (FFmpeg converts internally)
+// Video: request RGB24 output (FFmpeg converts internally)
 let mut vdec = VideoDecoder::open("video.mp4")
     .output_format(PixelFormat::Rgb24)
     .build()?;
@@ -72,7 +71,7 @@ while let Some(frame) = vdec.decode_one()? {
     // frame.data() contains raw pixel bytes
 }
 
-// Audio — resample to f32 at 44.1 kHz
+// Audio: resample to f32 at 44.1 kHz
 let mut adec = AudioDecoder::open("audio.flac")
     .output_format(SampleFormat::F32)
     .output_sample_rate(44_100)
@@ -184,7 +183,7 @@ use avio::{
     Hdr10Metadata, MasteringDisplay, ColorTransfer,
 };
 
-// HDR10 — PQ transfer + MaxCLL/MaxFALL side data
+// HDR10: PQ transfer + MaxCLL/MaxFALL side data
 let mut encoder = VideoEncoder::create("output.mkv")
     .video(3840, 2160, 24.0)
     .video_codec(VideoCodec::H265)
@@ -207,7 +206,7 @@ let mut encoder = VideoEncoder::create("output.mkv")
     })
     .build()?;
 
-// HLG — broadcast HDR without MaxCLL/MaxFALL
+// HLG: broadcast HDR without MaxCLL/MaxFALL
 use avio::{ColorSpace, ColorPrimaries};
 let mut encoder = VideoEncoder::create("output.mkv")
     .video(1920, 1080, 50.0)
@@ -259,14 +258,14 @@ Pipeline::builder()
 
 | Crate         | Purpose                                        |
 |---------------|------------------------------------------------|
-| `ff-sys`      | Raw bindgen FFI — internal use only            |
+| `ff-sys`      | Raw bindgen FFI (internal use only)            |
 | `ff-common`   | Shared buffer-pooling abstractions             |
 | `ff-format`   | Pure-Rust type definitions (no FFmpeg linkage) |
 | `ff-probe`    | Read-only media metadata extraction            |
 | `ff-decode`   | Video and audio decoding                       |
 | `ff-encode`   | Video and audio encoding                       |
 | `ff-filter`   | Filter graph operations                        |
-| `ff-pipeline` | Decode → filter → encode pipeline              |
+| `ff-pipeline` | Decode, filter, encode pipeline                |
 | `ff-stream`   | HLS / DASH adaptive streaming output           |
 | `ff-preview`  | Real-time preview and proxy workflow           |
 | `ff-render`   | GPU compositing pipeline (wgpu)                |

@@ -1,8 +1,8 @@
 # ff-encode
 
-Encode video and audio to any format with a builder chain. The encoder validates your codec, resolution, and bitrate settings before allocating any FFmpeg context — invalid configurations are caught as `Err`, not discovered at the first `push_video` call.
+Encode video and audio with a builder chain. The encoder validates codec, resolution, and bitrate settings before allocating any FFmpeg context. Invalid configurations are returned as `Err`, not discovered at the first `push_video` call.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -44,13 +44,13 @@ encoder.finish()?;
 ## Quality Modes
 
 ```rust
-// Constant bitrate — predictable file size and bandwidth.
+// Constant bitrate: predictable file size and bandwidth.
 .bitrate_mode(BitrateMode::Cbr(4_000_000))  // 4 Mbps
 
-// Constant rate factor — quality-driven; file size varies.
-.bitrate_mode(BitrateMode::Crf(23))          // 0–51, lower = better
+// Constant rate factor: quality-driven, file size varies.
+.bitrate_mode(BitrateMode::Crf(23))          // 0-51, lower = better
 
-// Variable bitrate — target average with hard ceiling.
+// Variable bitrate: target average with hard ceiling.
 .bitrate_mode(BitrateMode::Vbr { target: 3_000_000, max: 6_000_000 })
 ```
 
@@ -58,7 +58,7 @@ encoder.finish()?;
 
 `VideoCodecOptions` provides typed configuration for each codec. Options are
 applied via `av_opt_set` before `avcodec_open2`; unsupported values are logged
-as warnings and skipped — `build()` never fails due to an unsupported option.
+as warnings and skipped. `build()` never fails due to an unsupported option.
 
 ```rust
 use ff_encode::{
@@ -70,10 +70,10 @@ use ff_encode::{
     Vp9Options,
 };
 
-// H.264 — profile, level, B-frames, GOP, refs, preset, tune
+// H.264: profile, level, B-frames, GOP, refs, preset, tune
 let opts = VideoCodecOptions::H264(H264Options {
     profile: H264Profile::High,
-    level: Some(41),       // 4.1 — supports 1080p30
+    level: Some(41),       // 4.1 supports 1080p30
     bframes: 2,
     gop_size: 250,
     refs: 3,
@@ -81,14 +81,14 @@ let opts = VideoCodecOptions::H264(H264Options {
     tune: None,
 });
 
-// H.265 — profile (Main / Main10 for 10-bit HDR), preset
+// H.265: profile (Main / Main10 for 10-bit HDR), preset
 let opts = VideoCodecOptions::H265(H265Options {
     profile: H265Profile::Main10,
     preset: Some("fast".to_string()),
     ..H265Options::default()
 });
 
-// AV1 (libaom) — cpu_used, tile layout, usage mode
+// AV1 (libaom): cpu_used, tile layout, usage mode
 let opts = VideoCodecOptions::Av1(Av1Options {
     cpu_used: 6,
     tile_rows: 1,   // 2^1 = 2 rows
@@ -96,7 +96,7 @@ let opts = VideoCodecOptions::Av1(Av1Options {
     usage: Av1Usage::VoD,
 });
 
-// AV1 (SVT-AV1 / libsvtav1) — preset 0–13, tiles, raw params
+// AV1 (SVT-AV1 / libsvtav1): preset 0-13, tiles, raw params
 // Requires FFmpeg built with --enable-libsvtav1.
 let opts = VideoCodecOptions::Av1Svt(SvtAv1Options {
     preset: 8,
@@ -105,7 +105,7 @@ let opts = VideoCodecOptions::Av1Svt(SvtAv1Options {
     svtav1_params: None,
 });
 
-// VP9 — cpu_used, constrained quality, row-based multithreading
+// VP9: cpu_used, constrained quality, row-based multithreading
 let opts = VideoCodecOptions::Vp9(Vp9Options {
     cpu_used: 4,
     cq_level: Some(33),
@@ -136,7 +136,7 @@ use ff_encode::{
     OutputContainer,
 };
 
-// Opus — application mode + frame duration, OGG container
+// Opus: application mode + frame duration, OGG container
 let opts = AudioCodecOptions::Opus(OpusOptions {
     application: OpusApplication::Audio,
     frame_duration_ms: Some(20),
@@ -149,18 +149,18 @@ let mut encoder = AudioEncoder::create("output.ogg")
     .codec_options(opts)
     .build()?;
 
-// AAC — profile (LC / HE / HEv2), optional VBR quality
+// AAC: profile (LC / HE / HEv2), optional VBR quality
 let opts = AudioCodecOptions::Aac(AacOptions {
     profile: AacProfile::Lc,
     vbr_quality: None,  // None = CBR
 });
 
-// MP3 — VBR quality scale 0 (best) … 9 (smallest)
+// MP3: VBR quality scale 0 (best) to 9 (smallest)
 let opts = AudioCodecOptions::Mp3(Mp3Options {
     quality: Mp3Quality::Vbr(2),  // ~190 kbps
 });
 
-// FLAC — compression level 0–12, native FLAC container
+// FLAC: compression level 0-12, native FLAC container
 let opts = AudioCodecOptions::Flac(FlacOptions {
     compression_level: 6,
 });
@@ -185,7 +185,7 @@ use ff_encode::{
 };
 use ff_format::PixelFormat;
 
-// Apple ProRes HQ — yuv422p10le, .mov container
+// Apple ProRes HQ: yuv422p10le, .mov container
 let opts = VideoCodecOptions::ProRes(ProResOptions {
     profile: ProResProfile::Hq,
     vendor: None,
@@ -197,7 +197,7 @@ let mut encoder = VideoEncoder::create("output.mov")
     .codec_options(opts)
     .build()?;
 
-// Avid DNxHR SQ — yuv422p, any resolution
+// Avid DNxHR SQ: yuv422p, any resolution
 let opts = VideoCodecOptions::Dnxhd(DnxhdOptions {
     variant: DnxhdVariant::DnxhrSq,
 });
@@ -232,7 +232,7 @@ use ff_format::{
     PixelFormat,
 };
 
-// HDR10 — static metadata (MaxCLL, MaxFALL, mastering display)
+// HDR10: static metadata (MaxCLL, MaxFALL, mastering display)
 // hdr10_metadata() automatically sets BT.2020 primaries, PQ transfer,
 // and BT.2020 NCL colour matrix on the codec context.
 let meta = Hdr10Metadata {
@@ -259,7 +259,7 @@ let mut encoder = VideoEncoder::create("output.mkv")
     .hdr10_metadata(meta)
     .build()?;
 
-// HLG — broadcast HDR without MaxCLL/MaxFALL side data
+// HLG: broadcast HDR without MaxCLL/MaxFALL side data
 let mut encoder = VideoEncoder::create("output.mkv")
     .video(1920, 1080, 50.0)
     .video_codec(VideoCodec::H265)
@@ -293,7 +293,7 @@ let mut encoder = VideoEncoder::create("output.mp4")
     .bitrate_mode(BitrateMode::Cbr(4_000_000))
     .on_progress(|p| {
         println!(
-            "{:.1}% — {} frames, {:.1}s elapsed",
+            "{:.1}%, {} frames, {:.1}s elapsed",
             p.percent(),
             p.frames_encoded,
             p.elapsed.as_secs_f64()
@@ -304,7 +304,7 @@ let mut encoder = VideoEncoder::create("output.mp4")
 
 ## LGPL Compliance
 
-By default, `ff-encode` only links encoders that are compatible with the LGPL license — hardware encoders (NVENC, QSV, AMF, VideoToolbox) or software encoders for VP9 and AV1.
+By default, `ff-encode` only links encoders compatible with the LGPL license: hardware encoders (NVENC, QSV, AMF, VideoToolbox) or software encoders for VP9 and AV1.
 
 Enable the `gpl` feature to add libx264 and libx265. This changes the license terms of your binary; ensure you comply with the GPL or hold an appropriate MPEG LA commercial license before distributing.
 

@@ -1,9 +1,9 @@
 # ff-stream
 
 Produce HLS and DASH adaptive bitrate output from any video source. Define a rendition ladder,
-point it at an input file, and receive a standards-compliant package ready for CDN delivery.
+point it at an input file, and receive a package ready for CDN delivery.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 

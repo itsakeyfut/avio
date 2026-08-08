@@ -2,7 +2,7 @@
 
 Decode video and audio frames without managing codec contexts, packet queues, or timestamp conversions. Open a file, call `decode_one` in a loop, and receive `VideoFrame` objects with their position already expressed as a `Timestamp`.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -23,10 +23,10 @@ let mut decoder = VideoDecoder::open("video.mp4")
     .build()?;
 
 while let Some(frame) = decoder.decode_one()? {
-    // frame.data()      — raw pixel bytes in RGBA order
-    // frame.width()     — frame width in pixels
-    // frame.height()    — frame height in pixels
-    // frame.timestamp() — position as Timestamp
+    // frame.data()      : raw pixel bytes in RGBA order
+    // frame.width()     : frame width in pixels
+    // frame.height()    : frame height in pixels
+    // frame.timestamp() : position as Timestamp
     process(&frame);
 }
 ```
@@ -55,7 +55,7 @@ let mut decoder = AudioDecoder::open("audio.flac")
     .build()?;
 
 while let Some(frame) = decoder.decode_one()? {
-    // frame.to_f32_interleaved() — interleaved f32 samples
+    // frame.to_f32_interleaved() : interleaved f32 samples
     process(&frame);
 }
 ```
@@ -161,7 +161,7 @@ let mut decoder = VideoDecoder::open("video.mp4")
     .build()?;
 ```
 
-`HardwareAccel::Auto` probes for available accelerators — NVDEC, QSV, AMF, VideoToolbox, and VAAPI — and falls back to software decoding if none is available.
+`HardwareAccel::Auto` probes for available accelerators (NVDEC, QSV, AMF, VideoToolbox, VAAPI) and falls back to software decoding if none is available.
 
 ## Error Handling
 

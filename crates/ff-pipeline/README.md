@@ -1,8 +1,8 @@
 # ff-pipeline
 
-Wire decode, filter, and encode into a single configured pipeline. Instead of managing three separate contexts, set an input path, an output path with codec settings, and an optional filter chain — the builder validates the configuration before any processing begins.
+Wire decode, filter, and encode into a single configured pipeline. Instead of managing three separate contexts, set an input path, an output path with codec settings, and an optional filter chain; the builder validates the configuration before any processing begins.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -60,7 +60,7 @@ The progress callback receives a `Progress` value on each encoded frame:
 | `p.elapsed`          | `Duration`        | Wall-clock time since `run()` was called  |
 | `p.percent()`        | `Option<f64>`     | `(frames_processed / total_frames) * 100` |
 
-Return `false` from the callback to stop processing. The pipeline will drain in-flight frames and return `Err(PipelineError::Cancelled)`.
+Return `false` from the callback to stop processing. The pipeline drains in-flight frames and returns `Err(PipelineError::Cancelled)`.
 
 ## Error Handling
 

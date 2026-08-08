@@ -2,7 +2,7 @@
 
 Apply video and audio transformations without writing FFmpeg filter-graph strings. Build a chain with method calls; the graph description is generated and validated internally.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -24,11 +24,11 @@ let graph = FilterGraph::builder()
     .build()?;
 ```
 
-`build()` checks the configured steps and returns an `Err` if a value is out of range or the step set is empty. The underlying `FFmpeg` graph itself is constructed lazily on the first `push_video` / `push_audio` call, using the first frame's format.
+`build()` checks the configured steps and returns an `Err` if a value is out of range or the step set is empty. The underlying `FFmpeg` graph is constructed lazily on the first `push_video` / `push_audio` call, using the first frame's format.
 
 ## Available Video Operations
 
-This is a representative selection; see the API docs for the full set
+A representative selection; see the API docs for the full set
 (colour grading, blurs, denoise, keying, transitions, text, and more).
 
 | Method                            | Effect                                               |
