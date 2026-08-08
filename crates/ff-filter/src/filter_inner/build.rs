@@ -150,6 +150,37 @@ pub(crate) unsafe fn add_and_link_step(
             height,
             color,
         } => return add_fit_to_aspect_step(graph, prev_ctx, *width, *height, color, index),
+        FilterStep::LumaKey {
+            threshold,
+            tolerance,
+            softness,
+            invert,
+        } => {
+            // Build here (not via the generic path) so `invert` is applied for
+            // EVERY caller — the realtime compositor and the timeline export both
+            // drive steps through this dispatch, so putting the invert-negation
+            // geq here keeps preview and export consistent.
+            let ctx = add_raw_filter_step(
+                graph,
+                prev_ctx,
+                "lumakey",
+                &format!("threshold={threshold}:tolerance={tolerance}:softness={softness}"),
+                index,
+                "lumakey",
+            )?;
+            if *invert {
+                // Negate the alpha so the complementary region is keyed out.
+                return add_raw_filter_step(
+                    graph,
+                    ctx,
+                    "geq",
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255-alpha(X,Y)'",
+                    index,
+                    "geqluma",
+                );
+            }
+            return Ok(ctx);
+        }
         _ => {}
     }
 
@@ -2473,26 +2504,6 @@ impl FilterGraphInner {
             // are reset to start at zero.
             if matches!(step, FilterStep::Trim { .. }) {
                 prev_ctx = match add_setpts_after_trim(graph, prev_ctx, i) {
-                    Ok(ctx) => ctx,
-                    Err(e) => bail!(e),
-                };
-            }
-
-            // FitToAspect (scale + centre-pad) is built as a single compound step
-            // by `add_and_link_step` above, so no extra pad is added here.
-
-            // LumaKey with invert=true appends a geq filter that negates the
-            // alpha channel, turning the "key out pixels matching threshold"
-            // effect into "key out the complementary region".
-            if let FilterStep::LumaKey { invert: true, .. } = step {
-                prev_ctx = match add_raw_filter_step(
-                    graph,
-                    prev_ctx,
-                    "geq",
-                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255-alpha(X,Y)'",
-                    i,
-                    "geqluma",
-                ) {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),
                 };

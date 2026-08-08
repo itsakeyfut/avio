@@ -597,4 +597,39 @@ mod tests {
             Err(e) => panic!("pull failed for polygon-matte layer: {e}"),
         }
     }
+
+    #[test]
+    fn base_layer_with_inverted_lumakey_builds_and_pulls() {
+        // Regression: `LumaKey { invert: true }` appends an alpha-negating `geq`.
+        // That must be built by `add_and_link_step` (the realtime/preview path), not
+        // only by the single-source export builder — otherwise invert is a no-op in
+        // the preview. This asserts the inverted lumakey builds and pulls a frame.
+        let base = RealtimeLayer {
+            width: 320,
+            height: 240,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::LumaKey {
+                threshold: 0.5,
+                tolerance: 0.2,
+                softness: 0.1,
+                invert: true,
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => panic!("realtime composer failed to build inverted lumakey layer: {e}"),
+        };
+        let frame = VideoFrame::from_rgba(320, 240, vec![130u8; 320 * 240 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => panic!("pull failed for inverted lumakey layer: {e}"),
+        }
+    }
 }
