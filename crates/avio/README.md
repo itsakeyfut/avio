@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Safe Rust bindings over FFmpeg: decode, encode, filter, compose, and stream.
+A safe, high-level Rust API over FFmpeg for building media applications: decode, encode, filter, compose, and stream.
 
 `avio` is the facade crate for the `ff-*` crate family. Depend on a single crate and opt into the capabilities you need via feature flags. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
 

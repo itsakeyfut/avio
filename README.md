@@ -1,6 +1,6 @@
 # avio
 
-Safe Rust bindings over FFmpeg for building video editors: decode, encode, filter, compose, and stream.
+A safe, high-level Rust API over FFmpeg for building media applications: decode, encode, filter, compose, and stream.
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
