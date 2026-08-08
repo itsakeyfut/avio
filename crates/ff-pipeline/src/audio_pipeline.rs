@@ -144,11 +144,7 @@ impl AudioPipeline {
             let mut adec = AudioDecoder::open(input).build()?;
             let mut last_end_secs = pts_offset_secs;
 
-            loop {
-                let Some(mut aframe) = adec.decode_one()? else {
-                    break;
-                };
-
+            while let Some(mut aframe) = adec.decode_one()? {
                 let ts = aframe.timestamp();
                 let new_pts = pts_offset_secs + ts.as_secs_f64();
                 let frame_dur = frame_duration_secs(aframe.samples(), sample_rate);
