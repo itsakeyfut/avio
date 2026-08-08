@@ -60,9 +60,17 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
         });
     }
 
-    // Build CString args before allocating the graph.
-    let input_str = input.to_string_lossy();
-    let trf_str = output_trf.to_string_lossy();
+    // Build CString args before allocating the graph. Escape paths for the
+    // filter's `:`-separated option parser (movie `filename=` and vidstabdetect
+    // `result=`): Windows drive colons / backslashes would otherwise break it.
+    let input_str = input
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
+    let trf_str = output_trf
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
 
     let movie_args =
         CString::new(format!("filename={input_str}")).map_err(|_| FilterError::Ffmpeg {
@@ -294,8 +302,17 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     }
 
     // ── Build CString arguments before allocating the graph ───────────────────
-    let input_str = input.to_string_lossy();
-    let trf_str = trf_path.to_string_lossy();
+    // Escape paths for the filter's `:`-separated option parser (movie
+    // `filename=` and vidstabtransform `input=`): Windows drive colons /
+    // backslashes would otherwise break it.
+    let input_str = input
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
+    let trf_str = trf_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
 
     let movie_args =
         CString::new(format!("filename={input_str}")).map_err(|_| FilterError::Ffmpeg {
