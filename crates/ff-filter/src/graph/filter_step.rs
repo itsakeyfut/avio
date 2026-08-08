@@ -1323,7 +1323,11 @@ impl FilterStep {
                 format!("loop={loop_count}:size=1:start={start}")
             }
             Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
-                format!("filename={path}")
+                // Escape for the filter's `:`-separated option parser: normalise
+                // backslashes to `/` and escape the drive colon, else an absolute
+                // Windows path (`C:\subs.srt`) breaks parsing at the colon.
+                let escaped = path.replace('\\', "/").replace(':', "\\:");
+                format!("filename={escaped}")
             }
             // args() for OverlayImage returns the overlay positional args (x:y).
             // These are not consumed by add_and_link_step (which is bypassed for
