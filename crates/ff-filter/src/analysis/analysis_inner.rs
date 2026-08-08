@@ -45,7 +45,12 @@ pub(super) unsafe fn measure_loudness_unsafe(path: &Path) -> Result<LoudnessResu
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    // Escape for the amovie filter's `:`-separated option parser (Windows drive
+    // colons / backslashes would otherwise break parsing).
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let amovie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| FilterError::AnalysisFailed {
             reason: "path contains null byte".to_string(),

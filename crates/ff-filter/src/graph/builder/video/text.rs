@@ -267,6 +267,20 @@ mod tests {
     }
 
     #[test]
+    fn filter_step_subtitles_args_escape_windows_path() {
+        // A Windows absolute path must be escaped for the filter's `:`-separated
+        // option parser: backslashes → '/', drive colon → '\:'.
+        let step = FilterStep::SubtitlesSrt {
+            path: r"C:\subs\ep1.srt".to_owned(),
+        };
+        assert_eq!(step.args(), r"filename=C\:/subs/ep1.srt");
+        let step = FilterStep::SubtitlesAss {
+            path: r"D:\subs\ep1.ass".to_owned(),
+        };
+        assert_eq!(step.args(), r"filename=D\:/subs/ep1.ass");
+    }
+
+    #[test]
     fn builder_subtitles_srt_with_wrong_extension_should_return_invalid_config() {
         let result = FilterGraph::builder()
             .subtitles_srt("subtitles.vtt")

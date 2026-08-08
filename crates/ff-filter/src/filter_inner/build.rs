@@ -735,13 +735,14 @@ mod tests {
 
 // ── Overlay image compound step ───────────────────────────────────────────────
 
-/// Escapes a filesystem path for a `movie` filter `filename=` argument.
+/// Escapes a filesystem path for a `movie` / `amovie` filter `filename=`
+/// argument.
 ///
-/// The `movie` filter's arguments are a `:`-separated option list, so a raw
-/// Windows path (`D:\dir\logo.png`) would be split at the drive colon and fail
-/// to parse. Normalise backslashes to `/` (accepted on Windows) and escape any
-/// remaining `:` as `\:`. Mirrors the convention used for regular-file `movie`
-/// sources in `composition_inner`.
+/// These filters' arguments are a `:`-separated option list, so a raw Windows
+/// path (`D:\dir\logo.png`) would be split at the drive colon and fail to parse.
+/// Normalise backslashes to `/` (accepted on Windows) and escape any remaining
+/// `:` as `\:`. Mirrors the convention used for regular-file `movie` sources in
+/// `composition_inner`.
 fn escape_movie_path(path: &str) -> String {
     path.replace('\\', "/").replace(':', "\\:")
 }
@@ -2920,7 +2921,9 @@ pub(super) unsafe fn add_reverb_ir_step(
     }
     let amovie_name =
         CString::new(format!("reverb_amovie{index}")).map_err(|_| FilterError::BuildFailed)?;
-    let amovie_args_str = format!("filename={ir_path}");
+    // Escape the IR path for the amovie filter's `:`-separated option parser
+    // (Windows drive colons / backslashes would otherwise break parsing).
+    let amovie_args_str = format!("filename={}", escape_movie_path(ir_path));
     let amovie_args =
         CString::new(amovie_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
     let mut amovie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
