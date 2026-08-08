@@ -170,23 +170,33 @@
 //!
 //! **Examples:** `async_encode_video`, `async_encode_audio`, `async_transcode`.
 //!
-//! # Real-world Applications
+//! # Projects using avio
 //!
 //! ## ascii-term: Terminal ASCII Art Video Player
 //!
 //! [`ascii-term`](https://github.com/itsakeyfut/ascii-term) is a terminal media player
-//! that renders video as colored ASCII art with synchronized audio. It was fully migrated
-//! from `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` `FFmpeg` code
-//! remaining in the application.
-//!
-//! Key patterns used:
+//! that renders video as colored ASCII art with synchronized audio. It was migrated from
+//! `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` `FFmpeg` code in
+//! the application. It uses:
 //!
 //! - [`VideoDecoder`] with `.output_format(PixelFormat::Rgb24)` for per-pixel luminance
 //! - [`AudioDecoder`] with [`SampleFormat::F32`] output, converted to interleaved PCM for
 //!   [`rodio`](https://crates.io/crates/rodio) playback
-//! - Dual-thread A/V sync via `crossbeam-channel`
+//! - Synchronized audio and video across two threads via `crossbeam-channel`
 //!
-//! ### Extension trait
+//! ## avio-editor-demo: Non-Linear Video Editor
+//!
+//! [`avio-editor-demo`](https://github.com/itsakeyfut/avio-editor-demo) is a non-linear
+//! video editor and the main driver of the library's API. It exercises the full decode,
+//! timeline compose, preview, and export path, and is where most bugs and API changes
+//! originate. It uses:
+//!
+//! - `Timeline` / `Clip` multi-track composition with per-clip colour correction and transitions
+//! - A real-time preview that matches the exported result
+//! - The `ff-preview` proxy workflow, plus scene/silence detection, waveform, and EBU R128
+//!   loudness analysis
+//!
+//! # Extension traits
 //!
 //! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,
 //! `.is_lgpl_compatible()`) to `VideoCodec`. Import the trait to call them:

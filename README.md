@@ -200,21 +200,19 @@ The `avio` facade re-exports the member crates behind cargo features:
 
 ### [ascii-term](https://github.com/itsakeyfut/ascii-term)
 
-A terminal media player that renders video as colored ASCII art with synchronized audio. It was migrated from `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, and uses:
+A terminal media player that renders video as colored ASCII art with synchronized audio. It was migrated from `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` FFmpeg code in the application. It uses:
 
 - `VideoDecoder` with `PixelFormat::Rgb24` for per-pixel luminance mapping
 - `AudioDecoder` with PCM conversion (`SampleFormat::F32`) feeding [rodio](https://crates.io/crates/rodio)
 - Synchronized audio and video across two threads via `crossbeam-channel`
 
-It replaced `ffmpeg-next` / `ffmpeg-sys-next` with no direct `unsafe` FFmpeg code in the application.
-
 ### [avio-editor-demo](https://github.com/itsakeyfut/avio-editor-demo)
 
 A non-linear video editor and the main driver of the library's API. It exercises the full decode, timeline compose, preview, and export path, and is where most bugs and API changes originate. It uses:
 
-- `Timeline` / `Clip` multi-track composition with per-clip effects (colour correction, LUT, transitions)
-- A monitor preview that matches the exported result (same `yuv420p` pipeline)
-- The `ff-preview` proxy workflow and `ff-render` GPU compositing
+- `Timeline` / `Clip` multi-track composition with per-clip colour correction and transitions
+- A real-time preview that matches the exported result
+- The `ff-preview` proxy workflow, plus scene/silence detection, waveform, and EBU R128 loudness analysis
 
 ## Contributing
 
