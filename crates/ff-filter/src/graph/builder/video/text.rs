@@ -57,6 +57,21 @@ impl FilterGraphBuilder {
     pub fn subtitles_srt(mut self, srt_path: &str) -> Self {
         self.steps.push(FilterStep::SubtitlesSrt {
             path: srt_path.to_owned(),
+            force_style: None,
+        });
+        self
+    }
+
+    /// Burn SRT subtitles with an ASS style override (`force_style`).
+    ///
+    /// Identical to [`subtitles_srt`](Self::subtitles_srt) but passes
+    /// `force_style` to the `subtitles` filter, e.g.
+    /// `"Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2"`.
+    #[must_use]
+    pub fn subtitles_srt_styled(mut self, srt_path: &str, force_style: &str) -> Self {
+        self.steps.push(FilterStep::SubtitlesSrt {
+            path: srt_path.to_owned(),
+            force_style: Some(force_style.to_owned()),
         });
         self
     }
@@ -254,6 +269,7 @@ mod tests {
     fn filter_step_subtitles_srt_should_produce_correct_filter_name() {
         let step = FilterStep::SubtitlesSrt {
             path: "subs.srt".to_owned(),
+            force_style: None,
         };
         assert_eq!(step.filter_name(), "subtitles");
     }
@@ -262,8 +278,21 @@ mod tests {
     fn filter_step_subtitles_srt_should_produce_correct_args() {
         let step = FilterStep::SubtitlesSrt {
             path: "subs.srt".to_owned(),
+            force_style: None,
         };
         assert_eq!(step.args(), "filename=subs.srt");
+    }
+
+    #[test]
+    fn filter_step_subtitles_srt_force_style_appended_to_args() {
+        let step = FilterStep::SubtitlesSrt {
+            path: "subs.srt".to_owned(),
+            force_style: Some("Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2".to_owned()),
+        };
+        assert_eq!(
+            step.args(),
+            "filename=subs.srt:force_style='Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2'"
+        );
     }
 
     #[test]
@@ -272,6 +301,7 @@ mod tests {
         // option parser: backslashes → '/', drive colon → '\:'.
         let step = FilterStep::SubtitlesSrt {
             path: r"C:\subs\ep1.srt".to_owned(),
+            force_style: None,
         };
         assert_eq!(step.args(), r"filename=C\:/subs/ep1.srt");
         let step = FilterStep::SubtitlesAss {

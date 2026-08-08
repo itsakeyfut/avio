@@ -390,7 +390,7 @@ impl FilterGraphBuilder {
                     });
                 }
             }
-            if let FilterStep::SubtitlesSrt { path } = step {
+            if let FilterStep::SubtitlesSrt { path, .. } = step {
                 let ext = Path::new(path)
                     .extension()
                     .and_then(|e| e.to_str())

@@ -292,6 +292,11 @@ pub enum FilterStep {
     SubtitlesSrt {
         /// Absolute or relative path to the `.srt` file.
         path: String,
+        /// Optional ASS style override for the `subtitles` filter's `force_style`
+        /// option, e.g. `"Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2"`.
+        /// `None` uses the file's default styling. (The `ass` filter has no
+        /// `force_style`; ASS files carry their own styles.)
+        force_style: Option<String>,
     },
     /// Burn-in ASS/SSA styled subtitles using the `ass` filter.
     SubtitlesAss {
@@ -1322,10 +1327,21 @@ impl FilterStep {
                 let loop_count = (*duration * 25.0) as i64;
                 format!("loop={loop_count}:size=1:start={start}")
             }
-            Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
+            Self::SubtitlesSrt { path, force_style } => {
                 // Escape for the filter's `:`-separated option parser: normalise
                 // backslashes to `/` and escape the drive colon, else an absolute
                 // Windows path (`C:\subs.srt`) breaks parsing at the colon.
+                let escaped = path.replace('\\', "/").replace(':', "\\:");
+                match force_style {
+                    Some(fs) if !fs.is_empty() => {
+                        // Single-quote the style value so its `,`/`=` are read as
+                        // one option value by the parser.
+                        format!("filename={escaped}:force_style='{fs}'")
+                    }
+                    _ => format!("filename={escaped}"),
+                }
+            }
+            Self::SubtitlesAss { path } => {
                 let escaped = path.replace('\\', "/").replace(':', "\\:");
                 format!("filename={escaped}")
             }
