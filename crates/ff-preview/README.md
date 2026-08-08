@@ -1,8 +1,8 @@
 # ff-preview
 
-Real-time video preview and proxy workflow for Rust. Provides frame-accurate seek, audio-master A/V sync, a `FrameSink` trait for custom renderers, RGBA pixel delivery, and proxy generation with transparent auto-substitution.
+Real-time video preview and proxy workflow for Rust. Provides frame-accurate seek, audio-master A/V sync, a `FrameSink` trait for custom renderers, RGBA pixel delivery, and proxy generation with auto-substitution.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 

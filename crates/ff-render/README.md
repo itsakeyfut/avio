@@ -1,8 +1,8 @@
 # ff-render
 
-GPU compositing pipeline for real-time video preview, built on [wgpu]. Apply per-frame visual effects — colour grading, blending, masking, chroma key, YUV upload — in a linear render graph wired directly to `ff-preview`'s `PlayerRunner`.
+GPU compositing pipeline for real-time video preview, built on [wgpu]. Applies per-frame visual effects (colour grading, blending, masking, chroma key, YUV upload) in a linear render graph wired directly to `ff-preview`'s `PlayerRunner`.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -98,7 +98,7 @@ async fn with_preview() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Multi-Layer Compositor (wgpu feature)
 
-`Compositor` is a stateful high-level compositor that accepts a `Vec<FrameLayer>`, sorts layers by `z_order`, applies per-layer transforms and blend modes, and returns the composited `wgpu::Texture`.
+`Compositor` accepts a `Vec<FrameLayer>`, sorts layers by `z_order`, applies per-layer transforms and blend modes, and returns the composited `wgpu::Texture`.
 
 ```rust
 #[cfg(feature = "wgpu")]
@@ -145,9 +145,9 @@ async fn compositor_example() -> Result<(), ff_render::RenderError> {
 | `CrossfadeNode` | ✓ | ✓ | Linear crossfade between base and a target image |
 | `BlendModeNode` | ✓ | ✓ | Photoshop-style blend modes with per-node opacity |
 | `TransformNode` | passthrough | ✓ | Translate, rotate, and scale the frame in UV space |
-| `ChromaKeyNode` | ✓ | ✓ | Chroma key (green screen) — removes a specified colour range |
+| `ChromaKeyNode` | ✓ | ✓ | Chroma key (green screen): removes a specified colour range |
 | `ShapeMaskNode` | ✓ | ✓ | Binary alpha mask from an RGBA mask image |
-| `LumaMaskNode` | ✓ | ✓ | Luma-derived alpha mask — bright = keep, dark = cut |
+| `LumaMaskNode` | ✓ | ✓ | Luma-derived alpha mask (bright = keep, dark = cut) |
 | `AlphaMatteNode` | ✓ | ✓ | Alpha-composite foreground over a background using fg alpha |
 | `YuvUploadNode` | ✓ | ✓ | Upload native YUV planes (4:2:0 / 4:2:2 / 4:4:4) without `sws_scale` |
 
@@ -194,4 +194,4 @@ match result {
 ff-sys → ff-common → ff-format → ff-preview → ff-render
 ```
 
-`ff-render` depends on `ff-preview` for the `FrameSink` trait and `VideoFrame` type. It has no direct dependency on `ff-decode` or `ff-filter` — frames can come from any source.
+`ff-render` depends on `ff-preview` for the `FrameSink` trait and `VideoFrame` type. It has no direct dependency on `ff-decode` or `ff-filter`; frames can come from any source.

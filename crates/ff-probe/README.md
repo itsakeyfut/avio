@@ -1,8 +1,8 @@
 # ff-probe
 
-Read media file metadata with one function call. No knowledge of container formats or codec identifiers needed — you get back a structured `MediaInfo` with typed accessors for resolution, frame rate, sample rate, duration, and more.
+Read media file metadata with one function call. `open` returns a structured `MediaInfo` with typed accessors for resolution, frame rate, sample rate, duration, and codec identifiers.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Installation
 
@@ -36,9 +36,9 @@ fn main() -> Result<(), ff_probe::ProbeError> {
 }
 ```
 
-## What You Get Back
+## Returned Fields
 
-`MediaInfo` provides typed fields — no string parsing required:
+`MediaInfo` exposes typed fields, no string parsing required:
 
 | Method                   | Type                       | Description                            |
 |--------------------------|----------------------------|----------------------------------------|

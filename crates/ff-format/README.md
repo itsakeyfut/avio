@@ -1,8 +1,8 @@
 # ff-format
 
-Shared data types for the ff-* crate family. No FFmpeg dependency — these types exist so crates can exchange frames and stream metadata without coupling to FFmpeg's internal structs.
+Shared data types for the ff-* crate family. No FFmpeg dependency: these types exist so crates can exchange frames and stream metadata without coupling to FFmpeg's internal structs.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Key Types
 
@@ -27,7 +27,7 @@ These are the types `ff-decode` hands back when you decode a frame, and the type
 
 ## Color Science Types
 
-HDR and colour-space metadata is represented as pure-Rust enums — no FFmpeg dependency required:
+HDR and colour-space metadata is represented as pure-Rust enums, with no FFmpeg dependency:
 
 ```rust
 use ff_format::{ColorTransfer, ColorSpace, ColorPrimaries, ColorRange};

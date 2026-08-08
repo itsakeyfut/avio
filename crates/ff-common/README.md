@@ -2,17 +2,17 @@
 
 Shared buffer-pooling abstractions for the ff-* crate family.
 
-> **Project status (as of 2026-06-04):** The library foundation is in place. Development continues through [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`, which surfaces bugs and drives API improvements. Pull requests, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
+Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
 
 ## Overview
 
 `ff-common` provides the `FramePool` trait, `PooledBuffer` type, and `VecPool` (a ready-to-use pool implementation) used internally across the `ff-*` crates. It has no external dependencies and does not link against FFmpeg.
 
-`PooledBuffer` wraps an allocated block of memory and returns it to the originating pool automatically when dropped — no manual free call is needed. If no pool is associated, the memory is simply deallocated. `FramePool` is `Send + Sync`, so pools can be shared across threads without additional locking.
+`PooledBuffer` wraps an allocated block of memory and returns it to the originating pool automatically when dropped, so no manual free call is needed. If no pool is associated, the memory is deallocated. `FramePool` is `Send + Sync`, so pools can be shared across threads without additional locking.
 
 ## Usage
 
-`ff-common` is an internal workspace crate. It is not intended for direct use in application code. The following example shows the `PooledBuffer::standalone` constructor, which allocates a buffer without a backing pool:
+`ff-common` is an internal workspace crate, not intended for direct use in application code. The following example shows the `PooledBuffer::standalone` constructor, which allocates a buffer without a backing pool:
 
 ```rust
 use ff_common::PooledBuffer;
