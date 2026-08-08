@@ -1,28 +1,34 @@
-//! Safe, high-level audio/video/image processing for Rust.
+//! A safe, high-level Rust API over `FFmpeg` for building media applications: decode, encode, filter, compose, and stream.
 //!
-//! `avio` is the facade crate for the `ff-*` crate family — a backend-agnostic
+//! `avio` is the facade crate for the `ff-*` crate family, a backend-agnostic
 //! multimedia toolkit. It re-exports the public APIs of all member crates behind
 //! feature flags, so users can depend on a single crate and opt into only the
 //! functionality they need.
 //!
 //! # Feature Flags
 //!
-//! | Feature          | Crate              | Default | Implies                |
-//! |------------------|--------------------|---------|------------------------|
-//! | `probe`          | `ff-probe`         | yes     | —                      |
-//! | `decode`         | `ff-decode`        | yes     | —                      |
-//! | `encode`         | `ff-encode`        | yes     | —                      |
-//! | `filter`         | `ff-filter`        | no      | —                      |
-//! | `pipeline`       | `ff-pipeline`      | no      | `filter`               |
-//! | `preview`        | `ff-preview`       | no      | —                      |
-//! | `preview-proxy`  | `ff-preview`       | no      | `preview`              |
-//! | `stream`         | `ff-stream`        | no      | `pipeline`             |
-//! | `tokio`          | ff-decode/encode   | no      | `decode` + `encode`    |
+//! | Feature          | Crate              | Default | Implies             |
+//! |------------------|--------------------|---------|---------------------|
+//! | `probe`          | `ff-probe`         | yes     |                     |
+//! | `decode`         | `ff-decode`        | yes     |                     |
+//! | `encode`         | `ff-encode`        | yes     |                     |
+//! | `hwaccel`        | `ff-encode`        | yes     |                     |
+//! | `filter`         | `ff-filter`        | no      |                     |
+//! | `pipeline`       | `ff-pipeline`      | no      | `filter`            |
+//! | `stream`         | `ff-stream`        | no      | `pipeline`          |
+//! | `preview`        | `ff-preview`       | no      |                     |
+//! | `preview-proxy`  | `ff-preview`       | no      | `preview`           |
+//! | `render`         | `ff-render`        | no      | `preview`           |
+//! | `render-gpu`     | `ff-render`        | no      | `render`            |
+//! | `tokio`          | ff-decode/encode   | no      | `decode` + `encode` |
+//! | `gpl`            | `ff-encode`        | no      |                     |
+//! | `srt`            | ff-decode/stream   | no      |                     |
+//! | `serde`          | `ff-filter`        | no      |                     |
 //!
 //! # Usage
 //!
 //! ```toml
-//! # Default: probe + decode + encode
+//! # Default: probe + decode + encode + hwaccel
 //! [dependencies]
 //! avio = "0.15"
 //!
@@ -56,13 +62,13 @@
 //! ```ignore
 //! use avio::{VideoDecoder, AudioDecoder, PixelFormat, SampleFormat};
 //!
-//! // Video — request RGB24 output (FFmpeg converts internally)
+//! // Video: request RGB24 output (FFmpeg converts internally)
 //! let mut vdec = VideoDecoder::open("video.mp4")
 //!     .output_format(PixelFormat::Rgb24)
 //!     .build()?;
 //! for result in &mut vdec { /* ... */ }
 //!
-//! // Audio — resample to 16-bit 44.1 kHz
+//! // Audio: resample to 16-bit 44.1 kHz
 //! let mut adec = AudioDecoder::open("video.mp4")
 //!     .output_format(SampleFormat::I16)
 //!     .output_sample_rate(44_100)
@@ -164,23 +170,33 @@
 //!
 //! **Examples:** `async_encode_video`, `async_encode_audio`, `async_transcode`.
 //!
-//! # Real-world Applications
+//! # Projects using avio
 //!
-//! ## ascii-term — Terminal ASCII Art Video Player
+//! ## ascii-term: Terminal ASCII Art Video Player
 //!
 //! [`ascii-term`](https://github.com/itsakeyfut/ascii-term) is a terminal media player
-//! that renders video as colored ASCII art with synchronized audio. It was fully migrated
-//! from `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` `FFmpeg` code
-//! remaining in the application.
-//!
-//! Key patterns used:
+//! that renders video as colored ASCII art with synchronized audio. It was migrated from
+//! `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` `FFmpeg` code in
+//! the application. It uses:
 //!
 //! - [`VideoDecoder`] with `.output_format(PixelFormat::Rgb24)` for per-pixel luminance
 //! - [`AudioDecoder`] with [`SampleFormat::F32`] output, converted to interleaved PCM for
 //!   [`rodio`](https://crates.io/crates/rodio) playback
-//! - Dual-thread A/V sync via `crossbeam-channel`
+//! - Synchronized audio and video across two threads via `crossbeam-channel`
 //!
-//! ### Extension trait
+//! ## avio-editor-demo: Non-Linear Video Editor
+//!
+//! [`avio-editor-demo`](https://github.com/itsakeyfut/avio-editor-demo) is a non-linear
+//! video editor and the main driver of the library's API. It exercises the full decode,
+//! timeline compose, preview, and export path, and is where most bugs and API changes
+//! originate. It uses:
+//!
+//! - `Timeline` / `Clip` multi-track composition with per-clip colour correction and transitions
+//! - A real-time preview that matches the exported result
+//! - The `ff-preview` proxy workflow, plus scene/silence detection, waveform, and EBU R128
+//!   loudness analysis
+//!
+//! # Extension traits
 //!
 //! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,
 //! `.is_lgpl_compatible()`) to `VideoCodec`. Import the trait to call them:
@@ -200,11 +216,12 @@
 // in from ff-format anyway).
 pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
-    AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo,
-    ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, ContainerInfo,
-    Hdr10Metadata, MasteringDisplay, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat,
-    Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
-    VideoStreamInfo,
+    AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder, ChannelLayout,
+    ChapterInfo, ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer,
+    ContainerInfo, ContainerInfoBuilder, FormatError, FrameError, Hdr10Metadata, MasteringDisplay,
+    MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat, Rational, SampleFormat,
+    SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder, Timestamp, VideoCodec,
+    VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────
@@ -219,13 +236,14 @@ pub use ff_probe::{ProbeError, open};
 // trait for accepting custom pool implementations. Use VecPool directly, or
 // Arc<dyn FramePool> when you need to pass a pool through an abstraction boundary.
 #[cfg(feature = "decode")]
-pub use ff_common::VecPool;
+pub use ff_common::{PooledBuffer, VecPool};
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, BlackFrameDetector, DecodeError, FrameExtractor, FrameHistogram, FramePool,
-    HardwareAccel, Histogram, HistogramExtractor, ImageDecoder, KeyframeEnumerator, RgbParade,
-    SceneDetector, ScopeAnalyzer, SeekMode, SilenceDetector, SilenceRange, ThumbnailSelector,
-    VideoDecoder, WaveformAnalyzer, WaveformSample,
+    AudioDecoder, AudioDecoderBuilder, BlackFrameDetector, DecodeError, FrameExtractor,
+    FrameHistogram, FramePool, HardwareAccel, Histogram, HistogramExtractor, ImageDecoder,
+    ImageDecoderBuilder, KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SeekMode,
+    SilenceDetector, SilenceRange, ThumbnailSelector, VideoDecoder, VideoDecoderBuilder,
+    WaveformAnalyzer, WaveformSample,
 };
 
 // ── encode feature ────────────────────────────────────────────────────────────
@@ -237,14 +255,15 @@ pub use ff_decode::{
 // default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
-    AacOptions, AacProfile, AudioAdder, AudioCodecOptions, AudioEncoder, AudioEncoderConfig,
-    AudioExtractor, AudioReplacement, Av1Options, Av1Usage, BitrateMode, CRF_MAX, DnxhdOptions,
-    DnxhdVariant, EncodeError, EncodeProgress, EncodeProgressCallback, ExportPreset, FlacOptions,
-    GifPreview, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
-    HardwareEncoder, ImageEncoder, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
-    OutputContainer, Preset, ProResOptions, ProResProfile, SpriteSheet, StreamCopyTrim,
-    StreamCopyTrimmer, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder,
-    VideoEncoderConfig, Vp9Options,
+    AacOptions, AacProfile, AudioAdder, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
+    AudioEncoderConfig, AudioExtractor, AudioReplacement, Av1Options, Av1Usage, BitrateMode,
+    CRF_MAX, DnxhdOptions, DnxhdVariant, EncodeError, EncodeProgress, EncodeProgressCallback,
+    ExportPreset, FlacOptions, GifPreview, H264Options, H264Preset, H264Profile, H264Tune,
+    H265Options, H265Profile, H265Tier, HardwareEncoder, ImageEncoder, ImageEncoderBuilder,
+    Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer, Preset, ProResOptions,
+    ProResProfile, SpriteSheet, StreamCopyTrim, StreamCopyTrimmer, SvtAv1Options,
+    VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, VideoEncoderConfig,
+    Vp9Options,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────
@@ -268,8 +287,9 @@ pub use ff_filter::{
     BlendMode, ClipJoiner, ClipTransition, CompositeOp, DrawTextOptions, Easing, EqBand,
     FilterError, FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe,
     LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer,
-    NoiseType, ProxySource, QualityMetrics, Rgb, ScaleAlgorithm, StabilizeOptions, Stabilizer,
-    ToneMap, VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
+    NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm,
+    StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator, VideoLayer, XfadeTransition,
+    YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────
@@ -383,7 +403,7 @@ mod tests {
     #[cfg(feature = "probe")]
     #[test]
     fn probe_open_should_be_accessible() {
-        // open is a function — a non-existent path yields ProbeError
+        // open is a function; a non-existent path yields ProbeError
         let result = open("/no/such/file.mp4");
         assert!(matches!(result, Err(ProbeError::FileNotFound { .. })));
     }
@@ -472,7 +492,7 @@ mod tests {
     #[cfg(feature = "encode")]
     #[test]
     fn encode_progress_callback_should_be_accessible() {
-        // EncodeProgressCallback is a trait — verify it is in scope by creating
+        // EncodeProgressCallback is a trait; verify it is in scope by creating
         // a minimal no-op implementation.
         struct NoOp;
         impl EncodeProgressCallback for NoOp {
@@ -486,7 +506,7 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[test]
     fn tokio_async_decoders_should_be_accessible() {
-        // Verify name resolution — constructing the builder/future without
+        // Verify name resolution: constructing the builder/future without
         // opening a file is enough to confirm the types are in scope.
         let _ = AsyncVideoDecoder::open("/no/such/file.mp4");
         let _ = AsyncAudioDecoder::open("/no/such/file.mp4");
@@ -501,7 +521,7 @@ mod tests {
         use ff_encode::{AudioEncoderBuilder, VideoEncoderBuilder};
         fn _accepts_video_builder(_: VideoEncoderBuilder) {}
         fn _accepts_audio_builder(_: AudioEncoderBuilder) {}
-        // The types compile — that is the assertion.
+        // The types compile; that is the assertion.
         let _ = std::mem::size_of::<AsyncVideoEncoder>();
         let _ = std::mem::size_of::<AsyncAudioEncoder>();
     }
