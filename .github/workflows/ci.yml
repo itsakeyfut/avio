@@ -164,12 +164,11 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # --------------------------------------------------------------------------
-  # Aggregation gate: a single required check for branch protection. Passes
+  # Aggregation gate: the single required check for branch protection. Passes
   # only if every job above succeeded. Referencing just this check keeps branch
   # protection stable as jobs are added or renamed.
   # --------------------------------------------------------------------------
-  ci-success:
-    name: CI Success
+  ci:
     if: always()
     needs:
       - fmt
