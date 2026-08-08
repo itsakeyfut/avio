@@ -123,7 +123,7 @@ jobs:
         with:
           tool: cargo-hack
       - uses: Swatinem/rust-cache@v2
-      - run: cargo hack check --workspace --each-feature --no-dev-deps
+      - run: cargo hack check --workspace --each-feature --no-dev-deps --keep-going
 
   # --------------------------------------------------------------------------
   # docs.rs stubs: verify docsrs_stubs.rs compiles for all workspace crates.
