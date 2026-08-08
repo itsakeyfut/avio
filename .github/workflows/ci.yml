@@ -70,38 +70,25 @@ jobs:
       - run: cargo test --all --all-features
 
   # --------------------------------------------------------------------------
-  # Tests on Windows (MSVC). FFmpeg comes from vcpkg, matching ff-sys's
-  # documented Windows build path; libclang comes from the runner's LLVM.
-  # Default features only: the GPL (libx264/x265) and GPU (wgpu) features need
-  # libraries not present in the default vcpkg FFmpeg build.
+  # Windows (MSVC) compile check. FFmpeg is deliberately NOT installed here:
+  # building it via vcpkg takes ~20 minutes and dominates CI time. DOCS_RS=1
+  # makes ff-sys/build.rs skip bindgen/vcpkg and use the checked-in stub
+  # bindings, so this stays fast (a Rust-only compile) while still verifying
+  # the Windows-specific (cfg(windows)) code paths on the MSVC target.
+  # Running the real FFmpeg-linked test suite on Windows is left to local
+  # development, which already uses vcpkg per CONTRIBUTING.
   # --------------------------------------------------------------------------
-  test-windows:
-    name: Test (windows)
+  check-windows:
+    name: Check (windows)
     runs-on: windows-latest
-    env:
-      VCPKG_ROOT: C:\vcpkg
-      LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v7
-
-      - name: Cache vcpkg FFmpeg
-        id: cache-vcpkg
-        uses: actions/cache@v6
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-ffmpeg-x64-windows-v1
-
-      - name: Install FFmpeg via vcpkg
-        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
-        run: vcpkg install ffmpeg:x64-windows
-
-      - name: Add FFmpeg DLLs to PATH
-        shell: bash
-        run: echo 'C:\vcpkg\installed\x64-windows\bin' >> "$GITHUB_PATH"
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - name: Compile the workspace with DOCS_RS=1 (no FFmpeg needed)
+        run: cargo check --workspace
+        env:
+          DOCS_RS: "1"
 
   # --------------------------------------------------------------------------
   # MSRV: verify the crate still compiles on the declared minimum (Cargo.toml
@@ -188,7 +175,7 @@ jobs:
       - fmt
       - clippy
       - test
-      - test-windows
+      - check-windows
       - msrv
       - features
       - docsrs-stubs

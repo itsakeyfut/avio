@@ -45,7 +45,10 @@ runs:
         FFMPEG_SHA256: ${{ inputs.sha256 }}
       run: |
         set -euo pipefail
-        wget -q "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+        # Retry: on a cold cache several jobs fetch concurrently and ffmpeg.org
+        # occasionally refuses a connection (wget exits 4). Back off and retry.
+        wget -q --tries=5 --retry-connrefused --waitretry=15 --timeout=30 \
+          "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
         echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c -
         tar xf "ffmpeg-${FFMPEG_VERSION}.tar.xz"
         cd "ffmpeg-${FFMPEG_VERSION}"
