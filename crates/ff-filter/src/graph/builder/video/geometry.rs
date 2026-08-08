@@ -123,6 +123,36 @@ impl FilterGraphBuilder {
             x: x.to_owned(),
             y: y.to_owned(),
             opacity,
+            width: None,
+            height: None,
+        });
+        self
+    }
+
+    /// Composite a PNG image over video, scaled to `width`×`height`.
+    ///
+    /// Identical to [`overlay_image`](Self::overlay_image) but inserts a `scale`
+    /// filter on the image branch (`movie → scale → lut → overlay`), sizing the
+    /// overlay before compositing. `width`/`height` are `FFmpeg` `scale`
+    /// expression strings — e.g. `"300"`, `"iw*0.15"` — and `"-1"` preserves the
+    /// aspect ratio of the other dimension.
+    #[must_use]
+    pub fn overlay_image_scaled(
+        mut self,
+        path: &str,
+        x: &str,
+        y: &str,
+        opacity: f32,
+        width: &str,
+        height: &str,
+    ) -> Self {
+        self.steps.push(FilterStep::OverlayImage {
+            path: path.to_owned(),
+            x: x.to_owned(),
+            y: y.to_owned(),
+            opacity,
+            width: Some(width.to_owned()),
+            height: Some(height.to_owned()),
         });
         self
     }
@@ -514,6 +544,8 @@ mod tests {
             x: "10".to_owned(),
             y: "10".to_owned(),
             opacity: 1.0,
+            width: None,
+            height: None,
         };
         assert_eq!(step.filter_name(), "overlay");
     }
@@ -525,8 +557,55 @@ mod tests {
             x: "W-w-10".to_owned(),
             y: "H-h-10".to_owned(),
             opacity: 0.7,
+            width: None,
+            height: None,
         };
         assert_eq!(step.args(), "W-w-10:H-h-10");
+    }
+
+    #[test]
+    fn builder_overlay_image_defaults_to_native_size() {
+        // The plain `overlay_image` builder must not request any scaling — the
+        // image composites at its native resolution (width/height are None).
+        let steps = FilterGraph::builder()
+            .overlay_image("logo.png", "10", "10", 1.0)
+            .steps()
+            .to_vec();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            FilterStep::OverlayImage { width, height, .. } => {
+                assert!(width.is_none());
+                assert!(height.is_none());
+            }
+            other => panic!("expected OverlayImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builder_overlay_image_scaled_carries_size_exprs() {
+        // `overlay_image_scaled` records the scale expressions on the step; the
+        // filter name / positional args are unchanged (scale is a separate node
+        // on the image branch, built by `add_overlay_image_step`).
+        let steps = FilterGraph::builder()
+            .overlay_image_scaled("logo.png", "W-w-10", "H-h-10", 0.8, "iw*0.15", "-1")
+            .steps()
+            .to_vec();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            FilterStep::OverlayImage {
+                width,
+                height,
+                opacity,
+                ..
+            } => {
+                assert_eq!(width.as_deref(), Some("iw*0.15"));
+                assert_eq!(height.as_deref(), Some("-1"));
+                assert!((*opacity - 0.8).abs() < 1e-6);
+            }
+            other => panic!("expected OverlayImage, got {other:?}"),
+        }
+        assert_eq!(steps[0].filter_name(), "overlay");
+        assert_eq!(steps[0].args(), "W-w-10:H-h-10");
     }
 
     #[test]

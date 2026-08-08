@@ -450,9 +450,10 @@ pub enum FilterStep {
     },
     /// Composite a PNG image (watermark / logo) over video with optional opacity.
     ///
-    /// This is a compound step: internally it creates a `movie` source,
-    /// a `lut` alpha-scaling filter, and an `overlay` compositing filter.
-    /// The image file is loaded once at graph construction time.
+    /// This is a compound step: internally it creates a `movie` source, an
+    /// optional `scale` filter, a `lut` alpha-scaling filter, and an `overlay`
+    /// compositing filter. The image file is loaded once at graph construction
+    /// time.
     OverlayImage {
         /// Absolute or relative path to the `.png` file.
         path: String,
@@ -462,6 +463,13 @@ pub enum FilterStep {
         y: String,
         /// Opacity 0.0 (fully transparent) to 1.0 (fully opaque).
         opacity: f32,
+        /// Optional overlay width as an `FFmpeg` `scale` expression, e.g. `"300"`
+        /// or `"iw*0.15"` (`iw`/`ih` are the overlay's own dimensions). `-1`
+        /// preserves aspect ratio. `None` keeps the image's native width.
+        width: Option<String>,
+        /// Optional overlay height as an `FFmpeg` `scale` expression. `-1`
+        /// preserves aspect ratio. `None` keeps the image's native height.
+        height: Option<String>,
     },
 
     /// Blend a `top` layer over the current stream (bottom) using the given mode.
