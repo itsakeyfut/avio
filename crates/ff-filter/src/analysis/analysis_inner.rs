@@ -257,8 +257,16 @@ pub(super) unsafe fn compute_ssim_unsafe(
         }};
     }
 
-    let ref_str = reference.to_string_lossy();
-    let dist_str = distorted.to_string_lossy();
+    // Escape paths for the movie filter's `:`-separated option parser (Windows
+    // drive colons / backslashes would otherwise break parsing).
+    let ref_str = reference
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
+    let dist_str = distorted
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
 
     let ref_args =
         CString::new(format!("filename={ref_str}")).map_err(|_| FilterError::AnalysisFailed {
@@ -471,8 +479,16 @@ pub(super) unsafe fn compute_psnr_unsafe(
         }};
     }
 
-    let ref_str = reference.to_string_lossy();
-    let dist_str = distorted.to_string_lossy();
+    // Escape paths for the movie filter's `:`-separated option parser (Windows
+    // drive colons / backslashes would otherwise break parsing).
+    let ref_str = reference
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
+    let dist_str = distorted
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
 
     let ref_args =
         CString::new(format!("filename={ref_str}")).map_err(|_| FilterError::AnalysisFailed {
