@@ -505,4 +505,56 @@ mod tests {
             Err(e) => println!("Skipping: {e}"),
         }
     }
+
+    #[test]
+    fn base_layer_with_srt_subtitles_builds_and_pulls() {
+        // Diagnostic/regression: a base layer carrying `SubtitlesSrt` (a generic,
+        // PTS-dependent filter) must build in the realtime composer and pull a
+        // frame — this is the path the demo preview uses (#138). Requires an
+        // FFmpeg built with libass; skip if the `subtitles` filter is absent.
+        unsafe {
+            if ff_sys::avfilter_get_by_name(c"subtitles".as_ptr()).is_null() {
+                println!("Skipping: subtitles filter unavailable (no libass)");
+                return;
+            }
+        }
+        // Write a tiny .srt whose first cue covers t=0 (pushed frame pts=0).
+        let srt = std::env::temp_dir().join("avio_rt_subs_test.srt");
+        if std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:05,000\nhello subtitle\n").is_err() {
+            println!("Skipping: could not write temp .srt");
+            return;
+        }
+        let base = RealtimeLayer {
+            width: 320,
+            height: 240,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::SubtitlesSrt {
+                path: srt.to_string_lossy().into_owned(),
+                force_style: Some("Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2".to_owned()),
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base]) {
+            Ok(c) => c,
+            Err(e) => {
+                // Build failure here is the bug we are hunting for (#138 preview).
+                panic!("realtime composer failed to build subtitles layer: {e}");
+            }
+        };
+        let frame = VideoFrame::from_rgba(320, 240, vec![40u8; 320 * 240 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.format(), PixelFormat::Rgba);
+                assert_eq!(out.width(), 320);
+                assert_eq!(out.height(), 240);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => panic!("pull failed for subtitles layer: {e}"),
+        }
+    }
 }
