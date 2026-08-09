@@ -108,6 +108,7 @@ pub(crate) unsafe fn add_and_link_step(
     step: &FilterStep,
     index: usize,
     prefix: &str,
+    animations: &mut Vec<AnimationEntry>,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     // Single-stream compound steps expand to a multi-filter subgraph and must be
     // dispatched to their dedicated builders. The single-filter path below would
@@ -242,6 +243,12 @@ pub(crate) unsafe fn add_and_link_step(
     if ret < 0 {
         return Err(FilterError::BuildFailed);
     }
+
+    // Surface any per-frame animation the step carries (e.g. `CropAnimated`), keyed to
+    // this filter's instance name so the graph's tick can `send_command` it. Empty for
+    // non-animated steps. (The standalone `FilterGraphBuilder` registers these itself.)
+    animations.extend(step.animation_entries(&format!("{prefix}{index}")));
+
     Ok(step_ctx)
 }
 
@@ -1069,7 +1076,14 @@ pub(crate) unsafe fn add_blend_normal_step(
         ) {
             continue;
         }
-        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+        top_ctx = add_and_link_step(
+            graph,
+            top_ctx,
+            step,
+            index * 1000 + j,
+            "blend_top",
+            animations,
+        )?;
     }
 
     // 2. Attenuate the top layer's alpha via colorchannelmixer when opacity < 1.0
@@ -1249,7 +1263,15 @@ pub(crate) unsafe fn add_blend_photographic_step(
         ) {
             continue;
         }
-        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+        // Non-Normal blend paths don't surface effect animation (discarded sink).
+        top_ctx = add_and_link_step(
+            graph,
+            top_ctx,
+            step,
+            index * 1000 + j,
+            "blend_top",
+            &mut Vec::new(),
+        )?;
     }
 
     // 2. Create the blend filter.
@@ -1345,7 +1367,15 @@ pub(super) unsafe fn add_blend_under_step(
         ) {
             continue;
         }
-        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+        // Non-Normal blend paths don't surface effect animation (discarded sink).
+        top_ctx = add_and_link_step(
+            graph,
+            top_ctx,
+            step,
+            index * 1000 + j,
+            "blend_top",
+            &mut Vec::new(),
+        )?;
     }
 
     // 2. When opacity < 1.0, attenuate the bottom (background) layer's alpha channel.
@@ -1468,7 +1498,15 @@ pub(super) unsafe fn add_blend_expr_step(
         ) {
             continue;
         }
-        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+        // Non-Normal blend paths don't surface effect animation (discarded sink).
+        top_ctx = add_and_link_step(
+            graph,
+            top_ctx,
+            step,
+            index * 1000 + j,
+            "blend_top",
+            &mut Vec::new(),
+        )?;
     }
 
     // 2. Create the blend filter with the expression.
@@ -1936,7 +1974,14 @@ pub(super) unsafe fn add_alphamerge_step(
         ) {
             continue;
         }
-        matte_ctx = add_and_link_step(graph, matte_ctx, step, index * 1000 + j, "matte")?;
+        matte_ctx = add_and_link_step(
+            graph,
+            matte_ctx,
+            step,
+            index * 1000 + j,
+            "matte",
+            &mut Vec::new(),
+        )?;
     }
 
     // 2. Create the alphamerge filter.
@@ -2610,7 +2655,16 @@ impl FilterGraphInner {
                 }
                 _ => ("step", i),
             };
-            prev_ctx = match add_and_link_step(graph, prev_ctx, step, step_index, step_prefix) {
+            // The standalone builder registers animation entries in its builder
+            // methods (crop_animated, …), so discard the ones surfaced here.
+            prev_ctx = match add_and_link_step(
+                graph,
+                prev_ctx,
+                step,
+                step_index,
+                step_prefix,
+                &mut Vec::new(),
+            ) {
                 Ok(ctx) => ctx,
                 Err(e) => bail!(e),
             };
@@ -2973,7 +3027,7 @@ impl FilterGraphInner {
                 continue;
             }
 
-            prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
+            prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep", &mut Vec::new())?;
 
             // ConcatAudio consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.
             if let FilterStep::ConcatAudio { n } = step {
