@@ -418,6 +418,10 @@ pub(super) unsafe fn build_video_composition(
                     | FilterStep::PolygonMatte { .. }
                     | FilterStep::FeatherMask { .. }
                     | FilterStep::AlphaMatte { .. }
+                    // `rotate` with a transparent fill leaves alpha in the exposed
+                    // corners; the overlay must blend it (`:format=auto`) so the layers
+                    // below show through instead of the corners rendering as black.
+                    | FilterStep::RotateAnimated { .. }
             )
         });
 

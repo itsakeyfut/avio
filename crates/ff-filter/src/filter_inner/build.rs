@@ -199,6 +199,15 @@ pub(crate) unsafe fn add_and_link_step(
                 "mask",
             );
         }
+        FilterStep::RotateAnimated { .. } => {
+            // A transparent `fillcolor` needs an alpha plane for `rotate` to write the
+            // exposed corners; the export path feeds yuv (no alpha), so convert to rgba
+            // first. The preview already feeds rgba (no-op). Paired with the export
+            // overlay's `format=auto` (see `layer_has_alpha_effects`) so the rotated
+            // corners composite over the layers below instead of showing black.
+            let fmt = add_raw_filter_step(graph, prev_ctx, "format", "rgba", index, "rotfmt")?;
+            return add_raw_filter_step(graph, fmt, step.filter_name(), &step.args(), index, "rot");
+        }
         _ => {}
     }
 
