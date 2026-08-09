@@ -338,6 +338,7 @@ impl Clip {
             pixel_format,
             effects: self.video_effect_chain(),
             opacity: self.opacity,
+            opacity_track: self.opacity_track.clone(),
             blend_mode: self.blend_mode,
         }
     }

@@ -7,6 +7,7 @@ use super::{
 use std::ptr::NonNull;
 use std::time::Duration;
 
+use crate::animation::{AnimationEntry, AnimationTrack};
 use crate::blend::BlendMode;
 use crate::composite::CompositeOp;
 use crate::error::FilterError;
@@ -991,14 +992,17 @@ fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn add_blend_normal_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
     opacity: f32,
+    opacity_track: Option<&AnimationTrack<f64>>,
     alpha: AlphaMode,
     index: usize,
+    animations: &mut Vec<AnimationEntry>,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
 
@@ -1026,11 +1030,19 @@ pub(crate) unsafe fn add_blend_normal_step(
         top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
     }
 
-    // 2. When opacity < 1.0, attenuate the top layer's alpha channel.
-    if opacity < 1.0 {
+    // 2. Attenuate the top layer's alpha via colorchannelmixer when opacity < 1.0
+    //    OR an animation track is present. An animated track ALWAYS needs the node
+    //    (even at initial opacity 1.0) so per-frame `send_command` has a target; the
+    //    initial `aa` is the track's value at t=0. The node name `blend_ccm{index}`
+    //    is the `send_command` target registered in `animations`.
+    let initial_aa = match opacity_track {
+        Some(track) => track.value_at(Duration::ZERO),
+        None => f64::from(opacity),
+    };
+    if opacity < 1.0 || opacity_track.is_some() {
         let ccm_name =
             CString::new(format!("blend_ccm{index}")).map_err(|_| FilterError::BuildFailed)?;
-        let ccm_args_str = format!("aa={opacity}");
+        let ccm_args_str = format!("aa={initial_aa:.6}");
         let ccm_args = CString::new(ccm_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
 
         let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
@@ -1060,6 +1072,16 @@ pub(crate) unsafe fn add_blend_normal_step(
             return Err(FilterError::BuildFailed);
         }
         top_ctx = ccm_ctx;
+
+        // Register the animation so the graph's per-frame tick drives the alpha.
+        if let Some(track) = opacity_track {
+            animations.push(AnimationEntry {
+                node_name: format!("blend_ccm{index}"),
+                param: "aa",
+                track: track.clone(),
+                suffix: "",
+            });
+        }
     }
 
     // 3. Create the overlay filter.
@@ -1466,15 +1488,18 @@ pub(super) unsafe fn add_composite_step(
                 alpha,
                 index,
             ),
-            // Over (overlay=format=auto:shortest=1).
+            // Over (overlay=format=auto:shortest=1). The single-source composite path
+            // does not animate opacity, so no track and a discarded animations sink.
             _ => add_blend_normal_step(
                 graph,
                 bottom_ctx,
                 top_src_ctx,
                 top_steps,
                 opacity,
+                None,
                 alpha,
                 index,
+                &mut Vec::new(),
             ),
         },
     }
@@ -2412,8 +2437,10 @@ impl FilterGraphInner {
                     top_src.as_ptr(),
                     top.steps(),
                     *opacity,
+                    None,
                     *alpha,
                     i,
+                    &mut Vec::new(),
                 ) {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),

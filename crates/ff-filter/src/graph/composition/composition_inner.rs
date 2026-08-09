@@ -1180,6 +1180,9 @@ pub(super) unsafe fn build_realtime_composition(
     let (canvas_w, canvas_h) = (layers[0].width, layers[0].height);
 
     // ── Composite layers 1.. onto the accumulator ─────────────────────────────
+    // Animation entries registered by per-layer opacity tracks (Normal blend). When
+    // non-empty the graph is returned animated so the per-frame tick drives them.
+    let mut animations: Vec<AnimationEntry> = Vec::new();
     for idx in 1..layers.len() {
         let layer = &layers[idx];
         let Some(top_src) = src_ctxs[idx] else {
@@ -1200,8 +1203,10 @@ pub(super) unsafe fn build_realtime_composition(
                 top_src.as_ptr(),
                 &top_steps,
                 layer.opacity,
+                layer.opacity_track.as_ref(),
                 ff_format::AlphaMode::Straight,
                 idx,
+                &mut animations,
             ) {
                 Ok(c) => c,
                 Err(e) => bail!(graph, format!("normal blend failed layer={idx}: {e:?}")),
@@ -1343,8 +1348,16 @@ pub(super) unsafe fn build_realtime_composition(
     let graph_nn = NonNull::new_unchecked(graph);
     let sink_nn = NonNull::new_unchecked(sink_ctx);
     let inner = FilterGraphInner::with_prebuilt_video_inputs(graph_nn, src_ctxs, sink_nn);
-    log::info!("realtime composition graph built layers={}", layers.len());
-    Ok(FilterGraph::from_prebuilt(inner))
+    log::info!(
+        "realtime composition graph built layers={} animations={}",
+        layers.len(),
+        animations.len()
+    );
+    if animations.is_empty() {
+        Ok(FilterGraph::from_prebuilt(inner))
+    } else {
+        Ok(FilterGraph::from_prebuilt_animated(inner, animations))
+    }
 }
 
 // ── Audio mix graph builder ───────────────────────────────────────────────────

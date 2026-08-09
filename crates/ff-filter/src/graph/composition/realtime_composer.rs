@@ -12,6 +12,7 @@
 
 use ff_format::{PixelFormat, VideoFrame};
 
+use crate::animation::AnimationTrack;
 use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
@@ -40,6 +41,14 @@ pub struct RealtimeLayer {
     /// Opacity in `[0.0, 1.0]`. Applied when this layer is blended onto the layer
     /// below it (no effect on the base layer 0 — apply base opacity host-side).
     pub opacity: f32,
+    /// Optional keyframe track animating this layer's opacity (Normal blend only).
+    ///
+    /// When `Some`, the `colorchannelmixer` alpha node is always created (even at
+    /// initial opacity `1.0`) and registered for per-frame `send_command`, so a host
+    /// that pushes frames stamped with the composite's timeline PTS gets an animated
+    /// alpha. `None` keeps the static [`opacity`](Self::opacity). No effect on the
+    /// base layer 0 (apply animated base opacity host-side).
+    pub opacity_track: Option<AnimationTrack<f64>>,
     /// How this layer blends with the layer below. [`BlendMode::Normal`] uses
     /// `overlay`; other modes use `blend=all_mode=<token>`.
     pub blend_mode: BlendMode,
@@ -152,6 +161,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -169,6 +179,7 @@ mod tests {
                 intensity: 0.5,
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[layer])
@@ -195,6 +206,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::with_canvas(&[base], Some((1080, 1920))) {
@@ -246,6 +258,7 @@ mod tests {
                 },
             ],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -288,6 +301,7 @@ mod tests {
                 color: "black".to_string(),
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -321,6 +335,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: op,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[layer(1.0), layer(0.5)]) {
@@ -358,6 +373,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let top = RealtimeLayer {
@@ -366,6 +382,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Screen,
         };
         let mut composer = match RealtimeComposer::new(&[base, top]) {
@@ -415,6 +432,7 @@ mod tests {
                 },
             ],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -480,6 +498,7 @@ mod tests {
                 height: 6,
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -533,6 +552,7 @@ mod tests {
                 force_style: Some("Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2".to_owned()),
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -571,6 +591,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -586,6 +607,7 @@ mod tests {
                 invert: false,
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[base])
@@ -618,6 +640,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -635,6 +658,7 @@ mod tests {
                 invert: true,
             }],
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[base])
@@ -649,5 +673,83 @@ mod tests {
             Ok(None) => println!("Skipping: no frame produced"),
             Err(e) => println!("Skipping: {e}"),
         }
+    }
+
+    #[test]
+    fn animated_opacity_track_changes_composite_across_pts() {
+        // A top layer with an opacity ramp (0→1 over 1s) over a black base: at PTS 0 the
+        // top is transparent (composite ≈ black), at PTS 1s it is opaque (composite ≈
+        // white). Proves the realtime composer registers the `blend_ccm` animation and
+        // evaluates it at each pushed frame's PTS. Probe-gated: CI Linux FFmpeg has no
+        // filters, so even a no-effect layer fails to build there — skip.
+        use crate::animation::{AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 4,
+            height: 4,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 1.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 4,
+            height: 4,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let top = RealtimeLayer {
+            width: 4,
+            height: 4,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: Some(track),
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base, top])
+            .expect("animated-opacity composite must build once FFmpeg filters exist");
+
+        // Opaque black base and opaque white top, each stamped with the query PTS.
+        let stamped = |rgba: Vec<u8>, pts: Duration| -> VideoFrame {
+            let mut f = VideoFrame::from_rgba(4, 4, rgba).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            f
+        };
+        let black = |pts| stamped([0u8, 0, 0, 255].repeat(16), pts);
+        let white = |pts| stamped([255u8, 255, 255, 255].repeat(16), pts);
+
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u8> {
+            composer.push_layer(0, &black(pts)).ok()?;
+            composer.push_layer(1, &white(pts)).ok()?;
+            Some(composer.pull().ok()??.to_rgba()?[0])
+        };
+
+        let Some(r0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(r1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            r1 > r0 + 100,
+            "opacity ramp should brighten the composite across PTS: r0={r0} r1={r1}"
+        );
     }
 }
