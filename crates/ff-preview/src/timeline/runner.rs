@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use ff_filter::{BlendMode, RealtimeComposer, RealtimeLayer};
-use ff_format::{PixelFormat, VideoFrame};
+use ff_format::{PixelFormat, Rational, Timestamp, VideoFrame};
 
 use crate::audio::AudioMixer;
 use crate::error::PreviewError;
@@ -163,14 +163,16 @@ impl TimelineRunner {
     /// callers must push the returned dimensions to the sink rather than the
     /// decoded ones — otherwise the buffer length no longer matches the reported
     /// size and the frame is dropped.
+    #[allow(clippy::too_many_arguments)]
     fn composite_frame(
         &mut self,
         base_layer: RealtimeLayer,
         base_id: usize,
-        base_frame: &VideoFrame,
+        mut base_frame: VideoFrame,
         base_w: u32,
         base_h: u32,
         overlays: &[(usize, u32, u32)],
+        t: Duration,
     ) -> Option<(Vec<u8>, u32, u32)> {
         let mut specs = vec![base_layer];
         let mut key: Vec<(usize, usize, u32, u32)> = vec![(0, base_id, base_w, base_h)];
@@ -192,11 +194,19 @@ impl TimelineRunner {
             };
         }
         let composer = self.composer.as_mut()?;
-        if composer.push_layer(0, base_frame).is_err() {
+        // Stamp every pushed frame with the composite's timeline PTS so the graph's
+        // per-frame animation tick (in `push_video`) evaluates each layer's opacity
+        // track at the same time. Frames from `from_rgba` carry PTS 0 otherwise, and
+        // any registered `AnimationEntry` would be frozen at t=0.
+        let ts = Timestamp::from_duration(t, Rational::new(1, 1_000_000));
+        base_frame.set_timestamp(ts);
+        if composer.push_layer(0, &base_frame).is_err() {
             return None;
         }
         for (slot, &(li, ow, oh)) in overlays.iter().enumerate() {
-            let vf = VideoFrame::from_rgba(ow, oh, self.overlay_layers[li].rgba.clone()).ok()?;
+            let mut vf =
+                VideoFrame::from_rgba(ow, oh, self.overlay_layers[li].rgba.clone()).ok()?;
+            vf.set_timestamp(ts);
             if composer.push_layer(slot + 1, &vf).is_err() {
                 return None;
             }
@@ -687,16 +697,18 @@ impl TimelineRunner {
                                         pixel_format: PixelFormat::Rgba,
                                         effects: Vec::new(),
                                         opacity: 1.0,
+                                        opacity_track: None,
                                         blend_mode: BlendMode::Normal,
                                     };
                                     match VideoFrame::from_rgba(gw, gh, self.gap_buf.clone()) {
                                         Ok(bf) => self.composite_frame(
                                             base_layer,
                                             usize::MAX,
-                                            &bf,
+                                            bf,
                                             gw,
                                             gh,
                                             &gap_overlays,
+                                            gap_pts,
                                         ),
                                         Err(_) => None,
                                     }
@@ -799,8 +811,15 @@ impl TimelineRunner {
 
                     if a_ok {
                         // V1 per-clip opacity: pre-multiply toward black (producer-side;
-                        // the composer ignores base-layer opacity).
-                        let v1_op = self.clips[active].opacity;
+                        // the composer ignores base-layer opacity). An opacity track is
+                        // evaluated at the timeline PTS (tracks are timeline-global), so
+                        // base-layer opacity animates too.
+                        let v1_op = match self.clips[active].clip.opacity_track.as_ref() {
+                            // Value is clamped to [0.0, 1.0], so the f32 narrowing is safe.
+                            #[allow(clippy::cast_possible_truncation)]
+                            Some(track) => track.value_at(timeline_pts).clamp(0.0, 1.0) as f32,
+                            None => self.clips[active].opacity,
+                        };
                         if (v1_op - 1.0).abs() > 1e-6 {
                             for chunk in self.rgba_a.chunks_exact_mut(4) {
                                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -842,10 +861,11 @@ impl TimelineRunner {
                             Ok(bf) => self.composite_frame(
                                 base_layer,
                                 active,
-                                &bf,
+                                bf,
                                 w,
                                 h,
                                 &active_overlays,
+                                timeline_pts,
                             ),
                             Err(_) => None,
                         };
