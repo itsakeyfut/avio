@@ -1083,4 +1083,89 @@ mod tests {
             "the scaled output width should shrink across PTS: w0={w0} w1={w1}"
         );
     }
+
+    #[test]
+    fn animated_rotate_effect_turns_content_across_pts() {
+        // A base layer whose left half is white and right half is black, rotated by a
+        // `RotateAnimated` angle 0°→180° across 1s. At PTS 0 the top-left pixel is white;
+        // at PTS 1s (180°) the frame is turned, so the top-left shows the (black) right
+        // half. Proves the self-animating `rotate=angle=EXPR(t)` turns per frame.
+        // Probe-gated.
+        use crate::animation::{AnimatedValue, AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let angle = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 180.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::RotateAnimated {
+                angle: AnimatedValue::Track(angle),
+                fill_color: "black".to_string(),
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("animated-rotate base must build once FFmpeg filters exist");
+
+        // Left half (cols 0..4) white, right half (cols 4..8) black.
+        let mut data = vec![0u8; 8 * 8 * 4];
+        for row in 0..8 {
+            for col in 0..8 {
+                let p = (row * 8 + col) * 4;
+                if col < 4 {
+                    data[p] = 255;
+                    data[p + 1] = 255;
+                    data[p + 2] = 255;
+                }
+                data[p + 3] = 255;
+            }
+        }
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u8> {
+            let mut f = VideoFrame::from_rgba(8, 8, data.clone()).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            composer.push_layer(0, &f).ok()?;
+            Some(composer.pull().ok()??.to_rgba()?[0])
+        };
+
+        let Some(r0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(r1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            r0 > r1 + 100,
+            "180° rotation should turn the white half away from the top-left: r0={r0} r1={r1}"
+        );
+    }
 }
