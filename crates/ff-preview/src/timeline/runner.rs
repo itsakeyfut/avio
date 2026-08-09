@@ -698,6 +698,10 @@ impl TimelineRunner {
                                         effects: Vec::new(),
                                         opacity: 1.0,
                                         opacity_track: None,
+                                        x: 0.0,
+                                        y: 0.0,
+                                        x_track: None,
+                                        y_track: None,
                                         blend_mode: BlendMode::Normal,
                                     };
                                     match VideoFrame::from_rgba(gw, gh, self.gap_buf.clone()) {

@@ -313,6 +313,25 @@ impl Timeline {
                         va(track_idx, "opacity", 1.0)
                     };
 
+                    // Per-clip position: an explicit keyframe track wins, then a static
+                    // non-zero position, then any track-level animation.
+                    #[allow(clippy::float_cmp)]
+                    let clip_x = if let Some(track) = &clip.x_track {
+                        AnimatedValue::Track(track.clone())
+                    } else if clip.x != 0.0 {
+                        AnimatedValue::Static(clip.x)
+                    } else {
+                        va(track_idx, "x", 0.0)
+                    };
+                    #[allow(clippy::float_cmp)]
+                    let clip_y = if let Some(track) = &clip.y_track {
+                        AnimatedValue::Track(track.clone())
+                    } else if clip.y != 0.0 {
+                        AnimatedValue::Static(clip.y)
+                    } else {
+                        va(track_idx, "y", 0.0)
+                    };
+
                     // When a proxy is set, probe the original source resolution so
                     // the decoded proxy frames can be scaled back up to full size.
                     // If the probe fails the proxy is ignored (original used directly).
@@ -338,8 +357,8 @@ impl Timeline {
                         source: clip.source.clone(),
                         proxy,
                         input_format: None,
-                        x: va(track_idx, "x", 0.0),
-                        y: va(track_idx, "y", 0.0),
+                        x: clip_x,
+                        y: clip_y,
                         scale_x: va(track_idx, "scale_x", 1.0),
                         scale_y: va(track_idx, "scale_y", 1.0),
                         rotation: va(track_idx, "rotation", 0.0),

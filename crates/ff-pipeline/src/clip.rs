@@ -112,6 +112,25 @@ pub struct Clip {
     /// Takes precedence over the static [`opacity`](Self::opacity) when set.
     /// Defaults to `None` (use the static `opacity`).
     pub opacity_track: Option<AnimationTrack<f64>>,
+    /// Static overlay position (pixels) of this clip's top-left on the canvas.
+    ///
+    /// Maps to the `overlay` filter's `x`/`y`. Default `(0.0, 0.0)`. Meaningful for
+    /// overlay (non-base) layers — a Picture-in-Picture placement.
+    pub x: f64,
+    /// See [`x`](Self::x).
+    pub y: f64,
+    /// Optional keyframe tracks animating the overlay X / Y position over time.
+    ///
+    /// When `Some`, `Timeline::render()` maps them to the clip's
+    /// [`VideoLayer::x`/`y`](ff_filter::VideoLayer) as
+    /// [`AnimatedValue::Track`](ff_filter::AnimatedValue), driving the `overlay`
+    /// filter's `x`/`y` per frame (`:eval=frame` + `send_command`). Keyframe
+    /// timestamps are **timeline-global** (the composition graph's output PTS).
+    ///
+    /// Take precedence over the static [`x`](Self::x)/[`y`](Self::y). Default `None`.
+    pub x_track: Option<AnimationTrack<f64>>,
+    /// See [`x_track`](Self::x_track).
+    pub y_track: Option<AnimationTrack<f64>>,
     /// Blend mode for compositing this clip over the layer(s) below it.
     /// Default: [`BlendMode::Normal`] (standard alpha-over composite).
     ///
@@ -197,6 +216,10 @@ impl Clip {
             saturation: 1.0,
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
             composite_op: CompositeOp::Over,
             speed: 1.0,
@@ -339,6 +362,10 @@ impl Clip {
             effects: self.video_effect_chain(),
             opacity: self.opacity,
             opacity_track: self.opacity_track.clone(),
+            x: self.x,
+            y: self.y,
+            x_track: self.x_track.clone(),
+            y_track: self.y_track.clone(),
             blend_mode: self.blend_mode,
         }
     }
@@ -566,6 +593,67 @@ impl Clip {
     pub fn with_opacity_track(self, track: AnimationTrack<f64>) -> Self {
         Self {
             opacity_track: Some(track),
+            ..self
+        }
+    }
+
+    /// Sets the static overlay position (pixels) of this clip on the canvas.
+    ///
+    /// Maps to the `overlay` filter's `x`/`y` — a Picture-in-Picture placement for an
+    /// overlay layer. Superseded by [`with_x_track`](Self::with_x_track) /
+    /// [`with_y_track`](Self::with_y_track) when a track is set.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("pip.mp4").with_position(320.0, 180.0);
+    /// assert_eq!((clip.x, clip.y), (320.0, 180.0));
+    /// ```
+    #[must_use]
+    pub fn with_position(self, x: f64, y: f64) -> Self {
+        Self { x, y, ..self }
+    }
+
+    /// Animates the overlay X position with a keyframe track (timeline-global time).
+    ///
+    /// Drives the `overlay` filter's `x` per frame (`:eval=frame` + `send_command`).
+    /// Takes precedence over the static [`x`](Self::x).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::{AnimationTrack, Easing};
+    /// use std::time::Duration;
+    ///
+    /// let sweep = AnimationTrack::fade(
+    ///     0.0,
+    ///     640.0,
+    ///     Duration::ZERO,
+    ///     Duration::from_secs(2),
+    ///     Easing::Linear,
+    /// );
+    /// let clip = Clip::new("pip.mp4").with_x_track(sweep);
+    /// assert!(clip.x_track.is_some());
+    /// ```
+    #[must_use]
+    pub fn with_x_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            x_track: Some(track),
+            ..self
+        }
+    }
+
+    /// Animates the overlay Y position with a keyframe track (timeline-global time).
+    ///
+    /// Drives the `overlay` filter's `y` per frame (`:eval=frame` + `send_command`).
+    /// Takes precedence over the static [`y`](Self::y).
+    #[must_use]
+    pub fn with_y_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            y_track: Some(track),
             ..self
         }
     }
@@ -879,6 +967,35 @@ mod tests {
         let stored = clip.opacity_track.expect("track stored");
         // Midpoint of a 0→1 linear ramp is 0.5.
         assert!((stored.value_at(Duration::from_millis(500)) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_new_should_default_position_to_zero() {
+        let clip = Clip::new("video.mp4");
+        assert_eq!((clip.x, clip.y), (0.0, 0.0));
+        assert!(clip.x_track.is_none() && clip.y_track.is_none());
+    }
+
+    #[test]
+    fn clip_with_position_should_set_x_y() {
+        let clip = Clip::new("pip.mp4").with_position(100.0, 50.0);
+        assert_eq!((clip.x, clip.y), (100.0, 50.0));
+    }
+
+    #[test]
+    fn clip_with_x_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            0.0,
+            640.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+        let clip = Clip::new("pip.mp4").with_x_track(track);
+        let stored = clip.x_track.expect("x track stored");
+        // Midpoint of a 0→640 linear sweep is 320.
+        assert!((stored.value_at(Duration::from_secs(1)) - 320.0).abs() < 1e-9);
     }
 
     #[test]
