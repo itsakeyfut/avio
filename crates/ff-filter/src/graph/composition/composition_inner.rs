@@ -403,6 +403,23 @@ pub(super) unsafe fn build_video_composition(
         let needs_alpha = !use_blend_filter
             && matches!(layer.composite_op, CompositeOp::Over)
             && (is_animated_opacity || opacity_initial < 1.0);
+        // The layer's effect chain can itself produce a spatially-varying alpha
+        // (chroma/color key, luma/rect/polygon masks, feather, alpha matte). The
+        // `overlay` must then blend with that alpha via `:format=auto`; without it
+        // overlay defaults to a non-alpha format and the keyed/masked transparency
+        // is dropped — so the effect shows in the realtime preview but not export.
+        let layer_has_alpha_effects = layer.effects.iter().any(|e| {
+            matches!(
+                e,
+                FilterStep::ChromaKey { .. }
+                    | FilterStep::ColorKey { .. }
+                    | FilterStep::LumaKey { .. }
+                    | FilterStep::RectMask { .. }
+                    | FilterStep::PolygonMatte { .. }
+                    | FilterStep::FeatherMask { .. }
+                    | FilterStep::AlphaMatte { .. }
+            )
+        });
 
         if needs_alpha {
             // ── format=yuva420p: add alpha plane before colorchannelmixer ─────
@@ -942,7 +959,11 @@ pub(super) unsafe fn build_video_composition(
             let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
                 || matches!(layer.y, AnimatedValue::Track(_));
             let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
-            let format_suffix = if needs_alpha { ":format=auto" } else { "" };
+            let format_suffix = if needs_alpha || layer_has_alpha_effects {
+                ":format=auto"
+            } else {
+                ""
+            };
             let Ok(ov_args) = CString::new(format!(
                 "{lx}:{ly}:eof_action={eof_action}{eval_suffix}{format_suffix}"
             )) else {

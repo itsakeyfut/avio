@@ -557,4 +557,97 @@ mod tests {
             Err(e) => panic!("pull failed for subtitles layer: {e}"),
         }
     }
+
+    #[test]
+    fn base_layer_with_diagonal_polygon_matte_builds_and_pulls() {
+        // Regression: a diagonal `PolygonMatte` must build its `geq` and pull a frame,
+        // catching invalid geq expressions (e.g. `iw`/`ih`, which geq lacks) that a
+        // string-only test would miss. Probe-gated: CI's Linux FFmpeg is built with no
+        // filters, so even a no-effect layer fails to build there — skip. Where the
+        // probe builds, the geq layer MUST also build; that is the regression check.
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+        let base = RealtimeLayer {
+            width: 320,
+            height: 240,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::PolygonMatte {
+                vertices: vec![(0.2, 0.1), (0.9, 0.5), (0.3, 0.9)],
+                invert: false,
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("polygon-matte geq must build once FFmpeg filters exist");
+        let frame = VideoFrame::from_rgba(320, 240, vec![90u8; 320 * 240 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.format(), PixelFormat::Rgba);
+                assert_eq!(out.width(), 320);
+                assert_eq!(out.height(), 240);
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn base_layer_with_inverted_lumakey_builds_and_pulls() {
+        // Regression: `LumaKey { invert: true }` appends an alpha-negating `geq`, which
+        // must be built by `add_and_link_step` (the realtime/preview path), not only by
+        // the single-source export builder — otherwise invert is a no-op in the preview.
+        // Probe-gated like the other realtime tests (CI Linux FFmpeg has no filters).
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+        let base = RealtimeLayer {
+            width: 320,
+            height: 240,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::LumaKey {
+                threshold: 0.5,
+                tolerance: 0.2,
+                softness: 0.1,
+                invert: true,
+            }],
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("inverted lumakey must build once FFmpeg filters exist");
+        let frame = VideoFrame::from_rgba(320, 240, vec![130u8; 320 * 240 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
 }

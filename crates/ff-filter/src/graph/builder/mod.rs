@@ -1003,6 +1003,32 @@ mod tests {
     }
 
     #[test]
+    fn polygon_matte_geq_uses_valid_constants_and_no_bare_star_minus() {
+        // Regression for two `geq` eval failures:
+        // 1. `geq` has no `iw`/`ih` constants (those are scale/overlay's) — it uses
+        //    `W`/`H`; using `iw`/`ih` fails with "Undefined constant".
+        // 2. A diagonal edge has negative `dx`/`dy`; they must be parenthesised so
+        //    the expression contains no bare `*-`/`/-`.
+        let steps = FilterGraph::builder()
+            .polygon_matte(vec![(0.2, 0.1), (0.9, 0.5), (0.3, 0.9)], false)
+            .steps()
+            .to_vec();
+        let args = steps[0].args();
+        assert!(
+            !args.contains("iw") && !args.contains("ih"),
+            "geq must use W/H, not iw/ih: {args}"
+        );
+        assert!(
+            args.contains("*W") && args.contains("*H"),
+            "geq should use W/H: {args}"
+        );
+        assert!(
+            !args.contains("*-") && !args.contains("/-"),
+            "geq expression must not contain a bare '*-'/'/-': {args}"
+        );
+    }
+
+    #[test]
     fn chromakey_out_of_range_similarity_should_return_invalid_config() {
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
