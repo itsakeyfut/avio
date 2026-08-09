@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer, XfadeTransition};
+use ff_filter::{
+    AnimationTrack, BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer, XfadeTransition,
+};
 use ff_format::{PixelFormat, VideoFrame};
 
 use crate::error::PipelineError;
@@ -97,6 +99,19 @@ pub struct Clip {
     ///
     /// Neutral value (`1.0`) produces bit-identical output to the no-opacity path.
     pub opacity: f32,
+    /// Optional keyframe track animating this clip's opacity over time.
+    ///
+    /// When `Some`, `Timeline::render()` maps it to the clip's
+    /// [`VideoLayer::opacity`](ff_filter::VideoLayer) as an
+    /// [`AnimatedValue::Track`](ff_filter::AnimatedValue), driving the
+    /// `colorchannelmixer` alpha via per-frame `send_command`. Keyframe timestamps
+    /// are interpreted in **timeline-global** time (the composition graph's output
+    /// PTS), so a caller animating a clip placed at `offset` must author the track
+    /// at those absolute timeline positions.
+    ///
+    /// Takes precedence over the static [`opacity`](Self::opacity) when set.
+    /// Defaults to `None` (use the static `opacity`).
+    pub opacity_track: Option<AnimationTrack<f64>>,
     /// Blend mode for compositing this clip over the layer(s) below it.
     /// Default: [`BlendMode::Normal`] (standard alpha-over composite).
     ///
@@ -181,6 +196,7 @@ impl Clip {
             contrast: 1.0,
             saturation: 1.0,
             opacity: 1.0,
+            opacity_track: None,
             blend_mode: BlendMode::Normal,
             composite_op: CompositeOp::Over,
             speed: 1.0,
@@ -517,6 +533,42 @@ impl Clip {
         }
     }
 
+    /// Animates this clip's opacity with a keyframe track and returns the updated clip.
+    ///
+    /// The track drives the clip's `VideoLayer::opacity` as an
+    /// [`AnimatedValue::Track`](ff_filter::AnimatedValue), updating the
+    /// `colorchannelmixer` alpha per frame via `send_command`. Keyframe timestamps are
+    /// **timeline-global** (the composition graph's output PTS): animate a clip placed
+    /// at `offset(t0)` by authoring keyframes at absolute timeline positions.
+    ///
+    /// Takes precedence over the static [`with_opacity`](Self::with_opacity) value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::{AnimationTrack, Easing};
+    /// use std::time::Duration;
+    ///
+    /// // Fade in over the first second the clip is on the timeline.
+    /// let track = AnimationTrack::fade(
+    ///     0.0,
+    ///     1.0,
+    ///     Duration::ZERO,
+    ///     Duration::from_secs(1),
+    ///     Easing::Linear,
+    /// );
+    /// let clip = Clip::new("overlay.mp4").with_opacity_track(track);
+    /// assert!(clip.opacity_track.is_some());
+    /// ```
+    #[must_use]
+    pub fn with_opacity_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            opacity_track: Some(track),
+            ..self
+        }
+    }
+
     /// Sets the blend mode for compositing this clip over the layer below and returns
     /// the updated clip.
     ///
@@ -804,6 +856,28 @@ mod tests {
     fn clip_with_opacity_should_clamp_below_zero() {
         let clip = Clip::new("overlay.mp4").with_opacity(-0.5);
         assert_eq!(clip.opacity, 0.0);
+    }
+
+    #[test]
+    fn clip_new_should_default_opacity_track_to_none() {
+        let clip = Clip::new("video.mp4");
+        assert!(clip.opacity_track.is_none());
+    }
+
+    #[test]
+    fn clip_with_opacity_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            0.0,
+            1.0,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            Easing::Linear,
+        );
+        let clip = Clip::new("overlay.mp4").with_opacity_track(track);
+        let stored = clip.opacity_track.expect("track stored");
+        // Midpoint of a 0→1 linear ramp is 0.5.
+        assert!((stored.value_at(Duration::from_millis(500)) - 0.5).abs() < 1e-9);
     }
 
     #[test]
