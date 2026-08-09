@@ -96,6 +96,27 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Scale (resize / zoom) with optionally animated `width`/`height` (pixels).
+    ///
+    /// Unlike [`crop_animated`](Self::crop_animated) (which uses `send_command`), this
+    /// **self-animates** via `scale=eval=frame` with the tracks compiled to
+    /// `t`-expressions, so no [`AnimationEntry`] is registered — the same expression
+    /// drives preview and export identically. A `Static` side is a constant.
+    #[must_use]
+    pub fn scale_animated(
+        mut self,
+        width: AnimatedValue<f64>,
+        height: AnimatedValue<f64>,
+        algorithm: ScaleAlgorithm,
+    ) -> Self {
+        self.steps.push(FilterStep::ScaleAnimated {
+            width,
+            height,
+            algorithm,
+        });
+        self
+    }
+
     /// Overlay a second input stream at position `(x, y)`.
     #[must_use]
     pub fn overlay(mut self, x: i32, y: i32) -> Self {
