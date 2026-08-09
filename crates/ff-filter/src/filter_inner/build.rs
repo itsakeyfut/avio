@@ -181,6 +181,22 @@ pub(crate) unsafe fn add_and_link_step(
             }
             return Ok(ctx);
         }
+        FilterStep::RectMask { .. } | FilterStep::PolygonMatte { .. } => {
+            // These build a `geq` using r/g/b/a expressions, which need an RGB input
+            // *with* an alpha plane. The realtime preview feeds rgba so it works,
+            // but the timeline export feeds the source's yuv420p (no alpha) — so the
+            // `a=` write is a no-op and the mask vanishes on render. Convert to rgba
+            // first so `geq` can write alpha in both paths.
+            let fmt = add_raw_filter_step(graph, prev_ctx, "format", "rgba", index, "maskfmt")?;
+            return add_raw_filter_step(
+                graph,
+                fmt,
+                step.filter_name(),
+                &step.args(),
+                index,
+                "mask",
+            );
+        }
         _ => {}
     }
 
