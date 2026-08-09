@@ -302,9 +302,12 @@ impl Timeline {
                     // single-frame preview matches this rendered layer.
                     layer_effects.extend(clip.video_effect_chain());
 
-                    // Per-clip opacity overrides the track-level animation when not 1.0.
+                    // Per-clip opacity: an explicit keyframe track wins, then a static
+                    // non-neutral opacity, then any track-level animation.
                     #[allow(clippy::float_cmp)]
-                    let clip_opacity = if clip.opacity != 1.0 {
+                    let clip_opacity = if let Some(track) = &clip.opacity_track {
+                        AnimatedValue::Track(track.clone())
+                    } else if clip.opacity != 1.0 {
                         AnimatedValue::Static(f64::from(clip.opacity))
                     } else {
                         va(track_idx, "opacity", 1.0)
