@@ -922,4 +922,91 @@ mod tests {
             "overlay should slide in and cover the red base, dropping R: r0={r0} r1={r1}"
         );
     }
+
+    #[test]
+    fn animated_crop_effect_moves_the_cropped_region_across_pts() {
+        // A base layer whose left half is red and right half is blue, cropped to a
+        // 4-wide window whose x slides 0→4 across 1s. At PTS 0 the window shows the red
+        // half; at PTS 1s it shows the blue half. Proves a `CropAnimated` per-clip
+        // effect surfaces an AnimationEntry from `add_and_link_step` and animates via
+        // `send_command` (the #1294 plumbing that unblocks Ken Burns). Probe-gated.
+        use crate::animation::{AnimatedValue, AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let x_track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 4.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::CropAnimated {
+                x: AnimatedValue::Track(x_track),
+                y: AnimatedValue::Static(0.0),
+                width: AnimatedValue::Static(4.0),
+                height: AnimatedValue::Static(8.0),
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("animated-crop base must build once FFmpeg filters exist");
+
+        // Left half (cols 0..4) red, right half (cols 4..8) blue.
+        let mut data = vec![0u8; 8 * 8 * 4];
+        for row in 0..8 {
+            for col in 0..8 {
+                let p = (row * 8 + col) * 4;
+                if col < 4 {
+                    data[p] = 255; // R
+                } else {
+                    data[p + 2] = 255; // B
+                }
+                data[p + 3] = 255; // opaque
+            }
+        }
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u8> {
+            let mut f = VideoFrame::from_rgba(8, 8, data.clone()).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            composer.push_layer(0, &f).ok()?;
+            Some(composer.pull().ok()??.to_rgba()?[0])
+        };
+
+        let Some(r0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(r1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            r0 > r1 + 100,
+            "the crop window should slide from the red half to the blue half: r0={r0} r1={r1}"
+        );
+    }
 }

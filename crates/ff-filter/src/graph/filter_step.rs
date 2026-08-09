@@ -8,7 +8,7 @@ use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
-use crate::animation::AnimatedValue;
+use crate::animation::{AnimatedValue, AnimationEntry, AnimationTrack, Keyframe};
 use crate::blend::BlendMode;
 use crate::composite::CompositeOp;
 use ff_format::{AlphaMode, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat};
@@ -1513,6 +1513,10 @@ impl FilterStep {
                 let y0 = y.value_at(Duration::ZERO);
                 let w0 = width.value_at(Duration::ZERO);
                 let h0 = height.value_at(Duration::ZERO);
+                // No `eval=frame`: this FFmpeg's `crop` has no `eval` option and already
+                // re-evaluates the x/y position expressions per frame, so `send_command`
+                // updates to x/y take effect. (w/h are fixed at init — animate pan, not
+                // zoom, via crop; zoom is done by scaling.)
                 format!("x={x0}:y={y0}:w={w0}:h={h0}")
             }
             Self::GBlurAnimated { sigma } => {
@@ -1635,6 +1639,105 @@ impl FilterStep {
             ),
         }
     }
+
+    /// Animation entries this step contributes for per-frame `send_command`, when it
+    /// is an animated variant with `Track` params.
+    ///
+    /// `node_name` must equal the filter instance name created for this step (the
+    /// `send_command` target). Returns empty for non-animated steps and for `Static`
+    /// params. Used by [`crate::filter_inner::add_and_link_step`] to surface effect
+    /// animations to the composition builders; the standalone [`FilterGraphBuilder`]
+    /// registers the equivalent entries in its own builder methods.
+    pub(crate) fn animation_entries(&self, node_name: &str) -> Vec<AnimationEntry> {
+        let mut entries = Vec::new();
+        match self {
+            Self::CropAnimated {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                push_scalar_entry(&mut entries, node_name, "x", x);
+                push_scalar_entry(&mut entries, node_name, "y", y);
+                push_scalar_entry(&mut entries, node_name, "w", width);
+                push_scalar_entry(&mut entries, node_name, "h", height);
+            }
+            Self::GBlurAnimated { sigma } => {
+                push_scalar_entry(&mut entries, node_name, "sigma", sigma);
+            }
+            Self::EqAnimated {
+                brightness,
+                contrast,
+                saturation,
+                gamma,
+            } => {
+                push_scalar_entry(&mut entries, node_name, "brightness", brightness);
+                push_scalar_entry(&mut entries, node_name, "contrast", contrast);
+                push_scalar_entry(&mut entries, node_name, "saturation", saturation);
+                push_scalar_entry(&mut entries, node_name, "gamma", gamma);
+            }
+            Self::ColorBalanceAnimated { lift, gamma, gain } => {
+                push_tuple_entries(&mut entries, node_name, ["rs", "gs", "bs"], lift);
+                push_tuple_entries(&mut entries, node_name, ["rm", "gm", "bm"], gamma);
+                push_tuple_entries(&mut entries, node_name, ["rh", "gh", "bh"], gain);
+            }
+            _ => {}
+        }
+        entries
+    }
+}
+
+/// Pushes an [`AnimationEntry`] for a scalar animated param when it is a `Track`.
+fn push_scalar_entry(
+    entries: &mut Vec<AnimationEntry>,
+    node_name: &str,
+    param: &'static str,
+    av: &AnimatedValue<f64>,
+) {
+    if let AnimatedValue::Track(track) = av {
+        entries.push(AnimationEntry {
+            node_name: node_name.to_owned(),
+            param,
+            track: track.clone(),
+            suffix: "",
+        });
+    }
+}
+
+/// Pushes three per-channel [`AnimationEntry`]s for a `(R, G, B)` tuple animated param
+/// when it is a `Track`, splitting the tuple track into one scalar track per channel.
+fn push_tuple_entries(
+    entries: &mut Vec<AnimationEntry>,
+    node_name: &str,
+    params: [&'static str; 3],
+    av: &AnimatedValue<(f64, f64, f64)>,
+) {
+    let AnimatedValue::Track(track) = av else {
+        return;
+    };
+    for (i, param) in params.into_iter().enumerate() {
+        let scalar = track
+            .keyframes()
+            .iter()
+            .fold(AnimationTrack::new(), |t, kf| {
+                let v = match i {
+                    0 => kf.value.0,
+                    1 => kf.value.1,
+                    _ => kf.value.2,
+                };
+                t.push(Keyframe {
+                    timestamp: kf.timestamp,
+                    value: v,
+                    easing: kf.easing.clone(),
+                })
+            });
+        entries.push(AnimationEntry {
+            node_name: node_name.to_owned(),
+            param,
+            track: scalar,
+            suffix: "",
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1728,5 +1831,48 @@ mod tests {
             color_trc: None,
         };
         assert_eq!(step.args(), "");
+    }
+
+    #[test]
+    fn animation_entries_maps_only_track_params_to_the_node() {
+        use crate::animation::{AnimatedValue, AnimationTrack, Easing, Keyframe};
+        let ramp = || {
+            AnimationTrack::new()
+                .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+                .push(Keyframe::new(Duration::from_secs(1), 10.0, Easing::Linear))
+        };
+        // Only x and h are Track → exactly two entries, both on the given node.
+        let step = FilterStep::CropAnimated {
+            x: AnimatedValue::Track(ramp()),
+            y: AnimatedValue::Static(0.0),
+            width: AnimatedValue::Static(4.0),
+            height: AnimatedValue::Track(ramp()),
+        };
+        let entries = step.animation_entries("veff0");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.node_name == "veff0"));
+        let params: Vec<&str> = entries.iter().map(|e| e.param).collect();
+        assert!(params.contains(&"x") && params.contains(&"h"));
+
+        // A fully static animated step registers nothing.
+        let static_step = FilterStep::CropAnimated {
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            width: AnimatedValue::Static(4.0),
+            height: AnimatedValue::Static(8.0),
+        };
+        assert!(static_step.animation_entries("veff0").is_empty());
+
+        // A non-animated step never contributes entries.
+        assert!(
+            FilterStep::Crop {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 8,
+            }
+            .animation_entries("veff0")
+            .is_empty()
+        );
     }
 }
