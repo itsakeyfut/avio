@@ -231,6 +231,22 @@ pub enum FilterStep {
         /// Blur radius (standard deviation). Must evaluate to ≥ 0.0 at `Duration::ZERO`.
         sigma: AnimatedValue<f64>,
     },
+    /// Scale (resize / zoom) with optionally animated width/height, in pixels.
+    ///
+    /// Unlike `crop`, `scale` cannot be driven by `send_command` (its output size is
+    /// fixed at init); instead this **self-animates** via `scale=eval=frame` with the
+    /// width/height tracks compiled to `t`-expressions
+    /// ([`AnimationTrack::to_ffmpeg_expr`](crate::animation::AnimationTrack::to_ffmpeg_expr)).
+    /// The same expression is placed in both the preview and export graphs, so it
+    /// animates identically. When both are `Static` it renders a plain static `scale`.
+    ScaleAnimated {
+        /// Target width in pixels (expression when a `Track`).
+        width: AnimatedValue<f64>,
+        /// Target height in pixels (expression when a `Track`).
+        height: AnimatedValue<f64>,
+        /// Resampling algorithm (`flags=`).
+        algorithm: ScaleAlgorithm,
+    },
     /// Sharpen or blur via unsharp mask (luma + chroma strength).
     ///
     /// Positive values sharpen; negative values blur. Valid range for each
@@ -1028,6 +1044,7 @@ impl FilterStep {
             Self::PolygonMatte { .. } => "geq",
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
+            Self::ScaleAnimated { .. } => "scale",
             Self::MotionBlur { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
@@ -1522,6 +1539,32 @@ impl FilterStep {
             Self::GBlurAnimated { sigma } => {
                 let s0 = sigma.value_at(Duration::ZERO);
                 format!("sigma={s0}")
+            }
+            Self::ScaleAnimated {
+                width,
+                height,
+                algorithm,
+            } => {
+                let flags = algorithm.as_flags_str();
+                let animated = matches!(width, AnimatedValue::Track(_))
+                    || matches!(height, AnimatedValue::Track(_));
+                if animated {
+                    // Self-animate via per-frame expressions. A Static side is a
+                    // constant expression; a Track side compiles to a `t`-expression.
+                    let expr = |v: &AnimatedValue<f64>| match v {
+                        AnimatedValue::Track(t) => t.to_ffmpeg_expr("t"),
+                        AnimatedValue::Static(s) => format!("{s:.6}"),
+                    };
+                    format!(
+                        "w={}:h={}:flags={flags}:eval=frame",
+                        expr(width),
+                        expr(height)
+                    )
+                } else {
+                    let w0 = width.value_at(Duration::ZERO);
+                    let h0 = height.value_at(Duration::ZERO);
+                    format!("w={w0}:h={h0}:flags={flags}")
+                }
             }
             Self::MotionBlur {
                 shutter_angle_degrees,

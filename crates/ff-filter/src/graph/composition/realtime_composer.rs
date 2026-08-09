@@ -1009,4 +1009,78 @@ mod tests {
             "the crop window should slide from the red half to the blue half: r0={r0} r1={r1}"
         );
     }
+
+    #[test]
+    fn animated_scale_effect_resizes_the_output_across_pts() {
+        // A base layer with a `ScaleAnimated` whose width shrinks 8→4 across 1s. The
+        // self-animating `scale=eval=frame` expression re-evaluates the width per frame,
+        // so the composited output width is 8 at PTS 0 and 4 at PTS 1s. Proves #1297's
+        // expression-driven scale animates (and builds — this FFmpeg's scale supports
+        // eval=frame). Probe-gated.
+        use crate::animation::{AnimatedValue, AnimationTrack, Easing, Keyframe};
+        use crate::graph::types::ScaleAlgorithm;
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let width = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 8.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 4.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::ScaleAnimated {
+                width: AnimatedValue::Track(width),
+                height: AnimatedValue::Static(8.0),
+                algorithm: ScaleAlgorithm::Bilinear,
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("animated-scale base must build once FFmpeg filters exist");
+
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u32> {
+            let mut f = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            composer.push_layer(0, &f).ok()?;
+            Some(composer.pull().ok()??.width())
+        };
+
+        let Some(w0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(w1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            w0 > w1,
+            "the scaled output width should shrink across PTS: w0={w0} w1={w1}"
+        );
+    }
 }
