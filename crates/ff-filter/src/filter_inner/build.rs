@@ -975,36 +975,78 @@ fn overlay_alpha_suffix(alpha: AlphaMode) -> &'static str {
     }
 }
 
+/// Parameters for [`add_blend_normal_step`]: opacity + overlay position, each with an
+/// optional animation track, plus the top layer's alpha interpretation.
+#[derive(Clone, Copy)]
+pub(crate) struct NormalBlendParams<'a> {
+    /// Static opacity in `[0.0, 1.0]` (build-time initial value).
+    pub opacity: f32,
+    /// Optional opacity track; forces a commandable `colorchannelmixer` node even at 1.0.
+    pub opacity_track: Option<&'a AnimationTrack<f64>>,
+    /// Static overlay position (pixels) of the top layer's top-left on the canvas.
+    pub x: f64,
+    /// See [`x`](Self::x).
+    pub y: f64,
+    /// Optional position tracks; force `overlay:eval=frame` + commandable `x`/`y`.
+    pub x_track: Option<&'a AnimationTrack<f64>>,
+    /// See [`x_track`](Self::x_track).
+    pub y_track: Option<&'a AnimationTrack<f64>>,
+    /// Top-layer alpha interpretation for the overlay.
+    pub alpha: AlphaMode,
+}
+
+impl NormalBlendParams<'_> {
+    /// A static, un-positioned, un-animated overlay (opacity + alpha only) — used by
+    /// the single-source blend paths that do not composite onto a canvas at a position.
+    pub fn static_opacity(opacity: f32, alpha: AlphaMode) -> Self {
+        Self {
+            opacity,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            alpha,
+        }
+    }
+}
+
 /// Insert a Normal-mode blend compound step.
 ///
 /// The top layer's `top_steps` are first applied to `top_src_ctx` (the `in1`
-/// buffersrc), then optionally followed by `colorchannelmixer=aa=<opacity>` when
-/// `opacity < 1.0`.  The result is composited onto `bottom_ctx` using
-/// `overlay=format=auto:shortest=1`.
+/// buffersrc), then optionally followed by `colorchannelmixer=aa=<opacity>` when the
+/// opacity is < 1.0 or animated.  The result is composited onto `bottom_ctx` using
+/// `overlay=<x>:<y>:shortest=1:format=auto`.
 ///
 /// ```text
 /// [in1]top_steps...[top_processed]
-/// [top_processed]colorchannelmixer=aa=<opacity>[top_faded]   ← when opacity < 1.0
-/// [bottom_ctx][top_faded]overlay=format=auto:shortest=1[out]
+/// [top_processed]colorchannelmixer=aa=<opacity>[top_faded]   ← when opacity < 1.0/animated
+/// [bottom_ctx][top_faded]overlay=<x>:<y>:shortest=1:format=auto[out]
 /// ```
 ///
 /// # Safety
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn add_blend_normal_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
-    opacity: f32,
-    opacity_track: Option<&AnimationTrack<f64>>,
-    alpha: AlphaMode,
+    params: &NormalBlendParams,
     index: usize,
     animations: &mut Vec<AnimationEntry>,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
+    let NormalBlendParams {
+        opacity,
+        opacity_track,
+        x,
+        y,
+        x_track,
+        y_track,
+        alpha,
+    } = *params;
 
     // 1. Chain the top builder's steps starting from the in1 buffersrc.
     let mut top_ctx = top_src_ctx;
@@ -1092,7 +1134,23 @@ pub(crate) unsafe fn add_blend_normal_step(
     }
     let overlay_name =
         CString::new(format!("blend_overlay{index}")).map_err(|_| FilterError::BuildFailed)?;
-    let overlay_args_str = format!("format=auto:shortest=1{}", overlay_alpha_suffix(alpha));
+    // Position the overlay at (x, y). `eval=frame` is added only when a position track
+    // is present, so the un-animated x=0,y=0 case is byte-identical to the prior
+    // `format=auto:shortest=1` overlay (overlay defaults to 0,0).
+    #[allow(clippy::cast_possible_truncation)]
+    let overlay_args_str = {
+        let ox = x.round() as i64;
+        let oy = y.round() as i64;
+        let eval = if x_track.is_some() || y_track.is_some() {
+            ":eval=frame"
+        } else {
+            ""
+        };
+        format!(
+            "{ox}:{oy}:shortest=1:format=auto{eval}{}",
+            overlay_alpha_suffix(alpha)
+        )
+    };
     let overlay_args =
         CString::new(overlay_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
     let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -1119,6 +1177,24 @@ pub(crate) unsafe fn add_blend_normal_step(
     let ret = ff_sys::avfilter_link(top_ctx, 0, overlay_ctx, 1);
     if ret < 0 {
         return Err(FilterError::BuildFailed);
+    }
+
+    // Register position animations so the graph's per-frame tick drives overlay x/y.
+    if let Some(track) = x_track {
+        animations.push(AnimationEntry {
+            node_name: format!("blend_overlay{index}"),
+            param: "x",
+            track: track.clone(),
+            suffix: "",
+        });
+    }
+    if let Some(track) = y_track {
+        animations.push(AnimationEntry {
+            node_name: format!("blend_overlay{index}"),
+            param: "y",
+            track: track.clone(),
+            suffix: "",
+        });
     }
 
     log::debug!("filter blend_normal expanded opacity={opacity} index={index}");
@@ -1489,15 +1565,13 @@ pub(super) unsafe fn add_composite_step(
                 index,
             ),
             // Over (overlay=format=auto:shortest=1). The single-source composite path
-            // does not animate opacity, so no track and a discarded animations sink.
+            // does not animate opacity/position, so a static params + discarded sink.
             _ => add_blend_normal_step(
                 graph,
                 bottom_ctx,
                 top_src_ctx,
                 top_steps,
-                opacity,
-                None,
-                alpha,
+                &NormalBlendParams::static_opacity(opacity, alpha),
                 index,
                 &mut Vec::new(),
             ),
@@ -2436,9 +2510,7 @@ impl FilterGraphInner {
                     prev_ctx,
                     top_src.as_ptr(),
                     top.steps(),
-                    *opacity,
-                    None,
-                    *alpha,
+                    &NormalBlendParams::static_opacity(*opacity, *alpha),
                     i,
                     &mut Vec::new(),
                 ) {

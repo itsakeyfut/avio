@@ -49,6 +49,17 @@ pub struct RealtimeLayer {
     /// alpha. `None` keeps the static [`opacity`](Self::opacity). No effect on the
     /// base layer 0 (apply animated base opacity host-side).
     pub opacity_track: Option<AnimationTrack<f64>>,
+    /// Static overlay position (pixels) on the canvas. Maps to the `overlay` filter's
+    /// `x`/`y` (Normal blend only). Default `(0.0, 0.0)`. No effect on the base layer 0.
+    pub x: f64,
+    /// See [`x`](Self::x).
+    pub y: f64,
+    /// Optional keyframe tracks animating the overlay X / Y position (Normal blend).
+    /// When `Some`, the `overlay` node is created with `:eval=frame` and registered for
+    /// per-frame `send_command`. `None` keeps the static [`x`](Self::x)/[`y`](Self::y).
+    pub x_track: Option<AnimationTrack<f64>>,
+    /// See [`x_track`](Self::x_track).
+    pub y_track: Option<AnimationTrack<f64>>,
     /// How this layer blends with the layer below. [`BlendMode::Normal`] uses
     /// `overlay`; other modes use `blend=all_mode=<token>`.
     pub blend_mode: BlendMode,
@@ -162,6 +173,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -180,6 +195,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[layer])
@@ -207,6 +226,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::with_canvas(&[base], Some((1080, 1920))) {
@@ -259,6 +282,10 @@ mod tests {
             ],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -302,6 +329,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -336,6 +367,10 @@ mod tests {
             effects: vec![],
             opacity: op,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[layer(1.0), layer(0.5)]) {
@@ -374,6 +409,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let top = RealtimeLayer {
@@ -383,6 +422,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Screen,
         };
         let mut composer = match RealtimeComposer::new(&[base, top]) {
@@ -433,6 +476,10 @@ mod tests {
             ],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -499,6 +546,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -553,6 +604,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
@@ -592,6 +647,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -608,6 +667,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[base])
@@ -641,6 +704,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -659,6 +726,10 @@ mod tests {
             }],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[base])
@@ -693,6 +764,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
@@ -710,6 +785,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let top = RealtimeLayer {
@@ -719,6 +798,10 @@ mod tests {
             effects: vec![],
             opacity: 1.0,
             opacity_track: Some(track),
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
             blend_mode: BlendMode::Normal,
         };
         let mut composer = RealtimeComposer::new(&[base, top])
@@ -750,6 +833,93 @@ mod tests {
         assert!(
             r1 > r0 + 100,
             "opacity ramp should brighten the composite across PTS: r0={r0} r1={r1}"
+        );
+    }
+
+    #[test]
+    fn animated_position_track_moves_overlay_across_pts() {
+        // A blue top layer slides in from off-screen-right (x=8, over an 8-wide canvas)
+        // to fully covering (x=0) across 1s, over a red base. At PTS 0 the composite is
+        // red (top off-screen); at PTS 1s it is blue (top covers). Proves the realtime
+        // overlay honors an animated x position via `send_command`. Probe-gated.
+        use crate::animation::{AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let x_track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 8.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 0.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let top = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 8.0,
+            y: 0.0,
+            x_track: Some(x_track),
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base, top])
+            .expect("animated-position composite must build once FFmpeg filters exist");
+
+        let stamped = |rgba: Vec<u8>, pts: Duration| -> VideoFrame {
+            let mut f = VideoFrame::from_rgba(8, 8, rgba).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            f
+        };
+        let red = |pts| stamped([255u8, 0, 0, 255].repeat(64), pts);
+        let blue = |pts| stamped([0u8, 0, 255, 255].repeat(64), pts);
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u8> {
+            composer.push_layer(0, &red(pts)).ok()?;
+            composer.push_layer(1, &blue(pts)).ok()?;
+            Some(composer.pull().ok()??.to_rgba()?[0])
+        };
+
+        let Some(r0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(r1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            r0 > r1 + 100,
+            "overlay should slide in and cover the red base, dropping R: r0={r0} r1={r1}"
         );
     }
 }

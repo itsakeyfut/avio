@@ -1197,14 +1197,21 @@ pub(super) unsafe fn build_realtime_composition(
         });
         top_steps.extend(layer.effects.iter().cloned());
         acc = if layer.blend_mode == BlendMode::Normal {
+            let params = crate::filter_inner::NormalBlendParams {
+                opacity: layer.opacity,
+                opacity_track: layer.opacity_track.as_ref(),
+                x: layer.x,
+                y: layer.y,
+                x_track: layer.x_track.as_ref(),
+                y_track: layer.y_track.as_ref(),
+                alpha: ff_format::AlphaMode::Straight,
+            };
             match crate::filter_inner::add_blend_normal_step(
                 graph,
                 acc,
                 top_src.as_ptr(),
                 &top_steps,
-                layer.opacity,
-                layer.opacity_track.as_ref(),
-                ff_format::AlphaMode::Straight,
+                &params,
                 idx,
                 &mut animations,
             ) {
