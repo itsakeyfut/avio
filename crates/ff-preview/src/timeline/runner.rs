@@ -163,6 +163,7 @@ impl TimelineRunner {
     /// callers must push the returned dimensions to the sink rather than the
     /// decoded ones — otherwise the buffer length no longer matches the reported
     /// size and the frame is dropped.
+    #[allow(clippy::too_many_arguments)]
     fn composite_frame(
         &mut self,
         base_layer: RealtimeLayer,
@@ -814,6 +815,8 @@ impl TimelineRunner {
                         // evaluated at the timeline PTS (tracks are timeline-global), so
                         // base-layer opacity animates too.
                         let v1_op = match self.clips[active].clip.opacity_track.as_ref() {
+                            // Value is clamped to [0.0, 1.0], so the f32 narrowing is safe.
+                            #[allow(clippy::cast_possible_truncation)]
                             Some(track) => track.value_at(timeline_pts).clamp(0.0, 1.0) as f32,
                             None => self.clips[active].opacity,
                         };
