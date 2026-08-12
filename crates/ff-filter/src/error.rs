@@ -60,6 +60,17 @@ pub enum FilterError {
         /// Human-readable reason for the failure.
         reason: String,
     },
+
+    /// A function requires a GPL-licensed `FFmpeg` filter but the `gpl` feature
+    /// flag is not enabled.
+    ///
+    /// Enable the `gpl` feature in `Cargo.toml` and ensure your distribution
+    /// complies with the GPL licence before using this function.
+    #[error("GPL-licensed feature required: {feature} (enable the `gpl` feature flag)")]
+    GplRequired {
+        /// Name of the filter or capability that requires GPL.
+        feature: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -114,6 +125,17 @@ mod tests {
             reason: "file not found".to_string(),
         };
         assert_eq!(err.to_string(), "analysis failed: file not found");
+    }
+
+    #[test]
+    fn gpl_required_should_display_feature_name() {
+        let err = FilterError::GplRequired {
+            feature: "rubberband",
+        };
+        assert_eq!(
+            err.to_string(),
+            "GPL-licensed feature required: rubberband (enable the `gpl` feature flag)"
+        );
     }
 
     #[test]
