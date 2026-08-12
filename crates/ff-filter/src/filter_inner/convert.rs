@@ -233,6 +233,21 @@ pub(super) unsafe fn copy_video_planes_to_av(src: &VideoFrame, dst: *mut AVFrame
     }
 }
 
+/// Source pointer for row `y` of a plane, per `FFmpeg`'s `av_image_copy`
+/// invariant `row_y = data + y * linesize`.
+///
+/// The signed step is correct for both positive (top-down) and negative
+/// (bottom-up, e.g. from `vflip`) `linesize`, so the plane is never vertically
+/// flipped (issue #1306). Casting `linesize` to `usize` first would both wrap a
+/// negative value to a huge stride and reverse row order.
+///
+/// # Safety
+///
+/// `data` must be non-null and point to a plane whose row `y` is in bounds.
+unsafe fn plane_row_ptr(data: *const u8, linesize: c_int, y: usize) -> *const u8 {
+    data.offset(y as isize * linesize as isize)
+}
+
 /// Build a [`VideoFrame`] by copying data out of an `AVFrame`.
 ///
 /// # Safety
@@ -264,48 +279,37 @@ pub(super) unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Resul
         let stride = linesize_raw.unsigned_abs() as usize;
         let rows = plane_height(format, i, height as usize);
 
-        let data = if linesize_raw < 0 {
-            // Some filters (e.g. `vflip`) produce frames with a negative linesize to
-            // indicate a bottom-up scan order. `data[i]` then points to the last row,
-            // and each successive row is at a lower address. Seek back to the first
-            // row and copy the whole contiguous block (preserved behaviour).
-            //
-            // SAFETY: with a negative linesize `data[i]` sits at the start of the
-            // *last* row; offsetting by `linesize_raw * (rows - 1)` steps back to the
-            // first row so the `stride * rows` slice covers the full plane.
-            let data_ptr = src_ptr.offset(linesize_raw as isize * (rows as isize - 1));
-            std::slice::from_raw_parts(data_ptr, stride * rows).to_vec()
-        } else {
-            // Positive linesize: copy only the *valid* bytes of each row, not the
-            // full padded `stride`. A `crop` filter returns a view whose `data[i]`
-            // is offset into a larger parent allocation while `linesize` stays the
-            // parent's; reading `stride * rows` from the offset pointer would run
-            // past the parent buffer by the offset and segfault (issue: large crop
-            // offset after an up-scale). Reading `row_bytes ≤ stride` per row keeps
-            // the last row within bounds. `stride` is preserved so downstream stride
-            // math is unchanged; inter-row padding is left zeroed (never read).
-            let row_bytes = {
-                let n = ff_sys::av_image_get_linesize((*raw_frame).format, width as i32, i as i32);
-                if n > 0 {
-                    (n as usize).min(stride)
-                } else {
-                    stride
-                }
-            };
-            let mut buf = vec![0u8; stride * rows];
-            for row in 0..rows {
-                // SAFETY: source row `row` starts at `src_ptr + row * stride` and has
-                // at least `row_bytes` valid bytes; the dst slice is inside `buf`.
-                std::ptr::copy_nonoverlapping(
-                    src_ptr.add(row * stride),
-                    buf.as_mut_ptr().add(row * stride),
-                    row_bytes,
-                );
+        // Copy only the *valid* bytes of each row, not the full padded `stride`. A
+        // `crop` filter returns a view whose `data[i]` is offset into a larger
+        // parent allocation while `linesize` stays the parent's; reading `stride`
+        // past the last row would run past the parent buffer (issue: large crop
+        // offset after an up-scale). Reading `row_bytes ≤ stride` per row keeps the
+        // last row within bounds. `stride` is preserved so downstream stride math is
+        // unchanged; inter-row padding is left zeroed (never read).
+        let row_bytes = {
+            let n = ff_sys::av_image_get_linesize((*raw_frame).format, width as i32, i as i32);
+            if n > 0 {
+                (n as usize).min(stride)
+            } else {
+                stride
             }
-            buf
         };
+        let mut buf = vec![0u8; stride * rows];
+        for row in 0..rows {
+            // SAFETY: `plane_row_ptr` returns `src_ptr + row * linesize_raw`. A
+            // negative linesize (bottom-up scan order, e.g. from `vflip`) steps to
+            // lower addresses, matching FFmpeg's `av_image_copy` invariant so rows
+            // are copied top-down and never vertically flipped (issue #1306). Each
+            // source row has at least `row_bytes` valid bytes; the dst slice is
+            // inside `buf`.
+            std::ptr::copy_nonoverlapping(
+                plane_row_ptr(src_ptr, linesize_raw, row),
+                buf.as_mut_ptr().add(row * stride),
+                row_bytes,
+            );
+        }
 
-        planes.push(PooledBuffer::standalone(data));
+        planes.push(PooledBuffer::standalone(buf));
         strides.push(stride);
     }
 
@@ -378,6 +382,44 @@ pub(super) unsafe fn av_frame_to_audio_frame(raw_frame: *const AVFrame) -> Resul
 mod tests {
     use super::*;
     use ff_format::time::Rational;
+
+    // ── plane_row_ptr (issue #1306: no vertical flip on negative linesize) ─────
+
+    /// Positive linesize walks rows top-down: row `y` is at `data + y*linesize`.
+    #[test]
+    fn plane_row_ptr_positive_linesize_should_walk_rows_top_down() {
+        let mem = [10u8, 20, 30];
+        let data = mem.as_ptr();
+        // SAFETY: rows 0..3 map to offsets 0,1,2 — all in bounds of `mem`.
+        let got: Vec<u8> = (0..3)
+            .map(|y| unsafe { *plane_row_ptr(data, 1, y) })
+            .collect();
+        assert_eq!(got, [10, 20, 30]);
+    }
+
+    /// Negative linesize (bottom-up, e.g. `vflip`): `data` points at the top row,
+    /// which sits at the highest address. Correct top-down order is
+    /// `mem[2], mem[1], mem[0]` == `[30, 20, 10]`, NOT the flipped `[10, 20, 30]`.
+    #[test]
+    fn plane_row_ptr_negative_linesize_should_not_flip_rows() {
+        let mem = [10u8, 20, 30];
+        // SAFETY: index 2 is the last element of `mem`.
+        let data = unsafe { mem.as_ptr().add(2) };
+        // SAFETY: rows 0..3 map to offsets 0,-1,-2 — all in bounds of `mem`.
+        let got: Vec<u8> = (0..3)
+            .map(|y| unsafe { *plane_row_ptr(data, -1, y) })
+            .collect();
+        assert_eq!(got, [30, 20, 10]);
+    }
+
+    /// Row 0 is the base pointer regardless of the linesize sign.
+    #[test]
+    fn plane_row_ptr_row_zero_should_return_base() {
+        let mem = [7u8; 4];
+        let data = mem.as_ptr();
+        // SAFETY: y=0 yields a zero offset.
+        assert_eq!(unsafe { plane_row_ptr(data, -13, 0) }, data);
+    }
 
     // ── PTS helpers ───────────────────────────────────────────────────────────
 
