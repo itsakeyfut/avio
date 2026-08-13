@@ -7,8 +7,8 @@ description = "Safe, high-level audio/video/image processing for Rust — backen
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-keywords = ["video", "audio", "ffmpeg", "multimedia", "codec"]
-categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding"]
+keywords = ["video", "audio", "ffmpeg", "codec", "async"]
+categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding", "api-bindings", "asynchronous"]
 
 [features]
 default = ["probe", "decode", "encode", "hwaccel"]

@@ -8,7 +8,7 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 keywords = ["video", "audio", "ffmpeg", "filter", "effect"]
-categories = ["multimedia::video", "multimedia::audio"]
+categories = ["multimedia::video", "multimedia::audio", "api-bindings"]
 
 [features]
 serde = ["dep:serde"]
