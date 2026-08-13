@@ -79,17 +79,19 @@ impl FilterGraph {
 
     /// Shift audio pitch by `semitones` without changing playback speed.
     ///
-    /// Range: −12.0 to +12.0 semitones. Uses `asetrate` to change the
+    /// Range: −24.0 to +24.0 semitones. Uses `asetrate` to change the
     /// decoded sample rate followed by `atempo` to restore original duration.
+    /// Beyond ±12 semitones the `atempo` compensation factor falls outside a
+    /// single instance's `[0.5, 2.0]` range and is realised by chaining.
     ///
     /// # Errors
     ///
-    /// Returns [`FilterError::Ffmpeg`] if `semitones` is outside −12.0..=12.0.
+    /// Returns [`FilterError::Ffmpeg`] if `semitones` is outside −24.0..=24.0.
     pub fn pitch_shift(&mut self, semitones: f32) -> Result<&mut Self, FilterError> {
-        if !(-12.0..=12.0).contains(&semitones) {
+        if !(-24.0..=24.0).contains(&semitones) {
             return Err(FilterError::Ffmpeg {
                 code: 0,
-                message: format!("semitones must be in -12..=12, got {semitones}"),
+                message: format!("semitones must be in -24..=24, got {semitones}"),
             });
         }
         self.inner.push_step(FilterStep::PitchShift { semitones });
@@ -386,25 +388,35 @@ mod tests {
     #[test]
     fn pitch_shift_above_range_should_return_ffmpeg_error() {
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
-        let result = graph.pitch_shift(13.0);
+        let result = graph.pitch_shift(24.5);
         assert!(
             matches!(result, Err(FilterError::Ffmpeg { .. })),
-            "semitones=13.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+            "semitones=24.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
         );
     }
 
     #[test]
     fn pitch_shift_below_range_should_return_ffmpeg_error() {
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
-        let result = graph.pitch_shift(-13.0);
+        let result = graph.pitch_shift(-24.5);
         assert!(
             matches!(result, Err(FilterError::Ffmpeg { .. })),
-            "semitones=-13.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+            "semitones=-24.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
         );
     }
 
     #[test]
     fn pitch_shift_boundary_values_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(24.0).is_ok(),
+            "semitones=24.0 must succeed"
+        );
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(-24.0).is_ok(),
+            "semitones=-24.0 must succeed"
+        );
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
         assert!(
             graph.pitch_shift(12.0).is_ok(),

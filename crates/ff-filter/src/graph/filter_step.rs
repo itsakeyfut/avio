@@ -801,14 +801,14 @@ pub enum FilterStep {
     /// duration.  Implemented as `asetrate` (changes the declared sample rate
     /// to shift pitch) followed by `atempo` (restores the original duration).
     ///
-    /// Range: [−12.0, 12.0]; validated by
+    /// Range: [−24.0, 24.0]; validated by
     /// [`FilterGraph::pitch_shift`](crate::FilterGraph::pitch_shift).
     ///
     /// This is a compound step — `filter_name()` returns `"asetrate"` for
     /// `validate_filter_steps`; the actual graph construction is handled by
     /// `filter_inner::build::build_audio_graph`.
     PitchShift {
-        /// Pitch shift in semitones. Range: [−12.0, 12.0].
+        /// Pitch shift in semitones. Range: [−24.0, 24.0].
         semitones: f32,
     },
 

@@ -2930,10 +2930,13 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // PitchShift — compound step: asetrate → atempo.
-            // asetrate changes the declared sample rate (shifting pitch); atempo
-            // restores the original duration.  The actual sample rate is resolved
-            // from buffersrc_args so the integer value is substituted literally.
+            // PitchShift — compound step: asetrate → atempo chain.
+            // asetrate changes the declared sample rate (shifting pitch); the
+            // atempo chain restores the original duration.  For |semitones| > 12
+            // the compensation factor falls outside a single atempo instance's
+            // range, so add_atempo_chain decomposes it into linked instances.
+            // The actual sample rate is resolved from buffersrc_args so the
+            // integer value is substituted literally.
             if let FilterStep::PitchShift { semitones } = step {
                 let rate = 2f64.powf(f64::from(*semitones) / 12.0);
                 let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
@@ -2949,14 +2952,7 @@ impl FilterGraphInner {
                     i,
                     "pitch_asetrate",
                 )?;
-                prev_ctx = add_raw_filter_step(
-                    graph,
-                    prev_ctx,
-                    "atempo",
-                    &format!("{atempo:.6}"),
-                    i,
-                    "pitch_atempo",
-                )?;
+                prev_ctx = add_atempo_chain(graph, prev_ctx, atempo, i)?;
                 continue;
             }
 

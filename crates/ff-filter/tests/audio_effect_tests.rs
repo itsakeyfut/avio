@@ -478,6 +478,92 @@ fn pitch_shift_12_semitones_should_produce_audio_output() {
     }
 }
 
+/// Verifies that `FilterGraph::pitch_shift(24.0)` builds and runs. The +24
+/// semitone compensation factor (atempo = 0.25) falls outside a single atempo
+/// instance and must be realised as a chain. Acceptance criterion for #1091.
+#[test]
+fn pitch_shift_plus_24_semitones_should_produce_audio_output() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const SAMPLES: usize = 48_000;
+
+    let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
+
+    let mut graph = match FilterGraph::builder().build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.pitch_shift(24.0) {
+        println!("Skipping: pitch_shift setup failed: {e}");
+        return;
+    }
+
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: pitch shift filters not available");
+            return;
+        }
+        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
+    }
+
+    match graph.pull_audio() {
+        Ok(Some(out)) => {
+            assert!(
+                out.channels() > 0,
+                "pitch_shift output must have at least one channel"
+            );
+        }
+        Ok(None) => println!("Note: pitch_shift buffered (no immediate output)"),
+        Err(e) => println!("Note: pull_audio returned: {e}"),
+    }
+}
+
+/// Verifies that `FilterGraph::pitch_shift(-24.0)` builds and runs. The −24
+/// semitone compensation factor (atempo = 4.0) also requires the atempo chain
+/// path. Acceptance criterion for #1091.
+#[test]
+fn pitch_shift_minus_24_semitones_should_produce_audio_output() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const SAMPLES: usize = 48_000;
+
+    let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
+
+    let mut graph = match FilterGraph::builder().build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.pitch_shift(-24.0) {
+        println!("Skipping: pitch_shift setup failed: {e}");
+        return;
+    }
+
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: pitch shift filters not available");
+            return;
+        }
+        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
+    }
+
+    match graph.pull_audio() {
+        Ok(Some(out)) => {
+            assert!(
+                out.channels() > 0,
+                "pitch_shift output must have at least one channel"
+            );
+        }
+        Ok(None) => println!("Note: pitch_shift buffered (no immediate output)"),
+        Err(e) => println!("Note: pull_audio returned: {e}"),
+    }
+}
+
 // ── time_stretch ──────────────────────────────────────────────────────────────
 
 /// Verifies that `FilterGraph::time_stretch()` accepts audio and produces
