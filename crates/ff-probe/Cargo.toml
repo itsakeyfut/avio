@@ -8,7 +8,7 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 keywords = ["video", "audio", "ffmpeg", "media", "probe"]
-categories = ["multimedia::video", "multimedia::audio"]
+categories = ["multimedia::video", "multimedia::audio", "multimedia::images", "api-bindings"]
 
 [package.metadata.docs.rs]
 all-features = true

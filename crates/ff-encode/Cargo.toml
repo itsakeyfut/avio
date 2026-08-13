@@ -7,8 +7,8 @@ description = "Video and audio encoding - the Rust way"
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-keywords = ["video", "audio", "ffmpeg", "media", "encode"]
-categories = ["multimedia::video", "multimedia::audio"]
+keywords = ["video", "audio", "ffmpeg", "encode", "async"]
+categories = ["multimedia::video", "multimedia::audio", "multimedia::images", "api-bindings", "asynchronous"]
 
 [package.metadata.docs.rs]
 all-features = true

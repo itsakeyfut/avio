@@ -7,8 +7,8 @@ description = "Real-time video/audio preview and proxy workflow"
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-keywords = ["video", "audio", "ffmpeg", "preview", "playback"]
-categories = ["multimedia::video", "multimedia::audio"]
+keywords = ["video", "audio", "ffmpeg", "preview", "async"]
+categories = ["multimedia::video", "multimedia::audio", "api-bindings", "asynchronous"]
 
 [package.metadata.docs.rs]
 all-features = true
