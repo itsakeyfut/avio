@@ -28,6 +28,46 @@ use ff_sys::{AVFormatContext, AVFrame, AVSampleFormat, SwrContext};
 
 use crate::error::DecodeError;
 
+// ── Overflow / bounds guards (issue #1175) ───────────────────────────────────
+
+/// Rejects a negative `AVFrame::nb_samples` before casting it to `usize`.
+///
+/// A malformed or corrupt audio stream can make FFmpeg produce a frame with
+/// `nb_samples < 0`; the bare `as usize` cast would wrap it to a near-`usize::MAX`
+/// count, leading to an out-of-memory allocation or an invalid slice.
+fn checked_nb_samples(nb_samples: i32) -> Result<usize, DecodeError> {
+    if nb_samples < 0 {
+        return Err(DecodeError::Ffmpeg {
+            code: 0,
+            message: format!("invalid nb_samples={nb_samples}"),
+        });
+    }
+    Ok(nb_samples as usize)
+}
+
+/// Computes `samples * bytes_per_sample * channels` as a byte count, returning an
+/// error on overflow instead of wrapping.
+///
+/// Without this guard a very large sample count silently overflows the product,
+/// producing an undersized `vec![0u8; …]` that `swr_convert` then writes past —
+/// a heap overflow. `usize::checked_mul` catches the realistic 32-bit overflow as
+/// well as the (unreachable) 64-bit one.
+fn checked_buffer_size(
+    samples: usize,
+    bytes_per_sample: usize,
+    channels: usize,
+) -> Result<usize, DecodeError> {
+    samples
+        .checked_mul(bytes_per_sample)
+        .and_then(|n| n.checked_mul(channels))
+        .ok_or_else(|| DecodeError::Ffmpeg {
+            code: 0,
+            message: format!(
+                "audio buffer size overflow: samples={samples} bytes_per_sample={bytes_per_sample} channels={channels}"
+            ),
+        })
+}
+
 // ── SwrContext RAII guard ─────────────────────────────────────────────────────
 
 /// RAII guard for `SwrContext` to ensure proper cleanup.
@@ -132,7 +172,7 @@ pub(crate) unsafe fn extract_planes(
     nb_samples: usize,
     channels: u32,
     format: SampleFormat,
-) -> Vec<Vec<u8>> {
+) -> Result<Vec<Vec<u8>>, DecodeError> {
     // SAFETY: Caller ensures frame is valid and format matches actual frame format
     unsafe {
         let mut planes = Vec::new();
@@ -141,7 +181,7 @@ pub(crate) unsafe fn extract_planes(
         if format.is_planar() {
             // Planar: one plane per channel
             for ch in 0..channels as usize {
-                let plane_size = nb_samples * bytes_per_sample;
+                let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, 1)?;
                 let mut plane_data = vec![0u8; plane_size];
 
                 let src_ptr = (*frame).data[ch];
@@ -151,7 +191,7 @@ pub(crate) unsafe fn extract_planes(
             }
         } else {
             // Packed: single plane with interleaved samples
-            let plane_size = nb_samples * channels as usize * bytes_per_sample;
+            let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, channels as usize)?;
             let mut plane_data = vec![0u8; plane_size];
 
             let src_ptr = (*frame).data[0];
@@ -160,7 +200,7 @@ pub(crate) unsafe fn extract_planes(
             planes.push(plane_data);
         }
 
-        planes
+        Ok(planes)
     }
 }
 
@@ -178,7 +218,7 @@ pub(crate) unsafe fn av_frame_to_audio_frame(
 ) -> Result<AudioFrame, DecodeError> {
     // SAFETY: Caller ensures frame and format_ctx are valid
     unsafe {
-        let nb_samples = (*frame).nb_samples as usize;
+        let nb_samples = checked_nb_samples((*frame).nb_samples)?;
         let channels = (*frame).ch_layout.nb_channels as u32;
         let sample_rate = (*frame).sample_rate as u32;
         let format = convert_sample_format((*frame).format);
@@ -197,7 +237,7 @@ pub(crate) unsafe fn av_frame_to_audio_frame(
         };
 
         // Convert frame to planes
-        let planes = extract_planes(frame, nb_samples, channels, format);
+        let planes = extract_planes(frame, nb_samples, channels, format)?;
 
         AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(|e| {
             DecodeError::Ffmpeg {
@@ -233,7 +273,7 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
 ) -> Result<AudioFrame, DecodeError> {
     // SAFETY: Caller ensures frame is valid
     unsafe {
-        let nb_samples = (*frame).nb_samples as usize;
+        let nb_samples = checked_nb_samples((*frame).nb_samples)?;
         let channels = (*frame).ch_layout.nb_channels as u32;
         let sample_rate = (*frame).sample_rate as u32;
         let src_format = (*frame).format;
@@ -410,19 +450,15 @@ unsafe fn convert_with_swr(
     let bytes_per_sample = dst_sample_fmt.bytes_per_sample();
     let is_planar = dst_sample_fmt.is_planar();
 
-    let buffer_size = if is_planar {
-        // For planar formats, each plane has samples * bytes_per_sample
-        out_samples * bytes_per_sample * dst_channels as usize
-    } else {
-        // For packed formats, interleaved samples
-        out_samples * bytes_per_sample * dst_channels as usize
-    };
+    // Total bytes are identical for planar (dst_channels planes × out_samples ×
+    // bytes_per_sample) and packed (out_samples × dst_channels × bytes_per_sample).
+    let buffer_size = checked_buffer_size(out_samples, bytes_per_sample, dst_channels as usize)?;
 
     let mut out_buffer = vec![0u8; buffer_size];
 
     // Prepare output pointers for swr_convert
     let mut out_ptrs = if is_planar {
-        let plane_size = out_samples * bytes_per_sample;
+        let plane_size = checked_buffer_size(out_samples, bytes_per_sample, 1)?;
         (0..dst_channels)
             .map(|i| {
                 let offset = i as usize * plane_size;
@@ -474,7 +510,7 @@ unsafe fn convert_with_swr(
 
     // Create planes for AudioFrame
     let planes = if is_planar {
-        let plane_size = converted_samples as usize * bytes_per_sample;
+        let plane_size = checked_buffer_size(converted_samples as usize, bytes_per_sample, 1)?;
         (0..dst_channels)
             .map(|i| {
                 let offset = i as usize * plane_size;
@@ -482,10 +518,12 @@ unsafe fn convert_with_swr(
             })
             .collect()
     } else {
-        vec![
-            out_buffer[..converted_samples as usize * bytes_per_sample * dst_channels as usize]
-                .to_vec(),
-        ]
+        let end = checked_buffer_size(
+            converted_samples as usize,
+            bytes_per_sample,
+            dst_channels as usize,
+        )?;
+        vec![out_buffer[..end].to_vec()]
     };
 
     AudioFrame::new(
@@ -505,6 +543,32 @@ unsafe fn convert_with_swr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Overflow / bounds guards (issue #1175) ───────────────────────────────
+
+    #[test]
+    fn checked_nb_samples_negative_should_return_error() {
+        assert!(checked_nb_samples(-1).is_err());
+        assert!(checked_nb_samples(i32::MIN).is_err());
+    }
+
+    #[test]
+    fn checked_nb_samples_valid_should_return_count() {
+        assert!(matches!(checked_nb_samples(0), Ok(0)));
+        assert!(matches!(checked_nb_samples(1024), Ok(1024)));
+    }
+
+    #[test]
+    fn checked_buffer_size_normal_should_return_byte_count() {
+        // 1024 samples * 8 bytes (f64) * 8 channels = 65_536
+        assert!(matches!(checked_buffer_size(1024, 8, 8), Ok(65_536)));
+    }
+
+    #[test]
+    fn checked_buffer_size_overflow_should_return_error() {
+        // Overflows usize on both 64-bit and 32-bit targets.
+        assert!(checked_buffer_size(usize::MAX, 2, 1).is_err());
+    }
 
     #[test]
     fn convert_sample_format_should_map_all_packed_formats() {
