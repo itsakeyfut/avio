@@ -8,7 +8,7 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 keywords = ["video", "gpu", "wgpu", "compositing", "rendering"]
-categories = ["multimedia::video"]
+categories = ["multimedia::video", "rendering"]
 
 [package.metadata.docs.rs]
 all-features = true

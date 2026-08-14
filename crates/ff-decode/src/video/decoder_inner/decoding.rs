@@ -2,6 +2,7 @@ use super::{
     AVFrame, Arc, DecodeError, Duration, OutputScale, PixelFormat, PooledBuffer, Rational,
     Timestamp, VideoDecoderInner, VideoFrame, ptr,
 };
+use crate::shared::plane_inner::plane_row_ptr;
 
 impl VideoDecoderInner {
     /// Decodes the next video frame.
@@ -289,7 +290,8 @@ impl VideoDecoderInner {
             match format {
                 PixelFormat::Rgba | PixelFormat::Bgra | PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
                     // Packed formats - single plane
-                    let stride = (*frame).linesize[0] as usize;
+                    let src = (*frame).data[0];
+                    let src_linesize = (*frame).linesize[0];
                     let bytes_per_pixel = if matches!(format, PixelFormat::Rgba | PixelFormat::Bgra)
                     {
                         BYTES_PER_PIXEL_RGBA
@@ -301,9 +303,8 @@ impl VideoDecoderInner {
                     let mut plane_data = self.allocate_buffer(buffer_size);
 
                     for y in 0..height as usize {
-                        let src_offset = y * stride;
                         let dst_offset = y * row_size;
-                        let src_ptr = (*frame).data[0].add(src_offset);
+                        let src_ptr = plane_row_ptr(src, src_linesize, y);
                         let plane_slice = plane_data.as_mut();
                         // SAFETY: We copy exactly `row_size` bytes per row. The source pointer
                         // is valid (from FFmpeg frame data), destination has sufficient capacity
@@ -331,10 +332,11 @@ impl VideoDecoderInner {
                     let y_stride = width as usize;
                     let y_size = y_stride * height as usize;
                     let mut y_data = self.allocate_buffer(y_size);
+                    let y_src = (*frame).data[0];
+                    let y_src_linesize = (*frame).linesize[0];
                     for y in 0..height as usize {
-                        let src_offset = y * (*frame).linesize[0] as usize;
                         let dst_offset = y * y_stride;
-                        let src_ptr = (*frame).data[0].add(src_offset);
+                        let src_ptr = plane_row_ptr(y_src, y_src_linesize, y);
                         let y_slice = y_data.as_mut();
                         // SAFETY: Copying Y plane row-by-row. Source is valid FFmpeg data,
                         // destination has sufficient capacity, no overlap.
@@ -351,10 +353,11 @@ impl VideoDecoderInner {
                     let u_stride = chroma_width as usize;
                     let u_size = u_stride * chroma_height as usize;
                     let mut u_data = self.allocate_buffer(u_size);
+                    let u_src = (*frame).data[1];
+                    let u_src_linesize = (*frame).linesize[1];
                     for y in 0..chroma_height as usize {
-                        let src_offset = y * (*frame).linesize[1] as usize;
                         let dst_offset = y * u_stride;
-                        let src_ptr = (*frame).data[1].add(src_offset);
+                        let src_ptr = plane_row_ptr(u_src, u_src_linesize, y);
                         let u_slice = u_data.as_mut();
                         // SAFETY: Copying U (chroma) plane row-by-row. Valid source,
                         // sufficient destination capacity, no overlap.
@@ -371,10 +374,11 @@ impl VideoDecoderInner {
                     let v_stride = chroma_width as usize;
                     let v_size = v_stride * chroma_height as usize;
                     let mut v_data = self.allocate_buffer(v_size);
+                    let v_src = (*frame).data[2];
+                    let v_src_linesize = (*frame).linesize[2];
                     for y in 0..chroma_height as usize {
-                        let src_offset = y * (*frame).linesize[2] as usize;
                         let dst_offset = y * v_stride;
-                        let src_ptr = (*frame).data[2].add(src_offset);
+                        let src_ptr = plane_row_ptr(v_src, v_src_linesize, y);
                         let v_slice = v_data.as_mut();
                         // SAFETY: Copying V (chroma) plane row-by-row. Valid source,
                         // sufficient destination capacity, no overlap.
@@ -391,11 +395,12 @@ impl VideoDecoderInner {
                     // Single plane grayscale
                     let stride = width as usize;
                     let mut plane_data = self.allocate_buffer(stride * height as usize);
+                    let src = (*frame).data[0];
+                    let src_linesize = (*frame).linesize[0];
 
                     for y in 0..height as usize {
-                        let src_offset = y * (*frame).linesize[0] as usize;
                         let dst_offset = y * stride;
-                        let src_ptr = (*frame).data[0].add(src_offset);
+                        let src_ptr = plane_row_ptr(src, src_linesize, y);
                         let plane_slice = plane_data.as_mut();
                         // SAFETY: Copying grayscale plane row-by-row. Valid source,
                         // sufficient destination capacity, no overlap.
@@ -416,10 +421,11 @@ impl VideoDecoderInner {
                     // Y plane
                     let y_stride = width as usize;
                     let mut y_data = self.allocate_buffer(y_stride * height as usize);
+                    let y_src = (*frame).data[0];
+                    let y_src_linesize = (*frame).linesize[0];
                     for y in 0..height as usize {
-                        let src_offset = y * (*frame).linesize[0] as usize;
                         let dst_offset = y * y_stride;
-                        let src_ptr = (*frame).data[0].add(src_offset);
+                        let src_ptr = plane_row_ptr(y_src, y_src_linesize, y);
                         let y_slice = y_data.as_mut();
                         // SAFETY: Copying Y plane (semi-planar) row-by-row. Valid source,
                         // sufficient destination capacity, no overlap.
@@ -435,10 +441,11 @@ impl VideoDecoderInner {
                     // UV plane
                     let uv_stride = width as usize;
                     let mut uv_data = self.allocate_buffer(uv_stride * uv_height as usize);
+                    let uv_src = (*frame).data[1];
+                    let uv_src_linesize = (*frame).linesize[1];
                     for y in 0..uv_height as usize {
-                        let src_offset = y * (*frame).linesize[1] as usize;
                         let dst_offset = y * uv_stride;
-                        let src_ptr = (*frame).data[1].add(src_offset);
+                        let src_ptr = plane_row_ptr(uv_src, uv_src_linesize, y);
                         let uv_slice = uv_data.as_mut();
                         // SAFETY: Copying interleaved UV plane (semi-planar) row-by-row.
                         // Valid source, sufficient destination capacity, no overlap.
@@ -458,12 +465,12 @@ impl VideoDecoderInner {
                     let size = row_size * height as usize;
 
                     for plane_idx in 0..3usize {
-                        let src_linesize = (*frame).linesize[plane_idx] as usize;
+                        let src = (*frame).data[plane_idx];
+                        let src_linesize = (*frame).linesize[plane_idx];
                         let mut plane_data = self.allocate_buffer(size);
                         for y in 0..height as usize {
-                            let src_offset = y * src_linesize;
                             let dst_offset = y * row_size;
-                            let src_ptr = (*frame).data[plane_idx].add(src_offset);
+                            let src_ptr = plane_row_ptr(src, src_linesize, y);
                             let dst_slice = plane_data.as_mut();
                             // SAFETY: Copying one row of a planar float plane. Source is valid
                             // FFmpeg frame data, destination has sufficient capacity, no overlap.

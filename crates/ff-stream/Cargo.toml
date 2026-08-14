@@ -8,7 +8,7 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 keywords = ["video", "ffmpeg", "hls", "dash", "streaming"]
-categories = ["multimedia::video", "multimedia::encoding"]
+categories = ["multimedia::video", "multimedia::encoding", "api-bindings", "network-programming"]
 
 [features]
 srt = []

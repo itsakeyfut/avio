@@ -31,6 +31,7 @@ use ff_sys::{
 
 use crate::error::DecodeError;
 use crate::shared::guards_inner::{AvCodecContextGuard, AvFormatContextGuard};
+use crate::shared::plane_inner::plane_row_ptr;
 
 // ── ImageDecoderInner ─────────────────────────────────────────────────────────
 
@@ -354,7 +355,6 @@ impl ImageDecoderInner {
             match format {
                 PixelFormat::Rgba | PixelFormat::Bgra => {
                     let bytes_per_pixel = 4_usize;
-                    let stride = (*frame).linesize[0] as usize;
                     let row_w = w * bytes_per_pixel;
                     let mut buf = vec![0u8; row_w * h];
                     let src = (*frame).data[0];
@@ -364,9 +364,10 @@ impl ImageDecoderInner {
                             message: "Null plane data for packed format".to_string(),
                         });
                     }
+                    let src_linesize = (*frame).linesize[0];
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
-                            src.add(row * stride),
+                            plane_row_ptr(src, src_linesize, row),
                             buf[row * row_w..].as_mut_ptr(),
                             row_w,
                         );
@@ -376,7 +377,6 @@ impl ImageDecoderInner {
                 }
                 PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
                     let bytes_per_pixel = 3_usize;
-                    let stride = (*frame).linesize[0] as usize;
                     let row_w = w * bytes_per_pixel;
                     let mut buf = vec![0u8; row_w * h];
                     let src = (*frame).data[0];
@@ -386,9 +386,10 @@ impl ImageDecoderInner {
                             message: "Null plane data for packed format".to_string(),
                         });
                     }
+                    let src_linesize = (*frame).linesize[0];
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
-                            src.add(row * stride),
+                            plane_row_ptr(src, src_linesize, row),
                             buf[row * row_w..].as_mut_ptr(),
                             row_w,
                         );
@@ -397,7 +398,6 @@ impl ImageDecoderInner {
                     strides.push(row_w);
                 }
                 PixelFormat::Gray8 => {
-                    let stride = (*frame).linesize[0] as usize;
                     let mut buf = vec![0u8; w * h];
                     let src = (*frame).data[0];
                     if src.is_null() {
@@ -406,9 +406,10 @@ impl ImageDecoderInner {
                             message: "Null plane data for Gray8".to_string(),
                         });
                     }
+                    let src_linesize = (*frame).linesize[0];
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
-                            src.add(row * stride),
+                            plane_row_ptr(src, src_linesize, row),
                             buf[row * w..].as_mut_ptr(),
                             w,
                         );
@@ -418,7 +419,6 @@ impl ImageDecoderInner {
                 }
                 PixelFormat::Yuv420p | PixelFormat::Nv12 | PixelFormat::Nv21 => {
                     // Y plane (full size).
-                    let y_stride = (*frame).linesize[0] as usize;
                     let mut y_buf = vec![0u8; w * h];
                     let y_src = (*frame).data[0];
                     if y_src.is_null() {
@@ -427,9 +427,10 @@ impl ImageDecoderInner {
                             message: "Null Y plane".to_string(),
                         });
                     }
+                    let y_src_linesize = (*frame).linesize[0];
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
-                            y_src.add(row * y_stride),
+                            plane_row_ptr(y_src, y_src_linesize, row),
                             y_buf[row * w..].as_mut_ptr(),
                             w,
                         );
@@ -440,13 +441,13 @@ impl ImageDecoderInner {
                     if matches!(format, PixelFormat::Nv12 | PixelFormat::Nv21) {
                         // Interleaved UV plane (half height).
                         let uv_h = h / 2;
-                        let uv_stride = (*frame).linesize[1] as usize;
                         let mut uv_buf = vec![0u8; w * uv_h];
                         let uv_src = (*frame).data[1];
                         if !uv_src.is_null() {
+                            let uv_src_linesize = (*frame).linesize[1];
                             for row in 0..uv_h {
                                 ptr::copy_nonoverlapping(
-                                    uv_src.add(row * uv_stride),
+                                    plane_row_ptr(uv_src, uv_src_linesize, row),
                                     uv_buf[row * w..].as_mut_ptr(),
                                     w,
                                 );
@@ -459,13 +460,13 @@ impl ImageDecoderInner {
                         let uv_w = w / 2;
                         let uv_h = h / 2;
                         for plane_idx in 1..=2usize {
-                            let uv_stride = (*frame).linesize[plane_idx] as usize;
                             let mut uv_buf = vec![0u8; uv_w * uv_h];
                             let uv_src = (*frame).data[plane_idx];
                             if !uv_src.is_null() {
+                                let uv_src_linesize = (*frame).linesize[plane_idx];
                                 for row in 0..uv_h {
                                     ptr::copy_nonoverlapping(
-                                        uv_src.add(row * uv_stride),
+                                        plane_row_ptr(uv_src, uv_src_linesize, row),
                                         uv_buf[row * uv_w..].as_mut_ptr(),
                                         uv_w,
                                     );
@@ -481,13 +482,13 @@ impl ImageDecoderInner {
                     let uv_w = w / 2;
                     let plane_dims = [(w, h), (uv_w, h), (uv_w, h)];
                     for (plane_idx, (pw, ph)) in plane_dims.iter().enumerate() {
-                        let stride = (*frame).linesize[plane_idx] as usize;
                         let mut buf = vec![0u8; pw * ph];
                         let src = (*frame).data[plane_idx];
                         if !src.is_null() {
+                            let src_linesize = (*frame).linesize[plane_idx];
                             for row in 0..*ph {
                                 ptr::copy_nonoverlapping(
-                                    src.add(row * stride),
+                                    plane_row_ptr(src, src_linesize, row),
                                     buf[row * pw..].as_mut_ptr(),
                                     *pw,
                                 );
@@ -500,13 +501,13 @@ impl ImageDecoderInner {
                 PixelFormat::Yuv444p => {
                     // All three planes are full size.
                     for plane_idx in 0..3usize {
-                        let stride = (*frame).linesize[plane_idx] as usize;
                         let mut buf = vec![0u8; w * h];
                         let src = (*frame).data[plane_idx];
                         if !src.is_null() {
+                            let src_linesize = (*frame).linesize[plane_idx];
                             for row in 0..h {
                                 ptr::copy_nonoverlapping(
-                                    src.add(row * stride),
+                                    plane_row_ptr(src, src_linesize, row),
                                     buf[row * w..].as_mut_ptr(),
                                     w,
                                 );
