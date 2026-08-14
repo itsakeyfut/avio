@@ -590,6 +590,22 @@ impl TimelineRunner {
                             // not play this track's buffered audio past clip end.
                             at.handle.clear();
                         }
+                        // Per-clip volume automation: evaluate the dB envelope at the
+                        // timeline PTS and update the mixer track gain each tick.
+                        if should_run && let Some(track) = &at.volume_track {
+                            #[allow(clippy::cast_possible_truncation)]
+                            let linear = 10f32.powf(track.value_at(timeline_pts) as f32 / 20.0);
+                            at.handle.set_volume(linear);
+                        }
+                    }
+
+                    // Primary-track volume automation for the active clip.
+                    if let Some(handle) = &self.clips[active].audio_track
+                        && let Some(track) = &self.clips[active].clip.volume_track
+                    {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let linear = 10f32.powf(track.value_at(timeline_pts) as f32 / 20.0);
+                        handle.set_volume(linear);
                     }
 
                     // Update shared current_pts and resume anchor.
