@@ -386,7 +386,25 @@ mod tests {
     }
 
     #[test]
-    fn pitch_shift_above_range_should_return_ffmpeg_error() {
+    fn pitch_shift_24_semitones_up_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(24.0).is_ok(),
+            "semitones=24.0 must succeed"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_24_semitones_down_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(-24.0).is_ok(),
+            "semitones=-24.0 must succeed"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_above_24_should_return_ffmpeg_error() {
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
         let result = graph.pitch_shift(24.5);
         assert!(
@@ -396,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn pitch_shift_below_range_should_return_ffmpeg_error() {
+    fn pitch_shift_below_minus_24_should_return_ffmpeg_error() {
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
         let result = graph.pitch_shift(-24.5);
         assert!(
@@ -407,16 +425,6 @@ mod tests {
 
     #[test]
     fn pitch_shift_boundary_values_should_succeed() {
-        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
-        assert!(
-            graph.pitch_shift(24.0).is_ok(),
-            "semitones=24.0 must succeed"
-        );
-        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
-        assert!(
-            graph.pitch_shift(-24.0).is_ok(),
-            "semitones=-24.0 must succeed"
-        );
         let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
         assert!(
             graph.pitch_shift(12.0).is_ok(),
