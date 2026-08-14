@@ -199,6 +199,52 @@ pub(crate) unsafe fn add_and_link_step(
                 "mask",
             );
         }
+        FilterStep::RotateAnimated { .. } => {
+            // A transparent `fillcolor` needs an alpha plane for `rotate` to write the
+            // exposed corners; the export path feeds yuv (no alpha), so convert to rgba
+            // first. The preview already feeds rgba (no-op). Paired with the export
+            // overlay's `format=auto` (see `layer_has_alpha_effects`) so the rotated
+            // corners composite over the layers below instead of showing black.
+            let fmt = add_raw_filter_step(graph, prev_ctx, "format", "rgba", index, "rotfmt")?;
+            // `rotate` has no anti-aliasing, so its edges come out visibly stair-stepped.
+            // Supersample around it — upscale 2x, rotate, then Lanczos-downscale — so the
+            // downscale averages the jagged edges away. Do it on PREMULTIPLIED alpha so
+            // every resample (upscale, rotate, downscale) blends toward the premultiplied
+            // transparent fill correctly; straight-alpha would blend toward transparent
+            // *black* and leave a dark halo along the edges. `unpremultiply` restores
+            // straight alpha for the overlay. Falls back to a plain rotate where the
+            // premultiply filters are unavailable.
+            let have_pm = !ff_sys::avfilter_get_by_name(c"premultiply".as_ptr()).is_null()
+                && !ff_sys::avfilter_get_by_name(c"unpremultiply".as_ptr()).is_null();
+            let pre = if have_pm {
+                add_raw_filter_step(graph, fmt, "premultiply", "inplace=1", index, "rotpm")?
+            } else {
+                fmt
+            };
+            let up = add_raw_filter_step(
+                graph,
+                pre,
+                "scale",
+                "w=iw*2:h=ih*2:flags=lanczos",
+                index,
+                "rotup",
+            )?;
+            let rot =
+                add_raw_filter_step(graph, up, step.filter_name(), &step.args(), index, "rot")?;
+            let down = add_raw_filter_step(
+                graph,
+                rot,
+                "scale",
+                "w=iw/2:h=ih/2:flags=lanczos",
+                index,
+                "rotdown",
+            )?;
+            return if have_pm {
+                add_raw_filter_step(graph, down, "unpremultiply", "inplace=1", index, "rotupm")
+            } else {
+                Ok(down)
+            };
+        }
         _ => {}
     }
 

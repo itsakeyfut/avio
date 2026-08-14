@@ -1083,4 +1083,348 @@ mod tests {
             "the scaled output width should shrink across PTS: w0={w0} w1={w1}"
         );
     }
+
+    #[test]
+    fn animated_rotate_effect_turns_content_across_pts() {
+        // A base layer whose left half is white and right half is black, rotated by a
+        // `RotateAnimated` angle 0°→180° across 1s. At PTS 0 the top-left pixel is white;
+        // at PTS 1s (180°) the frame is turned, so the top-left shows the (black) right
+        // half. Proves the self-animating `rotate=angle=EXPR(t)` turns per frame.
+        // Probe-gated.
+        use crate::animation::{AnimatedValue, AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let angle = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 180.0, Easing::Linear));
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::RotateAnimated {
+                angle: AnimatedValue::Track(angle),
+                fill_color: "black".to_string(),
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = RealtimeComposer::new(&[base])
+            .expect("animated-rotate base must build once FFmpeg filters exist");
+
+        // Left half (cols 0..4) white, right half (cols 4..8) black.
+        let mut data = vec![0u8; 8 * 8 * 4];
+        for row in 0..8 {
+            for col in 0..8 {
+                let p = (row * 8 + col) * 4;
+                if col < 4 {
+                    data[p] = 255;
+                    data[p + 1] = 255;
+                    data[p + 2] = 255;
+                }
+                data[p + 3] = 255;
+            }
+        }
+        let sample = |composer: &mut RealtimeComposer, pts: Duration| -> Option<u8> {
+            let mut f = VideoFrame::from_rgba(8, 8, data.clone()).unwrap();
+            f.set_timestamp(Timestamp::from_duration(pts, Rational::new(1, 1_000_000)));
+            composer.push_layer(0, &f).ok()?;
+            Some(composer.pull().ok()??.to_rgba()?[0])
+        };
+
+        let Some(r0) = sample(&mut composer, Duration::ZERO) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        let Some(r1) = sample(&mut composer, Duration::from_secs(1)) else {
+            println!("Skipping: push/pull failed (FFmpeg unavailable?)");
+            return;
+        };
+        assert!(
+            r0 > r1 + 100,
+            "180° rotation should turn the white half away from the top-left: r0={r0} r1={r1}"
+        );
+    }
+
+    #[test]
+    fn rotate_transparent_fill_shows_layer_below_in_corners() {
+        // A blue top layer rotated 45° with a transparent fill, over a red base. At 45°
+        // the fixed 8×8 output's corners fall outside the rotated square and are filled
+        // transparently, so the top-left composites to the red base — not black. Proves
+        // `RotateAnimated` fillcolor=none + the overlay honoring that alpha (rgba
+        // conversion + `:format=auto`). Probe-gated.
+        use crate::animation::AnimatedValue;
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let base = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let top = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::RotateAnimated {
+                angle: AnimatedValue::Static(45.0),
+                fill_color: "none".to_string(),
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::new(&[base, top]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+
+        let red = VideoFrame::from_rgba(8, 8, [255u8, 0, 0, 255].repeat(64)).unwrap();
+        let mut blue = VideoFrame::from_rgba(8, 8, [0u8, 0, 255, 255].repeat(64)).unwrap();
+        blue.set_timestamp(Timestamp::from_duration(
+            Duration::ZERO,
+            Rational::new(1, 1_000_000),
+        ));
+        if composer.push_layer(0, &red).is_err() || composer.push_layer(1, &blue).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                let rgba = out.to_rgba().expect("rgba");
+                // Top-left corner: exposed by the 45° rotation → transparent → red base.
+                assert!(
+                    rgba[0] > 100 && rgba[2] < 100,
+                    "rotated corner should show the red base, not black: rgba={:?}",
+                    &rgba[0..4]
+                );
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn rotate_over_base_640x360_canvas_none_reveals_base() {
+        // Exactly the demo's real config: V1 base 640×360 + V2 overlay 640×360, both
+        // same size (identity force-scale), RotateAnimated, canvas=None (aspect Original).
+        // Asserts the rotated corner reveals the red base.
+        use crate::animation::AnimatedValue;
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 640,
+            height: 360,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+        let mk = |effects: Vec<FilterStep>| RealtimeLayer {
+            width: 640,
+            height: 360,
+            pixel_format: PixelFormat::Rgba,
+            effects,
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let base = mk(vec![]);
+        let top = mk(vec![FilterStep::RotateAnimated {
+            angle: AnimatedValue::Static(30.0),
+            fill_color: "none".to_string(),
+        }]);
+        let mut composer = match RealtimeComposer::new(&[base, top]) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        let red = VideoFrame::from_rgba(640, 360, [255u8, 0, 0, 255].repeat(640 * 360)).unwrap();
+        let mut blue =
+            VideoFrame::from_rgba(640, 360, [0u8, 0, 255, 255].repeat(640 * 360)).unwrap();
+        blue.set_timestamp(Timestamp::from_duration(
+            Duration::ZERO,
+            Rational::new(1, 1_000_000),
+        ));
+        if composer.push_layer(0, &red).is_err() || composer.push_layer(1, &blue).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                let rgba = out.to_rgba().expect("rgba");
+                // Top-left corner exposed by the 30° rotation → should be the red base.
+                assert!(
+                    rgba[0] > 100 && rgba[2] < 100,
+                    "640x360 canvas=None: rotated corner should show red base, not black: rgba={:?}",
+                    &rgba[0..4]
+                );
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn rotate_over_base_reveals_base_through_forcescale_and_canvas() {
+        // Mirrors the DEMO's real preview path more closely than the 8×8 test above:
+        // the overlay is a DIFFERENT size than the base (so `build_realtime_composition`
+        // prepends a non-identity `Scale{canvas, Fast}` force-scale before the rotate),
+        // and a project canvas is set (adding the fit-to-canvas letterbox pass). The
+        // rotated overlay's transparent corners must still composite to the red base.
+        use crate::animation::AnimatedValue;
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+
+        let probe = RealtimeLayer {
+            width: 16,
+            height: 16,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let base = RealtimeLayer {
+            width: 16,
+            height: 16,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        // Overlay is 32×24 (≠ base 16×16) → real force-scale to canvas before rotate.
+        let top = RealtimeLayer {
+            width: 32,
+            height: 24,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::RotateAnimated {
+                angle: AnimatedValue::Static(45.0),
+                fill_color: "none".to_string(),
+            }],
+            opacity: 1.0,
+            opacity_track: None,
+            x: 0.0,
+            y: 0.0,
+            x_track: None,
+            y_track: None,
+            blend_mode: BlendMode::Normal,
+        };
+        let mut composer = match RealtimeComposer::with_canvas(&[base, top], Some((16, 16))) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+
+        let red = VideoFrame::from_rgba(16, 16, [255u8, 0, 0, 255].repeat(256)).unwrap();
+        let mut blue = VideoFrame::from_rgba(32, 24, [0u8, 0, 255, 255].repeat(32 * 24)).unwrap();
+        blue.set_timestamp(Timestamp::from_duration(
+            Duration::ZERO,
+            Rational::new(1, 1_000_000),
+        ));
+        if composer.push_layer(0, &red).is_err() || composer.push_layer(1, &blue).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                let rgba = out.to_rgba().expect("rgba");
+                assert!(
+                    rgba[0] > 100 && rgba[2] < 100,
+                    "rotated corner should show the red base, not black: rgba={:?}",
+                    &rgba[0..4]
+                );
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
 }

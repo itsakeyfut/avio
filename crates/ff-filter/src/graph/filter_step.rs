@@ -247,6 +247,21 @@ pub enum FilterStep {
         /// Resampling algorithm (`flags=`).
         algorithm: ScaleAlgorithm,
     },
+    /// Rotate with an optionally animated angle (degrees), filling exposed corners
+    /// with `fill_color`.
+    ///
+    /// `rotate`'s `angle` option is an expression re-evaluated every frame, so this
+    /// **self-animates** via `rotate=angle=EXPR`: the angle track is compiled to a
+    /// `t`-expression ([`AnimationTrack::to_ffmpeg_expr`](crate::animation::AnimationTrack::to_ffmpeg_expr))
+    /// and converted degrees→radians. The same expression drives preview and export.
+    /// Output size stays `iw`×`ih` (corners clipped / filled). `Static` → a plain
+    /// rotate.
+    RotateAnimated {
+        /// Rotation angle in **degrees** (clockwise); an expression when a `Track`.
+        angle: AnimatedValue<f64>,
+        /// Colour for exposed corners (e.g. `"black"`, `"none"` for transparent).
+        fill_color: String,
+    },
     /// Sharpen or blur via unsharp mask (luma + chroma strength).
     ///
     /// Positive values sharpen; negative values blur. Valid range for each
@@ -1045,6 +1060,7 @@ impl FilterStep {
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
             Self::ScaleAnimated { .. } => "scale",
+            Self::RotateAnimated { .. } => "rotate",
             Self::MotionBlur { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
@@ -1566,6 +1582,17 @@ impl FilterStep {
                     format!("w={w0}:h={h0}:flags={flags}")
                 }
             }
+            Self::RotateAnimated { angle, fill_color } => match angle {
+                // `rotate` re-evaluates `angle` per frame, so a Track self-animates.
+                // Compile the degrees track to a `t`-expression, converted to radians.
+                AnimatedValue::Track(track) => {
+                    let deg = track.to_ffmpeg_expr("t");
+                    format!("angle=({deg})*PI/180:fillcolor={fill_color}")
+                }
+                AnimatedValue::Static(deg) => {
+                    format!("angle={}:fillcolor={fill_color}", deg.to_radians())
+                }
+            },
             Self::MotionBlur {
                 shutter_angle_degrees,
                 ..

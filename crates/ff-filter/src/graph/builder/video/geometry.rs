@@ -117,6 +117,22 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Rotate with an optionally animated `angle` (degrees), filling exposed corners
+    /// with `fill_color` (e.g. `"black"`, or `"none"` for transparent).
+    ///
+    /// **Self-animates** via `rotate=angle=EXPR` (the `angle` option is re-evaluated per
+    /// frame), so no [`AnimationEntry`] is registered — the same expression drives
+    /// preview and export. A `Static` angle renders a plain rotate. Output stays the
+    /// input size (corners clipped / filled).
+    #[must_use]
+    pub fn rotate_animated(mut self, angle: AnimatedValue<f64>, fill_color: &str) -> Self {
+        self.steps.push(FilterStep::RotateAnimated {
+            angle,
+            fill_color: fill_color.to_owned(),
+        });
+        self
+    }
+
     /// Overlay a second input stream at position `(x, y)`.
     #[must_use]
     pub fn overlay(mut self, x: i32, y: i32) -> Self {
