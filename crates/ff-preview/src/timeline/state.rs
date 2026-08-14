@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ff_filter::AnimationTrack;
 use ff_format::VideoFrame;
 use ff_pipeline::Clip;
 
@@ -122,6 +123,9 @@ pub(super) struct AudioOnlyTrack {
     /// Effective clip duration — used to position the fade-out ramp.
     pub(super) clip_dur: Duration,
     pub(super) handle: AudioTrackHandle,
+    /// Per-clip volume automation (dB, timeline-global). When `Some`, the runner
+    /// updates `handle`'s volume each tick; overrides the static one-shot gain.
+    pub(super) volume_track: Option<AnimationTrack<f64>>,
     pub(super) cancel: Option<Arc<AtomicBool>>,
     pub(super) thread: Option<JoinHandle<()>>,
 }

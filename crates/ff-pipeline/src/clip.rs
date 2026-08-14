@@ -58,6 +58,10 @@ pub struct Clip {
     ///
     /// Defaults to `0.0`.
     pub volume_db: f64,
+    /// Per-clip **volume automation** track (dB), evaluated in **timeline-global**
+    /// time (the mix graph's output PTS). Takes precedence over the static
+    /// [`volume_db`](Self::volume_db) when set. Defaults to `None`.
+    pub volume_track: Option<AnimationTrack<f64>>,
     /// Audio fade-in duration at the start of the clip (`Duration::ZERO` = no fade).
     ///
     /// When non-zero, a linear ramp from silence to the clip's volume level is
@@ -209,6 +213,7 @@ impl Clip {
             transition: None,
             transition_duration: Duration::ZERO,
             volume_db: 0.0,
+            volume_track: None,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
             brightness: 0.0,
@@ -457,6 +462,18 @@ impl Clip {
     pub fn volume(self, db: f64) -> Self {
         Self {
             volume_db: db,
+            ..self
+        }
+    }
+
+    /// Sets a per-clip **volume automation** track (dB) and returns the updated clip.
+    ///
+    /// The track is evaluated in **timeline-global** time and takes precedence over
+    /// the static [`volume`](Self::volume) / [`volume_db`](Self::volume_db) when set.
+    #[must_use]
+    pub fn with_volume_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            volume_track: Some(track),
             ..self
         }
     }
@@ -996,6 +1013,22 @@ mod tests {
         let stored = clip.x_track.expect("x track stored");
         // Midpoint of a 0→640 linear sweep is 320.
         assert!((stored.value_at(Duration::from_secs(1)) - 320.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_with_volume_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            0.0,
+            -12.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+        let clip = Clip::new("narration.wav").with_volume_track(track);
+        let stored = clip.volume_track.expect("volume track stored");
+        // Midpoint of a 0→-12 dB linear sweep is -6 dB.
+        assert!((stored.value_at(Duration::from_secs(1)) - (-6.0)).abs() < 1e-9);
     }
 
     #[test]
