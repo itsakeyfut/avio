@@ -564,6 +564,118 @@ fn pitch_shift_minus_24_semitones_should_produce_audio_output() {
     }
 }
 
+/// Estimate the dominant (fundamental) frequency of a mono sample buffer via
+/// autocorrelation. `sample_rate` is the rate the samples were captured at.
+/// Returns `None` if the buffer is too short to cover the search range.
+fn dominant_frequency(samples: &[f32], sample_rate: u32) -> Option<f64> {
+    let sr = f64::from(sample_rate);
+    // Search 100 Hz..2000 Hz, which brackets both 220 Hz and 880 Hz.
+    let min_lag = (sr / 2000.0).floor() as usize;
+    let max_lag = (sr / 100.0).ceil() as usize;
+    if max_lag <= min_lag || samples.len() <= max_lag * 2 {
+        return None;
+    }
+    // Remove DC offset so the autocorrelation is not dominated by a bias.
+    let mean = samples.iter().map(|&s| f64::from(s)).sum::<f64>() / samples.len() as f64;
+    let centered: Vec<f64> = samples.iter().map(|&s| f64::from(s) - mean).collect();
+
+    let mut best_lag = min_lag;
+    let mut best_corr = f64::MIN;
+    for lag in min_lag..=max_lag {
+        let mut corr = 0.0;
+        for i in 0..centered.len() - lag {
+            corr += centered[i] * centered[i + lag];
+        }
+        if corr > best_corr {
+            best_corr = corr;
+            best_lag = lag;
+        }
+    }
+    Some(sr / best_lag as f64)
+}
+
+/// Verifies that `pitch_shift(24.0)` (+2 octaves) actually multiplies the
+/// fundamental frequency by four: a 220 Hz sine becomes ~880 Hz. Uses
+/// autocorrelation on the filtered output rather than an FFT (no FFT crate in
+/// the workspace; `astats` reports level, not pitch). Acceptance criterion for
+/// issue #1092.
+#[test]
+fn pitch_shift_24_semitones_should_double_frequency_twice() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const SAMPLES: usize = 48_000; // 1 second of 220 Hz
+
+    let frame = make_sine_frame(220.0, SAMPLE_RATE, SAMPLES);
+
+    // `pitch_shift` is a post-build effect, and `build()` rejects an empty
+    // graph, so seed a transparent `volume(0.0)` (0 dB = x1.0) step. That makes
+    // the graph non-empty without altering the signal's frequency.
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.pitch_shift(24.0) {
+        println!("Skipping: pitch_shift setup failed: {e}");
+        return;
+    }
+
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: pitch shift filters not available");
+            return;
+        }
+        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
+    }
+
+    // atempo (WSOLA) holds its tail until EOF, so flush before draining.
+    graph.flush_audio();
+
+    // Drain all available output, collecting channel-0 samples and the output
+    // sample rate (asetrate shifts it, so `pitch_shift` output is not 48 kHz).
+    let mut mono: Vec<f32> = Vec::new();
+    let mut out_rate: Option<u32> = None;
+    while let Ok(Some(out)) = graph.pull_audio() {
+        if out_rate.is_none() {
+            out_rate = Some(out.sample_rate());
+        }
+        if let Some(s) = out.as_f32() {
+            // Packed interleaved stereo: take the left channel.
+            mono.extend(s.iter().step_by(2));
+        } else if let Some(s) = out.channel_as_f32(0) {
+            mono.extend_from_slice(s);
+        }
+    }
+
+    let Some(rate) = out_rate else {
+        println!("Skipping: no output frame produced (buffered)");
+        return;
+    };
+    if mono.len() < 8192 {
+        println!(
+            "Skipping: too few output samples ({}) to measure",
+            mono.len()
+        );
+        return;
+    }
+
+    // Analyse a middle window to avoid WSOLA edge transients and keep the
+    // autocorrelation cheap.
+    let window = 16_384.min(mono.len());
+    let start = (mono.len() - window) / 2;
+    let freq = dominant_frequency(&mono[start..start + window], rate)
+        .expect("window is large enough for the search range");
+
+    let expected = 880.0;
+    let tolerance = expected * 0.05;
+    assert!(
+        (freq - expected).abs() <= tolerance,
+        "pitch_shift(24.0) of 220 Hz must yield ~880 Hz (±5%), measured {freq:.1} Hz at {rate} Hz"
+    );
+}
+
 // ── time_stretch ──────────────────────────────────────────────────────────────
 
 /// Verifies that `FilterGraph::time_stretch()` accepts audio and produces

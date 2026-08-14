@@ -179,4 +179,16 @@ impl FilterGraph {
     pub fn pull_audio(&mut self) -> Result<Option<AudioFrame>, FilterError> {
         self.inner.pull_audio()
     }
+
+    /// Signal end-of-stream to the audio graph, flushing output still buffered
+    /// inside filters such as `atempo` (used by `pitch_shift` / `time_stretch`).
+    ///
+    /// Call this once after the final [`push_audio`](Self::push_audio) and
+    /// before draining the remaining frames with
+    /// [`pull_audio`](Self::pull_audio). A WSOLA filter like `atempo` holds its
+    /// tail until EOF, so without a flush the last frames never emerge. No-op if
+    /// no audio has been pushed yet.
+    pub fn flush_audio(&mut self) {
+        self.inner.flush_audio();
+    }
 }

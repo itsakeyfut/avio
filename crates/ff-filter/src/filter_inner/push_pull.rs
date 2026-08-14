@@ -499,6 +499,27 @@ impl FilterGraphInner {
         }
     }
 
+    /// Signal end-of-stream to every audio `buffersrc`, so buffering filters
+    /// (e.g. `atempo`) flush their pending output for the following
+    /// [`pull_audio`](Self::pull_audio) drain. No-op if the audio graph has not
+    /// been built yet (nothing has been pushed).
+    pub(crate) fn flush_audio(&mut self) {
+        if self.asink_ctx.is_none() {
+            return;
+        }
+        let audio_inputs = self.audio_input_count();
+        let video_slots = self.src_ctxs.len().saturating_sub(audio_inputs);
+        for slot in 0..audio_inputs {
+            if let Some(src_ctx) = self.src_ctxs.get(video_slots + slot).and_then(|opt| *opt) {
+                // SAFETY: `src_ctx` is a valid audio buffersrc owned by this
+                // graph; `av_buffersrc_close` signals EOF on it.
+                unsafe {
+                    ff_sys::av_buffersrc_close(src_ctx.as_ptr(), ff_sys::AV_NOPTS_VALUE, 0u32);
+                }
+            }
+        }
+    }
+
     // ── Two-pass loudness normalization ──────────────────────────────────────
 
     /// Run EBU R128 two-pass loudness normalization over `self.loudness_buf`:
