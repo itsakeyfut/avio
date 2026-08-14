@@ -427,10 +427,12 @@ impl Timeline {
                     // Per-clip volume_db overrides the track-level animation when non-zero.
                     // This lets callers set independent gain on each clip without needing
                     // one audio track per clip.
-                    let volume = if clip.volume_db == 0.0 {
-                        aa(track_idx, "volume", 0.0)
-                    } else {
-                        AnimatedValue::Static(clip.volume_db)
+                    // A per-clip volume track takes precedence over the static
+                    // volume_db, which in turn overrides the track-level animation.
+                    let volume = match &clip.volume_track {
+                        Some(track) => AnimatedValue::Track(track.clone()),
+                        None if clip.volume_db != 0.0 => AnimatedValue::Static(clip.volume_db),
+                        None => aa(track_idx, "volume", 0.0),
                     };
 
                     let mut effects: Vec<FilterStep> = Vec::new();
