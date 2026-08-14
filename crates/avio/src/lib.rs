@@ -239,7 +239,7 @@ pub use ff_probe::{ProbeError, open};
 pub use ff_common::{PooledBuffer, VecPool};
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, AudioDecoderBuilder, BlackFrameDetector, DecodeError, FrameExtractor,
+    AudioDecoder, AudioDecoderBuilder, BlackFrameDetector, BpmResult, DecodeError, FrameExtractor,
     FrameHistogram, FramePool, HardwareAccel, Histogram, HistogramExtractor, ImageDecoder,
     ImageDecoderBuilder, KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SeekMode,
     SilenceDetector, SilenceRange, ThumbnailSelector, VideoDecoder, VideoDecoderBuilder,

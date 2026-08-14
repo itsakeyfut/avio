@@ -236,6 +236,16 @@ pub enum DecodeError {
         /// Human-readable description of why the analysis failed.
         reason: String,
     },
+
+    /// BPM detection failed for a structural reason.
+    ///
+    /// Returned by the BPM detector when tempo cannot be estimated (e.g. no
+    /// audio stream, or a clip too short to analyse).
+    #[error("BPM detection failed: {reason}")]
+    BpmDetectionFailed {
+        /// Human-readable description of why BPM detection failed.
+        reason: String,
+    },
 }
 
 impl DecodeError {
@@ -405,7 +415,8 @@ impl DecodeError {
             | Self::UnsupportedResolution { .. }
             | Self::StreamCorrupted { .. }
             | Self::NoFrameAtTimestamp { .. }
-            | Self::AnalysisFailed { .. } => false,
+            | Self::AnalysisFailed { .. }
+            | Self::BpmDetectionFailed { .. } => false,
         }
     }
 
@@ -453,7 +464,8 @@ impl DecodeError {
             | Self::ConnectionFailed { .. }
             | Self::Io(_)
             | Self::StreamCorrupted { .. }
-            | Self::AnalysisFailed { .. } => true,
+            | Self::AnalysisFailed { .. }
+            | Self::BpmDetectionFailed { .. } => true,
             Self::DecodingFailed { .. }
             | Self::SeekFailed { .. }
             | Self::NetworkTimeout { .. }
@@ -862,6 +874,31 @@ mod tests {
     fn analysis_failed_should_be_fatal_and_not_recoverable() {
         let e = DecodeError::AnalysisFailed {
             reason: "zero interval".to_string(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn bpm_detection_failed_should_display_correctly() {
+        let e = DecodeError::BpmDetectionFailed {
+            reason: "no audio stream".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("BPM detection failed"),
+            "unexpected message: {msg}"
+        );
+        assert!(
+            msg.contains("no audio stream"),
+            "expected reason in message: {msg}"
+        );
+    }
+
+    #[test]
+    fn bpm_detection_failed_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::BpmDetectionFailed {
+            reason: "clip too short".to_string(),
         };
         assert!(e.is_fatal());
         assert!(!e.is_recoverable());
