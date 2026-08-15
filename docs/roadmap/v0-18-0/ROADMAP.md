@@ -67,7 +67,7 @@ The following end-to-end examples are provided under the workspace `examples/` d
 ### API Consistency Audit
 
 - The builder pattern is confirmed uniform across all crates: consuming builders (`self`), all validation in `build()`.
-- Error type hierarchy is audited against `docs/dev/error-handling.md`: no `anyhow` in library code, all FFmpeg errors wrapped with context.
+- Error type hierarchy is audited against `docs/rules/error-handling.md`: no `anyhow` in library code, all FFmpeg errors wrapped with context.
 - Every `*Inner` type that may cross thread boundaries carries an explicit `unsafe impl Send` (and `unsafe impl Sync` where appropriate) with a `// SAFETY:` comment.
 - No `unwrap()` or `expect()` remains in library source (`src/`); only in tests and examples.
 - `cargo clippy --workspace -- -D warnings` is clean on stable Rust.
