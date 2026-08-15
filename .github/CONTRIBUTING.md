@@ -17,6 +17,7 @@ If you're unsure where to start, feel free to open an issue and ask.
 - [Commit Messages](#commit-messages)
 - [Code Style](#code-style)
 - [Testing](#testing)
+- [Minimum Supported Rust Version (MSRV)](#minimum-supported-rust-version-msrv)
 - [Documentation](#documentation)
 - [FFmpeg Notes](#ffmpeg-notes)
 - [License](#license)
@@ -209,6 +210,24 @@ For crates with feature flags, also test without default features:
 ```sh
 cargo test -p ff-decode --no-default-features
 ```
+
+---
+
+## Minimum Supported Rust Version (MSRV)
+
+Develop and test on the **latest stable** toolchain. The MSRV is the oldest Rust release avio
+still compiles on, currently **1.93.0**, verified by CI.
+
+- The MSRV is a floor, not the toolchain you build with. It does not track new compiler
+  releases automatically; the project can stay on a given MSRV across many Rust releases.
+- A recent MSRV is intentional: while the project is young it lets us use current APIs without
+  policing per-version availability. The trade-off is that downstream users must be on a
+  reasonably recent toolchain.
+- The MSRV is raised only deliberately (adopting a newer std/language API, or a dependency
+  requiring it), only in a minor release, and always recorded in the CHANGELOG. It may be
+  lowered later if broader adoption warrants; lowering it is not a breaking change.
+
+In a contribution, please avoid APIs newer than the MSRV so the CI MSRV job stays green.
 
 ---
 
