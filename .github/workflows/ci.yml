@@ -139,7 +139,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build workspace with DOCS_RS=1 (no FFmpeg needed)
-        run: cargo build --workspace
+        # Exclude the publish=false example harness: its src/bin/* link FFmpeg,
+        # which the DOCS_RS stub build does not provide. It is never published to
+        # docs.rs, and the test jobs compile its binaries with real FFmpeg.
+        run: cargo build --workspace --exclude avio-examples
         env:
           DOCS_RS: "1"
 
