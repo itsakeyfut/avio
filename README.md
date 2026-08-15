@@ -54,7 +54,7 @@ ff-decode = "0.15"
 ff-encode = "0.15"
 ```
 
-FFmpeg 7.x development libraries must be installed on your system.
+FFmpeg 7.x or 8.x development libraries must be installed on your system.
 
 ### Windows
 
