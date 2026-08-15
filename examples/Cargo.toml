@@ -1,0 +1,28 @@
+# User-perspective, self-verifying end-to-end scripts that exercise avio's
+# video-editing surface through the public `avio` facade only. This crate depends
+# on avio the way a downstream consumer would (a dependency line + explicit
+# features), so a failing script isolates the problem to avio (no egui, no demo).
+#
+# It is intentionally NOT published and does NOT inherit the workspace lints: a
+# real consumer does not adopt avio's internal `unwrap_used`/`pedantic` policy.
+[package]
+name = "avio-examples"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Features mirror what avio-editor-demo enables, so this doubles as a
+# consumer-POV smoke test of that feature combination.
+avio = { path = "../crates/avio", features = [
+    "decode",
+    "encode",
+    "filter",
+    "pipeline",
+    "preview",
+    "preview-proxy",
+    "tokio",
+    "serde",
+] }
+tempfile = "3"
