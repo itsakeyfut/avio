@@ -44,19 +44,20 @@ Develop on the current stable toolchain. The MSRV (Minimum Supported Rust
 Version) is **1.93.0**; CI verifies the workspace still compiles on it, so
 avoid APIs newer than 1.93.0.
 
-**FFmpeg development libraries** (version **7.x required**)
+**FFmpeg development libraries** (version **7.x or 8.x required**)
 
-FFmpeg 6.x is not supported. In 7.x the scaling flags were converted from
-`#define` macros to a proper `enum SwsFlags`, and `ff-sys` relies on the
-bindgen-generated `SwsFlags_SWS_*` naming that only exists in 7.x.
+FFmpeg 6.x is not supported. Since 7.x the scaling flags are a proper
+`enum SwsFlags`, and `ff-sys` relies on the bindgen-generated `SwsFlags_SWS_*`
+naming that only exists in 7.x and later. FFmpeg 8.0 is also supported; its
+version-specific tokens are gated behind an `ffmpeg8` cfg in `ff-sys`.
 
 | Platform | Command |
 |---|---|
 | Ubuntu / Debian | `sudo apt install libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev pkg-config` |
 | macOS | `brew install ffmpeg pkg-config` |
-| Windows | Install via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install ffmpeg:x64-windows-static` |
+| Windows | Install via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install ffmpeg:x64-windows` |
 
-Verify: `ffmpeg -version` (must show `7.x`)
+Verify: `ffmpeg -version` (must show `7.x` or `8.x`)
 
 ---
 
@@ -126,9 +127,10 @@ before starting implementation.
 ## Pull Requests
 
 1. **Open an issue first** for any non-trivial change (new features, API changes, or significant refactors).
-2. Fork the repository and create a **topic branch** off `main`:
+2. Fork the repository and create a **topic branch** off `main`, named
+   `<type>/issue-<N>-<slug>` (`feat/`, `fix/`, `docs/`, `chore/`, `perf/`):
    ```sh
-   git checkout -b ff-filter/add-scale-filter
+   git checkout -b feat/issue-42-add-scale-filter
    ```
 3. Make your changes. Each commit should build and pass tests independently.
 4. Run the full check suite (see [Code Style](#code-style) and [Testing](#testing)).
@@ -141,25 +143,26 @@ before starting implementation.
 
 ## Commit Messages
 
-Use the `<crate>: <description>` prefix format so that changes are easy to identify:
+Use [Conventional Commits](https://www.conventionalcommits.org/): `<type>(<scope>): <description>`,
+where `<scope>` is the affected crate.
 
 ```
-ff-filter: add scale filter implementation
+feat(ff-filter): add scale filter implementation
 
 Wraps libavfilter's `scale` filter. Accepts width/height as either
 pixel values or expressions (e.g., "iw/2").
-
-Fixes: #42
 ```
 
 Guidelines:
 
-- Prefix with the crate name: `ff-filter:`, `ff-encode:`, `ff-probe:`, etc.
-  For workspace-wide changes use `workspace:` or `docs:`.
-- Use the imperative mood: "add", "fix", "remove" — not "added" or "fixes"
-- First line ≤ 72 characters
-- No trailing period on the first line
-- Reference issues with `Fixes: #N` or `Refs: #N` in the footer
+- Common types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `chore`.
+- Scope is the crate name: `feat(ff-encode): ...`, `fix(ff-probe): ...`. For workspace-wide
+  changes use `chore` or `docs` with no scope.
+- Use the imperative mood: "add", "fix", "remove", not "added" or "fixes".
+- First line ≤ 72 characters, no trailing period.
+- Add a blank line and a body explaining what and why for non-trivial changes.
+- Link issues from the pull request description (`Closes #N` / `Fixes #N` / `Resolves #N`),
+  not in the commit subject.
 
 ---
 
@@ -195,8 +198,11 @@ Run the full test suite:
 cargo test --all --all-features
 ```
 
-If a test requires a real media file or a specific codec, gate it with `#[ignore]` and document
-what is needed to run it manually.
+Tests must pass under a plain `cargo test` on any machine. If a test drives an FFmpeg filter
+graph, probe the graph first and skip gracefully when filters are unavailable (return early
+with a `println!` note) instead of calling a bare `.expect()`: CI's Linux FFmpeg is built
+without filters. If a test needs a real media file or a specific codec, detect its absence at
+runtime and skip the same way.
 
 For crates with feature flags, also test without default features:
 
@@ -219,12 +225,14 @@ Public API items must have rustdoc comments. Include at least:
 /// # Example
 ///
 /// ```no_run
-/// # use ff_probe::Probe;
-/// let info = Probe::open("video.mp4")?;
-/// println!("duration: {:?}", info.duration());
-/// # Ok::<_, ff_common::Error>(())
+/// # use ff_probe::open;
+/// let info = open("video.mp4")?;
+/// if let Some(v) = info.primary_video() {
+///     println!("{}x{}", v.width(), v.height());
+/// }
+/// # Ok::<_, ff_probe::ProbeError>(())
 /// ```
-pub fn open(path: impl AsRef<Path>) -> Result<Self> { ... }
+pub fn open(path: impl AsRef<Path>) -> Result<MediaInfo, ProbeError> { ... }
 ```
 
 ---
@@ -234,22 +242,30 @@ pub fn open(path: impl AsRef<Path>) -> Result<Self> { ... }
 **Crate layering**
 
 ```
-ff-sys          raw bindgen bindings (unsafe)
-ff-common       shared types and error handling
-ff-format       container demux / mux
-ff-probe        metadata extraction
-ff-decode       decoding
-ff-encode       encoding
-ff-filter       filter graphs
+ff-sys          raw bindgen FFI + safe thin wrappers (unsafe)
+ff-common       shared memory abstractions (no FFmpeg dep)
+ff-format       shared pure-Rust type system (no FFmpeg dep)
+ff-probe        read-only metadata extraction
+ff-decode       decode pipelines
+ff-encode       encode pipelines
+ff-filter       libavfilter graph construction
+ff-pipeline     high-level decode -> filter -> encode pipeline
+ff-stream       HLS / DASH adaptive streaming
+ff-preview      real-time preview and proxy workflow
+ff-render       GPU compositing (wgpu)
+avio            facade: re-exports only
 ```
 
-Each crate depends only on lower layers. No circular dependencies.
+Dependency order (no cycles):
+`ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode -> ff-filter -> ff-pipeline -> ff-stream -> avio`.
+Each crate depends only on lower layers.
 
 **unsafe isolation**
 
 All raw FFmpeg pointer operations live in `*_inner.rs` files (e.g., `decoder_inner.rs`,
-`filter_inner.rs`). Public-facing structs in `*_api.rs` or `lib.rs` must be fully safe.
-Every `unsafe` block requires a `// SAFETY:` comment.
+`filter_inner.rs`), exposed only as `pub(crate)`. The safe public API lives in each module's
+`mod.rs` and the crate `lib.rs`, and must be fully safe. Every `unsafe` block requires a
+`// SAFETY:` comment.
 
 **Linking**
 

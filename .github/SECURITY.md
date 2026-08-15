@@ -4,7 +4,10 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 0.15.x | Yes |
+| < 0.15 | No |
+
+While the project is pre-1.0, only the latest `0.x` minor receives security fixes.
 
 ## Reporting a Vulnerability
 

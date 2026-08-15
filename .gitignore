@@ -38,3 +38,8 @@ Desktop.ini
 
 # Personal working notes (not shared with contributors)
 /TODO.md
+
+# Private local media — drop your own files here to run avio during development
+/assets/private/*
+!/assets/private/.gitkeep
+!/assets/private/README.md
