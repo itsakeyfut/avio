@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
-    AnimatedValue, AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer,
-    VideoConcatenator, VideoLayer,
+    AnimatedValue, AudioConcatenator, AudioTrack, FilterStep, MultiTrackAudioMixer,
+    MultiTrackComposer, VideoConcatenator, VideoLayer,
     animation::{AnimationTrack, Easing, Keyframe},
 };
 use ff_format::{AudioFrame, ChannelLayout, SampleFormat, Timestamp};
@@ -90,10 +90,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            z_order: 0,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -109,10 +105,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            z_order: 1,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -128,10 +120,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            z_order: 2,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -581,10 +569,6 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            z_order: 0,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -600,10 +584,6 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Track(opacity_track),
-            z_order: 1,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -859,10 +839,6 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            z_order: 0,
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
@@ -915,10 +891,6 @@ fn composite_op_in_layer_should_build_and_produce_frame() {
         scale_y: AnimatedValue::Static(1.0),
         rotation: AnimatedValue::Static(0.0),
         opacity: AnimatedValue::Static(1.0),
-        z_order: 0,
-        time_offset: Duration::ZERO,
-        in_point: None,
-        out_point: None,
         in_transition: None,
         blend_mode: ff_filter::BlendMode::Normal,
         composite_op: ff_filter::CompositeOp::In,
@@ -966,10 +938,6 @@ fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
         scale_y: AnimatedValue::Static(1.0),
         rotation: AnimatedValue::Static(0.0),
         opacity: AnimatedValue::Static(0.5),
-        z_order: 0,
-        time_offset: Duration::ZERO,
-        in_point: None,
-        out_point: None,
         in_transition: None,
         blend_mode: ff_filter::BlendMode::Normal,
         composite_op: ff_filter::CompositeOp::Under,
@@ -996,6 +964,58 @@ fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
             );
         }
         Ok(None) => println!("Skipping: composite Under graph produced no frame"),
+        Err(e) => println!("Skipping: pull_video failed: {e}"),
+    }
+}
+
+// ── #1330: timeline trim/placement expressed as leading FilterSteps ─────────────
+
+/// After #1330 the engine derive emits a clip's trim + timeline placement as
+/// leading `FilterStep`s (`Trim` + `ResetPts` + `OffsetPts`) instead of
+/// `VideoLayer` fields. Verify the compositor builds that effect chain and pulls
+/// a frame. Uses a `lavfi` source; probe-gated (RK-002): CI's Linux FFmpeg has no
+/// filters, so build/pull failure → skip.
+#[test]
+fn trim_and_offset_effects_should_build_and_produce_frame() {
+    let layer = VideoLayer {
+        source: "color=c=white:s=64x64:r=25:d=2".into(),
+        proxy: None,
+        input_format: Some("lavfi".to_string()),
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(1.0),
+        in_transition: None,
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::Over,
+        effects: vec![
+            FilterStep::Trim {
+                start: Some(0.5),
+                end: Some(1.5),
+            },
+            FilterStep::ResetPts,
+            FilterStep::OffsetPts { seconds: 0.5 },
+        ],
+    };
+    let mut graph = match MultiTrackComposer::new(64, 64).add_layer(layer).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+    match graph.pull_video() {
+        Ok(Some(frame)) => {
+            assert_eq!(frame.width(), 64, "trim/offset must not change frame width");
+            assert_eq!(
+                frame.height(),
+                64,
+                "trim/offset must not change frame height"
+            );
+        }
+        Ok(None) => println!("Skipping: trim/offset graph produced no frame"),
         Err(e) => println!("Skipping: pull_video failed: {e}"),
     }
 }

@@ -52,8 +52,20 @@ pub enum FilterStep {
         color_trc: Option<ColorTransfer>,
     },
 
-    /// Trim: keep only frames in `[start, end)` seconds.
-    Trim { start: f64, end: f64 },
+    /// Trim: keep only frames in `[start, end)` seconds. Either bound may be
+    /// `None` for an open range (`start=None` keeps from 0; `end=None` keeps to
+    /// end-of-stream).
+    Trim {
+        start: Option<f64>,
+        end: Option<f64>,
+    },
+    /// Reset timestamps to start at zero (`setpts=PTS-STARTPTS`). Typically
+    /// follows a [`Trim`](Self::Trim) so a placed clip's timeline offset is
+    /// applied from zero.
+    ResetPts,
+    /// Shift every frame's presentation timestamp forward by `seconds`
+    /// (`setpts=PTS+{seconds}/TB`). Places a layer later on the output timeline.
+    OffsetPts { seconds: f64 },
     /// Scale to a new resolution using the given resampling algorithm.
     Scale {
         width: u32,
@@ -962,6 +974,8 @@ impl FilterStep {
             Self::Format { .. } => "format",
             Self::SetParams { .. } => "setparams",
             Self::Trim { .. } => "trim",
+            // "setpts" is checked at build-time (see Speed's note below).
+            Self::ResetPts | Self::OffsetPts { .. } => "setpts",
             Self::Scale { .. } => "scale",
             Self::Crop { .. } => "crop",
             Self::Overlay { .. } => "overlay",
@@ -1138,7 +1152,14 @@ impl FilterStep {
                 .collect::<Vec<_>>()
                 .join(":")
             }
-            Self::Trim { start, end } => format!("start={start}:end={end}"),
+            Self::Trim { start, end } => match (start, end) {
+                (Some(s), Some(e)) => format!("start={s}:end={e}"),
+                (Some(s), None) => format!("start={s}"),
+                (None, Some(e)) => format!("end={e}"),
+                (None, None) => String::new(),
+            },
+            Self::ResetPts => "PTS-STARTPTS".to_string(),
+            Self::OffsetPts { seconds } => format!("PTS+{seconds}/TB"),
             Self::Scale {
                 width,
                 height,

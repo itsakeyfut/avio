@@ -429,8 +429,8 @@ mod tests {
         let inner = FilterGraphInner::new(
             vec![
                 FilterStep::Trim {
-                    start: 0.0,
-                    end: 5.0,
+                    start: Some(0.0),
+                    end: Some(5.0),
                 },
                 FilterStep::Scale {
                     width: 640,
