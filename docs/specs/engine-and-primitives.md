@@ -79,6 +79,53 @@ opacity + blend + effect steps) plus the output canvas.
   today's `VideoLayer` carries `time_offset` and `in_transition` (timeline concepts); those move
   into the engine's `derive`, and the primitive layer keeps only current-frame fields.
 
+### 4.1 The preview Scene (runner-facing) — design for #1329
+
+The `Scene` above is per-frame (the `RealtimeComposer` input, already model-free). The **real-time
+preview runner** needs a **timeline-level** Scene, because it owns decode scheduling (opening/seeking a
+decoder per source and mapping the playhead to each source's frame time). A mapping of
+`ff-preview`'s `TimelineRunner`/`TimelinePlayer` established:
+
+- It reads `Timeline` **only at init and `update_layout`** — via four accessors (`video_tracks()`,
+  `audio_tracks()`, `frame_rate()`, `explicit_canvas()`); `run()` never touches `Timeline`.
+- The deep coupling is `Clip`: it clones the whole `Clip` into `ClipState.clip` and calls
+  `clip.realtime_layer(w, h, fmt)` + `clip.{opacity,volume}_track.value_at(t)` **every tick**. Everything
+  `realtime_layer` needs is already primitive (`FilterStep` / `AnimationTrack` / `AnimatedValue` /
+  `BlendMode`), and `RealtimeLayer` + `RealtimeComposer` are already the compositing seam.
+
+**Decision (approved): decouple, do not move.** The runner **stays in `ff-preview`** and consumes a
+primitive `Scene` instead of `Timeline`/`Clip`; only the model and its `Timeline → Scene` derivation move
+to `avio`. This avoids exposing `ff-preview` internals (`MasterClock`, `SwsRgbaConverter`,
+`PlayerHandle::for_timeline`) that a physical move would have forced public.
+
+**Scene types (defined in `ff-preview`, primitive; `avio` constructs them from `Timeline`/`Clip`):**
+
+```
+Scene { fps, canvas: Option<(u32,u32)>, video_layers: Vec<SceneVideoLayer>, audio_tracks: Vec<SceneAudioTrack> }
+SceneVideoLayer { placements: Vec<ScenePlacement> }        // layer 0 = V1 base, 1.. = overlays
+ScenePlacement  { source: PathBuf, timeline_start/timeline_end: Duration, in_point: Duration,
+                  out_point: Option<Duration>, speed: f64, transition_dur: Duration (V1 only),
+                  opacity: f32, layer: RealtimeLayerSpec }
+SceneAudioTrack { placements: Vec<SceneAudioPlacement> }
+SceneAudioPlacement { source, timeline_start/end, in_point, clip_dur, fade_in, fade_out, speed,
+                      volume_db: f64, volume_track: Option<AnimationTrack<f64>>, has_audio: bool }
+```
+
+- `RealtimeLayerSpec` = `RealtimeLayer` minus `width`/`height`/`pixel_format` (a new `ff-filter`
+  primitive); the runner builds the per-frame layer at decode time via
+  `RealtimeLayer::with_dimensions(spec, w, h, fmt)`. `Clip::realtime_layer` splits into
+  `Clip → RealtimeLayerSpec` (avio) + `spec → RealtimeLayer` (ff-filter).
+- `PlayerCommand::UpdateLayout(Box<Timeline>)` → `UpdateLayout(Box<Scene>)`;
+  `PlayerHandle::update_timeline` → `update_scene`. `avio` re-derives a `Scene` on edit and the runner
+  reconciles it (as `update_layout_in_place` does today).
+- After the move, `ff-preview`'s only `ff_pipeline` use is `proxy/` (primitive `Pipeline`/`EncoderConfig`)
+  — it drops the model dependency entirely.
+
+**Slices for #1329:** **A** (ff-filter) `RealtimeLayerSpec` + `with_dimensions`; **B** (ff-preview)
+`Scene` types + runner consumes `Scene` (temporary `Timeline → Scene` adapter keeps it green); **C**
+(avio) move `Timeline`/`Clip`/derivation + the two `PipelineError` model variants to `avio` and place the
+`Timeline → Scene` derivation there; **D** close-out (folds into #1333).
+
 ## 5. Crate roles and dependency direction (new)
 
 ```
