@@ -65,6 +65,61 @@ pub struct RealtimeLayer {
     pub blend_mode: BlendMode,
 }
 
+// ── RealtimeLayerDescriptor ───────────────────────────────────────────────────
+
+/// The dimension-independent part of a [`RealtimeLayer`]: every field except
+/// `width` / `height` / `pixel_format`, which are only known once a frame has been
+/// decoded.
+///
+/// An engine derives a descriptor from its editing model; a real-time driver
+/// realises it into a [`RealtimeLayer`] at decode time via
+/// [`RealtimeLayer::with_dimensions`].
+#[derive(Debug, Clone)]
+pub struct RealtimeLayerDescriptor {
+    /// See [`RealtimeLayer::effects`].
+    pub effects: Vec<FilterStep>,
+    /// See [`RealtimeLayer::opacity`].
+    pub opacity: f32,
+    /// See [`RealtimeLayer::opacity_track`].
+    pub opacity_track: Option<AnimationTrack<f64>>,
+    /// See [`RealtimeLayer::x`].
+    pub x: f64,
+    /// See [`RealtimeLayer::y`].
+    pub y: f64,
+    /// See [`RealtimeLayer::x_track`].
+    pub x_track: Option<AnimationTrack<f64>>,
+    /// See [`RealtimeLayer::y_track`].
+    pub y_track: Option<AnimationTrack<f64>>,
+    /// See [`RealtimeLayer::blend_mode`].
+    pub blend_mode: BlendMode,
+}
+
+impl RealtimeLayer {
+    /// Build a [`RealtimeLayer`] from a [`RealtimeLayerDescriptor`] plus the frame
+    /// dimensions and pixel format known at decode time.
+    #[must_use]
+    pub fn with_dimensions(
+        descriptor: RealtimeLayerDescriptor,
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixel_format,
+            effects: descriptor.effects,
+            opacity: descriptor.opacity,
+            opacity_track: descriptor.opacity_track,
+            x: descriptor.x,
+            y: descriptor.y,
+            x_track: descriptor.x_track,
+            y_track: descriptor.y_track,
+            blend_mode: descriptor.blend_mode,
+        }
+    }
+}
+
 // ── RealtimeComposer ──────────────────────────────────────────────────────────
 
 /// Composites externally-decoded frames from several layers into one frame,
@@ -146,6 +201,32 @@ impl RealtimeComposer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn realtime_layer_with_dimensions_should_copy_descriptor_fields() {
+        let descriptor = RealtimeLayerDescriptor {
+            effects: vec![FilterStep::HFlip],
+            opacity: 0.5,
+            opacity_track: Some(AnimationTrack::new()),
+            x: 12.0,
+            y: 34.0,
+            x_track: None,
+            y_track: Some(AnimationTrack::new()),
+            blend_mode: BlendMode::Multiply,
+        };
+        let layer = RealtimeLayer::with_dimensions(descriptor, 640, 360, PixelFormat::Rgba);
+        assert_eq!(layer.width, 640);
+        assert_eq!(layer.height, 360);
+        assert!(matches!(layer.pixel_format, PixelFormat::Rgba));
+        assert_eq!(layer.effects.len(), 1, "effects moved into the layer");
+        assert!((layer.opacity - 0.5).abs() < f32::EPSILON);
+        assert!(layer.opacity_track.is_some());
+        assert!((layer.x - 12.0).abs() < f64::EPSILON);
+        assert!((layer.y - 34.0).abs() < f64::EPSILON);
+        assert!(layer.x_track.is_none());
+        assert!(layer.y_track.is_some());
+        assert!(matches!(layer.blend_mode, BlendMode::Multiply));
+    }
 
     #[test]
     fn empty_layers_should_err() {
