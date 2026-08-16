@@ -49,8 +49,8 @@ pub use effects::{
 };
 pub use error::FilterError;
 pub use graph::{
-    AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, DrawTextOptions, EqBand,
-    FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, MultiTrackAudioMixer, MultiTrackComposer,
-    ProxySource, RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator,
-    VideoLayer, XfadeTransition, YadifMode,
+    AudioConcatenator, AudioTrack, ClipJoiner, DrawTextOptions, EqBand, FilterGraph,
+    FilterGraphBuilder, FilterStep, HwAccel, MultiTrackAudioMixer, MultiTrackComposer, ProxySource,
+    RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator, VideoLayer,
+    XfadeTransition, YadifMode,
 };

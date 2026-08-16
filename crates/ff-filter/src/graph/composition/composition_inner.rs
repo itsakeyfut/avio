@@ -104,14 +104,16 @@ pub(super) unsafe fn build_video_composition(
 
     // Pre-compute which layers should skip their overlay because the next
     // layer will cross-fade from them.  skip_overlay[i] is true when
-    // layers[i+1] has an in_transition. The caller (engine derive) only sets
-    // in_transition on a clip that follows its same-track predecessor, and emits
+    // layers[i+1] carries a `FilterStep::XFade`. The caller (engine derive) only
+    // emits an XFade on a clip that follows its same-track predecessor, and emits
     // layers in track order, so the transition partner is always layers[i].
     let skip_overlay: Vec<bool> = (0..layer_count)
         .map(|i| {
-            layers
-                .get(i + 1)
-                .is_some_and(|next| next.in_transition.is_some())
+            layers.get(i + 1).is_some_and(|next| {
+                next.effects
+                    .iter()
+                    .any(|s| matches!(s, crate::FilterStep::XFade { .. }))
+            })
         })
         .collect();
     // Saved chain_end from the preceding layer when skip_overlay was true.
@@ -404,6 +406,12 @@ pub(super) unsafe fn build_video_composition(
 
         // ── Per-layer video effects ───────────────────────────────────────────
         for (eff_idx, step) in layer.effects.iter().enumerate() {
+            // XFade is a 2-input cross-fade whose second input is the preceding
+            // layer; it is wired by the post-loop transition block below, not by
+            // add_and_link_step (whose second-input feed is caller-supplied).
+            if matches!(step, crate::FilterStep::XFade { .. }) {
+                continue;
+            }
             let combined_idx = idx * 1000 + eff_idx;
             let result = crate::filter_inner::add_and_link_step(
                 graph,
@@ -464,8 +472,15 @@ pub(super) unsafe fn build_video_composition(
             }
         }
 
-        // ── xfade (when this layer has an in_transition) ──────────────────────
-        if let Some(ref t) = layer.in_transition {
+        // ── xfade (when this layer carries a FilterStep::XFade) ───────────────
+        if let Some((transition, duration, offset)) = layer.effects.iter().find_map(|s| match s {
+            crate::FilterStep::XFade {
+                transition,
+                duration,
+                offset,
+            } => Some((*transition, *duration, *offset)),
+            _ => None,
+        }) {
             if !saved_chain.is_null() {
                 // Wire: clip A (saved_chain) × clip B (chain_end) → xfade
                 let xfade_filter = ff_sys::avfilter_get_by_name(c"xfade".as_ptr());
@@ -474,9 +489,9 @@ pub(super) unsafe fn build_video_composition(
                 }
                 let xfade_args_str = format!(
                     "transition={}:duration={}:offset={}",
-                    t.kind.as_str(),
-                    t.duration_secs,
-                    t.offset_secs,
+                    transition.as_str(),
+                    duration,
+                    offset,
                 );
                 let Ok(xfade_args) = CString::new(xfade_args_str.as_str()) else {
                     bail!(graph, "CString::new failed for xfade args");
@@ -512,13 +527,13 @@ pub(super) unsafe fn build_video_composition(
                 chain_end = xfade_ctx;
                 log::debug!(
                     "video composition xfade layer={idx} kind={} dur={} offset={}",
-                    t.kind.as_str(),
-                    t.duration_secs,
-                    t.offset_secs,
+                    transition.as_str(),
+                    duration,
+                    offset,
                 );
             } else {
                 log::warn!(
-                    "video composition layer={idx} has in_transition but no preceding \
+                    "video composition layer={idx} has a FilterStep::XFade but no preceding \
                      layer to cross-fade from; hard cut applied"
                 );
             }

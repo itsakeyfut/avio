@@ -22,7 +22,7 @@ use std::time::Duration;
 use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
     AnimatedValue, AudioConcatenator, AudioTrack, FilterStep, MultiTrackAudioMixer,
-    MultiTrackComposer, VideoConcatenator, VideoLayer,
+    MultiTrackComposer, VideoConcatenator, VideoLayer, XfadeTransition,
     animation::{AnimationTrack, Easing, Keyframe},
 };
 use ff_format::{AudioFrame, ChannelLayout, SampleFormat, Timestamp};
@@ -90,7 +90,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -105,7 +104,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -120,7 +118,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -563,7 +560,6 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -578,7 +574,6 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Track(opacity_track),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -830,7 +825,6 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
             scale_y: AnimatedValue::Static(1.0),
             rotation: AnimatedValue::Static(0.0),
             opacity: AnimatedValue::Static(1.0),
-            in_transition: None,
             blend_mode: ff_filter::BlendMode::Normal,
             composite_op: ff_filter::CompositeOp::Over,
             effects: vec![],
@@ -882,7 +876,6 @@ fn composite_op_in_layer_should_build_and_produce_frame() {
         scale_y: AnimatedValue::Static(1.0),
         rotation: AnimatedValue::Static(0.0),
         opacity: AnimatedValue::Static(1.0),
-        in_transition: None,
         blend_mode: ff_filter::BlendMode::Normal,
         composite_op: ff_filter::CompositeOp::In,
         effects: vec![],
@@ -929,7 +922,6 @@ fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
         scale_y: AnimatedValue::Static(1.0),
         rotation: AnimatedValue::Static(0.0),
         opacity: AnimatedValue::Static(0.5),
-        in_transition: None,
         blend_mode: ff_filter::BlendMode::Normal,
         composite_op: ff_filter::CompositeOp::Under,
         effects: vec![],
@@ -978,7 +970,6 @@ fn trim_and_offset_effects_should_build_and_produce_frame() {
         scale_y: AnimatedValue::Static(1.0),
         rotation: AnimatedValue::Static(0.0),
         opacity: AnimatedValue::Static(1.0),
-        in_transition: None,
         blend_mode: ff_filter::BlendMode::Normal,
         composite_op: ff_filter::CompositeOp::Over,
         effects: vec![
@@ -1054,5 +1045,66 @@ fn audio_trim_and_offset_effects_should_build_mix_and_pull() {
         Ok(Some(_frame)) => {} // produced audio through the effect chain — pass
         Ok(None) => println!("Skipping: mixer produced no audio frame"),
         Err(e) => println!("Skipping: pull_audio failed: {e}"),
+    }
+}
+
+// ── #1332: inter-clip transition expressed as a FilterStep::XFade ───────────────
+
+/// After #1332 the engine emits a cross-fade as a primitive `FilterStep::XFade`
+/// on the transitioning layer (no `ClipTransition`/`in_transition`). Verify the
+/// compositor defers the predecessor's overlay and wires the xfade's second input
+/// from it. Two `lavfi` layers; probe-gated (RK-002): build/pull failure → skip.
+#[test]
+fn xfade_effect_layer_should_build_and_produce_frame() {
+    let layer_a = VideoLayer {
+        source: "color=c=red:s=64x64:r=25:d=2".into(),
+        proxy: None,
+        input_format: Some("lavfi".to_string()),
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(1.0),
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::Over,
+        effects: vec![],
+    };
+    let layer_b = VideoLayer {
+        source: "color=c=blue:s=64x64:r=25:d=2".into(),
+        proxy: None,
+        input_format: Some("lavfi".to_string()),
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(1.0),
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::Over,
+        effects: vec![FilterStep::XFade {
+            transition: XfadeTransition::Dissolve,
+            duration: 0.5,
+            offset: 1.0,
+        }],
+    };
+    let mut graph = match MultiTrackComposer::new(64, 64)
+        .add_layer(layer_a)
+        .add_layer(layer_b)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+    match graph.pull_video() {
+        Ok(Some(frame)) => {
+            assert_eq!(frame.width(), 64, "xfade must not change frame width");
+            assert_eq!(frame.height(), 64, "xfade must not change frame height");
+        }
+        Ok(None) => println!("Skipping: xfade graph produced no frame"),
+        Err(e) => println!("Skipping: pull_video failed: {e}"),
     }
 }

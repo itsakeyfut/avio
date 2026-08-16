@@ -286,23 +286,6 @@ impl Timeline {
                 MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
             for (track_idx, track) in video_tracks.iter().enumerate() {
                 for (clip_idx, clip) in track.iter().enumerate() {
-                    // Wire xfade from the preceding clip on this track. Skip the
-                    // first clip of a track: a transition needs a same-track
-                    // predecessor to cross-fade from, and the compositor pairs an
-                    // in_transition layer with its Vec-predecessor, so the first
-                    // clip must not carry one.
-                    if let Some(kind) = clip.transition {
-                        if clip_idx == 0 {
-                            log::warn!(
-                                "transition on a track's first clip ignored (no preceding clip to cross-fade from) track={track_idx}"
-                            );
-                        } else {
-                            let dur_secs = clip.transition_duration.as_secs_f64();
-                            let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
-                            composer = composer.join_with_dissolve(prev_end, dur_secs, kind);
-                        }
-                    }
-
                     // Timeline trim + placement are emitted as leading filter
                     // steps so they precede timing-sensitive effects (Speed),
                     // mirroring the old composer node order
@@ -327,6 +310,26 @@ impl Timeline {
                     // effects, shared with `Clip::apply_video_effects` so a
                     // single-frame preview matches this rendered layer.
                     layer_effects.extend(clip.video_effect_chain());
+
+                    // Cross-fade from the preceding clip on this track, emitted as a
+                    // trailing FilterStep::XFade (after the layer's other effects,
+                    // matching the compositor's post-effects wiring). Skipped for a
+                    // track's first clip — nothing to cross-fade from.
+                    if let Some(kind) = clip.transition {
+                        if clip_idx == 0 {
+                            log::warn!(
+                                "transition on a track's first clip ignored (no preceding clip to cross-fade from) track={track_idx}"
+                            );
+                        } else {
+                            let dur_secs = clip.transition_duration.as_secs_f64();
+                            let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
+                            layer_effects.push(FilterStep::XFade {
+                                transition: kind,
+                                duration: dur_secs,
+                                offset: (prev_end - dur_secs).max(0.0),
+                            });
+                        }
+                    }
 
                     // Per-clip opacity: an explicit keyframe track wins, then a static
                     // non-neutral opacity, then any track-level animation.
@@ -391,7 +394,6 @@ impl Timeline {
                         opacity: clip_opacity,
                         blend_mode: clip.blend_mode,
                         composite_op: clip.composite_op,
-                        in_transition: None, // set by join_with_dissolve via add_layer
                         effects: layer_effects,
                     });
 
@@ -428,7 +430,6 @@ impl Timeline {
                     opacity: AnimatedValue::Static(1.0),
                     blend_mode: BlendMode::Normal,
                     composite_op: CompositeOp::Over,
-                    in_transition: None,
                     effects: vec![],
                 });
             }
