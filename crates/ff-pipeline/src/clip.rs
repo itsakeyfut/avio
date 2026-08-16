@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ff_filter::{
-    AnimationTrack, BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer, XfadeTransition,
+    AnimationTrack, BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer,
+    RealtimeLayerDescriptor, XfadeTransition,
 };
 use ff_format::{PixelFormat, VideoFrame};
 
@@ -360,10 +361,24 @@ impl Clip {
         height: u32,
         pixel_format: PixelFormat,
     ) -> RealtimeLayer {
-        RealtimeLayer {
+        RealtimeLayer::with_dimensions(
+            self.realtime_layer_descriptor(),
             width,
             height,
             pixel_format,
+        )
+    }
+
+    /// Builds the dimension-free [`RealtimeLayerDescriptor`] for this clip — the
+    /// [`realtime_layer`](Self::realtime_layer) fields except `width`/`height`/
+    /// `pixel_format`, which are known only once a frame has been decoded.
+    ///
+    /// An engine derives this from the model ahead of decode; the real-time
+    /// preview runner completes it per frame via
+    /// [`RealtimeLayer::with_dimensions`].
+    #[must_use]
+    pub fn realtime_layer_descriptor(&self) -> RealtimeLayerDescriptor {
+        RealtimeLayerDescriptor {
             effects: self.video_effect_chain(),
             opacity: self.opacity,
             opacity_track: self.opacity_track.clone(),

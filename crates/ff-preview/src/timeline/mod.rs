@@ -23,6 +23,8 @@
 mod audio_resampling;
 mod runner;
 mod runner_layout;
+mod scene;
+mod scene_adapter;
 mod state;
 mod timeline_inner;
 
@@ -31,7 +33,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use ff_pipeline::Clip;
 use ff_pipeline::timeline::Timeline;
 
 use crate::audio::{AudioMixer, AudioTrackHandle};
@@ -43,6 +44,7 @@ use crate::playback::master_clock::MasterClock;
 use crate::playback::player_handle::PlayerHandle;
 
 pub use runner::TimelineRunner;
+pub use scene::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
 
 use audio_resampling::spawn_audio_track_thread;
 use state::{AudioFadeConfig, AudioOnlyTrack, ClipState, OverlayLayer};
@@ -98,8 +100,26 @@ impl TimelinePlayer {
     /// - `timeline` has no video tracks or the primary track is empty,
     /// - a clip source file cannot be found or opened,
     /// - a clip cannot be probed for duration.
-    #[allow(clippy::too_many_lines)]
     pub fn open(timeline: &Timeline) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
+        Self::open_scene(&Scene::from_timeline(timeline))
+    }
+
+    /// Open a [`Scene`] for real-time preview playback.
+    ///
+    /// The `Scene` carries the primitivised editing model; this resolves it
+    /// against the media (probing each placement's source for duration, audio
+    /// availability, and frame size), opens a [`DecodeBuffer`] per V1 clip and
+    /// seeks it to `in_point`, and builds the audio mixer and tracks. This is the
+    /// media-resolution step that [`open`](Self::open) used to inline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] when:
+    /// - the scene has no video tracks or the base track is empty,
+    /// - a placement source file cannot be found or opened,
+    /// - a placement cannot be probed for duration.
+    #[allow(clippy::too_many_lines)]
+    pub fn open_scene(scene: &Scene) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
         struct ProbeResult {
             source: PathBuf,
             in_pt: Duration,
@@ -114,45 +134,39 @@ impl TimelinePlayer {
             video_h: u32,
             speed: f64,
             opacity: f32,
-            clip: Clip,
         }
 
-        let tracks = timeline.video_tracks();
-        if tracks.is_empty() || tracks[0].is_empty() {
+        let v_tracks = &scene.video_tracks;
+        if v_tracks.is_empty() || v_tracks[0].placements.is_empty() {
             return Err(PreviewError::Ffmpeg {
                 code: 0,
                 message: "timeline has no video clips in the primary track".into(),
             });
         }
 
-        let fps = timeline.frame_rate().max(1.0);
-        let clip_list = &tracks[0];
+        let fps = scene.fps.max(1.0);
+        let clip_list = &v_tracks[0].placements;
 
         // ── Phase 1: probe all clips ──────────────────────────────────────────
 
         let mut probes: Vec<ProbeResult> = Vec::with_capacity(clip_list.len());
         let mut has_any_audio = false;
 
-        for clip in clip_list {
-            let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
-            let info = ff_probe::open(&clip.source)?;
-            let speed = clip.speed.max(0.01);
+        for p in clip_list {
+            let in_pt = p.in_point;
+            let info = ff_probe::open(&p.source)?;
+            let speed = p.speed;
 
-            let unscaled_dur = match (clip.in_point, clip.out_point) {
-                (Some(ip), Some(op)) => op.saturating_sub(ip),
-                (None, Some(op)) => op,
-                _ => info.duration().saturating_sub(in_pt),
-            };
+            // `in_point` is pre-resolved (defaulted to zero) in the Scene, so this
+            // equals the old `match (in_point, out_point)` for all four cases.
+            let unscaled_dur = p.out_point.map_or_else(
+                || info.duration().saturating_sub(in_pt),
+                |op| op.saturating_sub(in_pt),
+            );
             let clip_dur = if (speed - 1.0).abs() < 1e-9 {
                 unscaled_dur
             } else {
                 unscaled_dur.div_f64(speed)
-            };
-
-            let transition_dur = if clip.transition.is_some() {
-                clip.transition_duration
-            } else {
-                Duration::ZERO
             };
 
             let has_audio = info.has_audio();
@@ -163,18 +177,17 @@ impl TimelinePlayer {
                 .map_or((0, 0), |v| (v.width(), v.height()));
 
             probes.push(ProbeResult {
-                source: clip.source.clone(),
+                source: p.source.clone(),
                 in_pt,
                 clip_dur,
-                timeline_offset: clip.timeline_offset,
-                out_point: clip.out_point,
-                transition_dur,
+                timeline_offset: p.timeline_offset,
+                out_point: p.out_point,
+                transition_dur: p.transition_dur,
                 has_audio,
                 video_w,
                 video_h,
                 speed,
-                opacity: clip.opacity.clamp(0.0, 1.0),
-                clip: clip.clone(),
+                opacity: p.opacity,
             });
         }
 
@@ -223,7 +236,8 @@ impl TimelinePlayer {
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
                 opacity: p.opacity,
-                clip: p.clip.clone(),
+                layer_desc: clip_list[i].layer.clone(),
+                volume_track: clip_list[i].volume_track.clone(),
             });
         }
 
@@ -234,22 +248,21 @@ impl TimelinePlayer {
         let mut audio_only_tracks: Vec<AudioOnlyTrack> = Vec::new();
 
         let mut overlay_layers: Vec<OverlayLayer> = Vec::new();
-        for v_track in timeline.video_tracks().iter().skip(1) {
-            if v_track.is_empty() {
+        for layer in v_tracks.iter().skip(1) {
+            if layer.placements.is_empty() {
                 continue;
             }
             let mut layer_clips: Vec<ClipState> = Vec::new();
-            for clip in v_track {
-                let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
-                let info = ff_probe::open(&clip.source)?;
-                let clip_dur = match (clip.in_point, clip.out_point) {
-                    (Some(ip), Some(op)) => op.saturating_sub(ip),
-                    (None, Some(op)) => op,
-                    _ => info.duration().saturating_sub(in_pt),
-                };
-                let timeline_start = clip.timeline_offset;
+            for p in &layer.placements {
+                let in_pt = p.in_point;
+                let info = ff_probe::open(&p.source)?;
+                let clip_dur = p.out_point.map_or_else(
+                    || info.duration().saturating_sub(in_pt),
+                    |op| op.saturating_sub(in_pt),
+                );
+                let timeline_start = p.timeline_offset;
                 let timeline_end = timeline_start + clip_dur;
-                let mut decode_buf = DecodeBuffer::open(&clip.source).build()?;
+                let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
                 if in_pt > Duration::ZERO {
                     decode_buf.seek(in_pt)?;
                 }
@@ -261,31 +274,32 @@ impl TimelinePlayer {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .add_track();
                     audio_only_tracks.push(AudioOnlyTrack {
-                        source: clip.source.clone(),
+                        source: p.source.clone(),
                         timeline_start,
                         timeline_end,
                         in_point: in_pt,
-                        fade_in: clip.fade_in,
-                        fade_out: clip.fade_out,
+                        fade_in: p.fade_in,
+                        fade_out: p.fade_out,
                         clip_dur,
                         handle,
-                        volume_track: clip.volume_track.clone(),
+                        volume_track: p.volume_track.clone(),
                         cancel: None,
                         thread: None,
                     });
                 }
                 layer_clips.push(ClipState {
-                    source: clip.source.clone(),
+                    source: p.source.clone(),
                     decode_buf,
                     timeline_start,
                     timeline_end,
                     in_point: in_pt,
-                    out_point: clip.out_point,
+                    out_point: p.out_point,
                     transition_dur: Duration::ZERO,
                     audio_track: None,
-                    speed: clip.speed.max(0.01),
-                    opacity: clip.opacity.clamp(0.0, 1.0),
-                    clip: clip.clone(),
+                    speed: p.speed,
+                    opacity: p.opacity,
+                    layer_desc: p.layer.clone(),
+                    volume_track: p.volume_track.clone(),
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -300,19 +314,18 @@ impl TimelinePlayer {
 
         // ── Phase 5: build audio-only tracks (A1, A2, …) ─────────────────────
 
-        for a_track in timeline.audio_tracks() {
-            for clip in a_track {
-                let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
-                let info = ff_probe::open(&clip.source)?;
+        for track in &scene.audio_tracks {
+            for p in &track.placements {
+                let in_pt = p.in_point;
+                let info = ff_probe::open(&p.source)?;
                 if !info.has_audio() {
                     continue;
                 }
-                let clip_dur = match (clip.in_point, clip.out_point) {
-                    (Some(ip), Some(op)) => op.saturating_sub(ip),
-                    (None, Some(op)) => op,
-                    _ => info.duration().saturating_sub(in_pt),
-                };
-                let timeline_start = clip.timeline_offset;
+                let clip_dur = p.out_point.map_or_else(
+                    || info.duration().saturating_sub(in_pt),
+                    |op| op.saturating_sub(in_pt),
+                );
+                let timeline_start = p.timeline_offset;
                 let timeline_end = timeline_start + clip_dur;
                 // Lazily create the mixer if no V1 clip had audio.
                 let mixer_ref =
@@ -324,21 +337,21 @@ impl TimelinePlayer {
                 // Apply per-clip gain (dB → linear). A volume_track (animated) takes
                 // precedence and is driven per-tick by the runner, so only apply the
                 // static gain when no track is present.
-                if clip.volume_track.is_none() && clip.volume_db != 0.0 {
+                if p.volume_track.is_none() && p.volume_db != 0.0 {
                     #[allow(clippy::cast_possible_truncation)]
-                    let linear = 10.0_f64.powf(clip.volume_db / 20.0) as f32;
+                    let linear = 10.0_f64.powf(p.volume_db / 20.0) as f32;
                     handle.set_volume(linear);
                 }
                 audio_only_tracks.push(AudioOnlyTrack {
-                    source: clip.source.clone(),
+                    source: p.source.clone(),
                     timeline_start,
                     timeline_end,
                     in_point: in_pt,
-                    fade_in: clip.fade_in,
-                    fade_out: clip.fade_out,
+                    fade_in: p.fade_in,
+                    fade_out: p.fade_out,
                     clip_dur,
                     handle,
-                    volume_track: clip.volume_track.clone(),
+                    volume_track: p.volume_track.clone(),
                     cancel: None,
                     thread: None,
                 });
@@ -430,7 +443,7 @@ impl TimelinePlayer {
             active_audio_thread: initial_audio_thread,
             composer: None,
             composer_key: Vec::new(),
-            canvas: timeline.explicit_canvas(),
+            canvas: scene.canvas,
         };
 
         let handle = PlayerHandle::for_timeline(

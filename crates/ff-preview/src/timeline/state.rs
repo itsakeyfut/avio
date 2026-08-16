@@ -10,9 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use ff_filter::AnimationTrack;
+use ff_filter::{AnimationTrack, RealtimeLayerDescriptor};
 use ff_format::VideoFrame;
-use ff_pipeline::Clip;
 
 use crate::audio::AudioTrackHandle;
 use crate::playback::SwsRgbaConverter;
@@ -44,11 +43,15 @@ pub(super) struct ClipState {
     pub(super) speed: f64,
     /// Per-clip opacity for overlay compositing (`1.0` = fully opaque).
     /// V1 base opacity is pre-multiplied host-side; overlay opacity is applied by
-    /// the composer via [`Clip::realtime_layer`].
+    /// the composer via the layer descriptor.
     pub(super) opacity: f32,
-    /// The source clip — provides the per-clip effect chain and blend mode for
-    /// the real-time compositor via [`Clip::realtime_layer`].
-    pub(super) clip: Clip,
+    /// Dimension-free compositing description (per-clip effect chain, blend mode,
+    /// opacity/position tracks). The runner realises it into a `RealtimeLayer`
+    /// each frame via [`RealtimeLayer::with_dimensions`](ff_filter::RealtimeLayer::with_dimensions).
+    pub(super) layer_desc: RealtimeLayerDescriptor,
+    /// Per-clip volume automation (dB, timeline-global). When `Some`, the runner
+    /// updates the primary-track mixer gain each tick.
+    pub(super) volume_track: Option<AnimationTrack<f64>>,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────

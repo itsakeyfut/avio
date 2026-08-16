@@ -1,7 +1,7 @@
 //! Shared, cloneable control handle for a running [`PlayerRunner`](super::player_runner::PlayerRunner).
 
 #[cfg(feature = "timeline")]
-use ff_pipeline::timeline::Timeline;
+use crate::timeline::Scene;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -88,7 +88,7 @@ impl PlayerHandle {
         let _ = self.cmd_tx.try_send(PlayerCommand::SetAvOffset(ms));
     }
 
-    /// Replace the running timeline's clip layout in place.
+    /// Replace the running timeline's clip layout in place from a new [`Scene`].
     ///
     /// Sends a [`PlayerCommand::UpdateLayout`] to `TimelineRunner`. The runner
     /// updates `timeline_start` / `timeline_end` / `in_point` / `out_point` for
@@ -102,10 +102,10 @@ impl PlayerHandle {
     /// No-op when called on a [`PlayerRunner`](super::player_runner::PlayerRunner)-backed
     /// handle (single-track player). Only `TimelineRunner` handles this command.
     #[cfg(feature = "timeline")]
-    pub fn update_timeline(&self, timeline: Timeline) {
+    pub fn update_scene(&self, scene: Scene) {
         let _ = self
             .cmd_tx
-            .try_send(PlayerCommand::UpdateLayout(Box::new(timeline)));
+            .try_send(PlayerCommand::UpdateLayout(Box::new(scene)));
     }
 
     /// PTS of the most recently presented frame.

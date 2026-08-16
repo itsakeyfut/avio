@@ -101,8 +101,8 @@ to `avio`. This avoids exposing `ff-preview` internals (`MasterClock`, `SwsRgbaC
 **Scene types (defined in `ff-preview`, primitive; `avio` constructs them from `Timeline`/`Clip`):**
 
 ```
-Scene { fps, canvas: Option<(u32,u32)>, video_layers: Vec<SceneVideoLayer>, audio_tracks: Vec<SceneAudioTrack> }
-SceneVideoLayer { placements: Vec<ScenePlacement> }        // layer 0 = V1 base, 1.. = overlays
+Scene { fps, canvas: Option<(u32,u32)>, video_tracks: Vec<SceneVideoTrack>, audio_tracks: Vec<SceneAudioTrack> }
+SceneVideoTrack { placements: Vec<ScenePlacement> }        // track 0 = V1 base, 1.. = overlays (index = composite order)
 ScenePlacement  { source: PathBuf, timeline_offset: Duration, in_point: Duration,
                   out_point: Option<Duration>, speed: f64, transition_dur: Duration (V1 only),
                   opacity: f32, layer: RealtimeLayerDescriptor,

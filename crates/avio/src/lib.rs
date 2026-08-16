@@ -342,7 +342,10 @@ pub use ff_preview::HardwareAccel;
 // `ff-pipeline`.  The `pipeline` feature in avio enables `ff-preview?/timeline`
 // (see Cargo.toml), which gates these types inside `ff-preview`.
 #[cfg(all(feature = "preview", feature = "pipeline"))]
-pub use ff_preview::{TimelinePlayer, TimelineRunner};
+pub use ff_preview::{
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack, TimelinePlayer,
+    TimelineRunner,
+};
 
 #[cfg(all(feature = "preview", feature = "tokio"))]
 pub use ff_preview::AsyncPreviewPlayer;
