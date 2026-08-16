@@ -140,9 +140,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             source: src1_path.clone(),
             volume: AnimatedValue::Static(0.0),
             pan: AnimatedValue::Static(0.0),
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             effects: vec![],
             sample_rate: SAMPLE_RATE,
             channel_layout: ChannelLayout::Stereo,
@@ -151,9 +148,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             source: src2_path.clone(),
             volume: AnimatedValue::Static(-3.0),
             pan: AnimatedValue::Static(0.0),
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             effects: vec![],
             sample_rate: SAMPLE_RATE,
             channel_layout: ChannelLayout::Stereo,
@@ -747,9 +741,6 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
             source: src_path.clone(),
             volume: AnimatedValue::Track(vol_track),
             pan: AnimatedValue::Static(0.0),
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             effects: vec![],
             sample_rate: SAMPLE_RATE,
             channel_layout: ChannelLayout::Stereo,
@@ -1017,5 +1008,51 @@ fn trim_and_offset_effects_should_build_and_produce_frame() {
         }
         Ok(None) => println!("Skipping: trim/offset graph produced no frame"),
         Err(e) => println!("Skipping: pull_video failed: {e}"),
+    }
+}
+
+// ── #1331: audio timeline trim/placement expressed as leading FilterSteps ───────
+
+/// After #1331 the engine derive emits a clip's audio source trim + timeline
+/// placement as leading `FilterStep`s (`ATrim` + `AResetPts` + `AudioDelay`)
+/// instead of `AudioTrack` fields. Verify the mixer builds that effect chain and
+/// pulls audio. Probe-gated (RK-002): build/pull failure → skip.
+#[test]
+fn audio_trim_and_offset_effects_should_build_mix_and_pull() {
+    let src = test_output_path("audio_trim_offset_src.mp4");
+    let _g = FileGuard::new(src.clone());
+    if make_source_file(&src, 64, 64, 30.0, 30, 128, 128, 128).is_none() {
+        return;
+    }
+
+    let mut mixer = match MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+        .add_track(AudioTrack {
+            source: src.clone(),
+            volume: AnimatedValue::Static(0.0),
+            pan: AnimatedValue::Static(0.0),
+            effects: vec![
+                FilterStep::ATrim {
+                    start: Some(0.2),
+                    end: Some(0.8),
+                },
+                FilterStep::AResetPts,
+                FilterStep::AudioDelay { ms: 100.0 },
+            ],
+            sample_rate: 48_000,
+            channel_layout: ChannelLayout::Stereo,
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackAudioMixer::build failed: {e}");
+            return;
+        }
+    };
+
+    match mixer.pull_audio() {
+        Ok(Some(_frame)) => {} // produced audio through the effect chain — pass
+        Ok(None) => println!("Skipping: mixer produced no audio frame"),
+        Err(e) => println!("Skipping: pull_audio failed: {e}"),
     }
 }

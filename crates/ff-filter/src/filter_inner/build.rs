@@ -3064,6 +3064,8 @@ impl FilterGraphInner {
                     | FilterStep::ConcatAudio { .. }
                     | FilterStep::NoiseReduce { .. }
                     | FilterStep::NoiseReduceProfile { .. }
+                    | FilterStep::ATrim { .. }
+                    | FilterStep::AResetPts
             ) {
                 log::debug!("audio graph: skipping non-audio step {step:?}");
                 continue;

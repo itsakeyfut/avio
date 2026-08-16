@@ -455,6 +455,24 @@ impl Timeline {
 
                     let mut effects: Vec<FilterStep> = Vec::new();
 
+                    // Timeline trim + placement, emitted as leading audio filter
+                    // steps so they precede the speed/fade/effect steps, mirroring
+                    // the old mixer node order (atrim → asetpts=PTS-STARTPTS → adelay).
+                    if clip.in_point.is_some() || clip.out_point.is_some() {
+                        effects.push(FilterStep::ATrim {
+                            start: clip.in_point.map(|d| d.as_secs_f64()),
+                            end: clip.out_point.map(|d| d.as_secs_f64()),
+                        });
+                        effects.push(FilterStep::AResetPts);
+                    }
+                    if clip.timeline_offset > Duration::ZERO {
+                        // `as_millis()` matches the old inline `adelay` (integer ms);
+                        // offset magnitudes are far below f64's exact-integer range.
+                        #[allow(clippy::cast_precision_loss)]
+                        let ms = clip.timeline_offset.as_millis() as f64;
+                        effects.push(FilterStep::AudioDelay { ms });
+                    }
+
                     if (clip.speed - 1.0).abs() > 1e-9 {
                         effects.push(FilterStep::Speed { factor: clip.speed });
                     }
@@ -512,9 +530,6 @@ impl Timeline {
                         source: clip.source.clone(),
                         volume,
                         pan: aa(track_idx, "pan", 0.0),
-                        time_offset: clip.timeline_offset,
-                        in_point: clip.in_point,
-                        out_point: clip.out_point,
                         effects,
                         sample_rate: 48_000,
                         channel_layout: ff_format::ChannelLayout::Stereo,
