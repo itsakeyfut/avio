@@ -284,10 +284,10 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 #[cfg(feature = "filter")]
 pub use ff_filter::{
     AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
-    BlendMode, ClipJoiner, ClipTransition, CompositeOp, DrawTextOptions, Easing, EqBand,
-    FilterError, FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe,
-    LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer,
-    NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm,
+    BlendMode, ClipJoiner, CompositeOp, DrawTextOptions, Easing, EqBand, FilterError, FilterGraph,
+    FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LensProfile, Lerp,
+    LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType,
+    ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer, Rgb, ScaleAlgorithm,
     StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator, VideoLayer, XfadeTransition,
     YadifMode,
 };
@@ -555,16 +555,6 @@ mod tests {
     fn filter_error_should_be_accessible() {
         let _: FilterError = FilterError::BuildFailed;
         let _: FilterError = FilterError::ProcessFailed;
-    }
-
-    #[cfg(feature = "filter")]
-    #[test]
-    fn filter_clip_transition_should_be_accessible() {
-        let _: ClipTransition = ClipTransition {
-            kind: XfadeTransition::Dissolve,
-            offset_secs: 0.0,
-            duration_secs: 1.0,
-        };
     }
 
     // ── pipeline feature ──────────────────────────────────────────────────────
