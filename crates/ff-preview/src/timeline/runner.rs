@@ -178,11 +178,12 @@ impl TimelineRunner {
         let mut key: Vec<(usize, usize, u32, u32)> = vec![(0, base_id, base_w, base_h)];
         for &(li, ow, oh) in overlays {
             let oc = &self.overlay_layers[li];
-            specs.push(
-                oc.clips[oc.active]
-                    .clip
-                    .realtime_layer(ow, oh, PixelFormat::Rgba),
-            );
+            specs.push(RealtimeLayer::with_dimensions(
+                oc.clips[oc.active].layer_desc.clone(),
+                ow,
+                oh,
+                PixelFormat::Rgba,
+            ));
             key.push((li + 1, oc.active, ow, oh));
         }
         if self.composer.is_none() || self.composer_key != key {
@@ -314,8 +315,8 @@ impl TimelineRunner {
                         }
                     }
                     PlayerCommand::SetAvOffset(_) => {} // audio timing is system-clock driven
-                    PlayerCommand::UpdateLayout(timeline) => {
-                        if let Err(e) = self.update_layout_in_place(&timeline, self.resume_pts) {
+                    PlayerCommand::UpdateLayout(scene) => {
+                        if let Err(e) = self.update_layout_in_place(&scene, self.resume_pts) {
                             log::warn!("timeline layout update ignored: {e}");
                         }
                     }
@@ -601,7 +602,7 @@ impl TimelineRunner {
 
                     // Primary-track volume automation for the active clip.
                     if let Some(handle) = &self.clips[active].audio_track
-                        && let Some(track) = &self.clips[active].clip.volume_track
+                        && let Some(track) = &self.clips[active].volume_track
                     {
                         #[allow(clippy::cast_possible_truncation)]
                         let linear = 10f32.powf(track.value_at(timeline_pts) as f32 / 20.0);
@@ -834,7 +835,7 @@ impl TimelineRunner {
                         // the composer ignores base-layer opacity). An opacity track is
                         // evaluated at the timeline PTS (tracks are timeline-global), so
                         // base-layer opacity animates too.
-                        let v1_op = match self.clips[active].clip.opacity_track.as_ref() {
+                        let v1_op = match self.clips[active].layer_desc.opacity_track.as_ref() {
                             // Value is clamped to [0.0, 1.0], so the f32 narrowing is safe.
                             #[allow(clippy::cast_possible_truncation)]
                             Some(track) => track.value_at(timeline_pts).clamp(0.0, 1.0) as f32,
@@ -873,10 +874,12 @@ impl TimelineRunner {
                         // Update overlays (held-frame, advanced by PTS) and composite
                         // the V1 base with them through the shared compositor.
                         let active_overlays = self.sync_overlays(timeline_pts);
-                        let base_layer =
-                            self.clips[active]
-                                .clip
-                                .realtime_layer(w, h, PixelFormat::Rgba);
+                        let base_layer = RealtimeLayer::with_dimensions(
+                            self.clips[active].layer_desc.clone(),
+                            w,
+                            h,
+                            PixelFormat::Rgba,
+                        );
                         let composited = match VideoFrame::from_rgba(w, h, self.rgba_a.clone()) {
                             Ok(bf) => self.composite_frame(
                                 base_layer,

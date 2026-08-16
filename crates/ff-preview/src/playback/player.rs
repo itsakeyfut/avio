@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ff_decode::HardwareAccel;
 #[cfg(feature = "timeline")]
-use ff_pipeline::timeline::Timeline;
+use crate::timeline::Scene;
+use ff_decode::HardwareAccel;
 
 use super::decode_buffer::DecodeBuffer;
 use super::master_clock::MasterClock;
@@ -57,7 +57,7 @@ pub enum PlayerCommand {
     /// in place and seeks to the last known media PTS so the next frame is
     /// spatially correct after the layout change.
     #[cfg(feature = "timeline")]
-    UpdateLayout(Box<Timeline>),
+    UpdateLayout(Box<Scene>),
 }
 
 // ── PreviewPlayer (thin builder) ──────────────────────────────────────────────

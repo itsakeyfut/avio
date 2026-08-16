@@ -54,4 +54,7 @@ pub use playback::AsyncPreviewPlayer;
 pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};
 
 #[cfg(feature = "timeline")]
-pub use timeline::{TimelinePlayer, TimelineRunner};
+pub use timeline::{
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack, TimelinePlayer,
+    TimelineRunner,
+};
