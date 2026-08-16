@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
 use ff_filter::{
-    AnimatedValue, AnimationTrack, AudioTrack, FilterStep, MultiTrackAudioMixer,
-    MultiTrackComposer, ProxySource, VideoLayer,
+    AnimatedValue, AnimationTrack, MultiTrackAudioMixer, MultiTrackComposer, ProxySource,
+    VideoLayer,
 };
 use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
+use crate::derive;
 use crate::error::TimelineError;
 use ff_pipeline::EncoderConfig;
 use ff_pipeline::Progress;
@@ -151,7 +152,7 @@ impl Timeline {
     ///
     /// Animation tracks registered via [`TimelineBuilder::video_animation`] and
     /// [`TimelineBuilder::audio_animation`] are forwarded to the corresponding
-    /// [`VideoLayer`] / [`AudioTrack`] fields before the filter graphs are built.
+    /// [`VideoLayer`] / [`AudioTrack`](ff_filter::AudioTrack) fields before the filter graphs are built.
     /// Unrecognised animation keys are ignored and logged as `warn!`.
     ///
     /// `on_progress` receives a [`Progress`] reference after every video frame.
@@ -254,24 +255,6 @@ impl Timeline {
             }
         }
 
-        // Helper: look up a video-layer animated value by track index + property.
-        let va = |track_idx: usize, prop: &str, default: f64| -> AnimatedValue<f64> {
-            let key = format!("video_{track_idx}_{prop}");
-            video_animations
-                .get(&key)
-                .cloned()
-                .map_or(AnimatedValue::Static(default), AnimatedValue::Track)
-        };
-
-        // Helper: look up an audio-track animated value by track index + property.
-        let aa = |track_idx: usize, prop: &str, default: f64| -> AnimatedValue<f64> {
-            let key = format!("audio_{track_idx}_{prop}");
-            audio_animations
-                .get(&key)
-                .cloned()
-                .map_or(AnimatedValue::Static(default), AnimatedValue::Track)
-        };
-
         // 3. Build video composition graph.
         let mut video_graph = None;
         if !video_tracks.is_empty() {
@@ -286,80 +269,8 @@ impl Timeline {
                 MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
             for (track_idx, track) in video_tracks.iter().enumerate() {
                 for (clip_idx, clip) in track.iter().enumerate() {
-                    // Timeline trim + placement are emitted as leading filter
-                    // steps so they precede timing-sensitive effects (Speed),
-                    // mirroring the old composer node order
-                    // (trim → setpts=PTS-STARTPTS → setpts=PTS+offset).
-                    let mut layer_effects: Vec<FilterStep> = Vec::new();
-                    if clip.in_point.is_some() || clip.out_point.is_some() {
-                        layer_effects.push(FilterStep::Trim {
-                            start: clip.in_point.map(|d| d.as_secs_f64()),
-                            end: clip.out_point.map(|d| d.as_secs_f64()),
-                        });
-                        layer_effects.push(FilterStep::ResetPts);
-                    }
-                    if clip.timeline_offset > Duration::ZERO {
-                        layer_effects.push(FilterStep::OffsetPts {
-                            seconds: clip.timeline_offset.as_secs_f64(),
-                        });
-                    }
-                    if (clip.speed - 1.0).abs() > 1e-9 {
-                        layer_effects.push(FilterStep::Speed { factor: clip.speed });
-                    }
-                    // Colour-correction (eq) + caller-attached per-clip video
-                    // effects, shared with `Clip::apply_video_effects` so a
-                    // single-frame preview matches this rendered layer.
-                    layer_effects.extend(clip.video_effect_chain());
-
-                    // Cross-fade from the preceding clip on this track, emitted as a
-                    // trailing FilterStep::XFade (after the layer's other effects,
-                    // matching the compositor's post-effects wiring). Skipped for a
-                    // track's first clip — nothing to cross-fade from.
-                    if let Some(kind) = clip.transition {
-                        if clip_idx == 0 {
-                            log::warn!(
-                                "transition on a track's first clip ignored (no preceding clip to cross-fade from) track={track_idx}"
-                            );
-                        } else {
-                            let dur_secs = clip.transition_duration.as_secs_f64();
-                            let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
-                            layer_effects.push(FilterStep::XFade {
-                                transition: kind,
-                                duration: dur_secs,
-                                offset: (prev_end - dur_secs).max(0.0),
-                            });
-                        }
-                    }
-
-                    // Per-clip opacity: an explicit keyframe track wins, then a static
-                    // non-neutral opacity, then any track-level animation.
-                    #[allow(clippy::float_cmp)]
-                    let clip_opacity = if let Some(track) = &clip.opacity_track {
-                        AnimatedValue::Track(track.clone())
-                    } else if clip.opacity != 1.0 {
-                        AnimatedValue::Static(f64::from(clip.opacity))
-                    } else {
-                        va(track_idx, "opacity", 1.0)
-                    };
-
-                    // Per-clip position: an explicit keyframe track wins, then a static
-                    // non-zero position, then any track-level animation.
-                    #[allow(clippy::float_cmp)]
-                    let clip_x = if let Some(track) = &clip.x_track {
-                        AnimatedValue::Track(track.clone())
-                    } else if clip.x != 0.0 {
-                        AnimatedValue::Static(clip.x)
-                    } else {
-                        va(track_idx, "x", 0.0)
-                    };
-                    #[allow(clippy::float_cmp)]
-                    let clip_y = if let Some(track) = &clip.y_track {
-                        AnimatedValue::Track(track.clone())
-                    } else if clip.y != 0.0 {
-                        AnimatedValue::Static(clip.y)
-                    } else {
-                        va(track_idx, "y", 0.0)
-                    };
+                    let prev_end =
+                        (clip_idx > 0).then(|| *prev_end_by_track.get(&track_idx).unwrap_or(&0.0));
 
                     // When a proxy is set, probe the original source resolution so
                     // the decoded proxy frames can be scaled back up to full size.
@@ -382,20 +293,14 @@ impl Timeline {
                             }
                         });
 
-                    composer = composer.add_layer(VideoLayer {
-                        source: clip.source.clone(),
+                    // Per-clip editorial interpretation → layer lives in `derive`.
+                    composer = composer.add_layer(derive::video_layer(
+                        clip,
+                        track_idx,
+                        &video_animations,
+                        prev_end,
                         proxy,
-                        input_format: None,
-                        x: clip_x,
-                        y: clip_y,
-                        scale_x: va(track_idx, "scale_x", 1.0),
-                        scale_y: va(track_idx, "scale_y", 1.0),
-                        rotation: va(track_idx, "rotation", 0.0),
-                        opacity: clip_opacity,
-                        blend_mode: clip.blend_mode,
-                        composite_op: clip.composite_op,
-                        effects: layer_effects,
-                    });
+                    ));
 
                     // Track how many seconds this clip contributes, so the next
                     // transition on the same track can compute the correct offset.
@@ -443,51 +348,11 @@ impl Timeline {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
             for (track_idx, track) in audio_tracks.iter().enumerate() {
                 for clip in track {
-                    // Per-clip volume_db overrides the track-level animation when non-zero.
-                    // This lets callers set independent gain on each clip without needing
-                    // one audio track per clip.
-                    // A per-clip volume track takes precedence over the static
-                    // volume_db, which in turn overrides the track-level animation.
-                    let volume = match &clip.volume_track {
-                        Some(track) => AnimatedValue::Track(track.clone()),
-                        None if clip.volume_db != 0.0 => AnimatedValue::Static(clip.volume_db),
-                        None => aa(track_idx, "volume", 0.0),
-                    };
-
-                    let mut effects: Vec<FilterStep> = Vec::new();
-
-                    // Timeline trim + placement, emitted as leading audio filter
-                    // steps so they precede the speed/fade/effect steps, mirroring
-                    // the old mixer node order (atrim → asetpts=PTS-STARTPTS → adelay).
-                    if clip.in_point.is_some() || clip.out_point.is_some() {
-                        effects.push(FilterStep::ATrim {
-                            start: clip.in_point.map(|d| d.as_secs_f64()),
-                            end: clip.out_point.map(|d| d.as_secs_f64()),
-                        });
-                        effects.push(FilterStep::AResetPts);
-                    }
-                    if clip.timeline_offset > Duration::ZERO {
-                        // `as_millis()` matches the old inline `adelay` (integer ms);
-                        // offset magnitudes are far below f64's exact-integer range.
-                        #[allow(clippy::cast_precision_loss)]
-                        let ms = clip.timeline_offset.as_millis() as f64;
-                        effects.push(FilterStep::AudioDelay { ms });
-                    }
-
-                    if (clip.speed - 1.0).abs() > 1e-9 {
-                        effects.push(FilterStep::Speed { factor: clip.speed });
-                    }
-
-                    if clip.fade_in > Duration::ZERO {
-                        effects.push(FilterStep::AFadeIn {
-                            start: 0.0,
-                            duration: clip.fade_in.as_secs_f64(),
-                        });
-                    }
-
-                    if clip.fade_out > Duration::ZERO {
-                        // Resolve effective duration to compute the afade start offset.
-                        let eff_dur: Option<Duration> = clip.duration().or_else(|| {
+                    // Resolve the effective clip duration only when a fade-out
+                    // needs it to compute its start offset (probing is I/O; the
+                    // pure per-clip build lives in `derive`).
+                    let fade_out_eff_dur = if clip.fade_out > Duration::ZERO {
+                        clip.duration().or_else(|| {
                             VideoDecoder::open(&clip.source).build().ok().map(|d| {
                                 let total = d.duration();
                                 match clip.in_point {
@@ -495,46 +360,16 @@ impl Timeline {
                                     None => total,
                                 }
                             })
-                        });
-                        match eff_dur {
-                            Some(dur) if dur > clip.fade_out => {
-                                // saturating_sub is safe: the guard ensures dur > fade_out.
-                                let start = dur.saturating_sub(clip.fade_out).as_secs_f64();
-                                effects.push(FilterStep::AFadeOut {
-                                    start,
-                                    duration: clip.fade_out.as_secs_f64(),
-                                });
-                            }
-                            Some(_) => {
-                                log::warn!(
-                                    "fade_out ({:.3}s) >= clip duration — skipping fade_out \
-                                     for {}",
-                                    clip.fade_out.as_secs_f64(),
-                                    clip.source.display(),
-                                );
-                            }
-                            None => {
-                                log::warn!(
-                                    "cannot determine clip duration — skipping fade_out \
-                                     for {}",
-                                    clip.source.display(),
-                                );
-                            }
-                        }
-                    }
-
-                    // Caller-attached per-clip audio effects run last (after the
-                    // built-in speed/fade steps).
-                    effects.extend(clip.audio_effects.iter().cloned());
-
-                    mixer = mixer.add_track(AudioTrack {
-                        source: clip.source.clone(),
-                        volume,
-                        pan: aa(track_idx, "pan", 0.0),
-                        effects,
-                        sample_rate: 48_000,
-                        channel_layout: ff_format::ChannelLayout::Stereo,
-                    });
+                        })
+                    } else {
+                        None
+                    };
+                    mixer = mixer.add_track(derive::audio_track(
+                        clip,
+                        track_idx,
+                        &audio_animations,
+                        fade_out_eff_dur,
+                    ));
                 }
             }
             audio_graph = Some(mixer.build().map_err(TimelineError::Filter)?);

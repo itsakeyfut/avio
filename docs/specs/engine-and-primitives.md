@@ -82,6 +82,30 @@ Confirmed design (user-approved):
 + executor convergence (its own design sub-cycle); **C5** structural-sharing history (memory, if
 needed). C1/C2 are the immediate, high-value, low-risk work; C3–C5 follow.
 
+#### C4 gap-list — where preview (`to_scene`) diverges from export (`render`) today
+
+A field-by-field mapping (during C3) showed the two derivations diverge not just in *encoding* but in
+*features*: the export path (`render` → `MultiTrackComposer`/`VideoLayer`) honours nine things the preview
+path (`to_scene` → `RealtimeComposer`/`RealtimeLayerDescriptor`) silently drops. Closing these — plus
+converging the two target types (`VideoLayer`'s `AnimatedValue<f64>` vs `RealtimeLayerDescriptor`'s
+`value + Option<track>`, and the missing composite/scale/rotation fields) — is the concrete **C4** target
+(and is a *behaviour change* for preview, so it cannot land under C3's "no behaviour change"):
+
+1. `composite_op` (Porter-Duff) — export only.
+2. `scale_x` / `scale_y` / `rotation` — export only (animation-driven).
+3. Timeline-level `video_animations` / `audio_animations` maps — export only, incl. the track-level
+   opacity/x/y/volume/pan fallbacks and the 3-way precedence merge (per-clip track > static > track-anim).
+4. `lavfi_overlay` — export only.
+5. Audio `speed` — export applies to audio; the preview audio placement has no speed.
+6. `audio_effects` — export only.
+7. `pan` — export only.
+8. Transition **kind** (`XfadeTransition`) — export honours it; preview collapses to a duration-only fade.
+
+The one extraction genuinely shared today is `Clip::video_effect_chain()` (eq + per-clip video effects),
+consumed by export directly and by preview via `Clip::realtime_layer_descriptor`. **C3** extracted the
+export per-clip interpretation into the pure `avio::derive` module (`video_layer` / `audio_track`) so it
+has one testable home; **C4** makes preview derive from the same core, closing the gaps above.
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do
