@@ -303,12 +303,16 @@ pub use ff_filter::{
 #[cfg(feature = "pipeline")]
 mod clip;
 #[cfg(feature = "pipeline")]
+mod edit;
+#[cfg(feature = "pipeline")]
 mod error;
 #[cfg(feature = "pipeline")]
 mod timeline;
 
 #[cfg(feature = "pipeline")]
 pub use clip::{Clip, VideoEffectRenderer};
+#[cfg(feature = "pipeline")]
+pub use edit::{ClipProperty, Command, EditError, TrackId, TrackKind, apply};
 #[cfg(feature = "pipeline")]
 pub use error::TimelineError;
 #[cfg(feature = "pipeline")]
