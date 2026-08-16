@@ -1,4 +1,4 @@
-//! Sequential video clip concatenation.
+//! Sequential video input concatenation.
 
 #![allow(unsafe_code)]
 
@@ -9,11 +9,11 @@ use crate::graph::graph::FilterGraph;
 
 // ── VideoConcatenator ─────────────────────────────────────────────────────────
 
-/// Concatenates multiple video clips into a single seamless output stream.
+/// Concatenates multiple video inputs into a single seamless output stream.
 ///
 /// Each clip is loaded via a `movie=` source node.  When
 /// [`output_resolution`](Self::output_resolution) is set, a `scale` filter is
-/// inserted per clip to normalise all clips to a common resolution before
+/// inserted per clip to normalise all inputs to a common resolution before
 /// concatenation.  A single clip skips the `concat` filter and passes through
 /// directly.
 ///
@@ -34,16 +34,16 @@ use crate::graph::graph::FilterGraph;
 /// }
 /// ```
 pub struct VideoConcatenator {
-    clips: Vec<PathBuf>,
+    inputs: Vec<PathBuf>,
     output_width: Option<u32>,
     output_height: Option<u32>,
 }
 
 impl VideoConcatenator {
     /// Creates a new concatenator for the given clip paths.
-    pub fn new(clips: Vec<impl AsRef<std::path::Path>>) -> Self {
+    pub fn new(inputs: Vec<impl AsRef<std::path::Path>>) -> Self {
         Self {
-            clips: clips
+            inputs: inputs
                 .into_iter()
                 .map(|p| p.as_ref().to_path_buf())
                 .collect(),
@@ -63,16 +63,16 @@ impl VideoConcatenator {
         }
     }
 
-    /// Builds a source-only [`FilterGraph`] that concatenates all clips.
+    /// Builds a source-only [`FilterGraph`] that concatenates all inputs.
     ///
     /// # Errors
     ///
-    /// - [`FilterError::CompositionFailed`] — no clips were provided, or an
+    /// - [`FilterError::CompositionFailed`] — no inputs were provided, or an
     ///   underlying `FFmpeg` graph-construction call failed.
     pub fn build(self) -> Result<FilterGraph, FilterError> {
-        if self.clips.is_empty() {
+        if self.inputs.is_empty() {
             return Err(FilterError::CompositionFailed {
-                reason: "no clips".to_string(),
+                reason: "no inputs".to_string(),
             });
         }
         // SAFETY: all raw pointer operations follow the avfilter ownership rules:
@@ -84,7 +84,7 @@ impl VideoConcatenator {
         // - NonNull::new_unchecked() is called only after ret >= 0 checks.
         unsafe {
             super::composition_inner::build_video_concat(
-                &self.clips,
+                &self.inputs,
                 self.output_width,
                 self.output_height,
             )
@@ -98,17 +98,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn concatenator_empty_clips_should_err() {
+    fn concatenator_empty_inputs_should_err() {
         let result = VideoConcatenator::new(Vec::<PathBuf>::new()).build();
         assert!(
             matches!(result, Err(FilterError::CompositionFailed { .. })),
-            "expected CompositionFailed for empty clips, got {result:?}"
+            "expected CompositionFailed for empty inputs, got {result:?}"
         );
     }
 
     #[test]
-    fn concatenator_three_clips_should_build_successfully() {
-        // Build with three nonexistent clips.  Graph construction of individual
+    fn concatenator_three_inputs_should_build_successfully() {
+        // Build with three nonexistent inputs.  Graph construction of individual
         // filter nodes (movie, concat, buffersink) should succeed; failure only
         // at avfilter_graph_config (file not found) is expected.
         //

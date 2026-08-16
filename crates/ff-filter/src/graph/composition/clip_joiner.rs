@@ -1,4 +1,4 @@
-//! Cross-dissolve join of two video clips.
+//! Cross-dissolve join of two video inputs.
 
 #![allow(unsafe_code)]
 
@@ -10,16 +10,16 @@ use crate::graph::graph::FilterGraph;
 
 // ── ClipJoiner ────────────────────────────────────────────────────────────────
 
-/// Joins two video clips with a cross-dissolve transition.
+/// Joins two video inputs with a cross-dissolve transition.
 ///
-/// Each clip is loaded via a `movie=` source node.  The last
-/// `dissolve_duration` seconds of clip A overlap with the first
-/// `dissolve_duration` seconds of clip B, producing an output shorter than
+/// Each input is loaded via a `movie=` source node.  The last
+/// `dissolve_duration` seconds of input A overlap with the first
+/// `dissolve_duration` seconds of input B, producing an output shorter than
 /// simple concatenation by `dissolve_duration`.
 ///
 /// When `dissolve_duration` is [`Duration::ZERO`] the clips are concatenated
 /// without a transition (equivalent to
-/// [`VideoConcatenator::new(vec![clip_a, clip_b]).build()`]).
+/// [`VideoConcatenator::new(vec![input_a, input_b]).build()`]).
 ///
 /// # Errors
 ///
@@ -41,8 +41,8 @@ use crate::graph::graph::FilterGraph;
 /// }
 /// ```
 pub struct ClipJoiner {
-    clip_a: PathBuf,
-    clip_b: PathBuf,
+    input_a: PathBuf,
+    input_b: PathBuf,
     dissolve_duration: Duration,
 }
 
@@ -52,13 +52,13 @@ impl ClipJoiner {
     /// `dissolve_duration` is the length of the cross-dissolve overlap.
     /// Pass [`Duration::ZERO`] for plain concatenation (no transition).
     pub fn new(
-        clip_a: impl AsRef<std::path::Path>,
-        clip_b: impl AsRef<std::path::Path>,
+        input_a: impl AsRef<std::path::Path>,
+        input_b: impl AsRef<std::path::Path>,
         dissolve_duration: Duration,
     ) -> Self {
         Self {
-            clip_a: clip_a.as_ref().to_path_buf(),
-            clip_b: clip_b.as_ref().to_path_buf(),
+            input_a: input_a.as_ref().to_path_buf(),
+            input_b: input_b.as_ref().to_path_buf(),
             dissolve_duration,
         }
     }
@@ -76,7 +76,11 @@ impl ClipJoiner {
         //         all pointers are null-checked; resources are freed on every
         //         error path.
         unsafe {
-            super::composition_inner::build_dissolve_join(&self.clip_a, &self.clip_b, dissolve_sec)
+            super::composition_inner::build_dissolve_join(
+                &self.input_a,
+                &self.input_b,
+                dissolve_sec,
+            )
         }
     }
 }
@@ -87,7 +91,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn join_with_dissolve_exceeding_clip_duration_should_err() {
+    fn clip_joiner_dissolve_exceeding_input_duration_should_err() {
         // dissolve_duration (9999 s) exceeds any realistic clip.  With
         // nonexistent files the probe itself returns CompositionFailed, which
         // also satisfies the assertion.  With real files the duration check
@@ -100,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn join_with_dissolve_should_reduce_total_duration() {
+    fn clip_joiner_dissolve_should_reduce_total_duration() {
         // With nonexistent files the probe step returns CompositionFailed.
         // This test verifies: (a) no panic, (b) the error is CompositionFailed
         // (not an unexpected variant), and (c) the `xfade` filter exists in the
@@ -108,7 +112,7 @@ mod tests {
         // we skip instead of failing, matching the pattern used by the concat
         // tests).
         let result =
-            ClipJoiner::new("clip_a.mp4", "clip_b.mp4", Duration::from_millis(500)).build();
+            ClipJoiner::new("input_a.mp4", "input_b.mp4", Duration::from_millis(500)).build();
         assert!(result.is_err(), "expected error (probe or graph failure)");
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
             if reason.contains("filter not found: xfade")

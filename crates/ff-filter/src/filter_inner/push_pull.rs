@@ -243,16 +243,15 @@ impl FilterGraphInner {
 
     /// Returns the number of video input slots required by the configured steps.
     ///
-    /// Returns 2 when [`FilterStep::Overlay`], [`FilterStep::XFade`], or
-    /// [`FilterStep::JoinWithDissolve`] is present (each needs a main stream on
-    /// slot 0 and a secondary stream on slot 1), 1 otherwise.
+    /// Returns 2 when [`FilterStep::Overlay`] or [`FilterStep::XFade`] is present
+    /// (each needs a main stream on slot 0 and a secondary stream on slot 1),
+    /// 1 otherwise.
     pub(super) fn video_input_count(&self) -> usize {
         for step in &self.steps {
             if matches!(
                 step,
                 FilterStep::Overlay { .. }
                     | FilterStep::XFade { .. }
-                    | FilterStep::JoinWithDissolve { .. }
                     | FilterStep::Blend { .. }
                     | FilterStep::Composite { .. }
                     | FilterStep::AlphaMatte { .. }

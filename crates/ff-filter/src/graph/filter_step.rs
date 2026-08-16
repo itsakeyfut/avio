@@ -489,24 +489,6 @@ pub enum FilterStep {
         /// Font color as an `FFmpeg` color string, e.g. `"white"` or `"0xFFFFFF"`.
         font_color: String,
     },
-    /// Join two video clips with a cross-dissolve transition.
-    ///
-    /// Compound step — expands in `filter_inner` to:
-    /// ```text
-    /// in0 → trim(end=clip_a_end+dissolve_dur) → setpts → xfade[0]
-    /// in1 → trim(start=max(0, clip_b_start−dissolve_dur)) → setpts → xfade[1]
-    /// ```
-    ///
-    /// Requires two video input slots: slot 0 = clip A, slot 1 = clip B.
-    /// `clip_a_end` and `dissolve_dur` must be > 0.0.
-    JoinWithDissolve {
-        /// Timestamp (seconds) where clip A ends. Must be > 0.0.
-        clip_a_end: f64,
-        /// Timestamp (seconds) where clip B content starts (before the overlap).
-        clip_b_start: f64,
-        /// Cross-dissolve overlap duration in seconds. Must be > 0.0.
-        dissolve_dur: f64,
-    },
     /// Composite a PNG image (watermark / logo) over video with optional opacity.
     ///
     /// This is a compound step: internally it creates a `movie` source, an
@@ -1046,9 +1028,6 @@ impl FilterStep {
             // "asetpts" is checked at build-time (audio counterpart of ResetPts).
             Self::AResetPts => "asetpts",
             Self::ConcatVideo { .. } | Self::ConcatAudio { .. } => "concat",
-            // JoinWithDissolve is a compound step (trim+setpts → xfade ← setpts+trim);
-            // "xfade" is used by validate_filter_steps as the primary filter check.
-            Self::JoinWithDissolve { .. } => "xfade",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -1570,14 +1549,6 @@ impl FilterStep {
             Self::AResetPts => "PTS-STARTPTS".to_string(),
             Self::ConcatVideo { n } => format!("n={n}:v=1:a=0"),
             Self::ConcatAudio { n } => format!("n={n}:v=0:a=1"),
-            // args() for JoinWithDissolve is not used by the build loop (which is
-            // bypassed in favour of add_join_with_dissolve_step); provided here for
-            // completeness using the xfade args.
-            Self::JoinWithDissolve {
-                clip_a_end,
-                dissolve_dur,
-                ..
-            } => format!("transition=dissolve:duration={dissolve_dur}:offset={clip_a_end}"),
             Self::CropAnimated {
                 x,
                 y,

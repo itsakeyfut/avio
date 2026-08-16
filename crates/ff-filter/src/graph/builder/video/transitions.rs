@@ -66,34 +66,6 @@ impl FilterGraphBuilder {
         });
         self
     }
-
-    /// Join two video streams with a cross-dissolve transition.
-    ///
-    /// Requires two video input slots: push clip A frames to slot 0 and clip B
-    /// frames to slot 1.  Internally expands to
-    /// `trim` + `setpts` → `xfade` ← `setpts` + `trim`.
-    ///
-    /// - `clip_a_end_sec`: timestamp (seconds) where clip A ends. Must be > 0.0.
-    /// - `clip_b_start_sec`: timestamp (seconds) where clip B content starts
-    ///   (before the overlap region).
-    /// - `dissolve_dur_sec`: cross-dissolve overlap length in seconds. Must be > 0.0.
-    ///
-    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
-    /// `dissolve_dur_sec ≤ 0.0` or `clip_a_end_sec ≤ 0.0`.
-    #[must_use]
-    pub fn join_with_dissolve(
-        mut self,
-        clip_a_end_sec: f64,
-        clip_b_start_sec: f64,
-        dissolve_dur_sec: f64,
-    ) -> Self {
-        self.steps.push(FilterStep::JoinWithDissolve {
-            clip_a_end: clip_a_end_sec,
-            clip_b_start: clip_b_start_sec,
-            dissolve_dur: dissolve_dur_sec,
-        });
-        self
-    }
 }
 
 #[cfg(test)]
@@ -366,74 +338,6 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for negative duration, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn filter_step_join_with_dissolve_should_have_correct_filter_name() {
-        let step = FilterStep::JoinWithDissolve {
-            clip_a_end: 4.0,
-            clip_b_start: 1.0,
-            dissolve_dur: 1.0,
-        };
-        assert_eq!(step.filter_name(), "xfade");
-    }
-
-    #[test]
-    fn filter_step_join_with_dissolve_should_produce_correct_args() {
-        let step = FilterStep::JoinWithDissolve {
-            clip_a_end: 4.0,
-            clip_b_start: 1.0,
-            dissolve_dur: 1.0,
-        };
-        assert_eq!(
-            step.args(),
-            "transition=dissolve:duration=1:offset=4",
-            "args must match xfade format for join_with_dissolve"
-        );
-    }
-
-    #[test]
-    fn builder_join_with_dissolve_valid_should_build_successfully() {
-        let result = FilterGraph::builder()
-            .join_with_dissolve(4.0, 1.0, 1.0)
-            .build();
-        assert!(
-            result.is_ok(),
-            "join_with_dissolve(4.0, 1.0, 1.0) must build successfully, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn builder_join_with_dissolve_with_zero_dissolve_dur_should_return_invalid_config() {
-        let result = FilterGraph::builder()
-            .join_with_dissolve(4.0, 1.0, 0.0)
-            .build();
-        assert!(
-            matches!(result, Err(FilterError::InvalidConfig { .. })),
-            "expected InvalidConfig for dissolve_dur=0.0, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn builder_join_with_dissolve_with_negative_dissolve_dur_should_return_invalid_config() {
-        let result = FilterGraph::builder()
-            .join_with_dissolve(4.0, 1.0, -1.0)
-            .build();
-        assert!(
-            matches!(result, Err(FilterError::InvalidConfig { .. })),
-            "expected InvalidConfig for dissolve_dur=-1.0, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn builder_join_with_dissolve_with_zero_clip_a_end_should_return_invalid_config() {
-        let result = FilterGraph::builder()
-            .join_with_dissolve(0.0, 1.0, 1.0)
-            .build();
-        assert!(
-            matches!(result, Err(FilterError::InvalidConfig { .. })),
-            "expected InvalidConfig for clip_a_end=0.0, got {result:?}"
         );
     }
 }
