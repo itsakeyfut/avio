@@ -104,12 +104,14 @@ pub(super) unsafe fn build_video_composition(
 
     // Pre-compute which layers should skip their overlay because the next
     // layer will cross-fade from them.  skip_overlay[i] is true when
-    // layers[i+1] has an in_transition on the same z_order as layers[i].
+    // layers[i+1] has an in_transition. The caller (engine derive) only sets
+    // in_transition on a clip that follows its same-track predecessor, and emits
+    // layers in track order, so the transition partner is always layers[i].
     let skip_overlay: Vec<bool> = (0..layer_count)
         .map(|i| {
-            layers.get(i + 1).is_some_and(|next| {
-                next.in_transition.is_some() && next.z_order == layers[i].z_order
-            })
+            layers
+                .get(i + 1)
+                .is_some_and(|next| next.in_transition.is_some())
         })
         .collect();
     // Saved chain_end from the preceding layer when skip_overlay was true.
@@ -203,110 +205,9 @@ pub(super) unsafe fn build_video_composition(
             chain_end = ps_ctx;
         }
 
-        // ── Optional trim + setpts ────────────────────────────────────────────
-        let trim_spec: Option<String> = match (layer.in_point, layer.out_point) {
-            (Some(a), Some(b)) => {
-                Some(format!("start={}:end={}", a.as_secs_f64(), b.as_secs_f64()))
-            }
-            (Some(a), None) => Some(format!("start={}", a.as_secs_f64())),
-            (None, Some(b)) => Some(format!("end={}", b.as_secs_f64())),
-            (None, None) => None,
-        };
-        if let Some(trim_args_str) = trim_spec {
-            let trim_filter = ff_sys::avfilter_get_by_name(c"trim".as_ptr());
-            if trim_filter.is_null() {
-                bail!(graph, "filter not found: trim");
-            }
-            let Ok(trim_name) = CString::new(format!("trim{idx}")) else {
-                bail!(graph, "CString::new failed for trim name");
-            };
-            let Ok(trim_args) = CString::new(trim_args_str) else {
-                bail!(graph, "CString::new failed for trim args");
-            };
-            let mut trim_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-            let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut trim_ctx,
-                trim_filter,
-                trim_name.as_ptr(),
-                trim_args.as_ptr(),
-                std::ptr::null_mut(),
-                graph,
-            );
-            if ret < 0 {
-                bail!(
-                    graph,
-                    format!("failed to create trim filter layer={idx} code={ret}")
-                );
-            }
-            let ret = ff_sys::avfilter_link(chain_end, 0, trim_ctx, 0);
-            if ret < 0 {
-                bail!(graph, format!("link failed: movie→trim layer={idx}"));
-            }
-            chain_end = trim_ctx;
-
-            let setpts_filter = ff_sys::avfilter_get_by_name(c"setpts".as_ptr());
-            if setpts_filter.is_null() {
-                bail!(graph, "filter not found: setpts");
-            }
-            let Ok(sp_name) = CString::new(format!("setpts_trim{idx}")) else {
-                bail!(graph, "CString::new failed for setpts name");
-            };
-            let mut sp_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-            let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut sp_ctx,
-                setpts_filter,
-                sp_name.as_ptr(),
-                c"PTS-STARTPTS".as_ptr(),
-                std::ptr::null_mut(),
-                graph,
-            );
-            if ret < 0 {
-                bail!(
-                    graph,
-                    format!("failed to create setpts filter layer={idx} code={ret}")
-                );
-            }
-            let ret = ff_sys::avfilter_link(chain_end, 0, sp_ctx, 0);
-            if ret < 0 {
-                bail!(graph, format!("link failed: trim→setpts layer={idx}"));
-            }
-            chain_end = sp_ctx;
-        }
-
-        // ── Optional timeline offset ──────────────────────────────────────────
-        if layer.time_offset > Duration::ZERO {
-            let offset = layer.time_offset.as_secs_f64();
-            let setpts_filter = ff_sys::avfilter_get_by_name(c"setpts".as_ptr());
-            if setpts_filter.is_null() {
-                bail!(graph, "filter not found: setpts");
-            }
-            let Ok(sp_name) = CString::new(format!("setpts_offset{idx}")) else {
-                bail!(graph, "CString::new failed for setpts offset name");
-            };
-            let Ok(sp_args) = CString::new(format!("PTS+{offset}/TB")) else {
-                bail!(graph, "CString::new failed for setpts offset args");
-            };
-            let mut sp_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-            let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut sp_ctx,
-                setpts_filter,
-                sp_name.as_ptr(),
-                sp_args.as_ptr(),
-                std::ptr::null_mut(),
-                graph,
-            );
-            if ret < 0 {
-                bail!(
-                    graph,
-                    format!("failed to create setpts offset filter layer={idx} code={ret}")
-                );
-            }
-            let ret = ff_sys::avfilter_link(chain_end, 0, sp_ctx, 0);
-            if ret < 0 {
-                bail!(graph, format!("link failed: →setpts_offset layer={idx}"));
-            }
-            chain_end = sp_ctx;
-        }
+        // Trim / timeline placement (`Trim` + `ResetPts` + `OffsetPts`) arrive as
+        // leading entries in `layer.effects` (emitted by the engine derive) and are
+        // built by the per-layer effects loop below.
 
         // ── Optional scale ────────────────────────────────────────────────────
         let sx = layer.scale_x.value_at(Duration::ZERO);
@@ -618,7 +519,7 @@ pub(super) unsafe fn build_video_composition(
             } else {
                 log::warn!(
                     "video composition layer={idx} has in_transition but no preceding \
-                     layer on same z_order; hard cut applied"
+                     layer to cross-fade from; hard cut applied"
                 );
             }
         }

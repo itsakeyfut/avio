@@ -7,7 +7,10 @@ impl FilterGraphBuilder {
     /// Trim the stream to the half-open interval `[start, end)` in seconds.
     #[must_use]
     pub fn trim(mut self, start: f64, end: f64) -> Self {
-        self.steps.push(FilterStep::Trim { start, end });
+        self.steps.push(FilterStep::Trim {
+            start: Some(start),
+            end: Some(end),
+        });
         self
     }
 
@@ -74,11 +77,53 @@ mod tests {
     #[test]
     fn filter_step_trim_should_produce_correct_args() {
         let step = FilterStep::Trim {
-            start: 10.0,
-            end: 30.0,
+            start: Some(10.0),
+            end: Some(30.0),
         };
         assert_eq!(step.filter_name(), "trim");
         assert_eq!(step.args(), "start=10:end=30");
+    }
+
+    #[test]
+    fn filter_step_trim_open_ended_should_omit_the_none_bound() {
+        assert_eq!(
+            FilterStep::Trim {
+                start: Some(10.0),
+                end: None,
+            }
+            .args(),
+            "start=10"
+        );
+        assert_eq!(
+            FilterStep::Trim {
+                start: None,
+                end: Some(30.0),
+            }
+            .args(),
+            "end=30"
+        );
+        assert_eq!(
+            FilterStep::Trim {
+                start: None,
+                end: None,
+            }
+            .args(),
+            ""
+        );
+    }
+
+    #[test]
+    fn filter_step_reset_pts_should_produce_setpts_pts_startpts() {
+        let step = FilterStep::ResetPts;
+        assert_eq!(step.filter_name(), "setpts");
+        assert_eq!(step.args(), "PTS-STARTPTS");
+    }
+
+    #[test]
+    fn filter_step_offset_pts_should_produce_setpts_offset_expr() {
+        let step = FilterStep::OffsetPts { seconds: 2.5 };
+        assert_eq!(step.filter_name(), "setpts");
+        assert_eq!(step.args(), "PTS+2.5/TB");
     }
 
     #[test]

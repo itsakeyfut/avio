@@ -285,15 +285,41 @@ impl Timeline {
             let mut composer =
                 MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
             for (track_idx, track) in video_tracks.iter().enumerate() {
-                for clip in track {
-                    // Wire xfade from the preceding clip on this track.
+                for (clip_idx, clip) in track.iter().enumerate() {
+                    // Wire xfade from the preceding clip on this track. Skip the
+                    // first clip of a track: a transition needs a same-track
+                    // predecessor to cross-fade from, and the compositor pairs an
+                    // in_transition layer with its Vec-predecessor, so the first
+                    // clip must not carry one.
                     if let Some(kind) = clip.transition {
-                        let dur_secs = clip.transition_duration.as_secs_f64();
-                        let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
-                        composer = composer.join_with_dissolve(prev_end, dur_secs, kind);
+                        if clip_idx == 0 {
+                            log::warn!(
+                                "transition on a track's first clip ignored (no preceding clip to cross-fade from) track={track_idx}"
+                            );
+                        } else {
+                            let dur_secs = clip.transition_duration.as_secs_f64();
+                            let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
+                            composer = composer.join_with_dissolve(prev_end, dur_secs, kind);
+                        }
                     }
 
+                    // Timeline trim + placement are emitted as leading filter
+                    // steps so they precede timing-sensitive effects (Speed),
+                    // mirroring the old composer node order
+                    // (trim → setpts=PTS-STARTPTS → setpts=PTS+offset).
                     let mut layer_effects: Vec<FilterStep> = Vec::new();
+                    if clip.in_point.is_some() || clip.out_point.is_some() {
+                        layer_effects.push(FilterStep::Trim {
+                            start: clip.in_point.map(|d| d.as_secs_f64()),
+                            end: clip.out_point.map(|d| d.as_secs_f64()),
+                        });
+                        layer_effects.push(FilterStep::ResetPts);
+                    }
+                    if clip.timeline_offset > Duration::ZERO {
+                        layer_effects.push(FilterStep::OffsetPts {
+                            seconds: clip.timeline_offset.as_secs_f64(),
+                        });
+                    }
                     if (clip.speed - 1.0).abs() > 1e-9 {
                         layer_effects.push(FilterStep::Speed { factor: clip.speed });
                     }
@@ -365,10 +391,6 @@ impl Timeline {
                         opacity: clip_opacity,
                         blend_mode: clip.blend_mode,
                         composite_op: clip.composite_op,
-                        z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
-                        time_offset: clip.timeline_offset,
-                        in_point: clip.in_point,
-                        out_point: clip.out_point,
                         in_transition: None, // set by join_with_dissolve via add_layer
                         effects: layer_effects,
                     });
@@ -406,10 +428,6 @@ impl Timeline {
                     opacity: AnimatedValue::Static(1.0),
                     blend_mode: BlendMode::Normal,
                     composite_op: CompositeOp::Over,
-                    z_order: u32::try_from(nv).unwrap_or(u32::MAX),
-                    time_offset: Duration::ZERO,
-                    in_point: None,
-                    out_point: None,
                     in_transition: None,
                     effects: vec![],
                 });

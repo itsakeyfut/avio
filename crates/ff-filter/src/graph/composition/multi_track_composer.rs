@@ -3,7 +3,6 @@
 #![allow(unsafe_code)]
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
@@ -51,8 +50,13 @@ pub struct ProxySource {
 
 /// A single video layer in a [`MultiTrackComposer`] composition.
 ///
-/// Layers are composited in ascending [`z_order`](Self::z_order), with
-/// `0` rendered first (bottom of the stack).
+/// Layers are composited in the order they are added, the first
+/// ([`add_layer`](MultiTrackComposer::add_layer)) at the bottom of the stack.
+/// Trim / timeline placement are expressed by the caller as leading
+/// [`FilterStep`](crate::graph::filter_step::FilterStep)s in [`effects`](Self::effects)
+/// (e.g. [`Trim`](crate::graph::filter_step::FilterStep::Trim) +
+/// [`OffsetPts`](crate::graph::filter_step::FilterStep::OffsetPts)); this layer type is
+/// model-free.
 ///
 /// The `x`, `y`, `scale_x`, `scale_y`, `rotation`, and `opacity` fields accept
 /// either a constant ([`AnimatedValue::Static`]) or a time-varying keyframe
@@ -89,15 +93,7 @@ pub struct VideoLayer {
     pub rotation: AnimatedValue<f64>,
     /// Opacity (`0.0` = fully transparent, `1.0` = fully opaque).
     pub opacity: AnimatedValue<f64>,
-    /// Compositing order (`0` = bottom layer; higher values render on top).
-    pub z_order: u32,
-    /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
-    pub time_offset: Duration,
-    /// Optional trim start within the source file.
-    pub in_point: Option<Duration>,
-    /// Optional trim end within the source file.
-    pub out_point: Option<Duration>,
-    /// Transition applied at the start of this layer (from the preceding layer on the same z-order).
+    /// Transition applied at the start of this layer (from the preceding layer on the same track).
     /// `None` = hard cut. Set by [`MultiTrackComposer::join_with_dissolve`].
     pub in_transition: Option<ClipTransition>,
     /// How this layer blends with the layer(s) below it.
@@ -124,9 +120,11 @@ pub struct VideoLayer {
     pub composite_op: CompositeOp,
     /// Per-layer video filter steps applied to this layer's decoded stream before compositing.
     ///
-    /// Applied in order after trim/setpts/scale/rotate/opacity and before the `overlay` node.
-    /// Typical use: `FilterStep::Eq { brightness, contrast, saturation }` for per-clip color
-    /// correction. An empty `Vec` (the default) is a no-op.
+    /// Applied in order after scale/rotate/opacity and before the `overlay` node. Any timeline
+    /// trim / placement steps (`Trim` + `ResetPts` + `OffsetPts`) the caller emits belong at the
+    /// front of this list so they precede timing-sensitive effects (`Speed`). Typical use:
+    /// `FilterStep::Eq { brightness, contrast, saturation }` for per-clip color correction.
+    /// An empty `Vec` (the default) is a no-op.
     pub effects: Vec<crate::graph::filter_step::FilterStep>,
 }
 
@@ -134,16 +132,15 @@ pub struct VideoLayer {
 
 /// Composes multiple video layers onto a solid-colour canvas.
 ///
-/// Layers are sorted by [`VideoLayer::z_order`] before compositing.  The
+/// Layers are composited in the order they are added (first at the bottom).  The
 /// resulting [`FilterGraph`] is source-only — call [`FilterGraph::pull_video`]
 /// in a loop to extract the output frames.  The graph terminates when the
-/// last (highest `z_order`) layer finishes.
+/// last (top) layer finishes.
 ///
 /// # Examples
 ///
 /// ```ignore
 /// use ff_filter::{AnimatedValue, MultiTrackComposer, VideoLayer};
-/// use std::time::Duration;
 ///
 /// let mut graph = MultiTrackComposer::new(1920, 1080)
 ///     .add_layer(VideoLayer {
@@ -156,10 +153,6 @@ pub struct VideoLayer {
 ///         scale_y: AnimatedValue::Static(1.0),
 ///         rotation: AnimatedValue::Static(0.0),
 ///         opacity: AnimatedValue::Static(1.0),
-///         z_order: 0,
-///         time_offset: Duration::ZERO,
-///         in_point: None,
-///         out_point: None,
 ///         in_transition: None,
 ///         blend_mode: BlendMode::Normal,
 ///         composite_op: CompositeOp::Over,
@@ -300,8 +293,9 @@ impl MultiTrackComposer {
                 reason: "no layers".to_string(),
             });
         }
-        let mut layers = self.layers;
-        layers.sort_by_key(|l| l.z_order);
+        // Layers are composited in insertion order (caller emits them in the
+        // intended bottom-to-top order); the compositor no longer reorders.
+        let layers = self.layers;
         // SAFETY: all raw pointer operations follow the avfilter ownership rules:
         // - avfilter_graph_alloc() returns an owned pointer freed via
         //   avfilter_graph_free() on error or stored in FilterGraphInner on success.
@@ -325,6 +319,7 @@ impl MultiTrackComposer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::graph::filter_step::FilterStep;
 
     #[test]
     fn composer_zero_canvas_size_should_err() {
@@ -340,10 +335,6 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
@@ -367,10 +358,6 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
@@ -402,10 +389,6 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
@@ -450,10 +433,6 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
@@ -470,9 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn video_layer_with_positive_offset_should_insert_setpts() {
-        // setpts_offset is inserted when time_offset > 0.
-        // Build fails (nonexistent file) but NOT at "filter not found: setpts".
+    fn video_layer_with_offset_pts_effect_should_insert_setpts() {
+        // A timeline offset is expressed by the caller as an OffsetPts effect,
+        // which builds a `setpts` node. Build fails (nonexistent file) but NOT at
+        // "filter not found: setpts".
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
@@ -484,14 +464,10 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::from_secs(2),
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
-                effects: vec![],
+                effects: vec![FilterStep::OffsetPts { seconds: 2.0 }],
             })
             .build();
         assert!(result.is_err(), "expected error (nonexistent file)");
@@ -504,8 +480,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_video_offset_should_not_insert_extra_filters() {
-        // time_offset=ZERO must not cause setpts_offset nodes.
+    fn layer_without_timeline_effects_should_not_insert_setpts() {
+        // A layer whose effects carry no Trim/OffsetPts inserts no `setpts` node.
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
@@ -517,10 +493,6 @@ mod tests {
                 scale_y: AnimatedValue::Static(1.0),
                 rotation: AnimatedValue::Static(0.0),
                 opacity: AnimatedValue::Static(1.0),
-                z_order: 0,
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 in_transition: None,
                 blend_mode: BlendMode::Normal,
                 composite_op: CompositeOp::Over,
@@ -529,8 +501,8 @@ mod tests {
             .build();
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
             assert!(
-                !reason.contains("setpts_offset"),
-                "setpts_offset must not appear for zero offset; got: {reason}"
+                !reason.contains("setpts"),
+                "no setpts node must appear without timeline effects; got: {reason}"
             );
         }
     }
