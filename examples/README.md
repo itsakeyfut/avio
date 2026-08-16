@@ -26,6 +26,9 @@ Each script generates a small synthetic clip by default, so it runs with no setu
 ```bash
 cargo run -p avio-examples --bin single_clip_import
 cargo run -p avio-examples --bin single_clip_export
+cargo run -p avio-examples --bin multitrack_export
+cargo run -p avio-examples --bin transition_export
+cargo run -p avio-examples --bin keyframe_export
 ```
 
 Point a script at a real media file, and keep the temp files for inspection:
@@ -50,9 +53,9 @@ A script prints one line per check and exits non-zero if any check fails.
 | Import a clip (probe + decode) | `single_clip_import` | done |
 | Export a clip (Timeline render) | `single_clip_export` | done |
 | Trim | `single_clip_trim` | TODO |
-| Multi-track composition / PiP + blend | `multitrack_compose` | TODO |
-| Transitions (`XfadeTransition`) | `transitions` | TODO |
-| Keyframe animation (`AnimationTrack`) | `keyframe_animation` | TODO |
+| Multi-track composition / PiP + blend | `multitrack_export` | done |
+| Transitions (`XfadeTransition`) | `transition_export` | done |
+| Keyframe animation (`AnimationTrack`) | `keyframe_export` | done |
 | Per-clip effects (`FilterStep`) | `effect_<name>` | TODO |
 | Preview matches export | `preview_matches_export` | TODO |
 | Audio mix + per-clip volume/fades | `audio_mix` | TODO |
