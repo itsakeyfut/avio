@@ -9,9 +9,9 @@ mod fixtures;
 
 use std::time::Duration;
 
+use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
 use ff_filter::animation::{AnimationTrack, Easing};
-use ff_pipeline::{Clip, EncoderConfig, PipelineError, Timeline};
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 // Small canvas for fast CI runs.
@@ -78,15 +78,15 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
 
     match timeline.render(&out_path, render_config()) {
         Ok(()) => {}
-        Err(PipelineError::Filter(e)) => {
+        Err(TimelineError::Filter(e)) => {
             println!("Skipping: filter graph construction failed: {e}");
             return;
         }
-        Err(PipelineError::Encode(e)) => {
+        Err(TimelineError::Encode(e)) => {
             println!("Skipping: encoder unavailable: {e}");
             return;
         }
-        Err(PipelineError::Decode(e)) => {
+        Err(TimelineError::Decode(e)) => {
             println!("Skipping: decoder unavailable: {e}");
             return;
         }
@@ -131,7 +131,7 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
     );
 }
 
-/// Verifies that `render_with_progress` returns `PipelineError::Cancelled` when
+/// Verifies that `render_with_progress` returns `TimelineError::Cancelled` when
 /// the callback immediately returns `false`.
 ///
 /// This is the acceptance-criterion test for issue #1016:
@@ -168,14 +168,14 @@ fn render_with_progress_should_cancel_when_callback_returns_false() {
     let result = timeline.render_with_progress(&out_path, render_config(), |_| false);
 
     match result {
-        Err(PipelineError::Cancelled) => { /* expected */ }
-        Err(PipelineError::Filter(e)) => {
+        Err(TimelineError::Cancelled) => { /* expected */ }
+        Err(TimelineError::Filter(e)) => {
             println!("Skipping: filter graph construction failed: {e}");
         }
-        Err(PipelineError::Encode(e)) => {
+        Err(TimelineError::Encode(e)) => {
             println!("Skipping: encoder unavailable: {e}");
         }
-        Err(PipelineError::Decode(e)) => {
+        Err(TimelineError::Decode(e)) => {
             println!("Skipping: decoder unavailable: {e}");
         }
         Err(e) => panic!("expected Cancelled, got {e}"),
@@ -191,7 +191,7 @@ fn render_with_progress_should_cancel_when_callback_returns_false() {
 /// cross-fade transitions."
 #[test]
 fn timeline_with_transition_should_build_without_error() {
-    use ff_pipeline::XfadeTransition;
+    use ff_filter::XfadeTransition;
 
     let clip_a = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4));
     let clip_b = Clip::new("b.mp4")
@@ -257,15 +257,15 @@ fn render_with_progress_should_invoke_callback_with_incrementing_frame_count() {
 
     match result {
         Ok(()) => {}
-        Err(PipelineError::Filter(e)) => {
+        Err(TimelineError::Filter(e)) => {
             println!("Skipping: filter graph construction failed: {e}");
             return;
         }
-        Err(PipelineError::Encode(e)) => {
+        Err(TimelineError::Encode(e)) => {
             println!("Skipping: encoder unavailable: {e}");
             return;
         }
-        Err(PipelineError::Decode(e)) => {
+        Err(TimelineError::Decode(e)) => {
             println!("Skipping: decoder unavailable: {e}");
             return;
         }
@@ -328,15 +328,15 @@ fn timeline_with_volume_animation_should_encode_successfully() {
 
     match timeline.render(&out_path, render_config()) {
         Ok(()) => {}
-        Err(PipelineError::Filter(e)) => {
+        Err(TimelineError::Filter(e)) => {
             println!("Skipping: filter graph construction failed: {e}");
             return;
         }
-        Err(PipelineError::Encode(e)) => {
+        Err(TimelineError::Encode(e)) => {
             println!("Skipping: encoder unavailable: {e}");
             return;
         }
-        Err(PipelineError::Decode(e)) => {
+        Err(TimelineError::Decode(e)) => {
             println!("Skipping: decoder unavailable: {e}");
             return;
         }

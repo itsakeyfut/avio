@@ -16,7 +16,7 @@ probe    = ["dep:ff-probe"]
 decode   = ["dep:ff-decode"]
 encode   = ["dep:ff-encode"]
 filter   = ["dep:ff-filter"]
-pipeline = ["dep:ff-pipeline", "filter", "ff-preview?/timeline"]
+pipeline = ["dep:ff-pipeline", "dep:thiserror", "dep:log", "decode", "encode", "filter", "ff-preview?/timeline"]
 stream   = ["dep:ff-stream", "pipeline"]
 preview       = ["dep:ff-preview"]
 preview-proxy = ["preview", "ff-preview/proxy"]
@@ -43,6 +43,20 @@ ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }
 ff-preview  = { workspace = true, optional = true }
 ff-render   = { workspace = true, optional = true }
+thiserror   = { workspace = true, optional = true }
+log         = { workspace = true, optional = true }
+
+[[test]]
+name = "timeline_tests"
+required-features = ["pipeline"]
+
+[[test]]
+name = "composition_framerate"
+required-features = ["pipeline"]
+
+[[test]]
+name = "timeline_preview_tests"
+required-features = ["pipeline", "preview"]
 
 [[example]]
 name = "probe_info"
@@ -522,6 +536,13 @@ required-features = ["decode", "encode", "filter"]
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
+# Used directly by the relocated editing-model integration tests
+# (tests/timeline_tests.rs, tests/composition_framerate.rs, tests/fixtures/).
+ff-format = { workspace = true }
+ff-probe  = { workspace = true }
+ff-decode = { workspace = true }
+ff-encode = { workspace = true }
+ff-filter = { workspace = true }
 
 [lints]
 workspace = true

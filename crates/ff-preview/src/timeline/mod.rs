@@ -1,19 +1,20 @@
-//! Real-time playback of a [`Timeline`].
+//! Real-time playback of a [`Scene`].
 //!
-//! [`TimelinePlayer`] opens every clip on the primary video track of a
-//! [`Timeline`] and plays them back in order, mapping each clip's frame PTS
-//! to the unified timeline coordinate.
+//! [`ScenePlayer`] opens every placement on the base video track of a [`Scene`]
+//! and plays them back in order, mapping each clip's frame PTS to the unified
+//! timeline coordinate. The `Scene` is a model-agnostic description an engine
+//! derives from its editing model.
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`TimelinePlayer`] | Thin builder: call [`open`](TimelinePlayer::open) |
+//! | [`ScenePlayer`] | Thin builder: call [`open`](ScenePlayer::open) |
 //! | [`TimelineRunner`] | Owns the decode pipelines; move to a thread and call [`run`](TimelineRunner::run) |
 //! | [`PlayerHandle`] | Shared, cloneable control handle |
 //!
 //! ## Audio
 //!
-//! When any clip on the primary video track carries an audio stream,
-//! [`TimelinePlayer::open`] creates an [`AudioMixer`] with one track per
+//! When any placement on the base video track carries an audio stream,
+//! [`ScenePlayer::open`] creates an [`AudioMixer`] with one track per
 //! audio-bearing clip.  A background [`AudioDecoder`](ff_decode::AudioDecoder) thread is started for
 //! the active clip and pushes mono samples via [`AudioTrackHandle`].  On clip
 //! transition or seek the old thread is cancelled and a new one is started.
@@ -24,7 +25,6 @@ mod audio_resampling;
 mod runner;
 mod runner_layout;
 mod scene;
-mod scene_adapter;
 mod state;
 mod timeline_inner;
 
@@ -32,8 +32,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
-
-use ff_pipeline::timeline::Timeline;
 
 use crate::audio::{AudioMixer, AudioTrackHandle};
 use crate::error::PreviewError;
@@ -53,64 +51,27 @@ use state::{AudioFadeConfig, AudioOnlyTrack, ClipState, OverlayLayer};
 
 const CHANNEL_CAP: usize = 64;
 
-// ── TimelinePlayer ────────────────────────────────────────────────────────────
+// ── ScenePlayer ─────────────────────────────────────────────────────────────
 
 /// Thin builder for a ([`TimelineRunner`], [`PlayerHandle`]) pair backed by a
-/// [`Timeline`].
+/// [`Scene`].
 ///
-/// Playback is limited to the primary video track (`video_tracks[0]`). When
-/// any clip carries an audio stream, an [`AudioMixer`] is created and audio
-/// is mixed into the stereo output from [`PlayerHandle::pop_audio_samples`].
+/// Playback is limited to the base video track (`video_tracks[0]`). When any
+/// placement carries an audio stream, an [`AudioMixer`] is created and audio is
+/// mixed into the stereo output from [`PlayerHandle::pop_audio_samples`].
 ///
-/// # Example
-///
-/// ```ignore
-/// use ff_pipeline::{Timeline, Clip};
-/// use ff_preview::{TimelinePlayer, RgbaSink};
-/// use std::time::Duration;
-///
-/// let timeline = Timeline::builder()
-///     .canvas(1920, 1080)
-///     .frame_rate(30.0)
-///     .video_track(vec![
-///         Clip::new("intro.mp4").trim(Duration::ZERO, Duration::from_secs(5)),
-///     ])
-///     .build()?;
-///
-/// let (mut runner, handle) = TimelinePlayer::open(&timeline)?;
-/// runner.set_sink(Box::new(RgbaSink::new()));
-/// std::thread::spawn(move || { let _ = runner.run(); });
-/// handle.play();
-/// ```
-pub struct TimelinePlayer;
+/// This player is model-agnostic: an engine derives the [`Scene`] from its
+/// editing model (for example `avio::TimelinePlayer` from a `Timeline`) and
+/// hands it here.
+pub struct ScenePlayer;
 
-impl TimelinePlayer {
-    /// Open `timeline` for real-time preview playback.
-    ///
-    /// Probes every clip's source file to determine effective durations and
-    /// audio availability, opens a [`DecodeBuffer`] for each clip on the
-    /// primary video track, and seeks each buffer to its configured `in_point`.
-    ///
-    /// When any clip carries an audio stream an [`AudioMixer`] is created and
-    /// the first audio-bearing clip's decode thread is started immediately.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] when:
-    /// - `timeline` has no video tracks or the primary track is empty,
-    /// - a clip source file cannot be found or opened,
-    /// - a clip cannot be probed for duration.
-    pub fn open(timeline: &Timeline) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
-        Self::open_scene(&Scene::from_timeline(timeline))
-    }
-
+impl ScenePlayer {
     /// Open a [`Scene`] for real-time preview playback.
     ///
-    /// The `Scene` carries the primitivised editing model; this resolves it
-    /// against the media (probing each placement's source for duration, audio
-    /// availability, and frame size), opens a [`DecodeBuffer`] per V1 clip and
-    /// seeks it to `in_point`, and builds the audio mixer and tracks. This is the
-    /// media-resolution step that [`open`](Self::open) used to inline.
+    /// Resolves the scene against the media (probing each placement's source for
+    /// duration, audio availability, and frame size), opens a [`DecodeBuffer`]
+    /// per base-track clip and seeks it to `in_point`, and builds the audio mixer
+    /// and tracks.
     ///
     /// # Errors
     ///
@@ -119,7 +80,7 @@ impl TimelinePlayer {
     /// - a placement source file cannot be found or opened,
     /// - a placement cannot be probed for duration.
     #[allow(clippy::too_many_lines)]
-    pub fn open_scene(scene: &Scene) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
+    pub fn open(scene: &Scene) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
         struct ProbeResult {
             source: PathBuf,
             in_pt: Duration,
@@ -465,12 +426,6 @@ impl TimelinePlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::thread;
-
-    fn test_video_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")
-    }
 
     // ── blend_rgba delegate ────────────────────────────────────────────────
 
@@ -490,189 +445,5 @@ mod tests {
         let _ = PreviewError::SeekOutOfRange {
             pts: Duration::from_secs(1),
         };
-    }
-
-    // ── run ───────────────────────────────────────────────────────────────
-
-    #[test]
-    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
-    fn timeline_runner_run_should_deliver_frames_for_single_clip() {
-        use crate::playback::sink::FrameSink;
-
-        let path = test_video_path();
-        if !path.exists() {
-            println!("skipping: video asset not found");
-            return;
-        }
-
-        struct CountSink(usize, PlayerHandle);
-        impl FrameSink for CountSink {
-            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
-                self.0 += 1;
-                if self.0 >= 20 {
-                    self.1.stop();
-                }
-            }
-        }
-
-        let timeline = ff_pipeline::Timeline::builder()
-            .canvas(1280, 720)
-            .frame_rate(30.0)
-            .video_track(vec![
-                ff_pipeline::Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(2)),
-            ])
-            .build()
-            .expect("timeline build failed");
-
-        let (mut runner, handle) = match TimelinePlayer::open(&timeline) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: open failed: {e}");
-                return;
-            }
-        };
-
-        runner.set_sink(Box::new(CountSink(0, handle.clone())));
-        let _ = runner.run();
-
-        let events: Vec<_> = std::iter::from_fn(|| handle.poll_event()).collect();
-        assert!(
-            events.iter().any(|e| matches!(e, PlayerEvent::Eof)),
-            "Eof event must be delivered after run() completes"
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, PlayerEvent::PositionUpdate(_))),
-            "PositionUpdate events must be emitted during playback"
-        );
-    }
-
-    /// Regression test for the MasterClock::System pause-drift bug.
-    ///
-    /// After pause → seek → sleep N seconds → play, the first PositionUpdate
-    /// must carry a PTS close to the seek target (≤ target + 2 frame periods),
-    /// not target + N.
-    #[test]
-    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
-    fn timeline_runner_resume_after_seek_while_paused_should_not_drift() {
-        let path = test_video_path();
-        if !path.exists() {
-            println!("skipping: video asset not found");
-            return;
-        }
-
-        let fps = 30.0_f64;
-        let seek_target = Duration::from_secs(1);
-        let two_frame_periods = Duration::from_secs_f64(2.0 / fps);
-
-        let timeline = ff_pipeline::Timeline::builder()
-            .canvas(1280, 720)
-            .frame_rate(fps)
-            .video_track(vec![
-                ff_pipeline::Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(5)),
-            ])
-            .build()
-            .expect("timeline build failed");
-
-        let (runner, handle) = match TimelinePlayer::open(&timeline) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: open failed: {e}");
-                return;
-            }
-        };
-
-        let handle_bg = handle.clone();
-        let bg = thread::spawn(move || {
-            let _ = runner.run();
-        });
-
-        // Let the runner start, then pause, seek, wait 500 ms, play.
-        thread::sleep(Duration::from_millis(50));
-        handle.pause();
-        thread::sleep(Duration::from_millis(20));
-        handle.seek(seek_target);
-        thread::sleep(Duration::from_millis(500));
-        handle.play();
-
-        // Collect the first PositionUpdate after play.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let first_pts = loop {
-            if let Some(PlayerEvent::PositionUpdate(pts)) = handle.poll_event() {
-                break Some(pts);
-            }
-            if std::time::Instant::now() > deadline {
-                break None;
-            }
-            thread::sleep(Duration::from_millis(5));
-        };
-
-        handle_bg.stop();
-        let _ = bg.join();
-
-        let pts = first_pts.expect("no PositionUpdate received within 5 seconds");
-        assert!(
-            pts <= seek_target + two_frame_periods,
-            "first frame after seek-while-paused should be near seek target; \
-             got {pts:?}, expected ≤ {:?}",
-            seek_target + two_frame_periods,
-        );
-    }
-
-    #[test]
-    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
-    fn timeline_runner_seek_should_deliver_seek_completed_event() {
-        let path = test_video_path();
-        if !path.exists() {
-            println!("skipping: video asset not found");
-            return;
-        }
-
-        let timeline = ff_pipeline::Timeline::builder()
-            .canvas(1280, 720)
-            .frame_rate(30.0)
-            .video_track(vec![
-                ff_pipeline::Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(10)),
-            ])
-            .build()
-            .expect("timeline build failed");
-
-        let (runner, handle) = match TimelinePlayer::open(&timeline) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: open failed: {e}");
-                return;
-            }
-        };
-
-        let handle_bg = handle.clone();
-        let bg = thread::spawn(move || {
-            let _ = runner.run();
-        });
-
-        thread::sleep(Duration::from_millis(50));
-        handle.seek(Duration::from_secs(1));
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let found = loop {
-            if let Some(e) = handle.poll_event() {
-                if matches!(e, PlayerEvent::SeekCompleted(_)) {
-                    break true;
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                break false;
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
-
-        handle_bg.stop();
-        let _ = bg.join();
-
-        assert!(
-            found,
-            "SeekCompleted must be delivered within 3 seconds of seek"
-        );
     }
 }

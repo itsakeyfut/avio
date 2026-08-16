@@ -11,9 +11,9 @@
 
 mod fixtures;
 
+use avio::{Clip, EncoderConfig, Timeline};
 use ff_decode::VideoDecoder;
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
-use ff_pipeline::{Clip, EncoderConfig, Timeline};
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 #[test]

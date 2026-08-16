@@ -297,7 +297,7 @@ impl Pipeline {
 ///
 /// `HwAccel` (ff-filter) and `HardwareEncoder` (ff-encode) are separate types
 /// to avoid a cross-crate dependency.  This function maps between them.
-pub(crate) fn hwaccel_to_hardware_encoder(hw: Option<HwAccel>) -> HardwareEncoder {
+pub fn hwaccel_to_hardware_encoder(hw: Option<HwAccel>) -> HardwareEncoder {
     match hw {
         None => HardwareEncoder::None,
         Some(HwAccel::Cuda) => HardwareEncoder::Nvenc,

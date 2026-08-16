@@ -18,10 +18,10 @@ use ff_filter::{
 use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
-use crate::encoder_config::EncoderConfig;
-use crate::error::PipelineError;
-use crate::pipeline::hwaccel_to_hardware_encoder;
-use crate::progress::Progress;
+use crate::error::TimelineError;
+use ff_pipeline::EncoderConfig;
+use ff_pipeline::Progress;
+use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
 
 /// An ordered layout of [`Clip`] instances across video and audio tracks.
 ///
@@ -35,7 +35,7 @@ use crate::progress::Progress;
 /// # Examples
 ///
 /// ```
-/// use ff_pipeline::{Clip, Timeline};
+/// use avio::{Clip, Timeline};
 /// use std::time::Duration;
 ///
 /// let clip = Clip::new("intro.mp4")
@@ -134,15 +134,15 @@ impl Timeline {
     ///
     /// # Errors
     ///
-    /// - [`PipelineError::ClipNotFound`] — a clip's source file is missing
-    /// - [`PipelineError::Encode`] — encoder failure
-    /// - [`PipelineError::Filter`] — filter graph construction failure
-    /// - [`PipelineError::TimelineRenderFailed`] — other structural failure
+    /// - [`TimelineError::ClipNotFound`] — a clip's source file is missing
+    /// - [`TimelineError::Encode`] — encoder failure
+    /// - [`TimelineError::Filter`] — filter graph construction failure
+    /// - [`TimelineError::TimelineRenderFailed`] — other structural failure
     pub fn render(
         self,
         output: impl AsRef<Path>,
         config: EncoderConfig,
-    ) -> Result<(), PipelineError> {
+    ) -> Result<(), TimelineError> {
         self.render_with_progress(output, config, |_| true)
     }
 
@@ -156,7 +156,7 @@ impl Timeline {
     ///
     /// `on_progress` receives a [`Progress`] reference after every video frame.
     /// Returning `false` cancels the render and returns
-    /// [`PipelineError::Cancelled`]. Audio-only timelines do not invoke the
+    /// [`TimelineError::Cancelled`]. Audio-only timelines do not invoke the
     /// callback (there are no video frames to report).
     ///
     /// # Example
@@ -176,17 +176,17 @@ impl Timeline {
     ///
     /// # Errors
     ///
-    /// - [`PipelineError::ClipNotFound`] — a clip's source file is missing
-    /// - [`PipelineError::Cancelled`] — `on_progress` returned `false`
-    /// - [`PipelineError::Encode`] — encoder failure
-    /// - [`PipelineError::Filter`] — filter graph construction failure
-    /// - [`PipelineError::TimelineRenderFailed`] — other structural failure
+    /// - [`TimelineError::ClipNotFound`] — a clip's source file is missing
+    /// - [`TimelineError::Cancelled`] — `on_progress` returned `false`
+    /// - [`TimelineError::Encode`] — encoder failure
+    /// - [`TimelineError::Filter`] — filter graph construction failure
+    /// - [`TimelineError::TimelineRenderFailed`] — other structural failure
     pub fn render_with_progress(
         self,
         output: impl AsRef<Path>,
         config: EncoderConfig,
         on_progress: impl Fn(&Progress) -> bool + Send,
-    ) -> Result<(), PipelineError> {
+    ) -> Result<(), TimelineError> {
         let output = output.as_ref();
 
         // Compute total expected video frame count from clips with known durations.
@@ -222,7 +222,7 @@ impl Timeline {
         for track in video_tracks.iter().chain(audio_tracks.iter()) {
             for clip in track {
                 if !clip.source.exists() {
-                    return Err(PipelineError::ClipNotFound {
+                    return Err(TimelineError::ClipNotFound {
                         path: clip.source.to_string_lossy().into_owned(),
                     });
                 }
@@ -434,7 +434,7 @@ impl Timeline {
                 });
             }
 
-            video_graph = Some(composer.build().map_err(PipelineError::Filter)?);
+            video_graph = Some(composer.build().map_err(TimelineError::Filter)?);
         }
 
         // 4. Build audio mix graph.
@@ -537,7 +537,7 @@ impl Timeline {
                     });
                 }
             }
-            audio_graph = Some(mixer.build().map_err(PipelineError::Filter)?);
+            audio_graph = Some(mixer.build().map_err(TimelineError::Filter)?);
         }
 
         // 5. Build encoder.
@@ -550,7 +550,7 @@ impl Timeline {
         if audio_graph.is_some() {
             enc_builder = enc_builder.audio(48_000, 2).audio_codec(config.audio_codec);
         }
-        let mut encoder = enc_builder.build().map_err(PipelineError::Encode)?;
+        let mut encoder = enc_builder.build().map_err(TimelineError::Encode)?;
 
         let start = Instant::now();
 
@@ -565,9 +565,9 @@ impl Timeline {
                 // frame index fits comfortably in f64 mantissa
                 let pts = Duration::from_secs_f64(f64::from(video_idx) / frame_rate);
                 vgraph.tick(pts);
-                match vgraph.pull_video().map_err(PipelineError::Filter)? {
+                match vgraph.pull_video().map_err(TimelineError::Filter)? {
                     Some(frame) => {
-                        encoder.push_video(&frame).map_err(PipelineError::Encode)?;
+                        encoder.push_video(&frame).map_err(TimelineError::Encode)?;
                         video_idx = video_idx.saturating_add(1);
                         let progress = Progress {
                             frames_processed: u64::from(video_idx),
@@ -575,7 +575,7 @@ impl Timeline {
                             elapsed: start.elapsed(),
                         };
                         if !on_progress(&progress) {
-                            return Err(PipelineError::Cancelled);
+                            return Err(TimelineError::Cancelled);
                         }
                     }
                     None => break,
@@ -590,10 +590,10 @@ impl Timeline {
             let mut audio_pts = Duration::ZERO;
             loop {
                 agraph.tick(audio_pts);
-                match agraph.pull_audio().map_err(PipelineError::Filter)? {
+                match agraph.pull_audio().map_err(TimelineError::Filter)? {
                     Some(frame) => {
                         let chunk_dur = frame.duration();
-                        encoder.push_audio(&frame).map_err(PipelineError::Encode)?;
+                        encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
                         audio_pts += chunk_dur;
                     }
                     None => break,
@@ -602,7 +602,7 @@ impl Timeline {
         }
 
         // 8. Flush encoder.
-        encoder.finish().map_err(PipelineError::Encode)?;
+        encoder.finish().map_err(TimelineError::Encode)?;
 
         log::info!(
             "timeline render complete output={} video_tracks={nv} audio_tracks={na}",
@@ -749,13 +749,13 @@ impl TimelineBuilder {
     ///
     /// # Errors
     ///
-    /// - [`PipelineError::NoInput`] — both track lists are empty
-    /// - [`PipelineError::ClipNotFound`] — canvas/fps auto-probe needed but
+    /// - [`TimelineError::NoInput`] — both track lists are empty
+    /// - [`TimelineError::ClipNotFound`] — canvas/fps auto-probe needed but
     ///   the first video clip's source file does not exist
-    /// - [`PipelineError::Decode`] — the first video clip could not be opened
-    pub fn build(self) -> Result<Timeline, PipelineError> {
+    /// - [`TimelineError::Decode`] — the first video clip could not be opened
+    pub fn build(self) -> Result<Timeline, TimelineError> {
         if self.video_tracks.is_empty() && self.audio_tracks.is_empty() {
-            return Err(PipelineError::NoInput);
+            return Err(TimelineError::NoInput);
         }
 
         let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
@@ -779,14 +779,14 @@ impl TimelineBuilder {
     /// When all three values are explicitly set, returns them directly.
     /// Otherwise probes the first video clip with `VideoDecoder`. For
     /// audio-only timelines (no video tracks) falls back to 1920×1080 @ 30 fps.
-    fn resolve_canvas_and_fps(&self) -> Result<(u32, u32, f64), PipelineError> {
+    fn resolve_canvas_and_fps(&self) -> Result<(u32, u32, f64), TimelineError> {
         let need_probe = self.canvas_width.is_none()
             || self.canvas_height.is_none()
             || self.frame_rate.is_none();
 
         if need_probe && let Some(first_clip) = self.video_tracks.first().and_then(|t| t.first()) {
             if !first_clip.source.exists() {
-                return Err(PipelineError::ClipNotFound {
+                return Err(TimelineError::ClipNotFound {
                     path: first_clip.source.to_string_lossy().into_owned(),
                 });
             }
@@ -806,15 +806,170 @@ impl TimelineBuilder {
     }
 }
 
+// ── Timeline -> Scene derivation (real-time preview) ────────────────────────────
+
+/// Projects one video clip into a [`ScenePlacement`](ff_preview::ScenePlacement).
+/// `is_base` selects the V1 base track, where a crossfade transition contributes a
+/// `transition_dur`; overlays force zero (matching the compositor).
+#[cfg(feature = "preview")]
+fn video_placement(clip: &Clip, is_base: bool) -> ff_preview::ScenePlacement {
+    let transition_dur = if is_base && clip.transition.is_some() {
+        clip.transition_duration
+    } else {
+        Duration::ZERO
+    };
+    ff_preview::ScenePlacement {
+        source: clip.source.clone(),
+        timeline_offset: clip.timeline_offset,
+        in_point: clip.in_point.unwrap_or(Duration::ZERO),
+        out_point: clip.out_point,
+        speed: clip.speed.max(0.01),
+        transition_dur,
+        opacity: clip.opacity.clamp(0.0, 1.0),
+        layer: clip.realtime_layer_descriptor(),
+        fade_in: clip.fade_in,
+        fade_out: clip.fade_out,
+        volume_db: clip.volume_db,
+        volume_track: clip.volume_track.clone(),
+    }
+}
+
+/// Projects one audio-only clip into a [`SceneAudioPlacement`](ff_preview::SceneAudioPlacement).
+#[cfg(feature = "preview")]
+fn audio_placement(clip: &Clip) -> ff_preview::SceneAudioPlacement {
+    ff_preview::SceneAudioPlacement {
+        source: clip.source.clone(),
+        timeline_offset: clip.timeline_offset,
+        in_point: clip.in_point.unwrap_or(Duration::ZERO),
+        out_point: clip.out_point,
+        fade_in: clip.fade_in,
+        fade_out: clip.fade_out,
+        volume_db: clip.volume_db,
+        volume_track: clip.volume_track.clone(),
+    }
+}
+
+#[cfg(feature = "preview")]
+impl Timeline {
+    /// Projects this timeline into a primitive [`Scene`](ff_preview::Scene) for the
+    /// real-time preview runner. This is a pure model projection — no probing or
+    /// I/O; media-dependent resolution (durations, audio presence, frame size)
+    /// happens later in [`ScenePlayer::open`](ff_preview::ScenePlayer::open).
+    ///
+    /// Video track `0` is the V1 base (crossfade transitions apply); tracks `1..`
+    /// are overlays (transitions forced off, matching the compositor).
+    #[must_use]
+    pub fn to_scene(&self) -> ff_preview::Scene {
+        let video_tracks = self
+            .video_tracks()
+            .iter()
+            .enumerate()
+            .map(|(track_idx, track)| ff_preview::SceneVideoTrack {
+                placements: track
+                    .iter()
+                    .map(|clip| video_placement(clip, track_idx == 0))
+                    .collect(),
+            })
+            .collect();
+
+        let audio_tracks = self
+            .audio_tracks()
+            .iter()
+            .map(|track| ff_preview::SceneAudioTrack {
+                placements: track.iter().map(audio_placement).collect(),
+            })
+            .collect();
+
+        ff_preview::Scene {
+            fps: self.frame_rate().max(1.0),
+            canvas: self.explicit_canvas(),
+            video_tracks,
+            audio_tracks,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "preview")]
+    #[test]
+    fn timeline_to_scene_should_project_clip_fields() {
+        use ff_filter::XfadeTransition;
+
+        let timeline = Timeline::builder()
+            // Explicit canvas + fps so build() does not probe the fake sources.
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("a.mp4")
+                    .trim(Duration::from_secs(1), Duration::from_secs(3))
+                    .offset(Duration::from_millis(500))
+                    .with_opacity(0.5)
+                    .with_speed(2.0)
+                    .with_volume_track(AnimationTrack::new()),
+                Clip::new("b.mp4")
+                    .with_transition(XfadeTransition::Fade, Duration::from_millis(750)),
+            ])
+            .video_track(vec![
+                // Overlay: a transition here must project as zero.
+                Clip::new("overlay.mp4")
+                    .with_transition(XfadeTransition::Fade, Duration::from_millis(400)),
+            ])
+            .audio_track(vec![
+                Clip::new("music.mp3")
+                    .with_fade_in(Duration::from_millis(200))
+                    .with_fade_out(Duration::from_millis(300))
+                    .volume(-6.0),
+            ])
+            .build()
+            .unwrap();
+
+        let scene = timeline.to_scene();
+
+        assert!((scene.fps - 30.0).abs() < f64::EPSILON);
+        assert_eq!(scene.canvas, Some((1920, 1080)));
+        assert_eq!(scene.video_tracks.len(), 2);
+        assert_eq!(scene.audio_tracks.len(), 1);
+
+        let base = &scene.video_tracks[0].placements[0];
+        assert_eq!(base.source.to_str(), Some("a.mp4"));
+        assert_eq!(base.timeline_offset, Duration::from_millis(500));
+        assert_eq!(base.in_point, Duration::from_secs(1));
+        assert_eq!(base.out_point, Some(Duration::from_secs(3)));
+        assert!((base.speed - 2.0).abs() < f64::EPSILON);
+        assert!((base.opacity - 0.5).abs() < f32::EPSILON);
+        assert_eq!(
+            base.transition_dur,
+            Duration::ZERO,
+            "clip 0 has no transition"
+        );
+        assert!(base.volume_track.is_some());
+        assert!((base.layer.opacity - 0.5).abs() < f32::EPSILON);
+
+        let base1 = &scene.video_tracks[0].placements[1];
+        assert_eq!(base1.transition_dur, Duration::from_millis(750));
+
+        let overlay = &scene.video_tracks[1].placements[0];
+        assert_eq!(
+            overlay.transition_dur,
+            Duration::ZERO,
+            "overlay transitions must project as zero"
+        );
+
+        let audio = &scene.audio_tracks[0].placements[0];
+        assert_eq!(audio.source.to_str(), Some("music.mp3"));
+        assert_eq!(audio.fade_in, Duration::from_millis(200));
+        assert_eq!(audio.fade_out, Duration::from_millis(300));
+        assert!((audio.volume_db - (-6.0)).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn timeline_builder_should_err_when_no_tracks() {
         let result = Timeline::builder().build();
-        assert!(matches!(result, Err(PipelineError::NoInput)));
+        assert!(matches!(result, Err(TimelineError::NoInput)));
     }
 
     #[test]
