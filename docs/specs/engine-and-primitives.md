@@ -103,25 +103,33 @@ to `avio`. This avoids exposing `ff-preview` internals (`MasterClock`, `SwsRgbaC
 ```
 Scene { fps, canvas: Option<(u32,u32)>, video_layers: Vec<SceneVideoLayer>, audio_tracks: Vec<SceneAudioTrack> }
 SceneVideoLayer { placements: Vec<ScenePlacement> }        // layer 0 = V1 base, 1.. = overlays
-ScenePlacement  { source: PathBuf, timeline_start/timeline_end: Duration, in_point: Duration,
+ScenePlacement  { source: PathBuf, timeline_offset: Duration, in_point: Duration,
                   out_point: Option<Duration>, speed: f64, transition_dur: Duration (V1 only),
-                  opacity: f32, layer: RealtimeLayerSpec }
+                  opacity: f32, layer: RealtimeLayerDescriptor,
+                  fade_in/fade_out: Duration, volume_db: f64,
+                  volume_track: Option<AnimationTrack<f64>> }
 SceneAudioTrack { placements: Vec<SceneAudioPlacement> }
-SceneAudioPlacement { source, timeline_start/end, in_point, clip_dur, fade_in, fade_out, speed,
-                      volume_db: f64, volume_track: Option<AnimationTrack<f64>>, has_audio: bool }
+SceneAudioPlacement { source: PathBuf, timeline_offset, in_point, out_point: Option<Duration>,
+                      fade_in/fade_out: Duration, volume_db: f64,
+                      volume_track: Option<AnimationTrack<f64>> }
 ```
 
-- `RealtimeLayerSpec` = `RealtimeLayer` minus `width`/`height`/`pixel_format` (a new `ff-filter`
+- **Model projection, not media resolution.** `Scene` carries only the editing model's primitivised
+  fields (`timeline_offset`, `out_point`, `speed`, …). Resolving them against the media — probing for
+  duration / `has_audio` / frame size — stays in the preview runner's `open()`, exactly as today. So a
+  Scene re-derived on every edit needs no re-probe, and behaviour is preserved (probe timing and error
+  surface unchanged).
+- `RealtimeLayerDescriptor` = `RealtimeLayer` minus `width`/`height`/`pixel_format` (a new `ff-filter`
   primitive); the runner builds the per-frame layer at decode time via
-  `RealtimeLayer::with_dimensions(spec, w, h, fmt)`. `Clip::realtime_layer` splits into
-  `Clip → RealtimeLayerSpec` (avio) + `spec → RealtimeLayer` (ff-filter).
+  `RealtimeLayer::with_dimensions(descriptor, w, h, fmt)`. `Clip::realtime_layer` splits into
+  `Clip → RealtimeLayerDescriptor` (avio) + `descriptor → RealtimeLayer` (ff-filter).
 - `PlayerCommand::UpdateLayout(Box<Timeline>)` → `UpdateLayout(Box<Scene>)`;
   `PlayerHandle::update_timeline` → `update_scene`. `avio` re-derives a `Scene` on edit and the runner
   reconciles it (as `update_layout_in_place` does today).
 - After the move, `ff-preview`'s only `ff_pipeline` use is `proxy/` (primitive `Pipeline`/`EncoderConfig`)
   — it drops the model dependency entirely.
 
-**Slices for #1329:** **A** (ff-filter) `RealtimeLayerSpec` + `with_dimensions`; **B** (ff-preview)
+**Slices for #1329:** **A** (ff-filter) `RealtimeLayerDescriptor` + `with_dimensions`; **B** (ff-preview)
 `Scene` types + runner consumes `Scene` (temporary `Timeline → Scene` adapter keeps it green); **C**
 (avio) move `Timeline`/`Clip`/derivation + the two `PipelineError` model variants to `avio` and place the
 `Timeline → Scene` derivation there; **D** close-out (folds into #1333).
