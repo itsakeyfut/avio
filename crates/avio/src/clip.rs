@@ -14,7 +14,7 @@ use ff_filter::{
 };
 use ff_format::{PixelFormat, VideoFrame};
 
-use crate::error::PipelineError;
+use crate::error::TimelineError;
 
 /// A single media clip on a timeline.
 ///
@@ -25,7 +25,7 @@ use crate::error::PipelineError;
 /// # Examples
 ///
 /// ```
-/// use ff_pipeline::Clip;
+/// use avio::Clip;
 /// use std::time::Duration;
 ///
 /// let clip = Clip::new("intro.mp4")
@@ -161,7 +161,7 @@ pub struct Clip {
     /// # Examples
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("scene.mp4").with_speed(2.0);
     /// assert_eq!(clip.speed, 2.0);
@@ -180,7 +180,7 @@ pub struct Clip {
     /// # Examples
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("scene.mp4").proxy("scene_proxy_quarter.mp4");
     /// assert!(clip.proxy.is_some());
@@ -243,7 +243,7 @@ impl Clip {
     /// # Examples
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::FilterStep;
     ///
     /// let clip = Clip::new("scene.mp4")
@@ -270,7 +270,7 @@ impl Clip {
     /// # Examples
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::FilterStep;
     ///
     /// let clip = Clip::new("scene.mp4")
@@ -318,9 +318,9 @@ impl Clip {
     ///
     /// # Errors
     ///
-    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built or
+    /// Returns [`TimelineError::Filter`] if the filter graph cannot be built or
     /// the frame cannot be processed.
-    pub fn apply_video_effects(&self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
+    pub fn apply_video_effects(&self, frame: &VideoFrame) -> Result<VideoFrame, TimelineError> {
         self.video_effect_renderer(frame.format())?.render(frame)
     }
 
@@ -334,11 +334,11 @@ impl Clip {
     ///
     /// # Errors
     ///
-    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built.
+    /// Returns [`TimelineError::Filter`] if the filter graph cannot be built.
     pub fn video_effect_renderer(
         &self,
         input_format: PixelFormat,
-    ) -> Result<VideoEffectRenderer, PipelineError> {
+    ) -> Result<VideoEffectRenderer, TimelineError> {
         VideoEffectRenderer::new(self, input_format)
     }
 
@@ -440,7 +440,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::XfadeTransition;
     /// use std::time::Duration;
     ///
@@ -468,7 +468,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("narration.wav").volume(-6.0);
     /// assert_eq!(clip.volume_db, -6.0);
@@ -501,7 +501,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use std::time::Duration;
     ///
     /// let clip = Clip::new("narration.wav").with_fade_in(Duration::from_secs(2));
@@ -525,7 +525,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use std::time::Duration;
     ///
     /// let clip = Clip::new("narration.wav")
@@ -555,7 +555,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("scene.mp4").with_color_correction(0.1, 1.2, 0.9);
     /// assert_eq!(clip.brightness, 0.1);
@@ -580,7 +580,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("overlay.mp4").with_opacity(0.5);
     /// assert_eq!(clip.opacity, 0.5);
@@ -606,7 +606,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::{AnimationTrack, Easing};
     /// use std::time::Duration;
     ///
@@ -638,7 +638,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("pip.mp4").with_position(320.0, 180.0);
     /// assert_eq!((clip.x, clip.y), (320.0, 180.0));
@@ -656,7 +656,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::{AnimationTrack, Easing};
     /// use std::time::Duration;
     ///
@@ -699,7 +699,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::BlendMode;
     ///
     /// let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Multiply);
@@ -721,7 +721,7 @@ impl Clip {
     /// # Examples
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     /// use ff_filter::CompositeOp;
     ///
     /// let clip = Clip::new("overlay.mp4").with_composite_op(CompositeOp::Atop);
@@ -746,7 +746,7 @@ impl Clip {
     /// # Example
     ///
     /// ```
-    /// use ff_pipeline::Clip;
+    /// use avio::Clip;
     ///
     /// let clip = Clip::new("scene.mp4").with_speed(2.0);
     /// assert_eq!(clip.speed, 2.0);
@@ -793,8 +793,8 @@ impl VideoEffectRenderer {
     ///
     /// # Errors
     ///
-    /// Returns [`PipelineError::Filter`] if the filter graph cannot be built.
-    pub fn new(clip: &Clip, input_format: PixelFormat) -> Result<Self, PipelineError> {
+    /// Returns [`TimelineError::Filter`] if the filter graph cannot be built.
+    pub fn new(clip: &Clip, input_format: PixelFormat) -> Result<Self, TimelineError> {
         let mut builder = FilterGraph::builder().format(vec![PixelFormat::Yuv420p], vec![], vec![]);
         for step in clip.video_effect_chain() {
             builder = builder.add_step(step);
@@ -813,12 +813,12 @@ impl VideoEffectRenderer {
     ///
     /// # Errors
     ///
-    /// Returns [`PipelineError::Filter`] if the frame cannot be processed.
-    pub fn render(&mut self, frame: &VideoFrame) -> Result<VideoFrame, PipelineError> {
+    /// Returns [`TimelineError::Filter`] if the frame cannot be processed.
+    pub fn render(&mut self, frame: &VideoFrame) -> Result<VideoFrame, TimelineError> {
         self.graph.push_video(0, frame)?;
         self.graph
             .pull_video()?
-            .ok_or(PipelineError::Filter(ff_filter::FilterError::ProcessFailed))
+            .ok_or(TimelineError::Filter(ff_filter::FilterError::ProcessFailed))
     }
 }
 

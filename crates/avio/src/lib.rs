@@ -14,7 +14,7 @@
 //! | `encode`         | `ff-encode`        | yes     |                     |
 //! | `hwaccel`        | `ff-encode`        | yes     |                     |
 //! | `filter`         | `ff-filter`        | no      |                     |
-//! | `pipeline`       | `ff-pipeline`      | no      | `filter`            |
+//! | `pipeline`       | `ff-pipeline`      | no      | `decode`+`encode`+`filter` |
 //! | `stream`         | `ff-stream`        | no      | `pipeline`          |
 //! | `preview`        | `ff-preview`       | no      |                     |
 //! | `preview-proxy`  | `ff-preview`       | no      | `preview`           |
@@ -296,11 +296,28 @@ pub use ff_filter::{
 //
 // Enabling `pipeline` also enables `filter` (see Cargo.toml).
 // Progress / ProgressCallback are re-exported here as the canonical source.
+//
+// The editing model (`Timeline` / `Clip` / `render` / `TimelineError`) is defined
+// in `avio` itself — the engine owns the model. The execution pipelines stay in
+// `ff-pipeline` and are re-exported below.
+#[cfg(feature = "pipeline")]
+mod clip;
+#[cfg(feature = "pipeline")]
+mod error;
+#[cfg(feature = "pipeline")]
+mod timeline;
+
+#[cfg(feature = "pipeline")]
+pub use clip::{Clip, VideoEffectRenderer};
+#[cfg(feature = "pipeline")]
+pub use error::TimelineError;
+#[cfg(feature = "pipeline")]
+pub use timeline::{Timeline, TimelineBuilder};
+
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
-    AudioPipeline, Clip, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder,
-    PipelineError, Progress, ProgressCallback, ThumbnailPipeline, Timeline, TimelineBuilder,
-    VideoEffectRenderer, VideoPipeline,
+    AudioPipeline, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError,
+    Progress, ProgressCallback, ThumbnailPipeline, VideoPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
@@ -338,14 +355,20 @@ pub use ff_preview::{
 #[cfg(all(feature = "preview", not(feature = "decode")))]
 pub use ff_preview::HardwareAccel;
 
-// `TimelinePlayer` and `TimelineRunner` require both `ff-preview` and
-// `ff-pipeline`.  The `pipeline` feature in avio enables `ff-preview?/timeline`
-// (see Cargo.toml), which gates these types inside `ff-preview`.
+// The editing-model preview entry `TimelinePlayer` is defined in `avio` (the
+// `player` module) — it derives a `Scene` from a `Timeline` and hands it to
+// `ff-preview`'s `ScenePlayer`. `ScenePlayer` / `TimelineRunner` / the `Scene`
+// types stay in `ff-preview` (model-agnostic). All require `preview` + `pipeline`;
+// the `pipeline` feature enables `ff-preview?/timeline` (see Cargo.toml).
+#[cfg(all(feature = "preview", feature = "pipeline"))]
+mod player;
 #[cfg(all(feature = "preview", feature = "pipeline"))]
 pub use ff_preview::{
-    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack, TimelinePlayer,
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneVideoTrack,
     TimelineRunner,
 };
+#[cfg(all(feature = "preview", feature = "pipeline"))]
+pub use player::TimelinePlayer;
 
 #[cfg(all(feature = "preview", feature = "tokio"))]
 pub use ff_preview::AsyncPreviewPlayer;

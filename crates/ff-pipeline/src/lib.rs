@@ -52,22 +52,17 @@
 #![warn(missing_docs)]
 
 pub mod audio_pipeline;
-pub mod clip;
 pub mod encoder_config;
 pub mod error;
 pub mod pipeline;
 pub mod progress;
 pub mod thumbnail;
-pub mod timeline;
 pub mod video_pipeline;
 
 pub use audio_pipeline::AudioPipeline;
-pub use clip::{Clip, VideoEffectRenderer};
 pub use encoder_config::{EncoderConfig, EncoderConfigBuilder};
 pub use error::PipelineError;
-pub use ff_filter::{BlendMode, CompositeOp, XfadeTransition};
 pub use pipeline::{Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;
-pub use timeline::{Timeline, TimelineBuilder};
 pub use video_pipeline::VideoPipeline;

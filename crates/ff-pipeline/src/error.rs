@@ -77,24 +77,6 @@ pub enum PipelineError {
     /// decodable frame exists at that point.
     #[error("no frame available at the requested position")]
     FrameNotAvailable,
-
-    /// A `Timeline::render()` call failed for a structural reason not covered
-    /// by a nested variant (e.g. [`PipelineError::Encode`] or [`PipelineError::Filter`]).
-    #[error("timeline render failed: {reason}")]
-    TimelineRenderFailed {
-        /// Human-readable description of the failure.
-        reason: String,
-    },
-
-    /// A clip's source file could not be found on disk.
-    ///
-    /// Returned by [`TimelineBuilder::build()`](crate::TimelineBuilder::build) and
-    /// `Timeline::render()` when `Clip.source` does not exist.
-    #[error("clip source not found: path={path}")]
-    ClipNotFound {
-        /// Absolute or relative path that could not be found.
-        path: String,
-    },
 }
 
 #[cfg(test)]
@@ -217,24 +199,5 @@ mod tests {
         let inner = std::io::Error::new(std::io::ErrorKind::Other, "some error");
         let err: PipelineError = inner.into();
         assert!(err.source().is_some());
-    }
-
-    #[test]
-    fn pipeline_error_timeline_render_failed_should_display_correctly() {
-        let err = PipelineError::TimelineRenderFailed {
-            reason: "not implemented".to_string(),
-        };
-        assert_eq!(err.to_string(), "timeline render failed: not implemented");
-    }
-
-    #[test]
-    fn pipeline_error_clip_not_found_should_include_path_in_message() {
-        let err = PipelineError::ClipNotFound {
-            path: "/tmp/missing.mp4".to_string(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "clip source not found: path=/tmp/missing.mp4"
-        );
     }
 }
