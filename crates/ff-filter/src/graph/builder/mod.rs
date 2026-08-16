@@ -252,25 +252,6 @@ impl FilterGraphBuilder {
                     reason: format!("xfade duration {duration} must be > 0.0"),
                 });
             }
-            if let FilterStep::JoinWithDissolve {
-                dissolve_dur,
-                clip_a_end,
-                ..
-            } = step
-            {
-                if *dissolve_dur <= 0.0 {
-                    return Err(FilterError::InvalidConfig {
-                        reason: format!(
-                            "join_with_dissolve dissolve_dur={dissolve_dur} must be > 0.0"
-                        ),
-                    });
-                }
-                if *clip_a_end <= 0.0 {
-                    return Err(FilterError::InvalidConfig {
-                        reason: format!("join_with_dissolve clip_a_end={clip_a_end} must be > 0.0"),
-                    });
-                }
-            }
             if let FilterStep::ANoiseGate {
                 attack_ms,
                 release_ms,

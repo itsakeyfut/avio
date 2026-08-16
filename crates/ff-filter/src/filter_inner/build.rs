@@ -2187,120 +2187,6 @@ pub(super) unsafe fn add_parametric_eq_chain(
     Ok(ctx)
 }
 
-// ── JoinWithDissolve compound step ────────────────────────────────────────────
-
-/// Expand a `JoinWithDissolve` step into the following compound filter graph:
-///
-/// ```text
-/// clip_a_src → trim(end=clip_a_end+dissolve_dur) → setpts → xfade[0]
-/// clip_b_src → trim(start=max(0, clip_b_start−dissolve_dur)) → setpts → xfade[1]
-/// ```
-///
-/// Returns the `xfade` filter context, which becomes the new `prev_ctx`.
-///
-/// # Safety
-///
-/// `graph`, `clip_a_src`, and `clip_b_src` must be valid non-null pointers
-/// belonging to the same `AVFilterGraph`.
-pub(super) unsafe fn add_join_with_dissolve_step(
-    graph: *mut ff_sys::AVFilterGraph,
-    clip_a_src: *mut ff_sys::AVFilterContext,
-    clip_b_src: *mut ff_sys::AVFilterContext,
-    clip_a_end: f64,
-    clip_b_start: f64,
-    dissolve_dur: f64,
-    index: usize,
-) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
-    // 1. trim_a: keep clip A frames up to clip_a_end + dissolve_dur
-    let a_trim_end = clip_a_end + dissolve_dur;
-    let trim_a = add_raw_filter_step(
-        graph,
-        clip_a_src,
-        "trim",
-        &format!("end={a_trim_end}"),
-        index,
-        "jwd_trima",
-    )?;
-
-    // 2. setpts_a: reset clip A timestamps to zero after trim
-    let setpts_a = add_raw_filter_step(
-        graph,
-        trim_a,
-        "setpts",
-        "PTS-STARTPTS",
-        index,
-        "jwd_setptsa",
-    )?;
-
-    // 3. Create xfade filter; pads are wired manually below.
-    let xfade_filter = ff_sys::avfilter_get_by_name(c"xfade".as_ptr());
-    if xfade_filter.is_null() {
-        log::warn!("filter not found name=xfade (join_with_dissolve)");
-        return Err(FilterError::BuildFailed);
-    }
-    let xfade_name = std::ffi::CString::new(format!("jwd_xfade{index}"))
-        .map_err(|_| FilterError::BuildFailed)?;
-    let xfade_args_str = format!("transition=dissolve:duration={dissolve_dur}:offset={clip_a_end}");
-    let xfade_args =
-        std::ffi::CString::new(xfade_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
-    let mut xfade_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    // SAFETY: all pointers are valid; xfade_filter, xfade_name, and xfade_args
-    // are non-null and null-terminated.
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut xfade_ctx,
-        xfade_filter,
-        xfade_name.as_ptr(),
-        xfade_args.as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        log::warn!("filter creation failed name=xfade args={xfade_args_str} (join_with_dissolve)");
-        return Err(FilterError::BuildFailed);
-    }
-    log::debug!("filter added name=xfade args={xfade_args_str} (join_with_dissolve)");
-
-    // Link setpts_a (clip A chain) → xfade[0]
-    // SAFETY: setpts_a and xfade_ctx belong to the same graph; pad indices valid.
-    let ret = ff_sys::avfilter_link(setpts_a, 0, xfade_ctx, 0);
-    if ret < 0 {
-        return Err(FilterError::BuildFailed);
-    }
-
-    // 4. trim_b: keep clip B frames from max(0, clip_b_start - dissolve_dur)
-    let b_trim_start = (clip_b_start - dissolve_dur).max(0.0);
-    let trim_b = add_raw_filter_step(
-        graph,
-        clip_b_src,
-        "trim",
-        &format!("start={b_trim_start}"),
-        index,
-        "jwd_trimb",
-    )?;
-
-    // 5. setpts_b: reset clip B timestamps to zero after trim
-    let setpts_b = add_raw_filter_step(
-        graph,
-        trim_b,
-        "setpts",
-        "PTS-STARTPTS",
-        index,
-        "jwd_setptsb",
-    )?;
-
-    // Link setpts_b (clip B chain) → xfade[1]
-    // SAFETY: setpts_b and xfade_ctx belong to the same graph; pad index 1 is valid for xfade.
-    let ret = ff_sys::avfilter_link(setpts_b, 0, xfade_ctx, 1);
-    if ret < 0 {
-        return Err(FilterError::BuildFailed);
-    }
-
-    log::debug!(
-        "filter join_with_dissolve expanded dissolve_dur={dissolve_dur} offset={clip_a_end}"
-    );
-    Ok(xfade_ctx)
-}
-
 // ── Graph orchestrators ───────────────────────────────────────────────────────
 
 use super::FilterGraphInner;
@@ -2501,34 +2387,6 @@ impl FilterGraphInner {
                     *opacity,
                     width.as_deref(),
                     height.as_deref(),
-                    i,
-                ) {
-                    Ok(ctx) => ctx,
-                    Err(e) => bail!(e),
-                };
-                continue;
-            }
-
-            // JoinWithDissolve is a compound step that expands to:
-            //   prev → trim_a → setpts_a → xfade[0]
-            //   in1  → trim_b → setpts_b → xfade[1]
-            // It bypasses the standard add_and_link_step path entirely.
-            if let FilterStep::JoinWithDissolve {
-                clip_a_end,
-                clip_b_start,
-                dissolve_dur,
-            } = step
-            {
-                let Some(b_src) = src_ctxs.get(1).and_then(|o| *o) else {
-                    bail!(FilterError::BuildFailed)
-                };
-                prev_ctx = match add_join_with_dissolve_step(
-                    graph,
-                    prev_ctx,
-                    b_src.as_ptr(),
-                    *clip_a_end,
-                    *clip_b_start,
-                    *dissolve_dur,
                     i,
                 ) {
                     Ok(ctx) => ctx,
@@ -2901,10 +2759,7 @@ impl FilterGraphInner {
             // Video-only steps; skip them in the audio graph.
             if matches!(
                 step,
-                FilterStep::Reverse
-                    | FilterStep::ConcatVideo { .. }
-                    | FilterStep::JoinWithDissolve { .. }
-                    | FilterStep::Blend { .. }
+                FilterStep::Reverse | FilterStep::ConcatVideo { .. } | FilterStep::Blend { .. }
             ) {
                 continue;
             }
