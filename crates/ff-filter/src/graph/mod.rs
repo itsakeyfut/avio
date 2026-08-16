@@ -11,7 +11,8 @@ pub mod types;
 pub use builder::FilterGraphBuilder;
 pub use composition::{
     AudioConcatenator, AudioTrack, ClipJoiner, MultiTrackAudioMixer, MultiTrackComposer,
-    ProxySource, RealtimeComposer, RealtimeLayer, VideoConcatenator, VideoLayer,
+    ProxySource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor, VideoConcatenator,
+    VideoLayer,
 };
 pub use ffmpeg_token::FfmpegToken;
 pub use filter_step::FilterStep;
