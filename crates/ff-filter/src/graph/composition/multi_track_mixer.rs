@@ -3,7 +3,6 @@
 #![allow(unsafe_code)]
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use ff_format::ChannelLayout;
 
@@ -30,25 +29,16 @@ pub struct AudioTrack {
     /// (`AnimatedValue::Track`) is not yet implemented; the initial value at
     /// `Duration::ZERO` is used and a warning is emitted.
     pub pan: AnimatedValue<f64>,
-    /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
-    pub time_offset: Duration,
-    /// Source in-point: start reading audio at this offset in the source file.
-    ///
-    /// When `Some`, an `atrim=start=<t>` filter is inserted immediately after
-    /// the source node so that audio before this timestamp is discarded.
-    /// `None` reads from the beginning of the file.
-    pub in_point: Option<Duration>,
-    /// Source out-point: stop reading audio at this offset in the source file.
-    ///
-    /// When `Some`, an `atrim=end=<t>` filter is inserted immediately after
-    /// the source node so that audio after this timestamp is discarded.
-    /// `None` reads to the end of the file.
-    pub out_point: Option<Duration>,
+    // Note (#1331): source trim (in/out) and timeline placement (offset) are not
+    // fields. The caller (engine derive) expresses them as leading effects —
+    // `ATrim` + `AResetPts` for the source window, `AudioDelay` for the timeline
+    // offset — so `AudioTrack` is model-free.
     /// Ordered per-track audio effect chain applied before mixing.
     ///
-    /// Each [`FilterStep`] is inserted as a filter node immediately after
-    /// the track's pan/volume chain and before the `amix` node.
-    /// Use audio-relevant variants such as [`FilterStep::Volume`],
+    /// Each [`FilterStep`] is inserted as a filter node after the track's
+    /// volume node and before the `amix` node. Any timeline trim/placement steps
+    /// the caller emits (`ATrim` + `AResetPts` + `AudioDelay`) belong at the front
+    /// of this list. Use audio-relevant variants such as [`FilterStep::Volume`],
     /// [`FilterStep::AFadeIn`], and [`FilterStep::ACompressor`].
     /// An empty vec inserts no extra nodes (zero overhead).
     pub effects: Vec<FilterStep>,
@@ -78,16 +68,12 @@ pub struct AudioTrack {
 /// ```ignore
 /// use ff_filter::MultiTrackAudioMixer;
 /// use ff_format::ChannelLayout;
-/// use std::time::Duration;
 ///
 /// let mut graph = MultiTrackAudioMixer::new(48000, ChannelLayout::Stereo)
 ///     .add_track(ff_filter::AudioTrack {
 ///         source: "music.mp3".into(),
 ///         volume: ff_filter::AnimatedValue::Static(-3.0),
 ///         pan: ff_filter::AnimatedValue::Static(0.0),
-///         time_offset: Duration::ZERO,
-///         in_point: None,
-///         out_point: None,
 ///         effects: vec![],
 ///         sample_rate: 48000,
 ///         channel_layout: ChannelLayout::Stereo,
@@ -148,6 +134,8 @@ impl MultiTrackAudioMixer {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -168,9 +156,6 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -191,9 +176,6 @@ mod tests {
             source: "track.mp3".into(),
             volume: AnimatedValue::Static(0.0),
             pan: AnimatedValue::Static(0.0),
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             effects: vec![FilterStep::Volume(6.0)],
             sample_rate: 48_000,
             channel_layout: ChannelLayout::Stereo,
@@ -216,9 +198,6 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 44_100, // mismatch → aresample should be inserted
                 channel_layout: ChannelLayout::Stereo,
@@ -234,18 +213,15 @@ mod tests {
     }
 
     #[test]
-    fn audio_track_with_positive_offset_should_insert_adelay() {
-        // adelay is inserted when time_offset > 0.
+    fn audio_track_with_audio_delay_effect_should_insert_adelay() {
+        // A timeline offset is expressed by the caller as an AudioDelay effect.
         // Build fails (nonexistent file) but NOT at "filter not found: adelay".
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::from_secs(2),
-                in_point: None,
-                out_point: None,
-                effects: vec![],
+                effects: vec![FilterStep::AudioDelay { ms: 2000.0 }],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
             })
@@ -260,16 +236,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_audio_offset_should_not_insert_extra_filters() {
-        // time_offset=ZERO must not cause adelay nodes.
+    fn track_without_timeline_effects_should_not_insert_adelay() {
+        // A track whose effects carry no AudioDelay inserts no adelay node.
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -292,9 +265,6 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000, // matches output → no aresample
                 channel_layout: ChannelLayout::Stereo, // matches output → no aformat
@@ -330,9 +300,6 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Track(vol_track),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -358,10 +325,13 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: Some(Duration::from_secs(2)),
-                out_point: Some(Duration::from_secs(6)),
-                effects: vec![],
+                effects: vec![
+                    FilterStep::ATrim {
+                        start: Some(2.0),
+                        end: Some(6.0),
+                    },
+                    FilterStep::AResetPts,
+                ],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
             })
@@ -387,10 +357,10 @@ mod tests {
                 source: "nonexistent.mp3".into(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.0),
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: Some(Duration::from_secs(4)),
-                effects: vec![],
+                effects: vec![FilterStep::ATrim {
+                    start: None,
+                    end: Some(4.0),
+                }],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
             })
@@ -421,9 +391,6 @@ mod tests {
             source: "nonexistent.mp3".into(),
             volume: AnimatedValue::Static(0.0),
             pan: AnimatedValue::Track(pan_track),
-            time_offset: Duration::ZERO,
-            in_point: None,
-            out_point: None,
             effects: vec![],
             sample_rate: 48_000,
             channel_layout: ChannelLayout::Stereo,

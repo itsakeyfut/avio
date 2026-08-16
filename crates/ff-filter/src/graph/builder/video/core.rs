@@ -127,6 +127,49 @@ mod tests {
     }
 
     #[test]
+    fn filter_step_atrim_should_produce_atrim_args_with_six_decimals() {
+        assert_eq!(
+            FilterStep::ATrim {
+                start: Some(10.0),
+                end: Some(30.0),
+            }
+            .filter_name(),
+            "atrim"
+        );
+        assert_eq!(
+            FilterStep::ATrim {
+                start: Some(10.0),
+                end: Some(30.0),
+            }
+            .args(),
+            "start=10.000000:end=30.000000"
+        );
+        assert_eq!(
+            FilterStep::ATrim {
+                start: Some(10.0),
+                end: None,
+            }
+            .args(),
+            "start=10.000000"
+        );
+        assert_eq!(
+            FilterStep::ATrim {
+                start: None,
+                end: Some(30.0),
+            }
+            .args(),
+            "end=30.000000"
+        );
+    }
+
+    #[test]
+    fn filter_step_areset_pts_should_produce_asetpts_pts_startpts() {
+        let step = FilterStep::AResetPts;
+        assert_eq!(step.filter_name(), "asetpts");
+        assert_eq!(step.args(), "PTS-STARTPTS");
+    }
+
+    #[test]
     fn filter_step_speed_should_produce_correct_filter_name() {
         let step = FilterStep::Speed { factor: 2.0 };
         assert_eq!(step.filter_name(), "setpts");

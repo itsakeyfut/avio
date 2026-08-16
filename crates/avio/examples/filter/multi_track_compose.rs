@@ -19,7 +19,7 @@
 //!   [--width 1280] [--height 720] [--fps 30]
 //! ```
 
-use std::{path::PathBuf, process, time::Duration};
+use std::{path::PathBuf, process};
 
 use avio::{
     AnimatedValue, AudioCodec, AudioTrack, ChannelLayout, MultiTrackAudioMixer, MultiTrackComposer,
@@ -136,9 +136,6 @@ fn main() {
                 source: audio_a.clone(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(-0.2), // slight left pan
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,
@@ -147,9 +144,6 @@ fn main() {
                 source: audio_b.clone(),
                 volume: AnimatedValue::Static(0.0),
                 pan: AnimatedValue::Static(0.2), // slight right pan
-                time_offset: Duration::ZERO,
-                in_point: None,
-                out_point: None,
                 effects: vec![],
                 sample_rate: 48_000,
                 channel_layout: ChannelLayout::Stereo,

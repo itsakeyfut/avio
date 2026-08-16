@@ -436,6 +436,17 @@ pub enum FilterStep {
         /// Delay in milliseconds. Positive = delay; negative = advance.
         ms: f64,
     },
+    /// Audio trim: keep only samples in `[start, end)` seconds (`atrim`). Either
+    /// bound may be `None` for an open range. The audio counterpart of
+    /// [`Trim`](Self::Trim).
+    ATrim {
+        start: Option<f64>,
+        end: Option<f64>,
+    },
+    /// Reset audio timestamps to start at zero (`asetpts=PTS-STARTPTS`). Typically
+    /// follows an [`ATrim`](Self::ATrim) so a placed track's delay is applied from
+    /// zero. The audio counterpart of [`ResetPts`](Self::ResetPts).
+    AResetPts,
     /// Concatenate `n` sequential video input segments via `FFmpeg`'s `concat` filter.
     ///
     /// Requires `n` video input slots (0 through `n-1`). `n` must be ≥ 2.
@@ -1031,6 +1042,9 @@ impl FilterStep {
             // AudioDelay dispatches to adelay (positive) or atrim (negative) at
             // build time; "adelay" is returned here for validate_filter_steps only.
             Self::AudioDelay { .. } => "adelay",
+            Self::ATrim { .. } => "atrim",
+            // "asetpts" is checked at build-time (audio counterpart of ResetPts).
+            Self::AResetPts => "asetpts",
             Self::ConcatVideo { .. } | Self::ConcatAudio { .. } => "concat",
             // JoinWithDissolve is a compound step (trim+setpts → xfade ← setpts+trim);
             // "xfade" is used by validate_filter_steps as the primary filter check.
@@ -1547,6 +1561,13 @@ impl FilterStep {
                     format!("start={}", -ms / 1000.0)
                 }
             }
+            Self::ATrim { start, end } => match (start, end) {
+                (Some(s), Some(e)) => format!("start={s:.6}:end={e:.6}"),
+                (Some(s), None) => format!("start={s:.6}"),
+                (None, Some(e)) => format!("end={e:.6}"),
+                (None, None) => String::new(),
+            },
+            Self::AResetPts => "PTS-STARTPTS".to_string(),
             Self::ConcatVideo { n } => format!("n={n}:v=1:a=0"),
             Self::ConcatAudio { n } => format!("n={n}:v=0:a=1"),
             // args() for JoinWithDissolve is not used by the build loop (which is
