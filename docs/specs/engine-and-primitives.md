@@ -50,6 +50,38 @@ stateless primitives: decode / filter / composite / encode   (ff-*)
 The model's immutable redesign, the pure `derive`, and Do/Undo are implemented in **#1327**.
 Their shape is fixed here so that #1326 purifies toward the right target.
 
+### 2.1 The immutable model and edit API — design for #1327
+
+The model relocated in #1326 is a build-once value (`Timeline` via `TimelineBuilder`) with no edit
+or history API. #1327 makes it an immutable, editable value with Do/Undo, per the North Star above.
+Confirmed design (user-approved):
+
+- **Immutable document.** The existing `Timeline` value is reused as the immutable document (already
+  `Clone`; its fields *are* the document — canvas, fps, tracks, clips, animations). An edit produces a
+  new `Timeline`; the `TimelineBuilder` probe path is not re-run (edits carry the already-resolved
+  canvas/fps).
+- **Edit API — Command/reducer.** A `Command` enum (`AddClip`, `RemoveClip`, `MoveClip`, `TrimClip`,
+  `SetClipProperty`, `AddTrack`/`RemoveTrack`, `SetCanvas`, `SetFrameRate`, …) is applied by a pure
+  `apply(&Timeline, &Command) -> Result<Timeline, EditError>`. Clips/tracks are addressed by a
+  `TrackId` (kind + index) plus a clip index (index-based first; stable IDs are a later enhancement).
+  Making each edit a value gives first-class Do/Undo/Redo and a path to serialization / collaboration.
+- **History — snapshot versions.** An `Editor { history: Vec<Timeline>, cursor }` holds the version
+  history: `apply` pushes a new version (truncating the redo tail), `undo`/`redo` move the cursor.
+  This is the North Star's "history of immutable versions"; structural sharing / diffs (im/rpds) are a
+  later memory optimisation, not needed first.
+- **Unified `derive` — staged.** Today export (`Timeline::render` → `MultiTrackComposer`) and preview
+  (`Timeline::to_scene` → runner → `RealtimeComposer`) are separate derivations that share
+  `Clip::video_effect_chain` but build different layer types and composers, so "preview == export" is
+  not yet structural. #1327 stages this: **first** the immutable model + edit API + Do/Undo (additive,
+  executors unchanged, always-green); **then** a unified pure `derive(model, t) -> Scene` (per-frame)
+  with converging executors so preview == export by construction — the hardest, riskiest part, split
+  into its own child issues.
+
+**Child issues (#1327):** **C1** `Command` + pure `apply`; **C2** `Editor` (history / undo / redo);
+**C3** extract a shared `derive` core across export/preview; **C4** unified `derive(model, t) -> Scene`
++ executor convergence (its own design sub-cycle); **C5** structural-sharing history (memory, if
+needed). C1/C2 are the immediate, high-value, low-risk work; C3–C5 follow.
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do
