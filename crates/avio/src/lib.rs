@@ -303,6 +303,8 @@ pub use ff_filter::{
 #[cfg(feature = "pipeline")]
 mod clip;
 #[cfg(feature = "pipeline")]
+mod derive;
+#[cfg(feature = "pipeline")]
 mod edit;
 #[cfg(feature = "pipeline")]
 mod editor;
