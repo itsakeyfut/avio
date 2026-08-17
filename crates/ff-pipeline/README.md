@@ -2,13 +2,15 @@
 
 Wire decode, filter, and encode into a single configured pipeline. Instead of managing three separate contexts, set an input path, an output path with codec settings, and an optional filter chain; the builder validates the configuration before any processing begins.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-pipeline` wires the decode, filter, and encode primitives into a single validated transcode pipeline. It is an orchestration layer rather than a direct FFmpeg wrapper: FFmpeg is touched only through `ff-decode` / `ff-filter` / `ff-encode`. Errors are typed and chain their source (`PipelineError` wraps `DecodeError` / `FilterError` / `EncodeError` via `#[from]`), so a `?` carries the underlying cause up with an actionable message.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-pipeline = "0.15"
+ff-pipeline = "0.16"
 ```
 
 ## Building a Pipeline

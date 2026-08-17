@@ -2,14 +2,16 @@
 
 Decode video and audio frames without managing codec contexts, packet queues, or timestamp conversions. Open a file, call `decode_one` in a loop, and receive `VideoFrame` objects with their position already expressed as a `Timestamp`.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-decode` is a safe, ergonomic wrapper over FFmpeg's decode path: libavcodec decoding and libavformat demuxing, with optional libavutil hardware frames. Errors are typed and contextual (`DecodeError`) and classified via `is_recoverable()` / `is_fatal()`, so callers can react to a corrupt frame or a network hiccup without string-matching FFmpeg return codes.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-decode = "0.15"
-ff-format = "0.15"
+ff-decode = "0.16"
+ff-format = "0.16"
 ```
 
 ## Video Decoding
@@ -174,6 +176,8 @@ let mut decoder = VideoDecoder::open("video.mp4")
 | `DecodeError::InvalidOutputDimensions` | Requested output width/height is invalid         |
 | `DecodeError::Ffmpeg`                  | An underlying FFmpeg call returned an error      |
 
+Every error carries context in its `Display` message, and `err.is_recoverable()` / `err.is_fatal()` classify it so callers can retry or bail without matching each variant.
+
 ## What the Crate Handles for You
 
 - Codec context allocation and lifetime
@@ -191,7 +195,7 @@ let mut decoder = VideoDecoder::open("video.mp4")
 
 ```toml
 [dependencies]
-ff-decode = { version = "0.15", features = ["tokio"] }
+ff-decode = { version = "0.16", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoDecoder` and `AudioDecoder` APIs are compiled. No tokio dependency is pulled in.

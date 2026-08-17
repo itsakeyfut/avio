@@ -2,7 +2,7 @@
 
 Shared data types for the ff-* crate family. No FFmpeg dependency: these types exist so crates can exchange frames and stream metadata without coupling to FFmpeg's internal structs.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-format` is the FFmpeg-free type system shared across the `ff-*` family: pixel and sample formats, channel layouts, colour info, codecs, frames, and stream metadata, so crates can exchange data without coupling to FFmpeg's C structs. It is pure Rust with no FFmpeg dependency, and `FormatError` carries structured context (e.g. `UnsupportedPixelFormat`). Each crate is versioned independently; see crates.io for current versions.
 
 ## Key Types
 

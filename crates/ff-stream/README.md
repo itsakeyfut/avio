@@ -3,13 +3,15 @@
 Produce HLS and DASH adaptive bitrate output from any video source. Define a rendition ladder,
 point it at an input file, and receive a package ready for CDN delivery.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-stream` is a safe, ergonomic wrapper over FFmpeg's adaptive-streaming muxers (the HLS and DASH segmenters in libavformat), driving the encode-and-mux loop from a rendition ladder. Errors are typed and chain their source (`StreamError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-stream = "0.15"
+ff-stream = "0.16"
 ```
 
 ## HLS Output

@@ -6,24 +6,26 @@
 
 A safe, high-level Rust API over FFmpeg for building media applications: decode, encode, filter, compose, and stream.
 
-`avio` is the facade crate for the `ff-*` crate family. Depend on a single crate and opt into the capabilities you need via feature flags. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+`avio` is the **editing engine** of the `ff-*` crate family. It owns the editing model (`Timeline` / `Clip`, the model-to-frame derivation, and edit history) and re-exports the model-agnostic `ff-*` primitives behind feature flags, so you can depend on a single crate and opt into the capabilities you need. If your app needs a different editing model, depend on the `ff-*` primitives directly instead; each is usable on its own. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
 
 ## Installation
 
 ```toml
 [dependencies]
 # Default: probe + decode + encode + hwaccel
-avio = "0.15"
+avio = "0.16"
 
 # Add filtering
-avio = { version = "0.15", features = ["filter"] }
+avio = { version = "0.16", features = ["filter"] }
 
 # Full streaming stack (implies pipeline, which implies filter)
-avio = { version = "0.15", features = ["stream"] }
+avio = { version = "0.16", features = ["stream"] }
 
 # Async decode/encode (requires tokio runtime)
-avio = { version = "0.15", features = ["tokio"] }
+avio = { version = "0.16", features = ["tokio"] }
 ```
+
+The crates in this family version independently (each on its own cadence, like `tokio` or `http`); see crates.io for the current version of each.
 
 ## Feature Flags
 
@@ -269,7 +271,7 @@ Pipeline::builder()
 | `ff-stream`   | HLS / DASH adaptive streaming output           |
 | `ff-preview`  | Real-time preview and proxy workflow           |
 | `ff-render`   | GPU compositing pipeline (wgpu)                |
-| `avio`        | Unified facade (this crate)                    |
+| `avio`        | Editing engine + facade (this crate)           |
 
 ## MSRV
 

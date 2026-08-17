@@ -2,13 +2,15 @@
 
 Apply video and audio transformations without writing FFmpeg filter-graph strings. Build a chain with method calls; the graph description is generated and validated internally.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-filter` is a safe, ergonomic wrapper over FFmpeg's libavfilter: build and run video and audio filter graphs without hand-writing filter-graph strings. Errors are typed and contextual (`FilterError`), so a bad input slot or an FFmpeg build error surfaces as a readable message rather than a raw return code.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-filter = "0.15"
+ff-filter = "0.16"
 ```
 
 ## Building a Filter Chain

@@ -2,13 +2,15 @@
 
 Read media file metadata with one function call. `open` returns a structured `MediaInfo` with typed accessors for resolution, frame rate, sample rate, duration, and codec identifiers.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-probe` safely wraps FFmpeg's container inspection (libavformat demuxing and stream discovery) as a read-only metadata reader, with no decoding or encoding. Errors are typed and carry path and message context (`ProbeError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-probe = "0.15"
+ff-probe = "0.16"
 ```
 
 ## Quick Start

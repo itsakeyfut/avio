@@ -1,6 +1,6 @@
 # avio
 
-A safe, high-level Rust API over FFmpeg for building media applications: decode, encode, filter, compose, and stream.
+A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of model-agnostic FFmpeg primitive crates.
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
@@ -8,9 +8,12 @@ A safe, high-level Rust API over FFmpeg for building media applications: decode,
 
 ## Overview
 
-`avio` is a family of Rust crates over FFmpeg, from decode and encode up to timeline composition, real-time preview, and GPU rendering. The public API is safe: every unsafe FFmpeg call is encapsulated, so application code never needs `unsafe`.
+`avio` is an **editing engine** built on a family of model-agnostic FFmpeg **primitive** crates:
 
-The goal is to be a foundation for video delivery services and video editing applications written in Rust. It does not try to cover every FFmpeg feature.
+- **`avio` (the engine)** owns the editing model (`Timeline` / `Clip`, the model-to-frame derivation, and edit history) and re-exports the primitives behind feature flags. It answers *what* to edit.
+- **The `ff-*` primitives** handle execution (decode, encode, filter, composite one frame, stream) and know nothing about timelines, tracks, or edits. They answer *how* to execute, so each is usable on its own, without the engine.
+
+The public API is safe: every unsafe FFmpeg call is encapsulated, so application code never needs `unsafe`. It also aims to be ergonomic in practice: builder APIs, typed formats, and errors that carry human-readable context instead of raw FFmpeg return codes. The goal is to be a foundation for video delivery services and video editing applications written in Rust. It does not try to cover every FFmpeg feature.
 
 ```rust
 use ff_probe::open;
@@ -42,19 +45,19 @@ encoder.finish()?;
 
 ## Installation
 
-Add the facade crate, or just the member crates you need:
+Add the `avio` engine (which re-exports the primitives), or depend on a single `ff-*` primitive on its own:
 
 ```toml
 [dependencies]
-avio = "0.15"
+avio = "0.16"
 
-# Or pick individual crates
-ff-probe  = "0.15"
-ff-decode = "0.15"
-ff-encode = "0.15"
+# Or pick individual primitives, without the engine
+ff-probe  = "0.16"
+ff-decode = "0.16"
+ff-encode = "0.16"
 ```
 
-FFmpeg 7.x or 8.x development libraries must be installed on your system.
+The crates version independently; see [Versioning](#versioning). FFmpeg 7.x or 8.x development libraries must be installed on your system.
 
 ### Windows
 
@@ -149,6 +152,28 @@ let encoder = VideoEncoder::create("output.mp4")
 
 See [docs.rs/avio](https://docs.rs/avio) for the full API.
 
+## Engine or primitives
+
+`avio` (the engine) is opinionated: it commits to one editing model (tracks, a per-clip effect stack, keyframes, and compositing). If that fits your app, depend on `avio` and drive `Timeline` / `Clip`.
+
+If it does not (a node-graph compositor, a magnetic timeline, or no timeline at all), depend on the `ff-*` primitives directly and build your own model. The primitives are model-free by construction (the editing model lives only in `avio`, at the top of the dependency graph), so nothing forces avio's model on you. Safe Rust media plumbing (decode, encode, transcode, stream) is also a first-class use of a single `ff-*` crate.
+
+A single primitive, used without the engine:
+
+```rust
+// Cargo.toml: ff-decode = "0.16"
+use ff_decode::VideoDecoder;
+use ff_format::PixelFormat;
+
+let mut decoder = VideoDecoder::open("video.mp4")
+    .output_format(PixelFormat::Rgba)
+    .build()?;
+
+while let Some(frame) = decoder.decode_one()? {
+    // frame.planes() contains pixel data
+}
+```
+
 ## Crates
 
 | Crate | Description | crates.io | docs.rs |
@@ -164,7 +189,7 @@ See [docs.rs/avio](https://docs.rs/avio) for the full API.
 | [`ff-format`](./crates/ff-format) | Shared type definitions | [![](https://img.shields.io/crates/v/ff-format.svg)](https://crates.io/crates/ff-format) | [![](https://docs.rs/ff-format/badge.svg)](https://docs.rs/ff-format) |
 | [`ff-common`](./crates/ff-common) | Common traits and buffer pooling | [![](https://img.shields.io/crates/v/ff-common.svg)](https://crates.io/crates/ff-common) | [![](https://docs.rs/ff-common/badge.svg)](https://docs.rs/ff-common) |
 | [`ff-sys`](./crates/ff-sys) | Low-level FFmpeg FFI bindings | [![](https://img.shields.io/crates/v/ff-sys.svg)](https://crates.io/crates/ff-sys) | [![](https://docs.rs/ff-sys/badge.svg)](https://docs.rs/ff-sys) |
-| [`avio`](./crates/avio) | Facade crate that re-exports all member crates | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
+| [`avio`](./crates/avio) | Editing engine: owns the editing model (Timeline/Clip, derivation, history); re-exports the primitives | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
 
 ## Feature flags
 
@@ -187,6 +212,10 @@ The `avio` facade re-exports the member crates behind cargo features:
 | `gpl` | | GPL codecs (libx264, libx265) |
 | `srt` | | SRT protocol input and output |
 | `serde` | | serde derives for filter types |
+
+## Versioning
+
+As of v0.16.0 the crates version **independently**: each crate's version reflects its own change cadence, like `tokio` or `http`. A stable `ff-format` can reach 1.0 while `ff-filter` keeps iterating at 0.x, so the numbers across crates will diverge over time. Check [crates.io](https://crates.io/crates/avio) for each crate's current version rather than assuming a shared one. Versions were released in lockstep through v0.15.x.
 
 ## Platform support
 
