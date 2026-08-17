@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ff_filter::{AnimationTrack, RealtimeLayerDescriptor};
+use ff_filter::{AnimatedValue, RealtimeLayerDescriptor};
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
@@ -79,10 +79,9 @@ pub struct ScenePlacement {
     pub fade_in: Duration,
     /// Audio fade-out duration (`Duration::ZERO` = none).
     pub fade_out: Duration,
-    /// Static audio gain in dB.
-    pub volume_db: f64,
-    /// Per-clip volume automation (dB, timeline-global). Overrides the static gain.
-    pub volume_track: Option<AnimationTrack<f64>>,
+    /// Resolved audio gain (dB), static or animated. A static value is applied once at
+    /// open; an animated one is evaluated per tick.
+    pub volume: AnimatedValue<f64>,
 }
 
 // ── SceneAudioTrack ─────────────────────────────────────────────────────────────
@@ -107,12 +106,14 @@ pub struct SceneAudioPlacement {
     pub in_point: Duration,
     /// Source-file PTS at which playback ends (`None` = play to EOF).
     pub out_point: Option<Duration>,
+    /// Playback speed multiplier (`1.0` = normal), clamped to at least `0.01`,
+    /// applied by resampling.
+    pub speed: f64,
     /// Audio fade-in duration (`Duration::ZERO` = none).
     pub fade_in: Duration,
     /// Audio fade-out duration (`Duration::ZERO` = none).
     pub fade_out: Duration,
-    /// Static audio gain in dB.
-    pub volume_db: f64,
-    /// Per-clip volume automation (dB, timeline-global). Overrides the static gain.
-    pub volume_track: Option<AnimationTrack<f64>>,
+    /// Resolved audio gain (dB), static or animated. A static value is applied once at
+    /// open; an animated one is evaluated per tick.
+    pub volume: AnimatedValue<f64>,
 }

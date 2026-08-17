@@ -672,23 +672,31 @@ fn video_placement(
         layer: crate::derive::realtime_descriptor(clip, track_idx, animations),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
-        volume_db: clip.volume_db,
-        volume_track: clip.volume_track.clone(),
+        // V1 clip audio has no dedicated audio-track counterpart in export (which
+        // mixes only `audio_tracks`), so its volume is the per-clip merge only.
+        volume: crate::derive::audio_volume(clip, 0, &HashMap::new()),
     }
 }
 
 /// Projects one audio-only clip into a [`SceneAudioPlacement`](ff_preview::SceneAudioPlacement).
+/// `track_idx` is the audio track index; `animations` the timeline `audio_animations`.
 #[cfg(feature = "preview")]
-fn audio_placement(clip: &Clip) -> ff_preview::SceneAudioPlacement {
+fn audio_placement(
+    clip: &Clip,
+    track_idx: usize,
+    animations: &HashMap<String, AnimationTrack<f64>>,
+) -> ff_preview::SceneAudioPlacement {
     ff_preview::SceneAudioPlacement {
         source: clip.source.clone(),
         timeline_offset: clip.timeline_offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
+        speed: clip.speed.max(0.01),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
-        volume_db: clip.volume_db,
-        volume_track: clip.volume_track.clone(),
+        // The single derive: the volume 3-way merge (incl. the timeline
+        // `audio_{idx}_volume` automation) reaches preview, matching export.
+        volume: crate::derive::audio_volume(clip, track_idx, animations),
     }
 }
 
@@ -720,8 +728,12 @@ impl Timeline {
         let audio_tracks = self
             .audio_tracks()
             .iter()
-            .map(|track| ff_preview::SceneAudioTrack {
-                placements: track.iter().map(audio_placement).collect(),
+            .enumerate()
+            .map(|(track_idx, track)| ff_preview::SceneAudioTrack {
+                placements: track
+                    .iter()
+                    .map(|clip| audio_placement(clip, track_idx, &self.audio_animations))
+                    .collect(),
             })
             .collect();
 
@@ -792,7 +804,7 @@ mod tests {
             Duration::ZERO,
             "clip 0 has no transition"
         );
-        assert!(base.volume_track.is_some());
+        assert!(matches!(base.volume, AnimatedValue::Track(_)));
         assert!(
             matches!(base.layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < f64::EPSILON)
         );
@@ -811,7 +823,7 @@ mod tests {
         assert_eq!(audio.source.to_str(), Some("music.mp3"));
         assert_eq!(audio.fade_in, Duration::from_millis(200));
         assert_eq!(audio.fade_out, Duration::from_millis(300));
-        assert!((audio.volume_db - (-6.0)).abs() < f64::EPSILON);
+        assert!(matches!(audio.volume, AnimatedValue::Static(v) if (v + 6.0).abs() < f64::EPSILON));
     }
 
     #[cfg(feature = "preview")]
@@ -864,6 +876,29 @@ mod tests {
             scene.lavfi_overlay.as_deref(),
             Some("color=s=1920x1080:c=black@0.0")
         );
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_carry_audio_speed_and_merged_volume() {
+        use ff_filter::{Easing, Keyframe};
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3").with_speed(2.0)]) // neutral volume
+            .audio_animation(
+                "audio_0_volume",
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        let audio = &scene.audio_tracks[0].placements[0];
+        assert!((audio.speed - 2.0).abs() < f64::EPSILON);
+        // The neutral clip volume falls back to the timeline `audio_0_volume` automation.
+        assert!(matches!(audio.volume, AnimatedValue::Track(_)));
     }
 
     #[test]
