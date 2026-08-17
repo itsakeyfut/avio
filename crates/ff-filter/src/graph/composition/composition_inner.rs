@@ -1119,22 +1119,64 @@ pub(super) unsafe fn build_realtime_composition(
         let Some(top_src) = src_ctxs[idx] else {
             bail!(graph, format!("missing buffersrc for layer={idx}"));
         };
-        // Scale the top layer to the canvas size first, then apply its effects.
-        let mut top_steps: Vec<FilterStep> = Vec::with_capacity(layer.effects.len() + 1);
+        // Scale the top layer to the canvas size first, then apply the engine-derived
+        // static transform (scale multiplier + rotation, evaluated at t=0 to match the
+        // export path — animated scale/rotate are not honoured on either side), then
+        // its per-clip effects.
+        let mut top_steps: Vec<FilterStep> = Vec::with_capacity(layer.effects.len() + 3);
         top_steps.push(FilterStep::Scale {
             width: canvas_w,
             height: canvas_h,
             algorithm: ScaleAlgorithm::Fast,
         });
+        let sx = layer.scale_x.value_at(Duration::ZERO);
+        let sy = layer.scale_y.value_at(Duration::ZERO);
+        if (sx - 1.0).abs() > f64::EPSILON || (sy - 1.0).abs() > f64::EPSILON {
+            // Force-scaled to the canvas above, so the multiplier maps to
+            // `canvas * scale` — the same target dimensions the export path uses.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let sw = ((f64::from(canvas_w) * sx).round() as u32).max(1);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let sh = ((f64::from(canvas_h) * sy).round() as u32).max(1);
+            top_steps.push(FilterStep::Scale {
+                width: sw,
+                height: sh,
+                algorithm: ScaleAlgorithm::Bicubic,
+            });
+        }
+        let rotation_deg = layer.rotation.value_at(Duration::ZERO);
+        if rotation_deg.abs() > f64::EPSILON {
+            top_steps.push(FilterStep::RotateAnimated {
+                angle: AnimatedValue::Static(rotation_deg),
+                fill_color: "black".to_string(),
+            });
+        }
         top_steps.extend(layer.effects.iter().cloned());
         acc = if layer.blend_mode == BlendMode::Normal {
+            // Lower the engine's `AnimatedValue` opacity/position to the existing
+            // blend parameters (static value, or a track wired for `send_command`).
+            #[allow(clippy::cast_possible_truncation)]
+            let (opacity, opacity_track) = match &layer.opacity {
+                // Clamp the static value to [0,1] before it reaches the blend args,
+                // matching the export path (`build_video_composition`).
+                AnimatedValue::Static(v) => ((*v).clamp(0.0, 1.0) as f32, None),
+                AnimatedValue::Track(t) => (1.0, Some(t)),
+            };
+            let (x, x_track) = match &layer.x {
+                AnimatedValue::Static(v) => (*v, None),
+                AnimatedValue::Track(t) => (0.0, Some(t)),
+            };
+            let (y, y_track) = match &layer.y {
+                AnimatedValue::Static(v) => (*v, None),
+                AnimatedValue::Track(t) => (0.0, Some(t)),
+            };
             let params = crate::filter_inner::NormalBlendParams {
-                opacity: layer.opacity,
-                opacity_track: layer.opacity_track.as_ref(),
-                x: layer.x,
-                y: layer.y,
-                x_track: layer.x_track.as_ref(),
-                y_track: layer.y_track.as_ref(),
+                opacity,
+                opacity_track,
+                x,
+                y,
+                x_track,
+                y_track,
                 alpha: ff_format::AlphaMode::Straight,
             };
             match crate::filter_inner::add_blend_normal_step(
@@ -1151,13 +1193,16 @@ pub(super) unsafe fn build_realtime_composition(
             }
         } else {
             let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
+            // Clamp to [0,1] before `all_opacity`, matching the export path.
+            #[allow(clippy::cast_possible_truncation)]
+            let opacity = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0) as f32;
             match crate::filter_inner::add_blend_photographic_step(
                 graph,
                 acc,
                 top_src.as_ptr(),
                 &top_steps,
                 mode_name,
-                layer.opacity,
+                opacity,
                 idx,
             ) {
                 Ok(c) => c,
