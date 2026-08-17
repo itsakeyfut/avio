@@ -266,8 +266,9 @@ ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode → ff-f
   structurally model-free — the separation is enforced by dependency direction, not discipline.
 - `avio` stops being a facade-only crate. It defines the editing-model types (and, in #1327, the
   derivation, immutable state, and undo). It still re-exports the `ff-*` primitives.
-- Versioning stays **lockstep** (Bevy-style); `ff-*` are public but not yet semver-frozen.
-  Independent per-crate versioning is deferred until real external demand appears.
+- Versioning: **independent per-crate** as of v0.16.0 (tokio/`http`-style — each crate's version
+  reflects its own change cadence, so a stable `ff-format` can reach 1.0 while `ff-filter` iterates
+  at 0.x; see `docs/roadmap/v0-16-0/ROADMAP.md`). Lockstep through v0.15.x.
 
 ## 6. Project decomposition
 
@@ -293,3 +294,37 @@ ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode → ff-f
 - Note the "define types in the lowest applicable crate" rule now has one deliberate exception:
   the editing model is defined in `avio` (the top), because model-freeness of `ff-*` must be
   enforced by dependency direction.
+
+## 9. Primitive expressiveness — keeping the model space wide
+
+Two multi-agent audits (2026-08-17) checked the boundary in **both** directions:
+
+- **Separation (are `ff-*` model-free?)** — zero structural editing-model leaks across all 11 `ff-*`
+  crates; the model lives only in `avio`. Residual findings were naming/doc only (#1374, #1375).
+- **Buildability (can `ff-*` host *any* editing model?)** — every paradigm the §7 non-goal points at
+  (track-based, trackless/magnetic, node-graph, frame-based) is buildable, and op coverage is strong
+  (blend / keying / masks / colour / transform / transition / keyframe / audio-mix). But the primitives
+  are a **closed, fixed-shape** op set rather than an **open, general graph**, so node-heavy
+  (Resolve/Fusion) and highly-extensible (AviUtl / Premiere-plugin) editors hit expressiveness ceilings.
+  Tracked in #1379 (`FilterStep::Raw` #1376, graph fan-out/DAG #1377, composition-as-source #1378, plus
+  keyframe-any-param, audio bus routing, frame-exact addressing).
+
+**Why this matters:** the *engine* (`avio`) commits to one model (§7), but `ff-*` are meant to host
+*other* models directly. That generality is currently preserved by **discipline** (the model stays in
+`avio`), not guaranteed — and it is **not** automatically preserved as features grow.
+
+**Design principle — adding a feature must not narrow the buildable model space.** Growth can shrink
+generality even while nominally additive:
+
+| Move | Effect on the model space |
+|---|---|
+| Add a leaf op (filter / blend / effect) | Neutral-to-widening (additive) |
+| Add an **open mechanism / escape hatch** (raw filter, DAG, generic `(node, param)` keyframe) | **Widens** — prefer this |
+| Add a **model-flavoured convenience type** (a `Track` / `Clip` / `ripple` / magnetic-snap / `Timeline` primitive) | **Narrows** — reject; keep in `avio` (litmus §3) |
+| Add a **fixed-shape special-case** for one editor (another `*Animated` variant, a track-privileging `Scene` field) | Accretes model bias; defers the general case — prefer generalising |
+| **Publish** a closed shape (v0.16.0 independent versioning) | Crystallises it; narrows future widening — open the substrate before broad adoption |
+
+**Rule: when adding a capability, open the substrate rather than encode one model's convenience.** Apply
+the litmus (§3) to every new primitive; keep the low-level `FilterGraph` / composer first-class so
+non-track models are not forced through a `Scene` that privileges tracks; and treat *"can a track / node
+/ trackless mini-pipeline still be built on `ff-*`?"* as a standing regression question.
