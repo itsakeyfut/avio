@@ -1,6 +1,6 @@
 # v0.16.0 — Engine / Library Split: Independent Publishing
 
-**Goal**: Present `avio` as an editing **engine** and the `ff-*` family as standalone, independently-versioned **primitive libraries**. The engine/primitive boundary is already clean (the model relocation and purification of #1326/#1327 landed, and preview == export via the C4 epic). This milestone makes that separation visible to downstream users: each `ff-*` crate is publishable and consumable on its own, versions diverge to reflect each crate's own change cadence, and the project moves to a GitHub organization.
+**Goal**: Present `avio` as an editing **engine** and the `ff-*` family as standalone, independently-versioned **primitive libraries**. The engine/primitive boundary is already clean (the model relocation and purification of #1326/#1327 landed, and preview == export via the C4 epic). This milestone makes that separation visible to downstream users: each `ff-*` crate is publishable and consumable on its own, and versions diverge to reflect each crate's own change cadence. (A GitHub organization move is deferred — see below.)
 
 **Prerequisite**: v0.15.x complete — the editing model lives only in `avio`, the `ff-*` crates are model-agnostic primitives, and the single `derive(model, t) -> Scene` feeds both preview and export.
 
@@ -36,11 +36,9 @@
 - Non-library members (`avio-examples`, `tools/gen-test-assets`, the `fuzz` crates) remain excluded from publishing (`publish = false`).
 - Each primitive crate's public surface and docs read as a standalone library: no dangling references to the editing model from a primitive crate. The stale `scene_adapter` / `avio::TimelinePlayer` doc references in `ff-preview` are reconciled, and any model-flavoured vocabulary on the primitive public surface is reviewed.
 
-### GitHub organization migration
+### GitHub organization migration — deferred (#1372)
 
-- The repository moves to a GitHub organization. The `repository` slug in crate metadata, `CODEOWNERS`, and `.github/*` references point to the org.
-- Each crate's crates.io Trusted Publisher is re-pointed to the org (this configuration lives on crates.io, performed by the maintainer).
-- Historical changelog links and cross-repo references rely on GitHub's transfer redirects rather than being rewritten.
+- **Deferred out of v0.16.0.** An org move is not a functional prerequisite: crates.io publishing (Trusted Publishing/OIDC) and independent versioning both work from the personal repo. With a small team the org's team/permission/identity benefits are not needed yet, and a GitHub repo transfer sets up automatic redirects, so it stays low-cost to do later (re-point the crate `repository` slug, `CODEOWNERS`, `.github/*`, and each crate's crates.io Trusted Publisher). Revisit when the team grows or around a 1.0 / community push. **v0.16.0 ships from `itsakeyfut/avio`.**
 
 ### Documentation — the "engine + primitives" story
 
@@ -56,9 +54,9 @@
 | Release tooling | `release-plz` — per-crate tags, per-crate changelogs, dependent-crate version bumps, all derived from conventional commits |
 | Initial versions | Start from the 0.15.1 baseline (crates.io versions are monotonic); do not reset to 0.1.0 |
 | pitch/BPM (Oto-MAD) | Included as a **minor feature** of this release (already implemented; see `oto-mad.md`); additive, not the headline theme |
-| Release numbering | One 0.16.0 cut carries the accumulated code (engine-separation, C4 preview==export, Oto-MAD) and introduces independent versioning + org migration; no separate 0.15.2 is cut |
+| Release numbering | One 0.16.0 cut carries the accumulated code (engine-separation, C4 preview==export, Oto-MAD) and introduces independent versioning; no separate 0.15.2 is cut |
 | Boundary purification | None required — #1326 / #1327 already landed; only cosmetic doc reconciliation remains |
-| Org migration | Repo transfer + metadata/CI slug updates + crates.io Trusted Publisher re-pointing; changelog history and cross-repo links left to GitHub redirects |
+| Org migration | **Deferred** (#1372) — not a prerequisite; done later when the team grows / around 1.0. v0.16.0 ships from the personal repo |
 
 ---
 
@@ -68,7 +66,6 @@
 - `release-plz` (or equivalent) produces per-crate version bumps, changelogs, and tags from commits; a dry-run release publishes only changed crates and does not abort on unchanged ones.
 - All 12 library crates publish to crates.io with complete metadata; `avio-examples`, `tools`, and `fuzz` crates are excluded.
 - Primitive crates' public docs contain no references to the editing model; the `ff-preview` scene / `TimelinePlayer` doc references are reconciled.
-- The repository lives under the GitHub organization; the crate `repository` slug, `CODEOWNERS`, `.github/*`, and each crate's crates.io Trusted Publisher point to the org.
 - `cargo clippy --workspace --all-features -- -D warnings` clean; `cargo test --workspace` passes (CI full sweep).
 
 ---
@@ -81,5 +78,5 @@ These decompose the requirements into implementable units (to be filed):
 2. **Adopt `release-plz`** — replace the all-crates publish loop in `release.yml` with per-crate, change-driven releases (tolerant of already-published crates); per-crate changelog convention.
 3. **Cosmetic doc reconciliation** — refresh the stale `scene_adapter` / `avio::TimelinePlayer` references and review primitive-surface vocabulary (`ff-preview` `Scene` fields).
 4. **Publishing readiness gate** — a CI/dry-run check that every library crate is publishable (metadata + `--dry-run` per crate) and non-library members stay excluded.
-5. **Org migration** — repository transfer; update `repository` slug, `CODEOWNERS`, `.github/*`; re-point crates.io Trusted Publishers. (Partly maintainer-performed outside the repo.)
+5. **Org migration** — *deferred out of v0.16.0* (#1372); revisit when the team grows / around 1.0.
 6. **Engine + primitives documentation** — README/story updates positioning `avio` as engine and `ff-*` as standalone libraries.
