@@ -148,6 +148,17 @@ fixed full-frame Normal/`Over`, matching export — on both the present and gap-
 source has no seek, so on a timeline seek the generator is rebuilt from t=0; a static overlay (a drawtext
 title, the dominant case) is exact, while a time-varying lavfi restarts from t=0 after a seek.
 
+**C4e (done):** the audio derivation converged on `avio::derive::audio_volume` (the 3-way volume merge), which
+both the export `audio_track` and the preview `to_scene` audio projection now share; `to_scene` threads
+`audio_animations` (previously unused). Preview audio now applies the merged volume (incl. the timeline
+`audio_{idx}_volume` automation), the audio-only-track `speed` (was hard-coded 1.0), and the V1-clip audio
+fades and static `volume_db` (previously dropped). Note export mixes only the dedicated `audio_tracks` (not
+video-clip audio), so the audio-track placements are the parity target. **Deferred (audio-Q2):** `pan` — a
+no-op in the export mixer today (`build_audio_mix` computes but never applies it) — and `audio_effects` — the
+preview audio path is a hand-rolled decode+resample+mix pipeline with no `FilterStep` executor. Both await a
+per-track preview audio `FilterGraph` executor (the audio analogue of the video executor convergence), which
+would also apply pitch-accurate `atempo` speed and realise pan in both ends.
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do

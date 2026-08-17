@@ -45,7 +45,10 @@ pub use runner::TimelineRunner;
 pub use scene::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
 
 use audio_resampling::spawn_audio_track_thread;
-use state::{AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer};
+use ff_filter::AnimatedValue;
+use state::{
+    AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, db_to_linear,
+};
 
 // -- Constants --
 
@@ -186,6 +189,14 @@ impl ScenePlayer {
                 decode_buf.seek(p.in_pt)?;
             }
 
+            // Apply a static V1 audio gain once at open; an animated gain is driven
+            // per-tick by the runner.
+            if let (Some(handle), AnimatedValue::Static(db)) =
+                (&audio_track_handles[i], &clip_list[i].volume)
+                && *db != 0.0
+            {
+                handle.set_volume(db_to_linear(*db));
+            }
             clip_states.push(ClipState {
                 source: p.source.clone(),
                 decode_buf,
@@ -198,7 +209,9 @@ impl ScenePlayer {
                 speed: p.speed,
                 opacity: p.opacity,
                 layer_desc: clip_list[i].layer.clone(),
-                volume_track: clip_list[i].volume_track.clone(),
+                volume: clip_list[i].volume.clone(),
+                fade_in: clip_list[i].fade_in,
+                fade_out: clip_list[i].fade_out,
             });
         }
 
@@ -234,6 +247,11 @@ impl ScenePlayer {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .add_track();
+                    if let AnimatedValue::Static(db) = &p.volume
+                        && *db != 0.0
+                    {
+                        handle.set_volume(db_to_linear(*db));
+                    }
                     audio_only_tracks.push(AudioOnlyTrack {
                         source: p.source.clone(),
                         timeline_start,
@@ -242,8 +260,9 @@ impl ScenePlayer {
                         fade_in: p.fade_in,
                         fade_out: p.fade_out,
                         clip_dur,
+                        speed: p.speed,
                         handle,
-                        volume_track: p.volume_track.clone(),
+                        volume: p.volume.clone(),
                         cancel: None,
                         thread: None,
                     });
@@ -260,7 +279,9 @@ impl ScenePlayer {
                     speed: p.speed,
                     opacity: p.opacity,
                     layer_desc: p.layer.clone(),
-                    volume_track: p.volume_track.clone(),
+                    volume: p.volume.clone(),
+                    fade_in: p.fade_in,
+                    fade_out: p.fade_out,
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -295,13 +316,12 @@ impl ScenePlayer {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .add_track();
-                // Apply per-clip gain (dB → linear). A volume_track (animated) takes
-                // precedence and is driven per-tick by the runner, so only apply the
-                // static gain when no track is present.
-                if p.volume_track.is_none() && p.volume_db != 0.0 {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let linear = 10.0_f64.powf(p.volume_db / 20.0) as f32;
-                    handle.set_volume(linear);
+                // Apply a static gain once at open; an animated gain (a track) is driven
+                // per-tick by the runner.
+                if let AnimatedValue::Static(db) = &p.volume
+                    && *db != 0.0
+                {
+                    handle.set_volume(db_to_linear(*db));
                 }
                 audio_only_tracks.push(AudioOnlyTrack {
                     source: p.source.clone(),
@@ -311,8 +331,9 @@ impl ScenePlayer {
                     fade_in: p.fade_in,
                     fade_out: p.fade_out,
                     clip_dur,
+                    speed: p.speed,
                     handle,
-                    volume_track: p.volume_track.clone(),
+                    volume: p.volume.clone(),
                     cancel: None,
                     thread: None,
                 });

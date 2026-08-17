@@ -24,6 +24,7 @@ use crate::playback::sink::FrameSink;
 use super::audio_resampling::spawn_audio_track_thread;
 use super::state::{
     AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, TransitionState,
+    db_to_linear,
 };
 use super::timeline_inner;
 
@@ -638,22 +639,19 @@ impl TimelineRunner {
                             // not play this track's buffered audio past clip end.
                             at.handle.clear();
                         }
-                        // Per-clip volume automation: evaluate the dB envelope at the
-                        // timeline PTS and update the mixer track gain each tick.
-                        if should_run && let Some(track) = &at.volume_track {
-                            #[allow(clippy::cast_possible_truncation)]
-                            let linear = 10f32.powf(track.value_at(timeline_pts) as f32 / 20.0);
-                            at.handle.set_volume(linear);
+                        // Per-clip volume automation: an animated gain is evaluated at
+                        // the timeline PTS each tick (a static gain was set at open).
+                        if should_run && let AnimatedValue::Track(track) = &at.volume {
+                            at.handle
+                                .set_volume(db_to_linear(track.value_at(timeline_pts)));
                         }
                     }
 
                     // Primary-track volume automation for the active clip.
                     if let Some(handle) = &self.clips[active].audio_track
-                        && let Some(track) = &self.clips[active].volume_track
+                        && let AnimatedValue::Track(track) = &self.clips[active].volume
                     {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let linear = 10f32.powf(track.value_at(timeline_pts) as f32 / 20.0);
-                        handle.set_volume(linear);
+                        handle.set_volume(db_to_linear(track.value_at(timeline_pts)));
                     }
 
                     // Update shared current_pts and resume anchor.
@@ -1111,19 +1109,25 @@ impl TimelineRunner {
         };
         handle.clear(); // discard stale samples
 
-        let source = self.clips[clip_idx].source.clone();
-        let clip_speed = self.clips[clip_idx].speed;
+        let c = &self.clips[clip_idx];
+        let source = c.source.clone();
+        // V1 clip audio honours its own fades + speed (the A-track path already does).
+        // `clip_dur` must be the SOURCE-time span (the resampler multiplies it by
+        // `1/speed` to get timeline time, as the A-tracks feed `out-in` source span);
+        // the timeline span is `source/speed`, so scale it back by `speed`.
+        let fades = AudioFadeConfig {
+            fade_in: c.fade_in,
+            fade_out: c.fade_out,
+            clip_dur: c
+                .timeline_end
+                .saturating_sub(c.timeline_start)
+                .mul_f64(c.speed),
+            in_point: c.in_point,
+            speed: c.speed,
+        };
         let cancel = Arc::new(AtomicBool::new(false));
-        let thread = spawn_audio_track_thread(
-            source,
-            start_pts,
-            handle,
-            Arc::clone(&cancel),
-            AudioFadeConfig {
-                speed: clip_speed,
-                ..AudioFadeConfig::NONE
-            },
-        );
+        let thread =
+            spawn_audio_track_thread(source, start_pts, handle, Arc::clone(&cancel), fades);
         self.active_audio_cancel = Some(cancel);
         self.active_audio_thread = Some(thread);
     }

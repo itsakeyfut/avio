@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use ff_filter::{AnimationTrack, LavfiSource, RealtimeLayerDescriptor};
+use ff_filter::{AnimatedValue, LavfiSource, RealtimeLayerDescriptor};
 use ff_format::VideoFrame;
 
 use crate::audio::AudioTrackHandle;
@@ -18,6 +18,12 @@ use crate::playback::SwsRgbaConverter;
 use crate::playback::decode_buffer::DecodeBuffer;
 
 use super::audio_resampling::spawn_audio_track_thread;
+
+/// Converts a gain in dB to a linear amplitude multiplier for the mixer.
+#[allow(clippy::cast_possible_truncation)]
+pub(super) fn db_to_linear(db: f64) -> f32 {
+    10.0_f64.powf(db / 20.0) as f32
+}
 
 // ── ClipState ─────────────────────────────────────────────────────────────────
 
@@ -49,9 +55,13 @@ pub(super) struct ClipState {
     /// opacity/position tracks). The runner realises it into a `RealtimeLayer`
     /// each frame via [`RealtimeLayer::with_dimensions`](ff_filter::RealtimeLayer::with_dimensions).
     pub(super) layer_desc: RealtimeLayerDescriptor,
-    /// Per-clip volume automation (dB, timeline-global). When `Some`, the runner
-    /// updates the primary-track mixer gain each tick.
-    pub(super) volume_track: Option<AnimationTrack<f64>>,
+    /// Audio gain (dB), static or automated (the 3-way-merged value). Applied to the
+    /// primary-track mixer gain: a static value once at open, an animated one per-tick.
+    pub(super) volume: AnimatedValue<f64>,
+    /// Per-clip audio fade-in / fade-out for this clip's own audio (`Duration::ZERO`
+    /// = none). Forwarded to the audio decode thread's fade envelope.
+    pub(super) fade_in: Duration,
+    pub(super) fade_out: Duration,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
@@ -214,10 +224,12 @@ pub(super) struct AudioOnlyTrack {
     pub(super) fade_out: Duration,
     /// Effective clip duration — used to position the fade-out ramp.
     pub(super) clip_dur: Duration,
+    /// Playback speed multiplier (`1.0` = normal), applied by resampling.
+    pub(super) speed: f64,
     pub(super) handle: AudioTrackHandle,
-    /// Per-clip volume automation (dB, timeline-global). When `Some`, the runner
-    /// updates `handle`'s volume each tick; overrides the static one-shot gain.
-    pub(super) volume_track: Option<AnimationTrack<f64>>,
+    /// Audio gain (dB), static or automated (the 3-way-merged value). Applied to
+    /// `handle`: a static value once at open, an animated one per-tick.
+    pub(super) volume: AnimatedValue<f64>,
     pub(super) cancel: Option<Arc<AtomicBool>>,
     pub(super) thread: Option<JoinHandle<()>>,
 }
@@ -241,7 +253,7 @@ impl AudioOnlyTrack {
                 fade_out: self.fade_out,
                 clip_dur: self.clip_dur,
                 in_point: self.in_point,
-                speed: 1.0,
+                speed: self.speed,
             },
         );
         self.cancel = Some(cancel);
@@ -267,6 +279,18 @@ impl Drop for AudioOnlyTrack {
 mod tests {
     use super::*;
     use ff_format::{Rational, Timestamp};
+
+    #[test]
+    fn db_to_linear_should_convert_gain() {
+        // The shared dB→linear conversion used by every audio-gain site.
+        assert!((db_to_linear(0.0) - 1.0).abs() < 1e-6, "0 dB = unity");
+        assert!(
+            (db_to_linear(-6.0) - 0.501_187).abs() < 1e-3,
+            "-6 dB ≈ 0.501"
+        );
+        assert!((db_to_linear(6.0) - 1.995).abs() < 1e-3, "+6 dB ≈ 1.995");
+        assert!(db_to_linear(-120.0) < 1e-5, "very quiet ≈ 0");
+    }
 
     #[test]
     fn lavfi_advance_to_should_surface_due_frames_and_hold_future_ones() {

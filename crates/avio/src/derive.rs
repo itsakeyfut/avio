@@ -200,6 +200,23 @@ pub(crate) fn realtime_descriptor(
     }
 }
 
+/// The 3-way-merged audio volume (dB): a per-clip volume track wins, then a static
+/// non-zero `volume_db`, then the timeline `audio_{idx}_volume` automation. This is
+/// the single interpretation the export [`audio_track`] and the preview audio
+/// projection ([`Timeline::to_scene`](crate::Timeline::to_scene)) share.
+#[allow(clippy::float_cmp)]
+pub(crate) fn audio_volume(
+    clip: &Clip,
+    track_idx: usize,
+    animations: &HashMap<String, AnimationTrack<f64>>,
+) -> AnimatedValue<f64> {
+    match &clip.volume_track {
+        Some(track) => AnimatedValue::Track(track.clone()),
+        None if clip.volume_db != 0.0 => AnimatedValue::Static(clip.volume_db),
+        None => track_animation(animations, "audio", track_idx, "volume", 0.0),
+    }
+}
+
 /// Derives the export [`AudioTrack`] for one clip.
 ///
 /// `fade_out_eff_dur` is the caller-resolved effective clip duration, used only
@@ -210,13 +227,7 @@ pub(crate) fn audio_track(
     animations: &HashMap<String, AnimationTrack<f64>>,
     fade_out_eff_dur: Option<Duration>,
 ) -> AudioTrack {
-    // A per-clip volume track wins over the static volume_db, which overrides
-    // the track-level animation.
-    let volume = match &clip.volume_track {
-        Some(track) => AnimatedValue::Track(track.clone()),
-        None if clip.volume_db != 0.0 => AnimatedValue::Static(clip.volume_db),
-        None => track_animation(animations, "audio", track_idx, "volume", 0.0),
-    };
+    let volume = audio_volume(clip, track_idx, animations);
 
     // Timeline trim + placement first, then speed/fade/effect steps, matching
     // the mixer node order (atrim → asetpts=PTS-STARTPTS → adelay).
@@ -472,6 +483,36 @@ mod tests {
         let clip = Clip::new("a.mp3");
         let track = audio_track(&clip, 0, &anims, None);
         assert!(matches!(track.pan, AnimatedValue::Track(_)));
+    }
+
+    // ── audio_volume (shared 3-way merge) ─────────────────────────────────────
+
+    #[test]
+    fn audio_volume_should_fall_back_to_timeline_animation() {
+        let mut anims = HashMap::new();
+        anims.insert(
+            "audio_0_volume".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp3"); // neutral volume_db, no volume_track
+        assert!(matches!(
+            audio_volume(&clip, 0, &anims),
+            AnimatedValue::Track(_)
+        ));
+    }
+
+    #[test]
+    fn audio_volume_static_should_win_over_timeline() {
+        let mut anims = HashMap::new();
+        anims.insert(
+            "audio_0_volume".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp3").volume(-6.0);
+        assert!(matches!(
+            audio_volume(&clip, 0, &anims),
+            AnimatedValue::Static(x) if (x + 6.0).abs() < 1e-9
+        ));
     }
 
     // ── realtime_descriptor (single derive → preview) ─────────────────────────
