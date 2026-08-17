@@ -1152,7 +1152,28 @@ pub(super) unsafe fn build_realtime_composition(
             });
         }
         top_steps.extend(layer.effects.iter().cloned());
-        acc = if layer.blend_mode == BlendMode::Normal {
+        acc = if layer.composite_op != CompositeOp::Over {
+            // Porter-Duff (Under/In/Out/Atop/Xor) via the same shared construction the
+            // export path and `FilterStep::Composite` use. The colour `blend_mode` is
+            // not additionally applied, and opacity is the static clamped value —
+            // animated opacity/position on a non-Over layer is intentionally not
+            // tracked, matching export.
+            #[allow(clippy::cast_possible_truncation)]
+            let opacity = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0) as f32;
+            match crate::filter_inner::add_composite_step(
+                graph,
+                acc,
+                top_src.as_ptr(),
+                &top_steps,
+                layer.composite_op,
+                opacity,
+                ff_format::AlphaMode::Straight,
+                idx,
+            ) {
+                Ok(c) => c,
+                Err(e) => bail!(graph, format!("composite failed layer={idx}: {e:?}")),
+            }
+        } else if layer.blend_mode == BlendMode::Normal {
             // Lower the engine's `AnimatedValue` opacity/position to the existing
             // blend parameters (static value, or a track wired for `send_command`).
             #[allow(clippy::cast_possible_truncation)]
