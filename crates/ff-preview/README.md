@@ -96,7 +96,7 @@ println!("proxy at {}", proxy_path.display());
 | *(default)* | `PreviewPlayer`, `PlayerRunner`, `PlayerHandle`, `DecodeBuffer`, `PlaybackClock`, `FrameSink`, `RgbaSink`, `RgbaFrame`, seek |
 | `tokio` | `AsyncPreviewPlayer` |
 | `proxy` | `ProxyGenerator`, `ProxyJob`, `ProxyResolution` |
-| `timeline` | `TimelinePlayer`, `TimelineRunner` |
+| `timeline` | `Scene`, `ScenePlayer`, `SceneRunner` |
 
 ## MSRV
 

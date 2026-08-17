@@ -10,7 +10,7 @@ pub mod types;
 
 pub use builder::FilterGraphBuilder;
 pub use composition::{
-    AudioConcatenator, AudioTrack, ClipJoiner, LavfiSource, MultiTrackAudioMixer,
+    AudioConcatenator, AudioTrack, CrossfadeJoiner, LavfiSource, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor,
     VideoConcatenator, VideoLayer,
 };

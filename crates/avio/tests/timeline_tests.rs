@@ -52,8 +52,8 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
     // ── Step 2: build a Timeline with two clips in sequence ────────────────────
     //
     // Both video and audio tracks contain:
-    //   clip 1 — timeline_offset = 0 s  (plays from 0 → 1 s)
-    //   clip 2 — timeline_offset = 1 s  (plays from 1 → 2 s)
+    //   clip 1 — offset = 0 s  (plays from 0 → 1 s)
+    //   clip 2 — offset = 1 s  (plays from 1 → 2 s)
     //
     // `Clip::new` defaults: in_point = None, out_point = None (full file).
 

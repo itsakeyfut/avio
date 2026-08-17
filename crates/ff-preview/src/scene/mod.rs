@@ -8,7 +8,7 @@
 //! | Type | Role |
 //! |------|------|
 //! | [`ScenePlayer`] | Thin builder: call [`open`](ScenePlayer::open) |
-//! | [`TimelineRunner`] | Owns the decode pipelines; move to a thread and call [`run`](TimelineRunner::run) |
+//! | [`SceneRunner`] | Owns the decode pipelines; move to a thread and call [`run`](SceneRunner::run) |
 //! | [`PlayerHandle`] | Shared, cloneable control handle |
 //!
 //! ## Audio
@@ -22,11 +22,11 @@
 //! interleaved stereo `f32` output.
 
 mod audio_resampling;
+mod inner;
 mod runner;
 mod runner_layout;
-mod scene;
 mod state;
-mod timeline_inner;
+mod types;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -41,8 +41,8 @@ use crate::playback::decode_buffer::DecodeBuffer;
 use crate::playback::master_clock::MasterClock;
 use crate::playback::player_handle::PlayerHandle;
 
-pub use runner::TimelineRunner;
-pub use scene::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
+pub use runner::SceneRunner;
+pub use types::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
 
 use audio_resampling::spawn_audio_track_thread;
 use ff_filter::{AnimatedValue, XfadeTransition};
@@ -56,7 +56,7 @@ const CHANNEL_CAP: usize = 64;
 
 // ── ScenePlayer ─────────────────────────────────────────────────────────────
 
-/// Thin builder for a ([`TimelineRunner`], [`PlayerHandle`]) pair backed by a
+/// Thin builder for a ([`SceneRunner`], [`PlayerHandle`]) pair backed by a
 /// [`Scene`].
 ///
 /// Playback is limited to the base video track (`video_tracks[0]`). When any
@@ -82,15 +82,15 @@ impl ScenePlayer {
     /// - a placement source file cannot be found or opened,
     /// - a placement cannot be probed for duration.
     #[allow(clippy::too_many_lines)]
-    pub fn open(scene: &Scene) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
+    pub fn open(scene: &Scene) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
         struct ProbeResult {
             source: PathBuf,
             in_pt: Duration,
             clip_dur: Duration,
-            timeline_offset: Duration,
+            offset: Duration,
             out_point: Option<Duration>,
-            transition_dur: Duration,
-            transition_kind: Option<XfadeTransition>,
+            xfade_dur: Duration,
+            xfade_kind: Option<XfadeTransition>,
             has_audio: bool,
             /// Video frame dimensions — used to pre-populate `last_frame_w/h` so the
             /// gap-fill loop can synthesise black frames before the first real frame.
@@ -144,10 +144,10 @@ impl ScenePlayer {
                 source: p.source.clone(),
                 in_pt,
                 clip_dur,
-                timeline_offset: p.timeline_offset,
+                offset: p.offset,
                 out_point: p.out_point,
-                transition_dur: p.transition_dur,
-                transition_kind: p.transition_kind,
+                xfade_dur: p.xfade_dur,
+                xfade_kind: p.xfade_kind,
                 has_audio,
                 video_w,
                 video_h,
@@ -182,7 +182,7 @@ impl ScenePlayer {
 
         let mut clip_states: Vec<ClipState> = Vec::with_capacity(probes.len());
         for (i, p) in probes.iter().enumerate() {
-            let timeline_start = p.timeline_offset;
+            let timeline_start = p.offset;
             let timeline_end = timeline_start + p.clip_dur;
 
             let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
@@ -205,8 +205,8 @@ impl ScenePlayer {
                 timeline_end,
                 in_point: p.in_pt,
                 out_point: p.out_point,
-                transition_dur: p.transition_dur,
-                transition_kind: p.transition_kind,
+                xfade_dur: p.xfade_dur,
+                xfade_kind: p.xfade_kind,
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
                 opacity: p.opacity,
@@ -236,7 +236,7 @@ impl ScenePlayer {
                     || info.duration().saturating_sub(in_pt),
                     |op| op.saturating_sub(in_pt),
                 );
-                let timeline_start = p.timeline_offset;
+                let timeline_start = p.offset;
                 let timeline_end = timeline_start + clip_dur;
                 let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
                 if in_pt > Duration::ZERO {
@@ -276,8 +276,8 @@ impl ScenePlayer {
                     timeline_end,
                     in_point: in_pt,
                     out_point: p.out_point,
-                    transition_dur: Duration::ZERO,
-                    transition_kind: None,
+                    xfade_dur: Duration::ZERO,
+                    xfade_kind: None,
                     audio_track: None,
                     speed: p.speed,
                     opacity: p.opacity,
@@ -310,7 +310,7 @@ impl ScenePlayer {
                     || info.duration().saturating_sub(in_pt),
                     |op| op.saturating_sub(in_pt),
                 );
-                let timeline_start = p.timeline_offset;
+                let timeline_start = p.offset;
                 let timeline_end = timeline_start + clip_dur;
                 // Lazily create the mixer if no V1 clip had audio.
                 let mixer_ref =
@@ -395,7 +395,7 @@ impl ScenePlayer {
         let (initial_last_w, initial_last_h) =
             probes.first().map_or((0, 0), |p| (p.video_w, p.video_h));
 
-        let runner = TimelineRunner {
+        let runner = SceneRunner {
             clips: clip_states,
             overlay_layers,
             audio_only_tracks,
@@ -458,11 +458,11 @@ mod tests {
     // ── blend_rgba delegate ────────────────────────────────────────────────
 
     #[test]
-    fn timeline_inner_blend_rgba_at_zero_alpha_should_return_a() {
+    fn inner_blend_rgba_at_zero_alpha_should_return_a() {
         let a = vec![255u8, 0, 0, 255];
         let b = vec![0u8, 0, 255, 255];
         let mut dst = Vec::new();
-        timeline_inner::blend_rgba(&a, &b, 0.0, &mut dst);
+        inner::blend_rgba(&a, &b, 0.0, &mut dst);
         assert_eq!(dst, a);
     }
 

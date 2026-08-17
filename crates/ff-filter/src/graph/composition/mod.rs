@@ -9,15 +9,15 @@
 //! extract output frames.
 
 mod audio_concatenator;
-mod clip_joiner;
 pub(super) mod composition_inner;
+mod crossfade_joiner;
 mod multi_track_composer;
 mod multi_track_mixer;
 mod realtime_composer;
 mod video_concatenator;
 
 pub use audio_concatenator::AudioConcatenator;
-pub use clip_joiner::ClipJoiner;
+pub use crossfade_joiner::CrossfadeJoiner;
 pub use multi_track_composer::{MultiTrackComposer, ProxySource, VideoLayer};
 pub use multi_track_mixer::{AudioTrack, MultiTrackAudioMixer};
 pub use realtime_composer::{
