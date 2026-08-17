@@ -202,6 +202,46 @@ impl RealtimeComposer {
     }
 }
 
+// ── LavfiSource ────────────────────────────────────────────────────────────────
+
+/// Generates video frames from an `FFmpeg` `lavfi` filtergraph string (e.g.
+/// `color=s=1920x1080:c=black@0.0,drawtext=text='Title'`), so a host such as the
+/// preview runner can feed a timeline-level generated overlay into a
+/// [`RealtimeComposer`] as pushed frames.
+///
+/// The output is `rgba` and preserves the graph's own alpha (no canvas is
+/// composited underneath), matching the export path's topmost lavfi layer. Frames
+/// are produced sequentially via [`pull`](Self::pull); the source exposes no seek,
+/// so a host that seeks rebuilds it from scratch.
+pub struct LavfiSource {
+    graph: FilterGraph,
+}
+
+impl LavfiSource {
+    /// Builds a source from a `lavfi` filtergraph string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError`] when the underlying `FFmpeg` graph cannot be built
+    /// (e.g. the `movie` / `lavfi` demuxer is unavailable, or the string is invalid).
+    pub fn new(lavfi: &str) -> Result<Self, FilterError> {
+        // SAFETY: `build_lavfi_source` follows the avfilter ownership rules; the
+        // returned graph owns every context it created.
+        let graph = unsafe { super::composition_inner::build_lavfi_source(lavfi)? };
+        Ok(Self { graph })
+    }
+
+    /// Pulls the next generated frame (`rgba`), or `None` when none is buffered yet
+    /// or at end-of-stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError`] on an unexpected `FFmpeg` error.
+    pub fn pull(&mut self) -> Result<Option<VideoFrame>, FilterError> {
+        self.graph.pull_video()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1756,5 +1796,35 @@ mod tests {
             Ok(None) => println!("Skipping: no frame produced"),
             Err(e) => println!("Skipping: {e}"),
         }
+    }
+
+    #[test]
+    fn lavfi_source_should_generate_rgba_frames() {
+        // C4d: a `LavfiSource` generates rgba frames from a filtergraph string. Probe-
+        // gated: CI's Linux FFmpeg has no filters / lavfi demuxer, so skip gracefully.
+        let mut source = match LavfiSource::new("color=c=red:s=16x16:d=1") {
+            Ok(s) => s,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
+            }
+        };
+        // The movie/lavfi source may return None before it warms up; try a few pulls.
+        for _ in 0..8 {
+            match source.pull() {
+                Ok(Some(frame)) => {
+                    assert_eq!(frame.format(), PixelFormat::Rgba);
+                    assert_eq!(frame.width(), 16);
+                    assert_eq!(frame.height(), 16);
+                    return;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    println!("Skipping: {e}");
+                    return;
+                }
+            }
+        }
+        println!("Skipping: no frame produced");
     }
 }

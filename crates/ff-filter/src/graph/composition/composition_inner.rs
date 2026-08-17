@@ -134,9 +134,7 @@ pub(super) unsafe fn build_video_composition(
         // FFmpeg's lavfi virtual demuxer; escape "\" and ":" for the option parser.
         // For regular files, normalise Windows backslashes and escape the drive colon.
         let movie_args_str = if layer.input_format.as_deref() == Some("lavfi") {
-            let lavfi_str = layer.source.to_string_lossy();
-            let escaped = lavfi_str.replace('\\', "\\\\").replace(':', "\\:");
-            format!("filename={escaped}:format_name=lavfi")
+            lavfi_movie_args(&layer.source.to_string_lossy())
         } else {
             // Decode from the proxy file when one is set; otherwise the original source.
             let decode_path = match &layer.proxy {
@@ -2399,5 +2397,138 @@ pub(super) unsafe fn build_dissolve_join(
     let sink_nn = NonNull::new_unchecked(sink_ctx);
     let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
     log::info!("dissolve join graph built dissolve_sec={dissolve_sec} xfade_offset={xfade_offset}");
+    Ok(FilterGraph::from_prebuilt(inner))
+}
+
+/// Builds the `movie` filter args for a `lavfi` source string, escaping `\` and `:`
+/// for the option parser. Shared by the export composition (`build_video_composition`)
+/// and the preview [`build_lavfi_source`] so the two stay in sync.
+fn lavfi_movie_args(lavfi: &str) -> String {
+    let escaped = lavfi.replace('\\', "\\\\").replace(':', "\\:");
+    format!("filename={escaped}:format_name=lavfi")
+}
+
+// ── Lavfi source graph (generated overlay for the preview runner) ──────────────
+
+/// Builds a source-only graph that generates frames from a `lavfi` filtergraph
+/// string: `movie=filename=<lavfi>:format_name=lavfi → format=rgba → buffersink`.
+///
+/// Unlike the export composition (which composites the lavfi layer onto a canvas),
+/// this keeps the lavfi's **own alpha** (output `rgba`, no canvas underneath) so the
+/// preview runner can overlay it on the live composite. Pulled with
+/// [`FilterGraph::pull_video`]; it has no `buffersrc` input and no animation entries.
+///
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// returned graph owns every context it created.
+pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // ── movie=filename=<escaped>:format_name=lavfi ────────────────────────────
+    let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filter.is_null() {
+        bail!(graph, "filter not found: movie");
+    }
+    let Ok(movie_args) = CString::new(lavfi_movie_args(lavfi)) else {
+        bail!(graph, "CString::new failed for lavfi movie args");
+    };
+    let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut movie_ctx,
+        movie_filter,
+        c"lavfi_movie".as_ptr(),
+        movie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create lavfi movie source code={ret}")
+        );
+    }
+
+    // ── format=rgba (preserve the overlay's own alpha) ────────────────────────
+    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if fmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut fmt_ctx,
+        fmt_filter,
+        c"lavfi_fmt".as_ptr(),
+        c"pix_fmts=rgba".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create lavfi format filter code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(movie_ctx, 0, fmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: lavfi movie→format");
+    }
+
+    // ── buffersink ────────────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"lavfi_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create lavfi buffersink code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(fmt_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: lavfi format→buffersink");
+    }
+
+    // ── Configure ─────────────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("lavfi avfilter_graph_config failed code={ret}")
+        );
+    }
+
+    // SAFETY: ret >= 0 guarantees both pointers are non-null.
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
+    log::info!("lavfi source graph built");
     Ok(FilterGraph::from_prebuilt(inner))
 }

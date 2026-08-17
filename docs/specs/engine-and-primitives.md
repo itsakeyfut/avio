@@ -140,6 +140,14 @@ expr-operator attenuation only becomes visible once the Q2 colour-space reconcil
 are alpha-composited and match export today. As with export, animated opacity/position on a non-`Over` layer
 is not tracked (the static t=0 value is used).
 
+**C4d (done):** preview composites the timeline-level `lavfi_overlay` (gap 4 closed). A new `ff_filter`
+primitive `LavfiSource` builds a source-only `movie=…:format_name=lavfi → format=rgba` graph (keeping the
+overlay's own alpha), carried into the `Scene` as a top-level `lavfi_overlay: Option<String>`. The runner
+generates a frame per tick (held-frame model, same as file overlays) and pushes it as the topmost layer —
+fixed full-frame Normal/`Over`, matching export — on both the present and gap-fill paths. **Limitation:** the
+source has no seek, so on a timeline seek the generator is rebuilt from t=0; a static overlay (a drawtext
+title, the dominant case) is exact, while a time-varying lavfi restarts from t=0 after a seek.
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do

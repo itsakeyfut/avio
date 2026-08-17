@@ -27,6 +27,10 @@ pub struct Scene {
     pub fps: f64,
     /// Explicit output canvas `(width, height)`, or `None` to size from the base track.
     pub canvas: Option<(u32, u32)>,
+    /// Optional timeline-global `lavfi` filtergraph string (e.g.
+    /// `color=s=1920x1080:c=black@0.0,drawtext=text='Title'`) generated and composited
+    /// as the **topmost** video layer, matching the export path. `None` = no overlay.
+    pub lavfi_overlay: Option<String>,
     /// Video tracks, composited bottom-up: index `0` is the V1 base, `1..` are overlays.
     pub video_tracks: Vec<SceneVideoTrack>,
     /// Dedicated audio-only tracks (A1, A2, …).

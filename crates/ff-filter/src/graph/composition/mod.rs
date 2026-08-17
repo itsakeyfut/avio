@@ -20,5 +20,7 @@ pub use audio_concatenator::AudioConcatenator;
 pub use clip_joiner::ClipJoiner;
 pub use multi_track_composer::{MultiTrackComposer, ProxySource, VideoLayer};
 pub use multi_track_mixer::{AudioTrack, MultiTrackAudioMixer};
-pub use realtime_composer::{RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor};
+pub use realtime_composer::{
+    LavfiSource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor,
+};
 pub use video_concatenator::VideoConcatenator;
