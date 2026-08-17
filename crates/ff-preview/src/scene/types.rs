@@ -1,7 +1,7 @@
 //! Model-agnostic description of a timeline for the real-time preview runner.
 //!
 //! A [`Scene`] is the primitive seam between an editing engine and
-//! [`TimelineRunner`](super::runner::TimelineRunner): it carries only the
+//! [`SceneRunner`](super::runner::SceneRunner): it carries only the
 //! model's primitivised fields (paths, durations, opacity, blend, animation
 //! tracks), never the editing model itself. Resolving a `Scene` against the
 //! media — probing for duration, audio presence, and frame size — happens in
@@ -48,14 +48,14 @@ pub struct SceneVideoTrack {
 /// One video clip placed on the timeline.
 ///
 /// Fields are pre-resolved model projections (e.g. `in_point` defaulted, `speed`
-/// clamped, `transition_dur` computed); media-dependent resolution (the effective
+/// clamped, `xfade_dur` computed); media-dependent resolution (the effective
 /// clip duration when `out_point` is `None`) is done by the runner at open time.
 #[derive(Debug, Clone)]
 pub struct ScenePlacement {
     /// Source media path.
     pub source: PathBuf,
     /// Global timeline position where this placement starts.
-    pub timeline_offset: Duration,
+    pub offset: Duration,
     /// Source-file PTS at which playback starts (`Clip::in_point`, defaulted to zero).
     pub in_point: Duration,
     /// Source-file PTS at which playback ends (`None` = play to EOF).
@@ -64,11 +64,11 @@ pub struct ScenePlacement {
     pub speed: f64,
     /// Crossfade duration from the previous placement into this one. Meaningful on
     /// the V1 base track only; `Duration::ZERO` = hard cut.
-    pub transition_dur: Duration,
+    pub xfade_dur: Duration,
     /// The `xfade` transition kind for this crossfade (V1 base track only). `None`
     /// when there is no transition; the runner defaults to `Fade` if a duration is
     /// set without a kind.
-    pub transition_kind: Option<XfadeTransition>,
+    pub xfade_kind: Option<XfadeTransition>,
     /// Per-clip opacity in `[0.0, 1.0]`.
     pub opacity: f32,
     /// The dimension-free compositing description (effects, blend, position, and the
@@ -101,7 +101,7 @@ pub struct SceneAudioPlacement {
     /// Source media path.
     pub source: PathBuf,
     /// Global timeline position where this placement starts.
-    pub timeline_offset: Duration,
+    pub offset: Duration,
     /// Source-file PTS at which playback starts (defaulted to zero).
     pub in_point: Duration,
     /// Source-file PTS at which playback ends (`None` = play to EOF).

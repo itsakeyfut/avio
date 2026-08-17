@@ -36,7 +36,7 @@ pub mod playback;
 pub mod proxy;
 
 #[cfg(feature = "timeline")]
-pub mod timeline;
+pub mod scene;
 
 pub use audio::{AudioMixer, AudioTrackHandle};
 pub use error::PreviewError;
@@ -54,7 +54,7 @@ pub use playback::AsyncPreviewPlayer;
 pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};
 
 #[cfg(feature = "timeline")]
-pub use timeline::{
-    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneVideoTrack,
-    TimelineRunner,
+pub use scene::{
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneRunner,
+    SceneVideoTrack,
 };

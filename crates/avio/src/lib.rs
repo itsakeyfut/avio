@@ -284,12 +284,12 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 #[cfg(feature = "filter")]
 pub use ff_filter::{
     AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
-    BlendMode, ClipJoiner, CompositeOp, DrawTextOptions, Easing, EqBand, FilterError, FilterGraph,
-    FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource, LensProfile,
-    Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType,
-    ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
-    ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator, VideoLayer,
-    XfadeTransition, YadifMode,
+    BlendMode, CompositeOp, CrossfadeJoiner, DrawTextOptions, Easing, EqBand, FilterError,
+    FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource,
+    LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer,
+    NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer,
+    RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap,
+    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────
@@ -349,7 +349,7 @@ pub use ff_stream::SrtOutput;
 // and the `RgbaSink` / `RgbaFrame` helpers.
 // Enable `preview-proxy` to additionally access `ProxyGenerator`.
 // Enable both `preview` and `pipeline` to access `TimelinePlayer` /
-// `TimelineRunner` for multi-clip real-time preview.
+// `SceneRunner` for multi-clip real-time preview.
 #[cfg(feature = "preview")]
 pub use ff_preview::{
     AudioMixer, AudioTrackHandle, DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink,
@@ -367,15 +367,15 @@ pub use ff_preview::HardwareAccel;
 
 // The editing-model preview entry `TimelinePlayer` is defined in `avio` (the
 // `player` module) — it derives a `Scene` from a `Timeline` and hands it to
-// `ff-preview`'s `ScenePlayer`. `ScenePlayer` / `TimelineRunner` / the `Scene`
+// `ff-preview`'s `ScenePlayer`. `ScenePlayer` / `SceneRunner` / the `Scene`
 // types stay in `ff-preview` (model-agnostic). All require `preview` + `pipeline`;
 // the `pipeline` feature enables `ff-preview?/timeline` (see Cargo.toml).
 #[cfg(all(feature = "preview", feature = "pipeline"))]
 mod player;
 #[cfg(all(feature = "preview", feature = "pipeline"))]
 pub use ff_preview::{
-    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneVideoTrack,
-    TimelineRunner,
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneRunner,
+    SceneVideoTrack,
 };
 #[cfg(all(feature = "preview", feature = "pipeline"))]
 pub use player::TimelinePlayer;
@@ -733,11 +733,11 @@ mod tests {
     #[cfg(all(feature = "preview", feature = "pipeline"))]
     #[test]
     fn preview_timeline_types_should_be_accessible() {
-        // TimelinePlayer and TimelineRunner are available when both `preview` and
+        // TimelinePlayer and SceneRunner are available when both `preview` and
         // `pipeline` features are enabled (avio wires ff-preview/timeline via
         // `ff-preview?/timeline` in the `pipeline` feature definition).
         let _ = std::mem::size_of::<TimelinePlayer>();
-        let _ = std::mem::size_of::<TimelineRunner>();
+        let _ = std::mem::size_of::<SceneRunner>();
     }
 
     #[cfg(all(feature = "preview", feature = "tokio"))]

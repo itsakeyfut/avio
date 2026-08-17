@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 
-// ── ClipJoiner ────────────────────────────────────────────────────────────────
+// ── CrossfadeJoiner ────────────────────────────────────────────────────────────────
 
 /// Joins two video inputs with a cross-dissolve transition.
 ///
@@ -30,24 +30,24 @@ use crate::graph::graph::FilterGraph;
 /// # Examples
 ///
 /// ```ignore
-/// use ff_filter::ClipJoiner;
+/// use ff_filter::CrossfadeJoiner;
 /// use std::time::Duration;
 ///
-/// let mut graph = ClipJoiner::new("intro.mp4", "main.mp4", Duration::from_secs(1))
+/// let mut graph = CrossfadeJoiner::new("intro.mp4", "main.mp4", Duration::from_secs(1))
 ///     .build()?;
 ///
 /// while let Some(frame) = graph.pull_video()? {
 ///     // encode or display `frame`
 /// }
 /// ```
-pub struct ClipJoiner {
+pub struct CrossfadeJoiner {
     input_a: PathBuf,
     input_b: PathBuf,
     dissolve_duration: Duration,
 }
 
-impl ClipJoiner {
-    /// Create a new `ClipJoiner`.
+impl CrossfadeJoiner {
+    /// Create a new `CrossfadeJoiner`.
     ///
     /// `dissolve_duration` is the length of the cross-dissolve overlap.
     /// Pass [`Duration::ZERO`] for plain concatenation (no transition).
@@ -91,12 +91,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_joiner_dissolve_exceeding_input_duration_should_err() {
+    fn crossfade_joiner_dissolve_exceeding_input_duration_should_err() {
         // dissolve_duration (9999 s) exceeds any realistic clip.  With
         // nonexistent files the probe itself returns CompositionFailed, which
         // also satisfies the assertion.  With real files the duration check
         // fires.
-        let result = ClipJoiner::new("a.mp4", "b.mp4", Duration::from_secs(9999)).build();
+        let result = CrossfadeJoiner::new("a.mp4", "b.mp4", Duration::from_secs(9999)).build();
         assert!(
             matches!(result, Err(FilterError::CompositionFailed { .. })),
             "expected CompositionFailed for dissolve_duration > clip duration, got {result:?}"
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn clip_joiner_dissolve_should_reduce_total_duration() {
+    fn crossfade_joiner_dissolve_should_reduce_total_duration() {
         // With nonexistent files the probe step returns CompositionFailed.
         // This test verifies: (a) no panic, (b) the error is CompositionFailed
         // (not an unexpected variant), and (c) the `xfade` filter exists in the
@@ -112,7 +112,7 @@ mod tests {
         // we skip instead of failing, matching the pattern used by the concat
         // tests).
         let result =
-            ClipJoiner::new("input_a.mp4", "input_b.mp4", Duration::from_millis(500)).build();
+            CrossfadeJoiner::new("input_a.mp4", "input_b.mp4", Duration::from_millis(500)).build();
         assert!(result.is_err(), "expected error (probe or graph failure)");
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
             if reason.contains("filter not found: xfade")

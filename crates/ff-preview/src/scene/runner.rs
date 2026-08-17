@@ -1,6 +1,6 @@
 //! The timeline decode/present state machine.
 //!
-//! [`TimelineRunner`] owns the per-track decode buffers and the audio mixer,
+//! [`SceneRunner`] owns the per-track decode buffers and the audio mixer,
 //! and drives frame presentation. Construct it via
 //! [`ScenePlayer::open`](super::ScenePlayer::open).
 
@@ -24,19 +24,19 @@ use crate::playback::player::PlayerCommand;
 use crate::playback::sink::FrameSink;
 
 use super::audio_resampling::spawn_audio_track_thread;
+use super::inner;
 use super::state::{
     AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, TransitionState,
     db_to_linear,
 };
-use super::timeline_inner;
 
-// ── TimelineRunner ────────────────────────────────────────────────────────────
+// ── SceneRunner ────────────────────────────────────────────────────────────
 
 /// Exclusive owner of the timeline decode pipeline.
 ///
 /// Move to a background thread and call [`run`](Self::run). Register a
 /// [`FrameSink`] with [`set_sink`](Self::set_sink) before calling `run`.
-pub struct TimelineRunner {
+pub struct SceneRunner {
     pub(super) clips: Vec<ClipState>,
     /// Secondary video overlay layers (V2, V3, …). Each is composited over V1
     /// in order before the frame is delivered to the sink.
@@ -99,7 +99,7 @@ pub struct TimelineRunner {
     pub(super) lavfi: Option<LavfiOverlayState>,
 }
 
-impl TimelineRunner {
+impl SceneRunner {
     /// Register the frame sink. Call before [`run`](Self::run).
     pub fn set_sink(&mut self, sink: Box<dyn FrameSink>) {
         self.sink = Some(sink);
@@ -666,15 +666,13 @@ impl TimelineRunner {
                     // ── Transition zone entry check ────────────────────────────
                     if self.transition.is_none() && active + 1 < self.clips.len() {
                         let next = &self.clips[active + 1];
-                        if next.transition_dur > Duration::ZERO
-                            && timeline_pts >= next.timeline_start
-                        {
-                            if timeline_pts < next.timeline_start + next.transition_dur {
+                        if next.xfade_dur > Duration::ZERO && timeline_pts >= next.timeline_start {
+                            if timeline_pts < next.timeline_start + next.xfade_dur {
                                 self.transition = Some(TransitionState {
                                     next_idx: active + 1,
                                     start: next.timeline_start,
-                                    duration: next.transition_dur,
-                                    kind: next.transition_kind.unwrap_or(XfadeTransition::Fade),
+                                    duration: next.xfade_dur,
+                                    kind: next.xfade_kind.unwrap_or(XfadeTransition::Fade),
                                 });
                             } else {
                                 // Jumped past the entire transition zone.
@@ -924,7 +922,7 @@ impl TimelineRunner {
                             let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
                                 / trans_dur.as_secs_f32())
                             .clamp(0.0, 1.0);
-                            timeline_inner::apply_xfade(
+                            inner::apply_xfade(
                                 trans_kind,
                                 &self.rgba_a,
                                 &self.rgba_b,
@@ -1146,7 +1144,7 @@ impl TimelineRunner {
     }
 }
 
-impl Drop for TimelineRunner {
+impl Drop for SceneRunner {
     fn drop(&mut self) {
         if let Some(cancel) = &self.active_audio_cancel {
             cancel.store(true, Ordering::Release);

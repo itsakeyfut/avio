@@ -43,7 +43,7 @@ pub struct Clip {
     /// End point within the source file. `None` = end of file.
     pub out_point: Option<Duration>,
     /// Start offset on the timeline (`Duration::ZERO` = beginning of composition).
-    pub timeline_offset: Duration,
+    pub offset: Duration,
     /// Arbitrary key/value metadata attached to this clip.
     pub metadata: HashMap<String, String>,
     /// Transition applied at the start of this clip (from the previous clip on the same track).
@@ -209,7 +209,7 @@ impl Clip {
             source: source.as_ref().to_path_buf(),
             in_point: None,
             out_point: None,
-            timeline_offset: Duration::ZERO,
+            offset: Duration::ZERO,
             metadata: HashMap::new(),
             transition: None,
             transition_duration: Duration::ZERO,
@@ -419,11 +419,8 @@ impl Clip {
 
     /// Sets the timeline start offset and returns the updated clip.
     #[must_use]
-    pub fn offset(self, timeline_offset: Duration) -> Self {
-        Self {
-            timeline_offset,
-            ..self
-        }
+    pub fn offset(self, offset: Duration) -> Self {
+        Self { offset, ..self }
     }
 
     /// Sets the visual transition from the previous clip into this one and returns
@@ -824,7 +821,7 @@ mod tests {
     #[test]
     fn clip_new_should_have_zero_offset() {
         let clip = Clip::new("video.mp4");
-        assert_eq!(clip.timeline_offset, Duration::ZERO);
+        assert_eq!(clip.offset, Duration::ZERO);
         assert!(clip.in_point.is_none());
         assert!(clip.out_point.is_none());
         assert!(clip.metadata.is_empty());

@@ -1,4 +1,4 @@
-//! Internal state structs for [`TimelineRunner`](super::runner::TimelineRunner).
+//! Internal state structs for [`SceneRunner`](super::runner::SceneRunner).
 //!
 //! These types are `pub(super)` so the runner (a sibling module) can construct
 //! and mutate them directly. They carry no behaviour beyond `AudioOnlyTrack`'s
@@ -41,9 +41,9 @@ pub(super) struct ClipState {
     pub(super) out_point: Option<Duration>,
     /// Duration of the crossfade from the previous clip into this one.
     /// `Duration::ZERO` = hard cut.
-    pub(super) transition_dur: Duration,
+    pub(super) xfade_dur: Duration,
     /// The `xfade` transition kind for that crossfade (`None` = default `Fade`).
-    pub(super) transition_kind: Option<XfadeTransition>,
+    pub(super) xfade_kind: Option<XfadeTransition>,
     /// Audio track handle — `None` if the clip has no audio stream.
     pub(super) audio_track: Option<AudioTrackHandle>,
     /// Playback speed multiplier from `Clip::speed` (`1.0` = normal).
@@ -81,7 +81,7 @@ pub(super) struct TransitionState {
 
 // ── OverlayLayer ──────────────────────────────────────────────────────────────
 
-/// One secondary video layer (V2, V3, …) inside [`TimelineRunner`](super::runner::TimelineRunner).
+/// One secondary video layer (V2, V3, …) inside [`SceneRunner`](super::runner::SceneRunner).
 pub(super) struct OverlayLayer {
     pub(super) clips: Vec<ClipState>,
     /// Index of the clip currently being decoded from this layer.
@@ -216,7 +216,7 @@ impl AudioFadeConfig {
 // ── AudioOnlyTrack ────────────────────────────────────────────────────────────
 
 /// One dedicated audio-only clip (from an A1/A2/… track) inside
-/// [`TimelineRunner`](super::runner::TimelineRunner).
+/// [`SceneRunner`](super::runner::SceneRunner).
 pub(super) struct AudioOnlyTrack {
     pub(super) source: PathBuf,
     pub(super) timeline_start: Duration,

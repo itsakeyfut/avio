@@ -207,7 +207,7 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             index,
             offset,
         } => {
-            clip_mut(&mut next, *track, *index)?.timeline_offset = *offset;
+            clip_mut(&mut next, *track, *index)?.offset = *offset;
         }
         Command::TrimClip {
             track,
@@ -365,10 +365,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            out.video_tracks()[0][0].timeline_offset,
-            Duration::from_secs(3)
-        );
+        assert_eq!(out.video_tracks()[0][0].offset, Duration::from_secs(3));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! In-place timeline layout update for [`TimelineRunner`].
+//! In-place timeline layout update for [`SceneRunner`].
 //!
 //! Split out of `runner.rs` to keep that file within the size limit.
 
@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use crate::error::PreviewError;
 
-use super::runner::TimelineRunner;
-use super::scene::Scene;
+use super::runner::SceneRunner;
+use super::types::Scene;
 
-impl TimelineRunner {
+impl SceneRunner {
     /// Update clip positions in place from a new [`Scene`] without stopping the
     /// runner or replacing audio infrastructure.
     ///
     /// Only the position metadata (`timeline_start`, `timeline_end`,
-    /// `in_point`, `out_point`, `transition_dur`) of existing `ClipState` and
+    /// `in_point`, `out_point`, `xfade_dur`) of existing `ClipState` and
     /// `AudioOnlyTrack` objects is changed. The `AudioMixer` and all
     /// `AudioTrackHandle`s are reused unchanged; only the decode positions are
     /// updated by calling `seek_timeline(resume_pts)` at the end.
@@ -72,13 +72,13 @@ impl TimelineRunner {
             } else {
                 new_unscaled.div_f64(new_speed)
             };
-            self.clips[i].timeline_start = p.timeline_offset;
-            self.clips[i].timeline_end = p.timeline_offset + new_dur;
+            self.clips[i].timeline_start = p.offset;
+            self.clips[i].timeline_end = p.offset + new_dur;
             self.clips[i].in_point = p.in_point;
             self.clips[i].out_point = p.out_point;
             self.clips[i].speed = new_speed;
-            self.clips[i].transition_dur = p.transition_dur;
-            self.clips[i].transition_kind = p.transition_kind;
+            self.clips[i].xfade_dur = p.xfade_dur;
+            self.clips[i].xfade_kind = p.xfade_kind;
         }
 
         // ── Update overlay layers (V2+) ────────────────────────────────────────
@@ -94,8 +94,8 @@ impl TimelineRunner {
                         let new_dur = p
                             .out_point
                             .map_or(old_dur, |op| op.saturating_sub(p.in_point));
-                        layer.clips[j].timeline_start = p.timeline_offset;
-                        layer.clips[j].timeline_end = p.timeline_offset + new_dur;
+                        layer.clips[j].timeline_start = p.offset;
+                        layer.clips[j].timeline_end = p.offset + new_dur;
                         layer.clips[j].in_point = p.in_point;
                         layer.clips[j].out_point = p.out_point;
                     }
@@ -111,7 +111,7 @@ impl TimelineRunner {
             .audio_tracks
             .iter()
             .flat_map(|track| track.placements.iter())
-            .map(|p| (p.timeline_offset, p.in_point, p.out_point))
+            .map(|p| (p.offset, p.in_point, p.out_point))
             .collect();
 
         if new_a_positions.len() == self.audio_only_tracks.len() {

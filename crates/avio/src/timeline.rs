@@ -645,7 +645,7 @@ impl TimelineBuilder {
 
 /// Projects one video clip into a [`ScenePlacement`](ff_preview::ScenePlacement).
 /// `is_base` selects the V1 base track, where a crossfade transition contributes a
-/// `transition_dur`; overlays force zero (matching the compositor).
+/// `xfade_dur`; overlays force zero (matching the compositor).
 #[cfg(feature = "preview")]
 fn video_placement(
     clip: &Clip,
@@ -653,22 +653,22 @@ fn video_placement(
     is_base: bool,
     animations: &HashMap<String, AnimationTrack<f64>>,
 ) -> ff_preview::ScenePlacement {
-    let transition_dur = if is_base && clip.transition.is_some() {
+    let xfade_dur = if is_base && clip.transition.is_some() {
         clip.transition_duration
     } else {
         Duration::ZERO
     };
     // Carry the transition kind (not just its duration) so preview renders the
     // actual xfade kind; overlays force no transition (matching the compositor).
-    let transition_kind = if is_base { clip.transition } else { None };
+    let xfade_kind = if is_base { clip.transition } else { None };
     ff_preview::ScenePlacement {
         source: clip.source.clone(),
-        timeline_offset: clip.timeline_offset,
+        offset: clip.offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
         speed: clip.speed.max(0.01),
-        transition_dur,
-        transition_kind,
+        xfade_dur,
+        xfade_kind,
         opacity: clip.opacity.clamp(0.0, 1.0),
         // The single derive: preview and export build their video layers from the
         // same `avio::derive`, so the timeline-level animations (scale/rotation and
@@ -692,7 +692,7 @@ fn audio_placement(
 ) -> ff_preview::SceneAudioPlacement {
     ff_preview::SceneAudioPlacement {
         source: clip.source.clone(),
-        timeline_offset: clip.timeline_offset,
+        offset: clip.offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
         speed: clip.speed.max(0.01),
@@ -798,38 +798,34 @@ mod tests {
 
         let base = &scene.video_tracks[0].placements[0];
         assert_eq!(base.source.to_str(), Some("a.mp4"));
-        assert_eq!(base.timeline_offset, Duration::from_millis(500));
+        assert_eq!(base.offset, Duration::from_millis(500));
         assert_eq!(base.in_point, Duration::from_secs(1));
         assert_eq!(base.out_point, Some(Duration::from_secs(3)));
         assert!((base.speed - 2.0).abs() < f64::EPSILON);
         assert!((base.opacity - 0.5).abs() < f32::EPSILON);
-        assert_eq!(
-            base.transition_dur,
-            Duration::ZERO,
-            "clip 0 has no transition"
-        );
-        assert_eq!(base.transition_kind, None, "clip 0 has no transition kind");
+        assert_eq!(base.xfade_dur, Duration::ZERO, "clip 0 has no transition");
+        assert_eq!(base.xfade_kind, None, "clip 0 has no transition kind");
         assert!(matches!(base.volume, AnimatedValue::Track(_)));
         assert!(
             matches!(base.layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < f64::EPSILON)
         );
 
         let base1 = &scene.video_tracks[0].placements[1];
-        assert_eq!(base1.transition_dur, Duration::from_millis(750));
+        assert_eq!(base1.xfade_dur, Duration::from_millis(750));
         assert_eq!(
-            base1.transition_kind,
+            base1.xfade_kind,
             Some(XfadeTransition::Fade),
             "base track carries the xfade kind"
         );
 
         let overlay = &scene.video_tracks[1].placements[0];
         assert_eq!(
-            overlay.transition_dur,
+            overlay.xfade_dur,
             Duration::ZERO,
             "overlay transitions must project as zero"
         );
         assert_eq!(
-            overlay.transition_kind, None,
+            overlay.xfade_kind, None,
             "overlay transition kind is forced off"
         );
 

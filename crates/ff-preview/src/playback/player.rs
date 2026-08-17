@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "timeline")]
-use crate::timeline::Scene;
+use crate::scene::Scene;
 use ff_decode::HardwareAccel;
 
 use super::decode_buffer::DecodeBuffer;
@@ -52,7 +52,7 @@ pub enum PlayerCommand {
     SetAvOffset(i64),
     /// Replace the timeline clip layout without stopping playback.
     ///
-    /// Handled only by `TimelineRunner`; `PlayerRunner` ignores it.
+    /// Handled only by `SceneRunner`; `PlayerRunner` ignores it.
     /// The runner updates its internal `ClipState` / `AudioOnlyTrack` positions
     /// in place and seeks to the last known media PTS so the next frame is
     /// spatially correct after the layout change.

@@ -161,10 +161,10 @@ would also apply pitch-accurate `atempo` speed and realise pan in both ends.
 
 **C4c (done, completes C4):** preview renders the export xfade *kind* (gap 8 closed). Previously every
 transition rendered as a single host-side linear crossfade (`blend_rgba`); the kind was collapsed to a bool
-in `video_placement`. The derived `Scene` now carries `transition_kind: Option<XfadeTransition>` (base track
+in `video_placement`. The derived `Scene` now carries `xfade_kind: Option<XfadeTransition>` (base track
 only; overlays force `None`, matching the compositor), threaded into the runner's `TransitionState`. At each
 transition frame the runner already holds both frames (`rgba_a`, `rgba_b`), a scalar progress, and `w`/`h`
-host-side, so a new pure `ff_preview::timeline_inner::apply_xfade` dispatches on the kind over packed RGBA:
+host-side, so a new pure `ff_preview::scene::inner::apply_xfade` dispatches on the kind over packed RGBA:
 `fade`, `wipe{left,right,up,down}`, `slide{left,right,up,down}`, and `dissolve` render with real fidelity and
 are covered by deterministic unit tests (no FFmpeg, no probe-gating). Preview transitions are CPU, as
 export's `xfade` is CPU. **Deferred:** the geometric/mosaic kinds (`fadegrays`, `circleopen`, `circleclose`,
@@ -183,7 +183,7 @@ its job?
 |---|---|
 | Timeline / Clip / tracks / clip effect stacks | FilterGraph / FilterStep |
 | model → Scene derivation, preview/export orchestration | RealtimeComposer / compositor (executes a Scene) |
-| TimelinePlayer / TimelineRunner (consume the model) | Keyframe / Easing / Lerp / AnimationTrack (interpolation math) |
+| TimelinePlayer / SceneRunner (consume the model) | Keyframe / Easing / Lerp / AnimationTrack (interpolation math) |
 | edit history (undo) — #1327 | BlendMode / CompositeOp / XfadeTransition (enums) |
 | | decode / encode / probe / stream / EncoderConfig |
 | | Pipeline / VideoPipeline / … (execution pipelines) |
@@ -205,7 +205,7 @@ opacity + blend + effect steps) plus the output canvas.
 The `Scene` above is per-frame (the `RealtimeComposer` input, already model-free). The **real-time
 preview runner** needs a **timeline-level** Scene, because it owns decode scheduling (opening/seeking a
 decoder per source and mapping the playhead to each source's frame time). A mapping of
-`ff-preview`'s `TimelineRunner`/`TimelinePlayer` established:
+`ff-preview`'s `SceneRunner`/`TimelinePlayer` established:
 
 - It reads `Timeline` **only at init and `update_layout`** — via four accessors (`video_tracks()`,
   `audio_tracks()`, `frame_rate()`, `explicit_canvas()`); `run()` never touches `Timeline`.
@@ -224,19 +224,19 @@ to `avio`. This avoids exposing `ff-preview` internals (`MasterClock`, `SwsRgbaC
 ```
 Scene { fps, canvas: Option<(u32,u32)>, video_tracks: Vec<SceneVideoTrack>, audio_tracks: Vec<SceneAudioTrack> }
 SceneVideoTrack { placements: Vec<ScenePlacement> }        // track 0 = V1 base, 1.. = overlays (index = composite order)
-ScenePlacement  { source: PathBuf, timeline_offset: Duration, in_point: Duration,
-                  out_point: Option<Duration>, speed: f64, transition_dur: Duration (V1 only),
+ScenePlacement  { source: PathBuf, offset: Duration, in_point: Duration,
+                  out_point: Option<Duration>, speed: f64, xfade_dur: Duration (V1 only),
                   opacity: f32, layer: RealtimeLayerDescriptor,
                   fade_in/fade_out: Duration, volume_db: f64,
                   volume_track: Option<AnimationTrack<f64>> }
 SceneAudioTrack { placements: Vec<SceneAudioPlacement> }
-SceneAudioPlacement { source: PathBuf, timeline_offset, in_point, out_point: Option<Duration>,
+SceneAudioPlacement { source: PathBuf, offset, in_point, out_point: Option<Duration>,
                       fade_in/fade_out: Duration, volume_db: f64,
                       volume_track: Option<AnimationTrack<f64>> }
 ```
 
 - **Model projection, not media resolution.** `Scene` carries only the editing model's primitivised
-  fields (`timeline_offset`, `out_point`, `speed`, …). Resolving them against the media — probing for
+  fields (`offset`, `out_point`, `speed`, …). Resolving them against the media — probing for
   duration / `has_audio` / frame size — stays in the preview runner's `open()`, exactly as today. So a
   Scene re-derived on every edit needs no re-probe, and behaviour is preserved (probe timing and error
   surface unchanged).

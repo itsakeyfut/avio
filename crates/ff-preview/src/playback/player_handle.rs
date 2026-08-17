@@ -1,7 +1,7 @@
 //! Shared, cloneable control handle for a running [`PlayerRunner`](super::player_runner::PlayerRunner).
 
 #[cfg(feature = "timeline")]
-use crate::timeline::Scene;
+use crate::scene::Scene;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -90,7 +90,7 @@ impl PlayerHandle {
 
     /// Replace the running timeline's clip layout in place from a new [`Scene`].
     ///
-    /// Sends a [`PlayerCommand::UpdateLayout`] to `TimelineRunner`. The runner
+    /// Sends a [`PlayerCommand::UpdateLayout`] to `SceneRunner`. The runner
     /// updates `timeline_start` / `timeline_end` / `in_point` / `out_point` for
     /// every existing clip, stops audio decode threads, and seeks all decode
     /// buffers to the last known media PTS — so the next presented frame is
@@ -100,7 +100,7 @@ impl PlayerHandle {
     /// Drops silently if the command channel (capacity 64) is full.
     ///
     /// No-op when called on a [`PlayerRunner`](super::player_runner::PlayerRunner)-backed
-    /// handle (single-track player). Only `TimelineRunner` handles this command.
+    /// handle (single-track player). Only `SceneRunner` handles this command.
     #[cfg(feature = "timeline")]
     pub fn update_scene(&self, scene: Scene) {
         let _ = self
@@ -270,7 +270,7 @@ impl PlayerHandle {
         self.event_rx.lock().ok()?.recv().ok()
     }
 
-    /// Construct a handle for a non-`PlayerRunner` runner (e.g., `TimelineRunner`).
+    /// Construct a handle for a non-`PlayerRunner` runner (e.g., `SceneRunner`).
     ///
     /// Audio fields are set to `None`; the handle's
     /// [`pop_audio_samples`](Self::pop_audio_samples) always returns an empty `Vec`.

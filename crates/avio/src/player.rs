@@ -4,14 +4,14 @@
 //! primitive preview runner: it derives a [`Scene`](ff_preview::Scene) from a
 //! [`Timeline`] and hands it to [`ff_preview::ScenePlayer`], which owns the
 //! decode pipelines and audio mixer. The runner itself
-//! ([`TimelineRunner`](ff_preview::TimelineRunner)) stays in `ff-preview` as a
+//! ([`SceneRunner`](ff_preview::SceneRunner)) stays in `ff-preview` as a
 //! model-agnostic `Scene` consumer.
 
-use ff_preview::{PlayerHandle, PreviewError, ScenePlayer, TimelineRunner};
+use ff_preview::{PlayerHandle, PreviewError, ScenePlayer, SceneRunner};
 
 use crate::timeline::Timeline;
 
-/// Thin builder for a ([`TimelineRunner`], [`PlayerHandle`]) pair backed by a
+/// Thin builder for a ([`SceneRunner`], [`PlayerHandle`]) pair backed by a
 /// [`Timeline`].
 ///
 /// # Example
@@ -49,7 +49,7 @@ impl TimelinePlayer {
     ///
     /// Returns [`PreviewError`] when the scene has no video tracks, a source file
     /// cannot be opened, or a clip cannot be probed.
-    pub fn open(timeline: &Timeline) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
+    pub fn open(timeline: &Timeline) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
         ScenePlayer::open(&timeline.to_scene())
     }
 }

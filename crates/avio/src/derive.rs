@@ -123,9 +123,9 @@ pub(crate) fn video_layer(
         });
         layer_effects.push(FilterStep::ResetPts);
     }
-    if clip.timeline_offset > Duration::ZERO {
+    if clip.offset > Duration::ZERO {
         layer_effects.push(FilterStep::OffsetPts {
-            seconds: clip.timeline_offset.as_secs_f64(),
+            seconds: clip.offset.as_secs_f64(),
         });
     }
     if (clip.speed - 1.0).abs() > 1e-9 {
@@ -239,11 +239,11 @@ pub(crate) fn audio_track(
         });
         effects.push(FilterStep::AResetPts);
     }
-    if clip.timeline_offset > Duration::ZERO {
+    if clip.offset > Duration::ZERO {
         // `as_millis()` matches the old inline `adelay` (integer ms); offset
         // magnitudes are far below f64's exact-integer range.
         #[allow(clippy::cast_precision_loss)]
-        let ms = clip.timeline_offset.as_millis() as f64;
+        let ms = clip.offset.as_millis() as f64;
         effects.push(FilterStep::AudioDelay { ms });
     }
     if (clip.speed - 1.0).abs() > 1e-9 {
