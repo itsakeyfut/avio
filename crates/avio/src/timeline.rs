@@ -647,7 +647,12 @@ impl TimelineBuilder {
 /// `is_base` selects the V1 base track, where a crossfade transition contributes a
 /// `transition_dur`; overlays force zero (matching the compositor).
 #[cfg(feature = "preview")]
-fn video_placement(clip: &Clip, is_base: bool) -> ff_preview::ScenePlacement {
+fn video_placement(
+    clip: &Clip,
+    track_idx: usize,
+    is_base: bool,
+    animations: &HashMap<String, AnimationTrack<f64>>,
+) -> ff_preview::ScenePlacement {
     let transition_dur = if is_base && clip.transition.is_some() {
         clip.transition_duration
     } else {
@@ -661,7 +666,10 @@ fn video_placement(clip: &Clip, is_base: bool) -> ff_preview::ScenePlacement {
         speed: clip.speed.max(0.01),
         transition_dur,
         opacity: clip.opacity.clamp(0.0, 1.0),
-        layer: clip.realtime_layer_descriptor(),
+        // The single derive: preview and export build their video layers from the
+        // same `avio::derive`, so the timeline-level animations (scale/rotation and
+        // the opacity/x/y track-level fallbacks) reach the preview too.
+        layer: crate::derive::realtime_descriptor(clip, track_idx, animations),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
         volume_db: clip.volume_db,
@@ -702,7 +710,9 @@ impl Timeline {
             .map(|(track_idx, track)| ff_preview::SceneVideoTrack {
                 placements: track
                     .iter()
-                    .map(|clip| video_placement(clip, track_idx == 0))
+                    .map(|clip| {
+                        video_placement(clip, track_idx, track_idx == 0, &self.video_animations)
+                    })
                     .collect(),
             })
             .collect();
@@ -782,7 +792,9 @@ mod tests {
             "clip 0 has no transition"
         );
         assert!(base.volume_track.is_some());
-        assert!((base.layer.opacity - 0.5).abs() < f32::EPSILON);
+        assert!(
+            matches!(base.layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < f64::EPSILON)
+        );
 
         let base1 = &scene.video_tracks[0].placements[1];
         assert_eq!(base1.transition_dur, Duration::from_millis(750));
@@ -799,6 +811,41 @@ mod tests {
         assert_eq!(audio.fade_in, Duration::from_millis(200));
         assert_eq!(audio.fade_out, Duration::from_millis(300));
         assert!((audio.volume_db - (-6.0)).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_route_timeline_animations_into_the_preview_layer() {
+        use ff_filter::{AnimatedValue, Easing, Keyframe};
+
+        // Track 1 (overlay) gets timeline scale_x + rotation animations, and an opacity
+        // animation the neutral clip should fall back to (the 3-way merge). The single
+        // derive must route all three into the preview placement's layer.
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("base.mp4")])
+            .video_track(vec![Clip::new("overlay.mp4")])
+            .video_animation(
+                "video_1_scale_x",
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+            )
+            .video_animation(
+                "video_1_rotation",
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 45.0, Easing::Linear)),
+            )
+            .video_animation(
+                "video_1_opacity",
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+
+        let scene = timeline.to_scene();
+        let overlay = &scene.video_tracks[1].placements[0];
+        assert!(matches!(overlay.layer.scale_x, AnimatedValue::Track(_)));
+        assert!(matches!(overlay.layer.rotation, AnimatedValue::Track(_)));
+        assert!(matches!(overlay.layer.opacity, AnimatedValue::Track(_)));
     }
 
     #[test]

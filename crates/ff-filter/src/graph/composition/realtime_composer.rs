@@ -12,8 +12,9 @@
 
 use ff_format::{PixelFormat, VideoFrame};
 
-use crate::animation::AnimationTrack;
+use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
+use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
@@ -38,31 +39,32 @@ pub struct RealtimeLayer {
     /// Per-clip video effect chain applied to this layer before compositing
     /// (the same `FilterStep`s as `Clip::video_effect_chain` / the export path).
     pub effects: Vec<FilterStep>,
-    /// Opacity in `[0.0, 1.0]`. Applied when this layer is blended onto the layer
-    /// below it (no effect on the base layer 0 — apply base opacity host-side).
-    pub opacity: f32,
-    /// Optional keyframe track animating this layer's opacity (Normal blend only).
-    ///
-    /// When `Some`, the `colorchannelmixer` alpha node is always created (even at
-    /// initial opacity `1.0`) and registered for per-frame `send_command`, so a host
-    /// that pushes frames stamped with the composite's timeline PTS gets an animated
-    /// alpha. `None` keeps the static [`opacity`](Self::opacity). No effect on the
-    /// base layer 0 (apply animated base opacity host-side).
-    pub opacity_track: Option<AnimationTrack<f64>>,
-    /// Static overlay position (pixels) on the canvas. Maps to the `overlay` filter's
-    /// `x`/`y` (Normal blend only). Default `(0.0, 0.0)`. No effect on the base layer 0.
-    pub x: f64,
-    /// See [`x`](Self::x).
-    pub y: f64,
-    /// Optional keyframe tracks animating the overlay X / Y position (Normal blend).
-    /// When `Some`, the `overlay` node is created with `:eval=frame` and registered for
-    /// per-frame `send_command`. `None` keeps the static [`x`](Self::x)/[`y`](Self::y).
-    pub x_track: Option<AnimationTrack<f64>>,
-    /// See [`x_track`](Self::x_track).
-    pub y_track: Option<AnimationTrack<f64>>,
+    /// Opacity in `[0.0, 1.0]`, static or animated. Applied via `colorchannelmixer`
+    /// alpha when this layer is blended onto the layer below (Normal blend only). An
+    /// [`AnimatedValue::Track`] registers the node for per-frame `send_command`. No
+    /// effect on the base layer 0 (apply base opacity host-side).
+    pub opacity: AnimatedValue<f64>,
+    /// Overlay X position (pixels) on the canvas, static or animated. Maps to the
+    /// `overlay` filter's `x` (Normal blend only); a [`AnimatedValue::Track`] uses
+    /// `:eval=frame` + per-frame `send_command`. No effect on the base layer 0.
+    pub x: AnimatedValue<f64>,
+    /// Overlay Y position; see [`x`](Self::x).
+    pub y: AnimatedValue<f64>,
+    /// Horizontal scale multiplier, evaluated statically at t=0 (matching the export
+    /// path). `1.0` = unscaled. Applied to overlay layers before their effects.
+    pub scale_x: AnimatedValue<f64>,
+    /// Vertical scale multiplier; see [`scale_x`](Self::scale_x).
+    pub scale_y: AnimatedValue<f64>,
+    /// Rotation in degrees, evaluated statically at t=0 (matching the export path).
+    /// `0.0` = no rotation. Applied to overlay layers before their effects.
+    pub rotation: AnimatedValue<f64>,
     /// How this layer blends with the layer below. [`BlendMode::Normal`] uses
     /// `overlay`; other modes use `blend=all_mode=<token>`.
     pub blend_mode: BlendMode,
+    /// Porter-Duff composite operator. Carried for representation parity with the
+    /// export [`VideoLayer`](super::VideoLayer); the realtime builder renders `Over`
+    /// today (the other operators land in C4b).
+    pub composite_op: CompositeOp,
 }
 
 // ── RealtimeLayerDescriptor ───────────────────────────────────────────────────
@@ -79,19 +81,21 @@ pub struct RealtimeLayerDescriptor {
     /// See [`RealtimeLayer::effects`].
     pub effects: Vec<FilterStep>,
     /// See [`RealtimeLayer::opacity`].
-    pub opacity: f32,
-    /// See [`RealtimeLayer::opacity_track`].
-    pub opacity_track: Option<AnimationTrack<f64>>,
+    pub opacity: AnimatedValue<f64>,
     /// See [`RealtimeLayer::x`].
-    pub x: f64,
+    pub x: AnimatedValue<f64>,
     /// See [`RealtimeLayer::y`].
-    pub y: f64,
-    /// See [`RealtimeLayer::x_track`].
-    pub x_track: Option<AnimationTrack<f64>>,
-    /// See [`RealtimeLayer::y_track`].
-    pub y_track: Option<AnimationTrack<f64>>,
+    pub y: AnimatedValue<f64>,
+    /// See [`RealtimeLayer::scale_x`].
+    pub scale_x: AnimatedValue<f64>,
+    /// See [`RealtimeLayer::scale_y`].
+    pub scale_y: AnimatedValue<f64>,
+    /// See [`RealtimeLayer::rotation`].
+    pub rotation: AnimatedValue<f64>,
     /// See [`RealtimeLayer::blend_mode`].
     pub blend_mode: BlendMode,
+    /// See [`RealtimeLayer::composite_op`].
+    pub composite_op: CompositeOp,
 }
 
 impl RealtimeLayer {
@@ -110,12 +114,13 @@ impl RealtimeLayer {
             pixel_format,
             effects: descriptor.effects,
             opacity: descriptor.opacity,
-            opacity_track: descriptor.opacity_track,
             x: descriptor.x,
             y: descriptor.y,
-            x_track: descriptor.x_track,
-            y_track: descriptor.y_track,
+            scale_x: descriptor.scale_x,
+            scale_y: descriptor.scale_y,
+            rotation: descriptor.rotation,
             blend_mode: descriptor.blend_mode,
+            composite_op: descriptor.composite_op,
         }
     }
 }
@@ -206,26 +211,34 @@ mod tests {
     fn realtime_layer_with_dimensions_should_copy_descriptor_fields() {
         let descriptor = RealtimeLayerDescriptor {
             effects: vec![FilterStep::HFlip],
-            opacity: 0.5,
-            opacity_track: Some(AnimationTrack::new()),
-            x: 12.0,
-            y: 34.0,
-            x_track: None,
-            y_track: Some(AnimationTrack::new()),
+            opacity: AnimatedValue::Track(crate::animation::AnimationTrack::new()),
+            x: AnimatedValue::Static(12.0),
+            y: AnimatedValue::Static(34.0),
+            scale_x: AnimatedValue::Static(2.0),
+            scale_y: AnimatedValue::Static(3.0),
+            rotation: AnimatedValue::Static(45.0),
             blend_mode: BlendMode::Multiply,
+            composite_op: CompositeOp::Under,
         };
         let layer = RealtimeLayer::with_dimensions(descriptor, 640, 360, PixelFormat::Rgba);
         assert_eq!(layer.width, 640);
         assert_eq!(layer.height, 360);
         assert!(matches!(layer.pixel_format, PixelFormat::Rgba));
         assert_eq!(layer.effects.len(), 1, "effects moved into the layer");
-        assert!((layer.opacity - 0.5).abs() < f32::EPSILON);
-        assert!(layer.opacity_track.is_some());
-        assert!((layer.x - 12.0).abs() < f64::EPSILON);
-        assert!((layer.y - 34.0).abs() < f64::EPSILON);
-        assert!(layer.x_track.is_none());
-        assert!(layer.y_track.is_some());
+        assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
+        assert!(matches!(layer.x, AnimatedValue::Static(v) if (v - 12.0).abs() < f64::EPSILON));
+        assert!(matches!(layer.y, AnimatedValue::Static(v) if (v - 34.0).abs() < f64::EPSILON));
+        assert!(
+            matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 2.0).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 3.0).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(layer.rotation, AnimatedValue::Static(v) if (v - 45.0).abs() < f64::EPSILON)
+        );
         assert!(matches!(layer.blend_mode, BlendMode::Multiply));
+        assert!(matches!(layer.composite_op, CompositeOp::Under));
     }
 
     #[test]
@@ -252,13 +265,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -274,13 +288,14 @@ mod tests {
                 radius: 4.0,
                 intensity: 0.5,
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[layer])
             .expect("Glow compound step must dispatch and build once FFmpeg filters exist");
@@ -305,13 +320,14 @@ mod tests {
             height: 360,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::with_canvas(&[base], Some((1080, 1920))) {
             Ok(c) => c,
@@ -361,13 +377,14 @@ mod tests {
                     height: 1920,
                 },
             ],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
             Ok(c) => c,
@@ -408,13 +425,14 @@ mod tests {
                 height: 1920,
                 color: "black".to_string(),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
             Ok(c) => c,
@@ -446,13 +464,14 @@ mod tests {
             height: 4,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: op,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(f64::from(op)),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[layer(1.0), layer(0.5)]) {
             Ok(c) => c,
@@ -488,26 +507,28 @@ mod tests {
             height: 4,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let top = RealtimeLayer {
             width: 8,
             height: 6,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Screen,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base, top]) {
             Ok(c) => c,
@@ -555,13 +576,14 @@ mod tests {
                     algorithm: crate::graph::types::ScaleAlgorithm::Bilinear,
                 },
             ],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
             Ok(c) => c,
@@ -625,13 +647,14 @@ mod tests {
                 width: 4,
                 height: 6,
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
             Ok(c) => c,
@@ -683,13 +706,14 @@ mod tests {
                 path: srt.to_string_lossy().into_owned(),
                 force_style: Some("Fontsize=24,PrimaryColour=&H00FFFFFF&,Alignment=2".to_owned()),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base]) {
             Ok(c) => c,
@@ -726,13 +750,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -746,13 +771,14 @@ mod tests {
                 vertices: vec![(0.2, 0.1), (0.9, 0.5), (0.3, 0.9)],
                 invert: false,
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base])
             .expect("polygon-matte geq must build once FFmpeg filters exist");
@@ -783,13 +809,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -805,13 +832,14 @@ mod tests {
                 softness: 0.1,
                 invert: true,
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base])
             .expect("inverted lumakey must build once FFmpeg filters exist");
@@ -843,13 +871,14 @@ mod tests {
             height: 4,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -864,26 +893,28 @@ mod tests {
             height: 4,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let top = RealtimeLayer {
             width: 4,
             height: 4,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: Some(track),
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Track(track),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base, top])
             .expect("animated-opacity composite must build once FFmpeg filters exist");
@@ -932,13 +963,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -953,26 +985,28 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let top = RealtimeLayer {
             width: 8,
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 8.0,
-            y: 0.0,
-            x_track: Some(x_track),
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Track(x_track),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base, top])
             .expect("animated-position composite must build once FFmpeg filters exist");
@@ -1020,13 +1054,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1046,13 +1081,14 @@ mod tests {
                 width: AnimatedValue::Static(4.0),
                 height: AnimatedValue::Static(8.0),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base])
             .expect("animated-crop base must build once FFmpeg filters exist");
@@ -1108,13 +1144,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1133,13 +1170,14 @@ mod tests {
                 height: AnimatedValue::Static(8.0),
                 algorithm: ScaleAlgorithm::Bilinear,
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base])
             .expect("animated-scale base must build once FFmpeg filters exist");
@@ -1181,13 +1219,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1205,13 +1244,14 @@ mod tests {
                 angle: AnimatedValue::Track(angle),
                 fill_color: "black".to_string(),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = RealtimeComposer::new(&[base])
             .expect("animated-rotate base must build once FFmpeg filters exist");
@@ -1266,13 +1306,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1284,13 +1325,14 @@ mod tests {
             height: 8,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let top = RealtimeLayer {
             width: 8,
@@ -1300,13 +1342,14 @@ mod tests {
                 angle: AnimatedValue::Static(45.0),
                 fill_color: "none".to_string(),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::new(&[base, top]) {
             Ok(c) => c,
@@ -1355,13 +1398,14 @@ mod tests {
             height: 360,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1372,13 +1416,14 @@ mod tests {
             height: 360,
             pixel_format: PixelFormat::Rgba,
             effects,
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let base = mk(vec![]);
         let top = mk(vec![FilterStep::RotateAnimated {
@@ -1434,13 +1479,14 @@ mod tests {
             height: 16,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         if RealtimeComposer::new(&[probe]).is_err() {
             println!("Skipping: FFmpeg filters unavailable");
@@ -1452,13 +1498,14 @@ mod tests {
             height: 16,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         // Overlay is 32×24 (≠ base 16×16) → real force-scale to canvas before rotate.
         let top = RealtimeLayer {
@@ -1469,13 +1516,14 @@ mod tests {
                 angle: AnimatedValue::Static(45.0),
                 fill_color: "none".to_string(),
             }],
-            opacity: 1.0,
-            opacity_track: None,
-            x: 0.0,
-            y: 0.0,
-            x_track: None,
-            y_track: None,
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
         };
         let mut composer = match RealtimeComposer::with_canvas(&[base, top], Some((16, 16))) {
             Ok(c) => c,
@@ -1504,6 +1552,97 @@ mod tests {
                     &rgba[0..4]
                 );
             }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    fn base_8x8() -> RealtimeLayer {
+        RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        }
+    }
+
+    #[test]
+    fn overlay_static_scale_should_shrink_the_overlay_and_reveal_base() {
+        // C4a: an overlay descriptor with a static `scale_x`/`scale_y` (the merged
+        // timeline transform) must build the scale node so the overlay shrinks —
+        // otherwise it would cover the whole canvas. A blue overlay at scale 0.5 over
+        // a red base covers only the top-left 4×4 quadrant, so the top-left pixel is
+        // blue but the bottom-right pixel reveals the red base. Probe-gated (CI's Linux
+        // FFmpeg has no filters), and pull is required to actually observe the effect.
+        if RealtimeComposer::new(&[base_8x8()]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+        let mut overlay = base_8x8();
+        overlay.scale_x = AnimatedValue::Static(0.5);
+        overlay.scale_y = AnimatedValue::Static(0.5);
+        let mut composer = RealtimeComposer::new(&[base_8x8(), overlay])
+            .expect("overlay scale must build once FFmpeg filters exist");
+        let red = VideoFrame::from_rgba(8, 8, [255u8, 0, 0, 255].repeat(64)).unwrap();
+        let blue = VideoFrame::from_rgba(8, 8, [0u8, 0, 255, 255].repeat(64)).unwrap();
+        if composer.push_layer(0, &red).is_err() || composer.push_layer(1, &blue).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                assert_eq!(out.width(), 8);
+                assert_eq!(out.height(), 8);
+                let rgba = out.to_rgba().expect("rgba");
+                // Top-left: the shrunk blue overlay sits here.
+                assert!(
+                    rgba[2] > 100 && rgba[0] < 100,
+                    "top-left should show the blue overlay: {:?}",
+                    &rgba[0..4]
+                );
+                // Bottom-right (row 7, col 7): outside the 4×4 overlay → red base. If
+                // the scale node were dropped, the overlay would cover this too (blue).
+                let br = (7 * 8 + 7) * 4;
+                assert!(
+                    rgba[br] > 100 && rgba[br + 2] < 100,
+                    "bottom-right should reveal the red base (overlay shrunk): {:?}",
+                    &rgba[br..br + 4]
+                );
+            }
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
+    fn overlay_static_rotation_should_build_and_pull() {
+        // C4a: a static `rotation` field must build the rotate node in the realtime
+        // compositor (the field path, distinct from a per-clip `RotateAnimated` effect)
+        // and pull an rgba frame. Probe-gated.
+        if RealtimeComposer::new(&[base_8x8()]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+        let mut overlay = base_8x8();
+        overlay.rotation = AnimatedValue::Static(45.0);
+        let mut composer = RealtimeComposer::new(&[base_8x8(), overlay])
+            .expect("overlay rotate must build once FFmpeg filters exist");
+        let bf = VideoFrame::from_rgba(8, 8, vec![80u8; 8 * 8 * 4]).unwrap();
+        let tf = VideoFrame::from_rgba(8, 8, vec![160u8; 8 * 8 * 4]).unwrap();
+        if composer.push_layer(0, &bf).is_err() || composer.push_layer(1, &tf).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
             Ok(None) => println!("Skipping: no frame produced"),
             Err(e) => println!("Skipping: {e}"),
         }

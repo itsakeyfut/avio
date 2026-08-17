@@ -378,16 +378,11 @@ impl Clip {
     /// [`RealtimeLayer::with_dimensions`].
     #[must_use]
     pub fn realtime_layer_descriptor(&self) -> RealtimeLayerDescriptor {
-        RealtimeLayerDescriptor {
-            effects: self.video_effect_chain(),
-            opacity: self.opacity,
-            opacity_track: self.opacity_track.clone(),
-            x: self.x,
-            y: self.y,
-            x_track: self.x_track.clone(),
-            y_track: self.y_track.clone(),
-            blend_mode: self.blend_mode,
-        }
+        // One code path: the per-clip descriptor is the shared derive with no
+        // timeline-level animations (track index 0, empty map) — so a per-clip
+        // keyframe or static value still applies, and the shape matches the export
+        // `VideoLayer`.
+        crate::derive::realtime_descriptor(self, 0, &std::collections::HashMap::new())
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
@@ -1179,7 +1174,9 @@ mod tests {
         assert_eq!(layer.width, 640);
         assert_eq!(layer.height, 480);
         assert_eq!(layer.pixel_format, PixelFormat::Yuv420p);
-        assert!((layer.opacity - 0.5).abs() < 1e-6);
+        assert!(
+            matches!(layer.opacity, ff_filter::AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-6)
+        );
         assert_eq!(layer.blend_mode, BlendMode::Screen);
         // The layer's effects are exactly `video_effect_chain()` (Eq + Hue).
         assert!(matches!(

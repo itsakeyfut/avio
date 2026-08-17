@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ff_filter::{BlendMode, RealtimeComposer, RealtimeLayer};
+use ff_filter::{AnimatedValue, BlendMode, RealtimeComposer, RealtimeLayer};
 use ff_format::{PixelFormat, Rational, Timestamp, VideoFrame};
 
 use crate::audio::AudioMixer;
@@ -713,13 +713,14 @@ impl TimelineRunner {
                                         height: gh,
                                         pixel_format: PixelFormat::Rgba,
                                         effects: Vec::new(),
-                                        opacity: 1.0,
-                                        opacity_track: None,
-                                        x: 0.0,
-                                        y: 0.0,
-                                        x_track: None,
-                                        y_track: None,
+                                        opacity: AnimatedValue::Static(1.0),
+                                        x: AnimatedValue::Static(0.0),
+                                        y: AnimatedValue::Static(0.0),
+                                        scale_x: AnimatedValue::Static(1.0),
+                                        scale_y: AnimatedValue::Static(1.0),
+                                        rotation: AnimatedValue::Static(0.0),
                                         blend_mode: BlendMode::Normal,
+                                        composite_op: ff_filter::CompositeOp::Over,
                                     };
                                     match VideoFrame::from_rgba(gw, gh, self.gap_buf.clone()) {
                                         Ok(bf) => self.composite_frame(
@@ -832,14 +833,16 @@ impl TimelineRunner {
 
                     if a_ok {
                         // V1 per-clip opacity: pre-multiply toward black (producer-side;
-                        // the composer ignores base-layer opacity). An opacity track is
-                        // evaluated at the timeline PTS (tracks are timeline-global), so
-                        // base-layer opacity animates too.
-                        let v1_op = match self.clips[active].layer_desc.opacity_track.as_ref() {
+                        // the composer ignores base-layer opacity). The merged opacity is
+                        // an `AnimatedValue`; a track is evaluated at the timeline PTS
+                        // (tracks are timeline-global), so base-layer opacity animates too.
+                        let v1_op = match &self.clips[active].layer_desc.opacity {
                             // Value is clamped to [0.0, 1.0], so the f32 narrowing is safe.
                             #[allow(clippy::cast_possible_truncation)]
-                            Some(track) => track.value_at(timeline_pts).clamp(0.0, 1.0) as f32,
-                            None => self.clips[active].opacity,
+                            AnimatedValue::Track(track) => {
+                                track.value_at(timeline_pts).clamp(0.0, 1.0) as f32
+                            }
+                            AnimatedValue::Static(_) => self.clips[active].opacity,
                         };
                         if (v1_op - 1.0).abs() > 1e-6 {
                             for chunk in self.rgba_a.chunks_exact_mut(4) {

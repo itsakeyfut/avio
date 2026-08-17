@@ -17,7 +17,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use ff_filter::{AnimatedValue, AnimationTrack, AudioTrack, FilterStep, ProxySource, VideoLayer};
+use ff_filter::{
+    AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, ProxySource,
+    RealtimeLayerDescriptor, VideoLayer,
+};
 use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
@@ -36,6 +39,65 @@ fn track_animation(
         .map_or(AnimatedValue::Static(default), |t| {
             AnimatedValue::Track(t.clone())
         })
+}
+
+/// The per-clip video transform shared by the export [`VideoLayer`] and the
+/// preview [`RealtimeLayerDescriptor`]: the 3-way-merged opacity/position, the
+/// scale/rotation, and the blend/composite operators. This is the single
+/// interpretation both executors consume; only the temporal steps (trim/offset/
+/// speed) and the cross-fade differ between the two paths.
+struct VideoTransform {
+    opacity: AnimatedValue<f64>,
+    x: AnimatedValue<f64>,
+    y: AnimatedValue<f64>,
+    scale_x: AnimatedValue<f64>,
+    scale_y: AnimatedValue<f64>,
+    rotation: AnimatedValue<f64>,
+    blend_mode: BlendMode,
+    composite_op: CompositeOp,
+}
+
+/// Computes the shared [`VideoTransform`]: a per-clip keyframe track wins, then a
+/// static non-neutral value, then any timeline track-level animation.
+fn video_transform(
+    clip: &Clip,
+    track_idx: usize,
+    animations: &HashMap<String, AnimationTrack<f64>>,
+) -> VideoTransform {
+    #[allow(clippy::float_cmp)]
+    let opacity = if let Some(track) = &clip.opacity_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.opacity != 1.0 {
+        AnimatedValue::Static(f64::from(clip.opacity))
+    } else {
+        track_animation(animations, "video", track_idx, "opacity", 1.0)
+    };
+    #[allow(clippy::float_cmp)]
+    let x = if let Some(track) = &clip.x_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.x != 0.0 {
+        AnimatedValue::Static(clip.x)
+    } else {
+        track_animation(animations, "video", track_idx, "x", 0.0)
+    };
+    #[allow(clippy::float_cmp)]
+    let y = if let Some(track) = &clip.y_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.y != 0.0 {
+        AnimatedValue::Static(clip.y)
+    } else {
+        track_animation(animations, "video", track_idx, "y", 0.0)
+    };
+    VideoTransform {
+        opacity,
+        x,
+        y,
+        scale_x: track_animation(animations, "video", track_idx, "scale_x", 1.0),
+        scale_y: track_animation(animations, "video", track_idx, "scale_y", 1.0),
+        rotation: track_animation(animations, "video", track_idx, "rotation", 0.0),
+        blend_mode: clip.blend_mode,
+        composite_op: clip.composite_op,
+    }
 }
 
 /// Derives the export [`VideoLayer`] for one clip.
@@ -93,46 +155,48 @@ pub(crate) fn video_layer(
         }
     }
 
-    // Per-clip opacity/position: an explicit keyframe track wins, then a static
-    // non-neutral value, then any track-level animation.
-    #[allow(clippy::float_cmp)]
-    let opacity = if let Some(track) = &clip.opacity_track {
-        AnimatedValue::Track(track.clone())
-    } else if clip.opacity != 1.0 {
-        AnimatedValue::Static(f64::from(clip.opacity))
-    } else {
-        track_animation(animations, "video", track_idx, "opacity", 1.0)
-    };
-    #[allow(clippy::float_cmp)]
-    let x = if let Some(track) = &clip.x_track {
-        AnimatedValue::Track(track.clone())
-    } else if clip.x != 0.0 {
-        AnimatedValue::Static(clip.x)
-    } else {
-        track_animation(animations, "video", track_idx, "x", 0.0)
-    };
-    #[allow(clippy::float_cmp)]
-    let y = if let Some(track) = &clip.y_track {
-        AnimatedValue::Track(track.clone())
-    } else if clip.y != 0.0 {
-        AnimatedValue::Static(clip.y)
-    } else {
-        track_animation(animations, "video", track_idx, "y", 0.0)
-    };
-
+    let transform = video_transform(clip, track_idx, animations);
     VideoLayer {
         source: clip.source.clone(),
         proxy,
         input_format: None,
-        x,
-        y,
-        scale_x: track_animation(animations, "video", track_idx, "scale_x", 1.0),
-        scale_y: track_animation(animations, "video", track_idx, "scale_y", 1.0),
-        rotation: track_animation(animations, "video", track_idx, "rotation", 0.0),
-        opacity,
-        blend_mode: clip.blend_mode,
-        composite_op: clip.composite_op,
+        x: transform.x,
+        y: transform.y,
+        scale_x: transform.scale_x,
+        scale_y: transform.scale_y,
+        rotation: transform.rotation,
+        opacity: transform.opacity,
+        blend_mode: transform.blend_mode,
+        composite_op: transform.composite_op,
         effects: layer_effects,
+    }
+}
+
+/// Derives the preview [`RealtimeLayerDescriptor`] for one clip.
+///
+/// Uses the same [`VideoTransform`] as [`video_layer`] (so both paths share one
+/// interpretation), but carries only the per-clip effect chain: the temporal
+/// steps (trim/offset/speed) and the cross-fade are omitted because the preview
+/// runner realises them from `ScenePlacement` (in/out points, speed, transition).
+///
+/// The timeline-level `lavfi_overlay` and a clip's `input_format` are not projected
+/// here (preview drops them today); closing that is C4d, not this backbone.
+pub(crate) fn realtime_descriptor(
+    clip: &Clip,
+    track_idx: usize,
+    animations: &HashMap<String, AnimationTrack<f64>>,
+) -> RealtimeLayerDescriptor {
+    let transform = video_transform(clip, track_idx, animations);
+    RealtimeLayerDescriptor {
+        effects: clip.video_effect_chain(),
+        opacity: transform.opacity,
+        x: transform.x,
+        y: transform.y,
+        scale_x: transform.scale_x,
+        scale_y: transform.scale_y,
+        rotation: transform.rotation,
+        blend_mode: transform.blend_mode,
+        composite_op: transform.composite_op,
     }
 }
 
@@ -408,5 +472,79 @@ mod tests {
         let clip = Clip::new("a.mp3");
         let track = audio_track(&clip, 0, &anims, None);
         assert!(matches!(track.pan, AnimatedValue::Track(_)));
+    }
+
+    // ── realtime_descriptor (single derive → preview) ─────────────────────────
+
+    #[test]
+    fn realtime_descriptor_should_carry_no_temporal_or_xfade_steps() {
+        // The preview runner realises trim/offset/speed/xfade from `ScenePlacement`;
+        // the descriptor must carry only the per-clip effect chain.
+        let clip = Clip::new("a.mp4")
+            .trim(Duration::from_secs(1), Duration::from_secs(3))
+            .offset(Duration::from_secs(2))
+            .with_speed(2.0)
+            .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
+        let d = realtime_descriptor(&clip, 0, &no_anim());
+        assert!(!d.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::Trim { .. }
+                | FilterStep::ResetPts
+                | FilterStep::OffsetPts { .. }
+                | FilterStep::Speed { .. }
+                | FilterStep::XFade { .. }
+        )));
+    }
+
+    #[test]
+    fn realtime_descriptor_should_carry_effect_chain() {
+        let mut clip = Clip::new("a.mp4");
+        clip.brightness = 0.5; // forces an Eq step in `video_effect_chain`
+        let d = realtime_descriptor(&clip, 0, &no_anim());
+        assert!(d.effects.iter().any(|s| matches!(s, FilterStep::Eq { .. })));
+    }
+
+    #[test]
+    fn realtime_descriptor_should_pick_up_timeline_scale_and_rotation() {
+        let mut anims = HashMap::new();
+        anims.insert(
+            "video_1_scale_x".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+        );
+        anims.insert(
+            "video_1_rotation".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp4");
+        let d = realtime_descriptor(&clip, 1, &anims);
+        assert!(matches!(d.scale_x, AnimatedValue::Track(_)));
+        assert!(matches!(d.rotation, AnimatedValue::Track(_)));
+        assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn realtime_descriptor_opacity_should_fall_back_to_timeline_animation() {
+        // A neutral per-clip opacity (1.0) falls through to the timeline track.
+        let mut anims = HashMap::new();
+        anims.insert(
+            "video_0_opacity".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp4");
+        let d = realtime_descriptor(&clip, 0, &anims);
+        assert!(matches!(d.opacity, AnimatedValue::Track(_)));
+    }
+
+    #[test]
+    fn realtime_descriptor_static_opacity_should_win_over_timeline() {
+        // A per-clip static non-neutral opacity wins the 3-way merge.
+        let mut anims = HashMap::new();
+        anims.insert(
+            "video_0_opacity".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.2, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp4").with_opacity(0.5);
+        let d = realtime_descriptor(&clip, 0, &anims);
+        assert!(matches!(d.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
 }

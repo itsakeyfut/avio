@@ -82,6 +82,15 @@ Confirmed design (user-approved):
 + executor convergence (its own design sub-cycle); **C5** structural-sharing history (memory, if
 needed). C1/C2 are the immediate, high-value, low-risk work; C3–C5 follow.
 
+**C4 decomposition (scope B — full visual parity):** C4 is an epic. Both compositors are FFmpeg
+libavfilter graphs that already share the same lower-level builders, so "same executor" means the same
+per-frame overlay/blend graph. Scope B closes the nine gaps below so preview is visually identical to
+export while keeping the two executors (full per-frame-export unification, retiring `MultiTrackComposer`,
+is out of scope). Children: **C4a** single `derive` backbone + video representation convergence (gaps 2, 3);
+**C4b** `composite_op` in the preview executor (gap 1); **C4c** transition/xfade-kind parity (gap 8, last,
+own sub-cycle); **C4d** `lavfi_overlay` in preview (gap 4); **C4e** audio derivation + preview parity
+(gaps 5, 6, 7). Sequence: C4a → {C4b, C4d, C4e} → C4c.
+
 #### C4 gap-list — where preview (`to_scene`) diverges from export (`render`) today
 
 A field-by-field mapping (during C3) showed the two derivations diverge not just in *encoding* but in
@@ -105,6 +114,17 @@ The one extraction genuinely shared today is `Clip::video_effect_chain()` (eq + 
 consumed by export directly and by preview via `Clip::realtime_layer_descriptor`. **C3** extracted the
 export per-clip interpretation into the pure `avio::derive` module (`video_layer` / `audio_track`) so it
 has one testable home; **C4** makes preview derive from the same core, closing the gaps above.
+
+**C4a (done):** both paths now build their video layer from one core. `avio::derive::video_transform`
+computes the merged opacity/x/y/scale/rotation + blend + composite once; `video_layer` (export) and
+`realtime_descriptor` (preview) both consume it, and `to_scene` routes through the latter. The
+`RealtimeLayerDescriptor` converged to the `VideoLayer` shape (`AnimatedValue<f64>` opacity/x/y +
+`scale_x`/`scale_y`/`rotation` + `composite_op`), and `build_realtime_composition` consumes the new
+fields (rendering scale/rotation as static-at-t=0 nodes, matching export; `composite_op` is carried but
+still rendered as `Over` until C4b). This closes gaps 2 and 3 for preview overlays. **Deferred (Q2):**
+exact pixel-parity (the realtime `rgba`/base-size output vs export's `color`-canvas/`yuv420p`, and the
+overlay force-scale) and base-track (V1) scale/rotation — both entangled with canvas semantics — are left
+to a C4 canvas-reconciliation follow-up.
 
 ## 3. Boundary principle (model vs primitive)
 
