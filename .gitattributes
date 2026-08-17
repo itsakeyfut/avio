@@ -1,0 +1,13 @@
+# Line-ending normalization.
+#
+# Rust / Cargo projects use LF. Enforce LF in the repository AND in the working
+# tree so Windows checkouts do not churn line endings and git stops emitting the
+# "LF will be replaced by CRLF" warnings caused by `core.autocrlf=true`.
+* text=auto eol=lf
+
+# Binary assets — never apply line-ending conversion (belt-and-suspenders over
+# git's own binary detection). Note: `.cube` / `.3dl` LUTs are TEXT and are left
+# to the rule above.
+*.mp4 binary
+*.png binary
+*.bin binary
