@@ -20,7 +20,8 @@ mod push_pull;
 pub(crate) use build::add_and_link_step;
 pub(crate) use build::add_asetrate_resample_chain;
 pub(crate) use build::{
-    NormalBlendParams, add_blend_normal_step, add_blend_photographic_step, video_buffersrc_args,
+    NormalBlendParams, add_blend_normal_step, add_blend_photographic_step, add_composite_step,
+    video_buffersrc_args,
 };
 pub(crate) use convert::pixel_format_to_av;
 

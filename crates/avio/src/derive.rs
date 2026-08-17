@@ -547,4 +547,12 @@ mod tests {
         let d = realtime_descriptor(&clip, 0, &anims);
         assert!(matches!(d.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
+
+    #[test]
+    fn realtime_descriptor_should_carry_composite_op() {
+        let mut clip = Clip::new("a.mp4");
+        clip.composite_op = CompositeOp::Under;
+        let d = realtime_descriptor(&clip, 0, &no_anim());
+        assert!(matches!(d.composite_op, CompositeOp::Under));
+    }
 }

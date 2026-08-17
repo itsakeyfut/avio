@@ -1500,10 +1500,11 @@ pub(super) unsafe fn add_blend_under_step(
 
 // ── Blend expression-based compound step ────────────────────────────────────
 
-/// Insert a Porter-Duff expression-based blend step (In, Out).
+/// Insert a Porter-Duff expression-based blend step (In / Out / Atop / Xor).
 ///
-/// Chains `top_steps` on `top_src_ctx`, then creates
-/// `blend=all_expr=<expr>` and links both inputs.
+/// Chains `top_steps` on `top_src_ctx`, then creates `blend=all_expr=<expr>` and
+/// links both inputs. `opacity` is forwarded via `all_opacity` when it differs
+/// from `1.0` (attenuating the operator, matching the export path).
 ///
 /// ```text
 /// [in1]top_steps...[top_processed]
@@ -1520,6 +1521,7 @@ pub(super) unsafe fn add_blend_expr_step(
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
     expr: &str,
+    opacity: f32,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
@@ -1563,7 +1565,14 @@ pub(super) unsafe fn add_blend_expr_step(
     }
     let blend_name =
         CString::new(format!("blend_expr{index}")).map_err(|_| FilterError::BuildFailed)?;
-    let blend_args_str = format!("all_expr={expr}");
+    // Opacity is forwarded via `all_opacity` (matching the export path and the
+    // photographic blend branch); omitted at 1.0 so the default stays byte-identical.
+    // `:.6` matches the export inline formatting (`composition_inner.rs`).
+    let blend_args_str = if (opacity - 1.0).abs() < f32::EPSILON {
+        format!("all_expr={expr}")
+    } else {
+        format!("all_expr={expr}:all_opacity={opacity:.6}")
+    };
     let blend_args = CString::new(blend_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
     let mut blend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
     let ret = ff_sys::avfilter_graph_create_filter(
@@ -1616,7 +1625,8 @@ pub(super) unsafe fn add_blend_expr_step(
 // ── Composite compound step ───────────────────────────────────────────────────
 /// Builds a Porter-Duff composite step from a [`CompositeOp`], dispatching to the
 /// shared blend construction helpers (`overlay` for `Over`/`Under`, `blend` with
-/// a per-channel expression for the rest). Consumed by [`FilterStep::Composite`].
+/// a per-channel expression for the rest). Consumed by [`FilterStep::Composite`]
+/// and by the realtime compositor (`build_realtime_composition`).
 ///
 /// # Safety
 ///
@@ -1624,7 +1634,7 @@ pub(super) unsafe fn add_blend_expr_step(
 /// same `AVFilterGraph`.
 // One more argument (`op`) than the 7-arg blend helpers it forwards to.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn add_composite_step(
+pub(crate) unsafe fn add_composite_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
@@ -1637,7 +1647,15 @@ pub(super) unsafe fn add_composite_step(
     // `blend_all_expr` is `Some` for In/Out/Atop/Xor (built via `blend all_expr`),
     // `None` for Over/Under (built via the `overlay` filter).
     match op.blend_all_expr() {
-        Some(expr) => add_blend_expr_step(graph, bottom_ctx, top_src_ctx, top_steps, expr, index),
+        Some(expr) => add_blend_expr_step(
+            graph,
+            bottom_ctx,
+            top_src_ctx,
+            top_steps,
+            expr,
+            opacity,
+            index,
+        ),
         None => match op {
             CompositeOp::Under => add_blend_under_step(
                 graph,

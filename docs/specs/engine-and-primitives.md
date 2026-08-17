@@ -126,6 +126,20 @@ exact pixel-parity (the realtime `rgba`/base-size output vs export's `color`-can
 overlay force-scale) and base-track (V1) scale/rotation — both entangled with canvas semantics — are left
 to a C4 canvas-reconciliation follow-up.
 
+**C4b (done):** preview renders `composite_op` (gap 1 closed). `build_realtime_composition` now dispatches
+non-`Over` overlays through the shared `add_composite_step` — the same Porter-Duff *construction* the export
+path and `FilterStep::Composite` use (`overlay` swap for `Under`, `blend all_expr` for In/Out/Atop/Xor), and
+`add_blend_expr_step` forwards opacity via `all_opacity` to match export's construction. `eof_action` stays
+export-only (the realtime buffersrc inputs are finite, not the infinite `color` canvas). Two effects fall
+under the Q2 pixel-parity deferral, both rooted in the realtime graph compositing in **rgba** while export
+normalises the `blend` inputs to **yuv420p**: (a) the channel-math operators (In/Out/Atop/Xor — like the
+photographic blend modes, which already have this property) apply the *same operator* but evaluate it in a
+different colour space, so exact pixels differ; and (b) `blend`'s `all_opacity` is planar-oriented, so on the
+rgba inputs it is currently a no-op — the `all_opacity` arg is emitted for construction parity but the
+expr-operator attenuation only becomes visible once the Q2 colour-space reconciliation lands. `Under`/`Over`
+are alpha-composited and match export today. As with export, animated opacity/position on a non-`Over` layer
+is not tracked (the static t=0 value is used).
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do
