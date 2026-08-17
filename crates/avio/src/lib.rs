@@ -285,8 +285,8 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 pub use ff_filter::{
     AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
     BlendMode, ClipJoiner, CompositeOp, DrawTextOptions, Easing, EqBand, FilterError, FilterGraph,
-    FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LensProfile, Lerp,
-    LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType,
+    FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource, LensProfile,
+    Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType,
     ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
     ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator, VideoLayer,
     XfadeTransition, YadifMode,

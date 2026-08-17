@@ -45,7 +45,7 @@ pub use runner::TimelineRunner;
 pub use scene::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
 
 use audio_resampling::spawn_audio_track_thread;
-use state::{AudioFadeConfig, AudioOnlyTrack, ClipState, OverlayLayer};
+use state::{AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer};
 
 // -- Constants --
 
@@ -405,6 +405,10 @@ impl ScenePlayer {
             composer: None,
             composer_key: Vec::new(),
             canvas: scene.canvas,
+            lavfi: scene
+                .lavfi_overlay
+                .as_deref()
+                .and_then(LavfiOverlayState::new),
         };
 
         let handle = PlayerHandle::for_timeline(

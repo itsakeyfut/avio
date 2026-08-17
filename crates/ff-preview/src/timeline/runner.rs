@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ff_filter::{AnimatedValue, BlendMode, RealtimeComposer, RealtimeLayer};
+use ff_filter::{AnimatedValue, BlendMode, CompositeOp, RealtimeComposer, RealtimeLayer};
 use ff_format::{PixelFormat, Rational, Timestamp, VideoFrame};
 
 use crate::audio::AudioMixer;
@@ -22,7 +22,9 @@ use crate::playback::player::PlayerCommand;
 use crate::playback::sink::FrameSink;
 
 use super::audio_resampling::spawn_audio_track_thread;
-use super::state::{AudioFadeConfig, AudioOnlyTrack, ClipState, OverlayLayer, TransitionState};
+use super::state::{
+    AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, TransitionState,
+};
 use super::timeline_inner;
 
 // ── TimelineRunner ────────────────────────────────────────────────────────────
@@ -89,6 +91,9 @@ pub struct TimelineRunner {
     /// matches the project's output aspect. `None` composites at the base clip's
     /// own size (legacy behaviour).
     pub(super) canvas: Option<(u32, u32)>,
+    /// Timeline-global generated `lavfi` overlay, composited as the topmost layer
+    /// (above every file overlay). `None` when the timeline set no `lavfi_overlay`.
+    pub(super) lavfi: Option<LavfiOverlayState>,
 }
 
 impl TimelineRunner {
@@ -151,6 +156,14 @@ impl TimelineRunner {
         active
     }
 
+    /// Advances the generated `lavfi` overlay (if any) to the frame due at
+    /// `target_pts`, holding otherwise — see [`LavfiOverlayState::advance_to`].
+    /// Returns the current frame's `(width, height)`, or `None` when there is no
+    /// lavfi overlay / no frame yet.
+    fn sync_lavfi(&mut self, target_pts: Duration) -> Option<(u32, u32)> {
+        self.lavfi.as_mut()?.advance_to(target_pts)
+    }
+
     /// Composites `base_frame` (the bottom layer) with the given overlay layers
     /// through the cached [`RealtimeComposer`], applying each layer's effects and
     /// blend mode. `base_id` identifies the base for cache invalidation — the V1
@@ -186,6 +199,27 @@ impl TimelineRunner {
             ));
             key.push((li + 1, oc.active, ow, oh));
         }
+        // Topmost timeline-global lavfi overlay (generated), when a frame is held.
+        // Fixed full-frame Normal/Over layer, matching export; its transparency comes
+        // from the lavfi content's own alpha. A sentinel layer id keys the cache.
+        let lavfi_dims = self.lavfi.as_ref().and_then(|s| s.dims);
+        if let Some((lw, lh)) = lavfi_dims {
+            specs.push(RealtimeLayer {
+                width: lw,
+                height: lh,
+                pixel_format: PixelFormat::Rgba,
+                effects: Vec::new(),
+                opacity: AnimatedValue::Static(1.0),
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
+            });
+            key.push((usize::MAX - 1, 0, lw, lh));
+        }
         if self.composer.is_none() || self.composer_key != key {
             self.composer = RealtimeComposer::with_canvas(&specs, self.canvas).ok();
             self.composer_key = if self.composer.is_some() {
@@ -209,6 +243,19 @@ impl TimelineRunner {
                 VideoFrame::from_rgba(ow, oh, self.overlay_layers[li].rgba.clone()).ok()?;
             vf.set_timestamp(ts);
             if composer.push_layer(slot + 1, &vf).is_err() {
+                return None;
+            }
+        }
+        // Push the lavfi overlay last (topmost slot), reading its held rgba from the
+        // disjoint `lavfi` field (as the overlay loop reads `overlay_layers`).
+        if let Some((lw, lh)) = lavfi_dims {
+            let rgba = self
+                .lavfi
+                .as_ref()
+                .map_or_else(Vec::new, |s| s.rgba.clone());
+            let mut vf = VideoFrame::from_rgba(lw, lh, rgba).ok()?;
+            vf.set_timestamp(ts);
+            if composer.push_layer(overlays.len() + 1, &vf).is_err() {
                 return None;
             }
         }
@@ -705,36 +752,40 @@ impl TimelineRunner {
                                 self.gap_buf.resize(n, 0);
                                 self.gap_buf.fill(0);
                                 let gap_overlays = self.sync_overlays(gap_pts);
-                                let gap_composited = if gap_overlays.is_empty() {
-                                    None
-                                } else {
-                                    let base_layer = RealtimeLayer {
-                                        width: gw,
-                                        height: gh,
-                                        pixel_format: PixelFormat::Rgba,
-                                        effects: Vec::new(),
-                                        opacity: AnimatedValue::Static(1.0),
-                                        x: AnimatedValue::Static(0.0),
-                                        y: AnimatedValue::Static(0.0),
-                                        scale_x: AnimatedValue::Static(1.0),
-                                        scale_y: AnimatedValue::Static(1.0),
-                                        rotation: AnimatedValue::Static(0.0),
-                                        blend_mode: BlendMode::Normal,
-                                        composite_op: ff_filter::CompositeOp::Over,
+                                let gap_lavfi = self.sync_lavfi(gap_pts);
+                                // Composite when there is a file overlay OR a lavfi
+                                // overlay to draw over the gap's black base.
+                                let gap_composited =
+                                    if gap_overlays.is_empty() && gap_lavfi.is_none() {
+                                        None
+                                    } else {
+                                        let base_layer = RealtimeLayer {
+                                            width: gw,
+                                            height: gh,
+                                            pixel_format: PixelFormat::Rgba,
+                                            effects: Vec::new(),
+                                            opacity: AnimatedValue::Static(1.0),
+                                            x: AnimatedValue::Static(0.0),
+                                            y: AnimatedValue::Static(0.0),
+                                            scale_x: AnimatedValue::Static(1.0),
+                                            scale_y: AnimatedValue::Static(1.0),
+                                            rotation: AnimatedValue::Static(0.0),
+                                            blend_mode: BlendMode::Normal,
+                                            composite_op: ff_filter::CompositeOp::Over,
+                                        };
+                                        match VideoFrame::from_rgba(gw, gh, self.gap_buf.clone()) {
+                                            Ok(bf) => self.composite_frame(
+                                                base_layer,
+                                                usize::MAX,
+                                                bf,
+                                                gw,
+                                                gh,
+                                                &gap_overlays,
+                                                gap_pts,
+                                            ),
+                                            Err(_) => None,
+                                        }
                                     };
-                                    match VideoFrame::from_rgba(gw, gh, self.gap_buf.clone()) {
-                                        Ok(bf) => self.composite_frame(
-                                            base_layer,
-                                            usize::MAX,
-                                            bf,
-                                            gw,
-                                            gh,
-                                            &gap_overlays,
-                                            gap_pts,
-                                        ),
-                                        Err(_) => None,
-                                    }
-                                };
                                 // Manage audio-only decode threads (A1/A2…).
                                 for at in &mut self.audio_only_tracks {
                                     let should_run =
@@ -877,6 +928,7 @@ impl TimelineRunner {
                         // Update overlays (held-frame, advanced by PTS) and composite
                         // the V1 base with them through the shared compositor.
                         let active_overlays = self.sync_overlays(timeline_pts);
+                        self.sync_lavfi(timeline_pts);
                         let base_layer = RealtimeLayer::with_dimensions(
                             self.clips[active].layer_desc.clone(),
                             w,
@@ -999,6 +1051,13 @@ impl TimelineRunner {
             }
         }
 
+        // The lavfi overlay source exposes no seek — rebuild it so it restarts from
+        // t=0. Static overlays are unaffected; a time-varying lavfi restarts (a
+        // documented limitation).
+        if let Some(st) = &mut self.lavfi {
+            st.rebuild();
+        }
+
         // Stop all audio-only threads; they restart on the next frame tick.
         for at in &mut self.audio_only_tracks {
             at.stop();
@@ -1030,6 +1089,10 @@ impl TimelineRunner {
             .seek_coarse(clip_local_pts)?;
         self.active = clip_idx;
         self.transition = None;
+        // Keep the lavfi overlay consistent with the main seek path (no source seek).
+        if let Some(st) = &mut self.lavfi {
+            st.rebuild();
+        }
         Ok(())
     }
 

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use ff_filter::{AnimationTrack, RealtimeLayerDescriptor};
+use ff_filter::{AnimationTrack, LavfiSource, RealtimeLayerDescriptor};
 use ff_format::VideoFrame;
 
 use crate::audio::AudioTrackHandle;
@@ -81,6 +81,95 @@ pub(super) struct OverlayLayer {
     /// A frame popped ahead of its presentation time, held until `timeline_pts`
     /// reaches it. Decouples decode order from the present rate.
     pub(super) pending: Option<VideoFrame>,
+}
+
+// ── LavfiOverlayState ─────────────────────────────────────────────────────────
+
+/// A timeline-global generated `lavfi` overlay, composited as the topmost layer.
+///
+/// The [`LavfiSource`] produces frames sequentially (no seek); the runner advances
+/// it with the same held-frame model as [`OverlayLayer`] and rebuilds it on seek.
+pub(super) struct LavfiOverlayState {
+    /// The lavfi filtergraph string, kept for rebuild-on-seek.
+    lavfi: String,
+    /// The frame generator (`movie=…:format_name=lavfi → format=rgba`).
+    source: LavfiSource,
+    /// Reuses one buffer across ticks (like [`OverlayLayer::sws`]).
+    sws: SwsRgbaConverter,
+    /// Current held rgba frame data.
+    pub(super) rgba: Vec<u8>,
+    /// Dimensions of the current held frame, or `None` when none is held yet.
+    pub(super) dims: Option<(u32, u32)>,
+    /// A frame popped ahead of its presentation time (held until due).
+    pub(super) pending: Option<VideoFrame>,
+}
+
+impl LavfiOverlayState {
+    /// Builds the generator from a lavfi string, or logs and returns `None` when the
+    /// source cannot be built (e.g. the `movie` / `lavfi` demuxer is unavailable) —
+    /// the overlay is then simply dropped from the preview rather than failing `open`.
+    pub(super) fn new(lavfi: &str) -> Option<Self> {
+        match LavfiSource::new(lavfi) {
+            Ok(source) => Some(Self {
+                lavfi: lavfi.to_string(),
+                source,
+                sws: SwsRgbaConverter::new(),
+                rgba: Vec::new(),
+                dims: None,
+                pending: None,
+            }),
+            Err(e) => {
+                log::warn!("lavfi overlay unavailable, dropped from preview: {e}");
+                None
+            }
+        }
+    }
+
+    /// Advances the generator to the frame due at `target_pts`, holding the current
+    /// frame otherwise (the same held-frame model as [`OverlayLayer`]). The source
+    /// PTS runs monotonically from 0 alongside the timeline. Returns the current
+    /// frame's `(width, height)`, or `None` when no frame is held yet.
+    ///
+    /// Only the newest due frame is converted (not every intermediate one during a
+    /// far-seek catch-up), reusing the `rgba` buffer like the file-overlay path.
+    pub(super) fn advance_to(&mut self, target_pts: Duration) -> Option<(u32, u32)> {
+        let mut latest: Option<VideoFrame> = None;
+        loop {
+            let f = match self.pending.take() {
+                Some(pf) => pf,
+                None => match self.source.pull() {
+                    Ok(Some(f)) => f,
+                    _ => break,
+                },
+            };
+            if f.timestamp().as_duration() > target_pts {
+                // Not due yet — hold it for a later present.
+                self.pending = Some(f);
+                break;
+            }
+            latest = Some(f);
+        }
+        if let Some(f) = latest
+            && self.sws.convert(&f, &mut self.rgba)
+        {
+            self.dims = Some((f.width(), f.height()));
+        }
+        self.dims
+    }
+
+    /// Rebuilds the source from t=0 (the source has no seek) and clears held state.
+    /// On failure the overlay keeps its previous source and is logged.
+    pub(super) fn rebuild(&mut self) {
+        match LavfiSource::new(&self.lavfi) {
+            Ok(source) => {
+                self.source = source;
+                self.pending = None;
+                self.rgba.clear();
+                self.dims = None;
+            }
+            Err(e) => log::warn!("lavfi overlay seek rebuild failed: {e}"),
+        }
+    }
 }
 
 // ── AudioFadeConfig ───────────────────────────────────────────────────────────
@@ -170,5 +259,40 @@ impl AudioOnlyTrack {
 impl Drop for AudioOnlyTrack {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use ff_format::{Rational, Timestamp};
+
+    #[test]
+    fn lavfi_advance_to_should_surface_due_frames_and_hold_future_ones() {
+        // Probe-gated: needs the `movie` filter to build the source (absent on CI's
+        // Linux FFmpeg). The lavfi demuxer is also absent here, so `source.pull()`
+        // yields nothing and the seeded `pending` frames drive the held-frame logic
+        // deterministically.
+        let Some(mut st) = LavfiOverlayState::new("color=c=red:s=8x8:d=1") else {
+            println!("Skipping: movie/lavfi filter unavailable");
+            return;
+        };
+        let stamped = |w: u32, h: u32, secs: u64| {
+            let mut f = VideoFrame::from_rgba(w, h, vec![200u8; (w * h * 4) as usize]).unwrap();
+            f.set_timestamp(Timestamp::from_duration(
+                Duration::from_secs(secs),
+                Rational::new(1, 1_000_000),
+            ));
+            f
+        };
+        // A frame due at t=0 is surfaced (dims set, buffer converted).
+        st.pending = Some(stamped(8, 8, 0));
+        assert_eq!(st.advance_to(Duration::ZERO), Some((8, 8)));
+        assert!(!st.rgba.is_empty(), "the due frame was converted into rgba");
+        // A far-future frame is held, not surfaced; dims stay the last shown 8x8.
+        st.pending = Some(stamped(4, 4, 10));
+        assert_eq!(st.advance_to(Duration::from_secs(1)), Some((8, 8)));
+        assert!(st.pending.is_some(), "the future frame is held for later");
     }
 }

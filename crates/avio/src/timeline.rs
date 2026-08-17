@@ -728,6 +728,7 @@ impl Timeline {
         ff_preview::Scene {
             fps: self.frame_rate().max(1.0),
             canvas: self.explicit_canvas(),
+            lavfi_overlay: self.lavfi_overlay.clone(),
             video_tracks,
             audio_tracks,
         }
@@ -846,6 +847,23 @@ mod tests {
         assert!(matches!(overlay.layer.scale_x, AnimatedValue::Track(_)));
         assert!(matches!(overlay.layer.rotation, AnimatedValue::Track(_)));
         assert!(matches!(overlay.layer.opacity, AnimatedValue::Track(_)));
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_carry_lavfi_overlay() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .lavfi_overlay("color=s=1920x1080:c=black@0.0")
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert_eq!(
+            scene.lavfi_overlay.as_deref(),
+            Some("color=s=1920x1080:c=black@0.0")
+        );
     }
 
     #[test]
