@@ -5,13 +5,9 @@
 //! model's primitivised fields (paths, durations, opacity, blend, animation
 //! tracks), never the editing model itself. Resolving a `Scene` against the
 //! media — probing for duration, audio presence, and frame size — happens in
-//! [`TimelinePlayer::open_scene`](super::TimelinePlayer::open_scene), exactly as
-//! it did when the runner consumed `Timeline`/`Clip` directly. So a `Scene`
-//! re-derived on every edit needs no re-probe and behaviour is preserved.
-//!
-//! Temporarily, `ff-preview` also derives a `Scene` from a `Timeline` (see
-//! `scene_adapter`); that adapter moves to `avio` in the model relocation
-//! (#1329, slice C), after which `Scene` is the only input the runner accepts.
+//! [`ScenePlayer::open`](super::ScenePlayer::open), so a `Scene` re-derived on
+//! every edit needs no re-probe and behaviour is preserved. An engine derives a
+//! `Scene` from its own editing model; `Scene` is the only input the runner accepts.
 
 use std::path::PathBuf;
 use std::time::Duration;
