@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use ff_filter::{AnimatedValue, LavfiSource, RealtimeLayerDescriptor};
+use ff_filter::{AnimatedValue, LavfiSource, RealtimeLayerDescriptor, XfadeTransition};
 use ff_format::VideoFrame;
 
 use crate::audio::AudioTrackHandle;
@@ -42,6 +42,8 @@ pub(super) struct ClipState {
     /// Duration of the crossfade from the previous clip into this one.
     /// `Duration::ZERO` = hard cut.
     pub(super) transition_dur: Duration,
+    /// The `xfade` transition kind for that crossfade (`None` = default `Fade`).
+    pub(super) transition_kind: Option<XfadeTransition>,
     /// Audio track handle — `None` if the clip has no audio stream.
     pub(super) audio_track: Option<AudioTrackHandle>,
     /// Playback speed multiplier from `Clip::speed` (`1.0` = normal).
@@ -73,6 +75,8 @@ pub(super) struct TransitionState {
     pub(super) start: Duration,
     /// Duration of the transition.
     pub(super) duration: Duration,
+    /// The `xfade` kind to render for this transition.
+    pub(super) kind: XfadeTransition,
 }
 
 // ── OverlayLayer ──────────────────────────────────────────────────────────────

@@ -78,6 +78,7 @@ impl TimelineRunner {
             self.clips[i].out_point = p.out_point;
             self.clips[i].speed = new_speed;
             self.clips[i].transition_dur = p.transition_dur;
+            self.clips[i].transition_kind = p.transition_kind;
         }
 
         // ── Update overlay layers (V2+) ────────────────────────────────────────

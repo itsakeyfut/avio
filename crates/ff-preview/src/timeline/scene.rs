@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ff_filter::{AnimatedValue, RealtimeLayerDescriptor};
+use ff_filter::{AnimatedValue, RealtimeLayerDescriptor, XfadeTransition};
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +69,10 @@ pub struct ScenePlacement {
     /// Crossfade duration from the previous placement into this one. Meaningful on
     /// the V1 base track only; `Duration::ZERO` = hard cut.
     pub transition_dur: Duration,
+    /// The `xfade` transition kind for this crossfade (V1 base track only). `None`
+    /// when there is no transition; the runner defaults to `Fade` if a duration is
+    /// set without a kind.
+    pub transition_kind: Option<XfadeTransition>,
     /// Per-clip opacity in `[0.0, 1.0]`.
     pub opacity: f32,
     /// The dimension-free compositing description (effects, blend, position, and the

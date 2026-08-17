@@ -45,7 +45,7 @@ pub use runner::TimelineRunner;
 pub use scene::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
 
 use audio_resampling::spawn_audio_track_thread;
-use ff_filter::AnimatedValue;
+use ff_filter::{AnimatedValue, XfadeTransition};
 use state::{
     AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, db_to_linear,
 };
@@ -91,6 +91,7 @@ impl ScenePlayer {
             timeline_offset: Duration,
             out_point: Option<Duration>,
             transition_dur: Duration,
+            transition_kind: Option<XfadeTransition>,
             has_audio: bool,
             /// Video frame dimensions — used to pre-populate `last_frame_w/h` so the
             /// gap-fill loop can synthesise black frames before the first real frame.
@@ -147,6 +148,7 @@ impl ScenePlayer {
                 timeline_offset: p.timeline_offset,
                 out_point: p.out_point,
                 transition_dur: p.transition_dur,
+                transition_kind: p.transition_kind,
                 has_audio,
                 video_w,
                 video_h,
@@ -205,6 +207,7 @@ impl ScenePlayer {
                 in_point: p.in_pt,
                 out_point: p.out_point,
                 transition_dur: p.transition_dur,
+                transition_kind: p.transition_kind,
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
                 opacity: p.opacity,
@@ -275,6 +278,7 @@ impl ScenePlayer {
                     in_point: in_pt,
                     out_point: p.out_point,
                     transition_dur: Duration::ZERO,
+                    transition_kind: None,
                     audio_track: None,
                     speed: p.speed,
                     opacity: p.opacity,

@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ff_filter::{AnimatedValue, BlendMode, CompositeOp, RealtimeComposer, RealtimeLayer};
+use ff_filter::{
+    AnimatedValue, BlendMode, CompositeOp, RealtimeComposer, RealtimeLayer, XfadeTransition,
+};
 use ff_format::{PixelFormat, Rational, Timestamp, VideoFrame};
 
 use crate::audio::AudioMixer;
@@ -672,6 +674,7 @@ impl TimelineRunner {
                                     next_idx: active + 1,
                                     start: next.timeline_start,
                                     duration: next.transition_dur,
+                                    kind: next.transition_kind.unwrap_or(XfadeTransition::Fade),
                                 });
                             } else {
                                 // Jumped past the entire transition zone.
@@ -873,10 +876,17 @@ impl TimelineRunner {
 
                     // Copy transition fields to avoid holding a borrow while
                     // calling `pop_frame` on the next clip.
-                    let (in_trans, next_idx, trans_start, trans_dur) = match &self.transition {
-                        Some(tp) => (true, tp.next_idx, tp.start, tp.duration),
-                        None => (false, 0, Duration::ZERO, Duration::ZERO),
-                    };
+                    let (in_trans, next_idx, trans_start, trans_dur, trans_kind) =
+                        match &self.transition {
+                            Some(tp) => (true, tp.next_idx, tp.start, tp.duration, tp.kind),
+                            None => (
+                                false,
+                                0,
+                                Duration::ZERO,
+                                Duration::ZERO,
+                                XfadeTransition::Fade,
+                            ),
+                        };
 
                     let a_ok = self.sws_a.convert(&frame, &mut self.rgba_a);
 
@@ -914,10 +924,13 @@ impl TimelineRunner {
                             let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
                                 / trans_dur.as_secs_f32())
                             .clamp(0.0, 1.0);
-                            timeline_inner::blend_rgba(
+                            timeline_inner::apply_xfade(
+                                trans_kind,
                                 &self.rgba_a,
                                 &self.rgba_b,
                                 alpha,
+                                w,
+                                h,
                                 &mut self.blend_buf,
                             );
                             std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
