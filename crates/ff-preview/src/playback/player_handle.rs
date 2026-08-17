@@ -37,7 +37,7 @@ pub struct PlayerHandle {
     /// Mirrors the runner's stopped state; updated immediately by `stop`.
     pub(crate) stopped: Arc<AtomicBool>,
     pub(crate) duration_millis: u64,
-    /// Multi-track mixer — present when the runner was created by `TimelinePlayer`.
+    /// Multi-track mixer — present when the runner was created by `ScenePlayer`.
     pub(crate) audio_mixer: Option<Arc<Mutex<AudioMixer>>>,
 }
 
@@ -164,7 +164,7 @@ impl PlayerHandle {
         if n == 0 {
             return Vec::new();
         }
-        // Mixer path — used when the handle was created by TimelinePlayer.
+        // Mixer path — used when the handle was created by ScenePlayer.
         // The timeline clock is System-based so samples_consumed is not advanced here.
         if let Some(mixer) = &self.audio_mixer {
             return mixer
@@ -222,7 +222,7 @@ impl PlayerHandle {
             }
             return Vec::new();
         }
-        // Mixer path (TimelinePlayer) — System clock, no samples_consumed tracking.
+        // Mixer path (ScenePlayer) — System clock, no samples_consumed tracking.
         if let Some(mixer) = &self.audio_mixer {
             return mixer
                 .lock()

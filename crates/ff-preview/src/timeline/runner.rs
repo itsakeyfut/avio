@@ -2,7 +2,7 @@
 //!
 //! [`TimelineRunner`] owns the per-track decode buffers and the audio mixer,
 //! and drives frame presentation. Construct it via
-//! [`TimelinePlayer::open`](super::TimelinePlayer::open).
+//! [`ScenePlayer::open`](super::ScenePlayer::open).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};

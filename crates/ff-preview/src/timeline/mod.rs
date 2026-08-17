@@ -64,8 +64,7 @@ const CHANNEL_CAP: usize = 64;
 /// mixed into the stereo output from [`PlayerHandle::pop_audio_samples`].
 ///
 /// This player is model-agnostic: an engine derives the [`Scene`] from its
-/// editing model (for example `avio::TimelinePlayer` from a `Timeline`) and
-/// hands it here.
+/// editing model and hands it here.
 pub struct ScenePlayer;
 
 impl ScenePlayer {
