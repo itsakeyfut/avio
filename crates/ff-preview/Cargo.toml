@@ -1,6 +1,6 @@
 [package]
 name = "ff-preview"
-version.workspace = true
+version = "0.16.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Real-time video/audio preview and proxy workflow"
