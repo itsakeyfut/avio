@@ -7,6 +7,8 @@ use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
 /// Noise type used as the initial spectral model for `afftdn`.
+// Open catalog: `FFmpeg` noise colours (blue, violet, velvet, …) can be added.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NoiseType {
     /// White noise (flat spectrum).

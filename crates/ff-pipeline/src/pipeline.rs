@@ -303,6 +303,13 @@ pub fn hwaccel_to_hardware_encoder(hw: Option<HwAccel>) -> HardwareEncoder {
         Some(HwAccel::Cuda) => HardwareEncoder::Nvenc,
         Some(HwAccel::VideoToolbox) => HardwareEncoder::VideoToolbox,
         Some(HwAccel::Vaapi) => HardwareEncoder::Vaapi,
+        // `HwAccel` is `#[non_exhaustive]`: a backend without an encoder mapping
+        // falls back to software encoding rather than failing to build. Log it so a
+        // newly-added backend that lacks a mapping is not silently ignored.
+        Some(other) => {
+            log::warn!("unmapped hardware backend, encoding in software backend={other:?}");
+            HardwareEncoder::None
+        }
     }
 }
 

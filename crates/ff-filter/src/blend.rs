@@ -14,6 +14,8 @@
 /// use [`CompositeOp`](crate::CompositeOp) instead — that is a separate concept
 /// (alpha channel operators, not pixel-value blend modes). Note `BlendMode::Xor`
 /// is the *arithmetic* `xor` blend, distinct from `CompositeOp::Xor`.
+// Open catalog: mirrors `FFmpeg`'s `blend all_mode` set, which can grow.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
     // ── Standard modes ────────────────────────────────────────────────────

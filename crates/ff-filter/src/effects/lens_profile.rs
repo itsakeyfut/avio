@@ -7,6 +7,8 @@
 /// correction.
 ///
 /// Use with [`FilterGraph::lens_profile`](crate::FilterGraph::lens_profile).
+// Open catalog: more camera/lens profiles are added over time.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LensProfile {
     /// `GoPro` Hero 9 / 10 / 11 wide-angle mode (heavy barrel distortion).

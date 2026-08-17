@@ -11,6 +11,8 @@
 /// There is no `blend all_mode` token for Porter-Duff compositing, so this type
 /// has no `FfmpegToken` impl; each operator maps to a specific `FFmpeg` construction
 /// (`overlay` or `blend` with a per-channel expression) in the filter graph.
+// Open catalog: the Porter-Duff operator set is added to incrementally.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompositeOp {
     /// Top layer rendered over the bottom (standard alpha compositing).
