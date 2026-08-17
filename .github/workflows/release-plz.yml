@@ -1,0 +1,95 @@
+name: Release-plz
+
+# Change-driven, per-crate releases for the workspace (replaces the tag-push
+# release.yml). On every push to `main`:
+#
+#   - `release-plz-pr` opens/updates a "Release PR" that bumps versions and
+#     regenerates per-crate changelogs from conventional commits.
+#   - `release-plz-release` publishes any crate whose Cargo.toml version is not
+#     yet on crates.io (in dependency order), creates per-crate tags
+#     (`<crate>-v<version>`), and cuts GitHub Releases. It is a no-op when there
+#     is nothing new to publish.
+#
+# Publishing uses crates.io Trusted Publishing (OIDC) NATIVELY: release-plz performs
+# the token exchange itself, so there is NO long-lived `CARGO_REGISTRY_TOKEN`. Each
+# crate must have a Trusted Publisher configured on crates.io (workflow
+# `release-plz.yml`, environment `crates-io`).
+#
+# The release job runs in the `crates-io` GitHub environment: it scopes the OIDC
+# token and (if the environment has required reviewers) gates each publish behind
+# manual approval. As a result the release job enters "pending approval" on every
+# push to main; approve it only when a Release PR has been merged and a release is
+# intended.
+#
+# The release-plz action is pinned to a full commit SHA (it holds the OIDC token
+# and contents:write), matching how the other workflows pin third-party actions.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'itsakeyfut' }}
+    permissions:
+      contents: write # push the release-plz branch
+      pull-requests: write # open/update the Release PR
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # release-plz reads the full git history
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.93.0"
+
+      - name: Open/update the Release PR
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'itsakeyfut' }}
+    # Scopes the crates.io OIDC token to this environment (matching each crate's
+    # Trusted Publisher config) and gates publishing behind manual approval.
+    environment: crates-io
+    # Serialize publishing so two pushes to main cannot run `release` concurrently
+    # (a race could double-publish or clash on tag/GitHub-Release creation).
+    # Never cancel an in-flight publish: it has non-idempotent side effects.
+    concurrency:
+      group: release-plz-release
+      cancel-in-progress: false
+    permissions:
+      contents: write # push per-crate tags, create GitHub Releases
+      id-token: write # crates.io Trusted Publishing (OIDC); release-plz exchanges it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.93.0"
+
+      - name: Publish changed crates
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NO CARGO_REGISTRY_TOKEN: release-plz performs the OIDC exchange itself.

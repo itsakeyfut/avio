@@ -1,0 +1,28 @@
+# release-plz configuration: https://release-plz.dev/docs/config
+#
+# Drives change-driven, per-crate releases: versions and per-crate changelogs are
+# derived from conventional commits, and only crates whose version is not yet on
+# crates.io are published (in dependency order). See `.github/workflows/release-plz.yml`.
+
+[workspace]
+# Skip the `cargo publish` verification build. The publish step then never compiles
+# or links FFmpeg, so all uploads finish inside the crates.io OIDC token window.
+publish_no_verify = true
+
+# The public API is not yet frozen (pre-1.0; breaking changes are expected), and
+# `cargo-semver-checks` would build the FFmpeg-linked crates in the PR job. Disable
+# it so the release-pr job stays lightweight and needs no FFmpeg toolchain.
+semver_check = false
+
+# Give the crates.io sparse index time to propagate between dependent publishes
+# (12 crates in dependency order) so a dependent does not fail because its
+# dependency is not yet visible.
+publish_timeout = "10m"
+
+# Non-library workspace members: not versioned, tagged, or released. Cargo's
+# `publish = false` is also honored automatically; this makes the intent explicit.
+# (The `tools` and `fuzz` crates are separate workspaces, so they are outside
+# release-plz's set already.)
+[[package]]
+name = "avio-examples"
+release = false
