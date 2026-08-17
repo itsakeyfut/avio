@@ -14,6 +14,10 @@
 \#*\#
 .\#*
 
+# Python (CI helper scripts under .github/scripts)
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 .AppleDouble
