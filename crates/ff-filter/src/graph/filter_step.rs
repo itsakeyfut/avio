@@ -932,6 +932,28 @@ pub enum FilterStep {
         /// When `true`, the mask is inverted: outside is opaque, inside is transparent.
         invert: bool,
     },
+
+    /// Apply an arbitrary `FFmpeg` avfilter to the current stream — the escape
+    /// hatch for filters not covered by the typed builder methods.
+    ///
+    /// `filter` is the avfilter name (e.g. `"selectivecolor"`, `"pseudocolor"`)
+    /// and `args` its option string (e.g. `"reds=…:blues=…"`; empty when the
+    /// filter takes no options). It is emitted as a single node `filter=args`
+    /// and linked in chain order like any other step, so it accepts one input
+    /// and produces one output.
+    ///
+    /// The filter name is checked for existence when the graph is built
+    /// ([`build`](FilterGraphBuilder::build)); the `args` are validated by
+    /// `FFmpeg` on the first [`push_video`](crate::FilterGraph::push_video) /
+    /// [`push_audio`](crate::FilterGraph::push_audio), exactly as for the typed
+    /// steps. Prefer the typed builder methods where they exist; use this for
+    /// filters they do not cover.
+    Raw {
+        /// The avfilter name (e.g. `"selectivecolor"`).
+        filter: String,
+        /// The avfilter option string (e.g. `"reds=…"`); empty for none.
+        args: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -962,8 +984,11 @@ fn kelvin_to_rgb(temp_k: u32) -> (f64, f64, f64) {
 
 impl FilterStep {
     /// Returns the libavfilter filter name for this step.
-    pub(crate) fn filter_name(&self) -> &'static str {
+    pub(crate) fn filter_name(&self) -> &str {
         match self {
+            // Escape hatch: the runtime filter name is borrowed from `self`.
+            // (The `&'static str` literals below coerce to the borrowed `&str`.)
+            Self::Raw { filter, .. } => filter,
             Self::Format { .. } => "format",
             Self::SetParams { .. } => "setparams",
             Self::Trim { .. } => "trim",
@@ -1097,6 +1122,8 @@ impl FilterStep {
     /// Returns the `args` string passed to `avfilter_graph_create_filter`.
     pub(crate) fn args(&self) -> String {
         match self {
+            // Escape hatch: the option string is passed through verbatim.
+            Self::Raw { args, .. } => args.clone(),
             Self::Format {
                 pix_fmts,
                 color_spaces,
@@ -1865,6 +1892,34 @@ mod tests {
             color_trc: None,
         };
         assert_eq!(step.filter_name(), "setparams");
+    }
+
+    #[test]
+    fn raw_filter_name_should_be_the_given_filter() {
+        let step = FilterStep::Raw {
+            filter: "selectivecolor".to_string(),
+            args: "reds=0.1 0 0".to_string(),
+        };
+        assert_eq!(step.filter_name(), "selectivecolor");
+    }
+
+    #[test]
+    fn raw_args_should_pass_through_verbatim() {
+        let step = FilterStep::Raw {
+            filter: "selectivecolor".to_string(),
+            args: "reds=0.1 0 0:blues=0 0 0.2".to_string(),
+        };
+        assert_eq!(step.args(), "reds=0.1 0 0:blues=0 0 0.2");
+    }
+
+    #[test]
+    fn raw_with_empty_args_should_render_empty_args() {
+        let step = FilterStep::Raw {
+            filter: "hflip".to_string(),
+            args: String::new(),
+        };
+        assert_eq!(step.filter_name(), "hflip");
+        assert_eq!(step.args(), "");
     }
 
     #[test]
