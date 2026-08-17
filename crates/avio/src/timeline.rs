@@ -658,6 +658,9 @@ fn video_placement(
     } else {
         Duration::ZERO
     };
+    // Carry the transition kind (not just its duration) so preview renders the
+    // actual xfade kind; overlays force no transition (matching the compositor).
+    let transition_kind = if is_base { clip.transition } else { None };
     ff_preview::ScenePlacement {
         source: clip.source.clone(),
         timeline_offset: clip.timeline_offset,
@@ -665,6 +668,7 @@ fn video_placement(
         out_point: clip.out_point,
         speed: clip.speed.max(0.01),
         transition_dur,
+        transition_kind,
         opacity: clip.opacity.clamp(0.0, 1.0),
         // The single derive: preview and export build their video layers from the
         // same `avio::derive`, so the timeline-level animations (scale/rotation and
@@ -804,6 +808,7 @@ mod tests {
             Duration::ZERO,
             "clip 0 has no transition"
         );
+        assert_eq!(base.transition_kind, None, "clip 0 has no transition kind");
         assert!(matches!(base.volume, AnimatedValue::Track(_)));
         assert!(
             matches!(base.layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < f64::EPSILON)
@@ -811,12 +816,21 @@ mod tests {
 
         let base1 = &scene.video_tracks[0].placements[1];
         assert_eq!(base1.transition_dur, Duration::from_millis(750));
+        assert_eq!(
+            base1.transition_kind,
+            Some(XfadeTransition::Fade),
+            "base track carries the xfade kind"
+        );
 
         let overlay = &scene.video_tracks[1].placements[0];
         assert_eq!(
             overlay.transition_dur,
             Duration::ZERO,
             "overlay transitions must project as zero"
+        );
+        assert_eq!(
+            overlay.transition_kind, None,
+            "overlay transition kind is forced off"
         );
 
         let audio = &scene.audio_tracks[0].placements[0];

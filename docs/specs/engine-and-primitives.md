@@ -159,6 +159,18 @@ preview audio path is a hand-rolled decode+resample+mix pipeline with no `Filter
 per-track preview audio `FilterGraph` executor (the audio analogue of the video executor convergence), which
 would also apply pitch-accurate `atempo` speed and realise pan in both ends.
 
+**C4c (done, completes C4):** preview renders the export xfade *kind* (gap 8 closed). Previously every
+transition rendered as a single host-side linear crossfade (`blend_rgba`); the kind was collapsed to a bool
+in `video_placement`. The derived `Scene` now carries `transition_kind: Option<XfadeTransition>` (base track
+only; overlays force `None`, matching the compositor), threaded into the runner's `TransitionState`. At each
+transition frame the runner already holds both frames (`rgba_a`, `rgba_b`), a scalar progress, and `w`/`h`
+host-side, so a new pure `ff_preview::timeline_inner::apply_xfade` dispatches on the kind over packed RGBA:
+`fade`, `wipe{left,right,up,down}`, `slide{left,right,up,down}`, and `dissolve` render with real fidelity and
+are covered by deterministic unit tests (no FFmpeg, no probe-gating). Preview transitions are CPU, as
+export's `xfade` is CPU. **Deferred:** the geometric/mosaic kinds (`fadegrays`, `circleopen`, `circleclose`,
+`pixelize`) fall back to the linear fade; exact fidelity for those and GPU-default compositing (export +
+preview) are tracked in #1365.
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do
