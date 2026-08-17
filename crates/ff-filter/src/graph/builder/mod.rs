@@ -68,6 +68,23 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Append an arbitrary `FFmpeg` avfilter as an effect step on the current
+    /// stream — the escape hatch for filters not covered by the typed builder
+    /// methods.
+    ///
+    /// `filter` is the avfilter name (e.g. `"selectivecolor"`) and `args` its
+    /// option string (empty for none). The filter name is checked for existence
+    /// at [`build`](Self::build); the `args` are validated by `FFmpeg` on the
+    /// first push. Equivalent to
+    /// `add_step(FilterStep::Raw { filter, args })`.
+    #[must_use]
+    pub fn raw_filter(self, filter: impl Into<String>, args: impl Into<String>) -> Self {
+        self.add_step(FilterStep::Raw {
+            filter: filter.into(),
+            args: args.into(),
+        })
+    }
+
     /// Enable hardware-accelerated filtering.
     ///
     /// When set, `hwupload` and `hwdownload` filters are inserted around the

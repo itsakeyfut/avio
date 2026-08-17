@@ -106,6 +106,31 @@ fn format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
 }
 
 #[test]
+fn raw_filter_should_apply_an_arbitrary_avfilter() {
+    // #1376: `raw_filter` is the escape hatch for avfilters not covered by the typed
+    // builder methods. `hflip` (one-in / one-out, no args) exercises the whole path:
+    // `FilterStep::Raw` -> generic `add_and_link_step` -> a real avfilter node. CI's
+    // Linux FFmpeg is built with no filters, so a push failure means `hflip` is
+    // unavailable (skip), not that the escape hatch is broken. `build()` always
+    // succeeds because `validate_filter_steps` defers the registration check to push.
+    let frame = make_yuv420p_frame(64, 64);
+    let mut graph = FilterGraph::builder()
+        .raw_filter("hflip", "")
+        .build()
+        .expect("non-empty raw-filter graph must build");
+    if graph.push_video(0, &frame).is_err() {
+        eprintln!("skipping: `hflip` filter not available in this FFmpeg build");
+        return;
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame) after hflip push");
+    assert_eq!(out.width(), 64, "hflip must not change frame width");
+    assert_eq!(out.height(), 64, "hflip must not change frame height");
+}
+
+#[test]
 fn setparams_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg() {
     // #1227: `setparams` args (colorspace=/range=/color_primaries=/color_trc=) are built from
     // `FfmpegToken`. The graph is built lazily on the first `push_video`, so the push — not

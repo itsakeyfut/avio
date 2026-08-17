@@ -352,6 +352,64 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_with_raw_effect_should_build() {
+        // #1376: `FilterStep::Raw` (the arbitrary-avfilter escape hatch) must work as a
+        // per-layer effect through the realtime (preview) compositor's `add_and_link_step`
+        // dispatch, exactly like the typed steps — this is the composer-path coverage for
+        // the raw hatch. `hflip` (one-in / one-out, no args) is the raw filter. Probe-gate
+        // as above: CI's Linux FFmpeg has no filters, so a no-effect base layer fails to
+        // build there — skip; where filters exist, the raw `hflip` layer must build.
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let layer = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::Raw {
+                filter: "hflip".to_string(),
+                args: String::new(),
+            }],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let mut composer = RealtimeComposer::new(&[layer])
+            .expect("raw `hflip` effect must dispatch and build once FFmpeg filters exist");
+        let frame = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn with_canvas_letterboxes_output_to_canvas_size() {
         // A 640×360 (16:9) base composited onto a 1080×1920 (9:16) canvas must
         // produce a 1080×1920 frame (letterboxed), not the base's own size.
