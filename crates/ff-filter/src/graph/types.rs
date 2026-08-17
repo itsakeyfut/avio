@@ -13,6 +13,8 @@
 /// | [`Hable`](Self::Hable) | Filmic, rich contrast | Film / cinematic content |
 /// | [`Reinhard`](Self::Reinhard) | Simple, fast, neutral | Fast previews, general video |
 /// | [`Mobius`](Self::Mobius) | Smooth highlights | Bright outdoor or HDR10 content |
+// Open catalog: `FFmpeg`'s `tonemap` supports more operators than are exposed here.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToneMap {
     /// Hable (Uncharted 2) filmic tone mapping.
@@ -49,6 +51,8 @@ impl ToneMap {
 /// When set on the builder, upload/download filters are inserted automatically
 /// around the filter chain. This is independent of `ff_decode::HardwareAccel`
 /// and is defined here to avoid a hard dependency on `ff-decode`.
+// Open catalog: more hardware backends (QSV, D3D11VA, Vulkan, …) can be added.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAccel {
     /// NVIDIA CUDA.
@@ -88,6 +92,8 @@ impl Rgb {
 /// Resampling algorithm for the `scale` filter.
 ///
 /// Used with [`super::FilterGraphBuilder::scale`].
+// Open catalog: `swscale` exposes more flags (neighbor, area, gauss, …) than these.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleAlgorithm {
     /// Fast bilinear interpolation (default). Good balance of speed and quality.
@@ -191,6 +197,8 @@ impl XfadeTransition {
 /// A single band for the parametric equalizer.
 ///
 /// Used with [`super::FilterGraphBuilder::equalizer`].
+// Open catalog: more biquad band types (lowpass, highpass, notch, …) can be added.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum EqBand {
     /// Low-shelf EQ: boosts or cuts all frequencies below `freq_hz`.

@@ -6,6 +6,8 @@
 ///
 /// Individual easing functions are implemented across issues #352–#357.
 #[derive(Debug, Clone)]
+// Open catalog: more easing curves (Steps, Bounce, …) can be added.
+#[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Easing {
     /// Hold: the value snaps to the next keyframe without interpolation.

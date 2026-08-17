@@ -30,6 +30,9 @@ pub(crate) fn escape_filter_path(path: &str) -> String {
 ///
 /// Used by [`crate::FilterGraphBuilder`] to build pipeline filter graphs, and by
 /// [`crate::AudioTrack::effects`] to attach per-track effects in a multi-track mix.
+// Open catalog: new filter steps are added over time (e.g. `Raw`), so downstream
+// matches must carry a `_` arm.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum FilterStep {
     /// Convert video to a suitable pixel format from the given options.

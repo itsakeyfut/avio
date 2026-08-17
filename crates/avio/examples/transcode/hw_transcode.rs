@@ -137,6 +137,7 @@ fn main() {
         HwAccel::Cuda => "CUDA (NVENC)",
         HwAccel::VideoToolbox => "VideoToolbox",
         HwAccel::Vaapi => "VA-API",
+        _ => "hardware",
     });
 
     let codec_label = match video_codec {
