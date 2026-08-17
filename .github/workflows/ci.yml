@@ -167,6 +167,22 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # --------------------------------------------------------------------------
+  # Publishing readiness: verify every library crate has complete publish
+  # metadata and passes `cargo publish --dry-run`, and that non-library members
+  # stay publish=false. No FFmpeg: the script uses --no-verify (matching
+  # release-plz's publish_no_verify), so it skips the compile step the test and
+  # features jobs already cover.
+  # --------------------------------------------------------------------------
+  publish-ready:
+    name: Publishing readiness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 .github/scripts/check-publish-readiness.py
+
+  # --------------------------------------------------------------------------
   # Aggregation gate: the single required check for branch protection. Passes
   # only if every job above succeeded. Referencing just this check keeps branch
   # protection stable as jobs are added or renamed.
@@ -182,6 +198,7 @@ jobs:
       - features
       - docsrs-stubs
       - docs
+      - publish-ready
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed or was cancelled
