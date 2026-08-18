@@ -1,7 +1,7 @@
 //! Integration tests for SilenceDetector.
 //!
 //! Tests verify:
-//! - Missing input file returns `DecodeError::AnalysisFailed`
+//! - Missing input file returns `AnalysisError::Failed`
 //! - A synthetic audio file (1s tone + 2s silence + 1s tone) yields one `SilenceRange`
 //! - The detected range has the expected start/end within ±200 ms
 //! - A `min_duration` longer than the actual silence yields no ranges
@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use ff_decode::{DecodeError, SilenceDetector};
+use ff_analysis::{AnalysisError, SilenceDetector};
 
 /// Writes a minimal PCM WAV file with the layout:
 ///   0–1 s : 440 Hz sine at 80% amplitude
@@ -90,8 +90,8 @@ fn test_audio_path() -> std::path::PathBuf {
 fn silence_detector_missing_file_should_return_analysis_failed() {
     let result = SilenceDetector::new("does_not_exist_99999.mp3").run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for missing file, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for missing file, got {result:?}"
     );
 }
 

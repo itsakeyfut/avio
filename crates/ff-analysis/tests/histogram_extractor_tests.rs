@@ -1,14 +1,14 @@
 //! Integration tests for HistogramExtractor.
 //!
 //! Tests verify:
-//! - Missing input returns `DecodeError::AnalysisFailed`
-//! - `interval_frames(0)` returns `DecodeError::AnalysisFailed`
+//! - Missing input returns `AnalysisError::Failed`
+//! - `interval_frames(0)` returns `AnalysisError::Failed`
 //! - A real video file produces non-empty histograms with correct bin totals
 //! - `interval_frames(N)` yields approximately 1/N of the full-frame count
 
 #![allow(clippy::unwrap_used)]
 
-use ff_decode::{DecodeError, HistogramExtractor};
+use ff_analysis::{AnalysisError, HistogramExtractor};
 
 fn test_video_path() -> std::path::PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -21,8 +21,8 @@ fn test_video_path() -> std::path::PathBuf {
 fn histogram_extractor_missing_file_should_return_analysis_failed() {
     let result = HistogramExtractor::new("does_not_exist_99999.mp4").run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for missing file, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for missing file, got {result:?}"
     );
 }
 
@@ -32,14 +32,14 @@ fn histogram_extractor_zero_interval_should_return_analysis_failed() {
         .interval_frames(0)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for interval_frames=0, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for interval_frames=0, got {result:?}"
     );
 }
 
 // ── Functional tests ──────────────────────────────────────────────────────────
 // These tests decode the full video and can be slow on large files.
-// Run explicitly with: cargo test -p ff-decode -- --include-ignored
+// Run explicitly with: cargo test -p ff-analysis -- --include-ignored
 
 #[test]
 #[ignore = "decodes entire video; run explicitly with -- --include-ignored"]

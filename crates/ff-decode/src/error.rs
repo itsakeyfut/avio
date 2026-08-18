@@ -228,23 +228,14 @@ pub enum DecodeError {
         timestamp: Duration,
     },
 
-    /// An analysis operation failed for a structural reason.
+    /// Frame or thumbnail extraction failed for a structural reason.
     ///
-    /// Returned by tools in [`crate::analysis`] when the operation cannot
-    /// proceed (e.g. zero interval, missing audio stream, unsupported format).
-    #[error("analysis failed: {reason}")]
-    AnalysisFailed {
-        /// Human-readable description of why the analysis failed.
-        reason: String,
-    },
-
-    /// BPM detection failed for a structural reason.
-    ///
-    /// Returned by the BPM detector when tempo cannot be estimated (e.g. no
-    /// audio stream, or a clip too short to analyse).
-    #[error("BPM detection failed: {reason}")]
-    BpmDetectionFailed {
-        /// Human-readable description of why BPM detection failed.
+    /// Returned by [`FrameExtractor`](crate::extract::FrameExtractor) and
+    /// [`ThumbnailSelector`](crate::extract::ThumbnailSelector) when extraction
+    /// cannot proceed (e.g. a zero interval, or no suitable frame was found).
+    #[error("extraction failed: {reason}")]
+    ExtractionFailed {
+        /// Human-readable description of why extraction failed.
         reason: String,
     },
 }
@@ -388,8 +379,7 @@ impl MediaError for DecodeError {
             | Self::ConnectionFailed { .. }
             | Self::Io(_)
             | Self::StreamCorrupted { .. }
-            | Self::AnalysisFailed { .. }
-            | Self::BpmDetectionFailed { .. } => ErrorSeverity::Fatal,
+            | Self::ExtractionFailed { .. } => ErrorSeverity::Fatal,
             Self::Ffmpeg { .. }
             | Self::SeekNotSupported
             | Self::UnsupportedResolution { .. }
@@ -769,14 +759,17 @@ mod tests {
     }
 
     #[test]
-    fn decode_error_analysis_failed_should_display_correctly() {
-        let e = DecodeError::AnalysisFailed {
-            reason: "interval must be non-zero".to_string(),
+    fn decode_error_extraction_failed_should_display_correctly() {
+        let e = DecodeError::ExtractionFailed {
+            reason: "interval must be positive".to_string(),
         };
         let msg = e.to_string();
-        assert!(msg.contains("analysis failed"), "unexpected message: {msg}");
         assert!(
-            msg.contains("interval must be non-zero"),
+            msg.contains("extraction failed"),
+            "unexpected message: {msg}"
+        );
+        assert!(
+            msg.contains("interval must be positive"),
             "expected reason in message: {msg}"
         );
     }
@@ -791,34 +784,9 @@ mod tests {
     }
 
     #[test]
-    fn analysis_failed_should_be_fatal_and_not_recoverable() {
-        let e = DecodeError::AnalysisFailed {
-            reason: "zero interval".to_string(),
-        };
-        assert!(e.is_fatal());
-        assert!(!e.is_recoverable());
-    }
-
-    #[test]
-    fn bpm_detection_failed_should_display_correctly() {
-        let e = DecodeError::BpmDetectionFailed {
-            reason: "no audio stream".to_string(),
-        };
-        let msg = e.to_string();
-        assert!(
-            msg.contains("BPM detection failed"),
-            "unexpected message: {msg}"
-        );
-        assert!(
-            msg.contains("no audio stream"),
-            "expected reason in message: {msg}"
-        );
-    }
-
-    #[test]
-    fn bpm_detection_failed_should_be_fatal_and_not_recoverable() {
-        let e = DecodeError::BpmDetectionFailed {
-            reason: "clip too short".to_string(),
+    fn extraction_failed_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::ExtractionFailed {
+            reason: "no suitable frame".to_string(),
         };
         assert!(e.is_fatal());
         assert!(!e.is_recoverable());

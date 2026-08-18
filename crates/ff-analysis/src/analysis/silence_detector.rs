@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::DecodeError;
+use crate::AnalysisError;
 
 /// A detected silent interval in an audio stream.
 ///
@@ -29,7 +29,7 @@ pub struct SilenceRange {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_decode::SilenceDetector;
+/// use ff_analysis::SilenceDetector;
 /// use std::time::Duration;
 ///
 /// let ranges = SilenceDetector::new("audio.mp3")
@@ -90,11 +90,11 @@ impl SilenceDetector {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — input file not found or an internal
+    /// - [`AnalysisError::Failed`] — input file not found or an internal
     ///   filter-graph error occurs.
-    pub fn run(self) -> Result<Vec<SilenceRange>, DecodeError> {
+    pub fn run(self) -> Result<Vec<SilenceRange>, AnalysisError> {
         if !self.input.exists() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
@@ -119,8 +119,8 @@ mod tests {
     fn silence_detector_missing_file_should_return_analysis_failed() {
         let result = SilenceDetector::new("does_not_exist_99999.mp3").run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for missing file, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for missing file, got {result:?}"
         );
     }
 
@@ -132,8 +132,8 @@ mod tests {
             .threshold_db(-40.0)
             .run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed (missing file) when threshold_db=-40, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed (missing file) when threshold_db=-40, got {result:?}"
         );
     }
 }

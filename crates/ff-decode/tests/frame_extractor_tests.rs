@@ -1,7 +1,7 @@
 //! Integration tests for FrameExtractor.
 //!
 //! Tests verify:
-//! - Zero interval returns `DecodeError::AnalysisFailed`
+//! - Zero interval returns `DecodeError::ExtractionFailed`
 //! - A real video with a 1-second interval returns the expected frame count
 //! - All frame timestamps are monotonically non-decreasing
 //! - Each frame's timestamp is within a reasonable window of its expected interval
@@ -24,8 +24,8 @@ fn frame_extractor_zero_interval_should_return_analysis_failed() {
         .interval(Duration::ZERO)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for zero interval, got {result:?}"
+        matches!(result, Err(DecodeError::ExtractionFailed { .. })),
+        "expected ExtractionFailed for zero interval, got {result:?}"
     );
 }
 

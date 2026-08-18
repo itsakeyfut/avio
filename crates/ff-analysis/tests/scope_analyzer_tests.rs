@@ -4,7 +4,7 @@
 //! required.  Tests use synthetic `VideoFrame` objects to verify measurable,
 //! predictable output values.
 
-use ff_decode::ScopeAnalyzer;
+use ff_analysis::ScopeAnalyzer;
 use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

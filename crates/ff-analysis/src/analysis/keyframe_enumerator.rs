@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::DecodeError;
+use crate::AnalysisError;
 
 /// Enumerates the timestamps of all keyframes in a video stream.
 ///
@@ -17,7 +17,7 @@ use crate::DecodeError;
 /// # Examples
 ///
 /// ```ignore
-/// use ff_decode::KeyframeEnumerator;
+/// use ff_analysis::KeyframeEnumerator;
 ///
 /// let keyframes = KeyframeEnumerator::new("video.mp4").run()?;
 /// for ts in &keyframes {
@@ -56,12 +56,12 @@ impl KeyframeEnumerator {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — input file not found, no video
+    /// - [`AnalysisError::Failed`] — input file not found, no video
     ///   stream exists, the requested stream index is out of range, or an
     ///   internal `FFmpeg` error occurs.
-    pub fn run(self) -> Result<Vec<Duration>, DecodeError> {
+    pub fn run(self) -> Result<Vec<Duration>, AnalysisError> {
         if !self.input.exists() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
@@ -81,8 +81,8 @@ mod tests {
     fn keyframe_enumerator_missing_file_should_return_analysis_failed() {
         let result = KeyframeEnumerator::new("does_not_exist_99999.mp4").run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for missing file, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for missing file, got {result:?}"
         );
     }
 }

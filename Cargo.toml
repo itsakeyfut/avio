@@ -18,6 +18,7 @@ ff-common   = { path = "crates/ff-common",   version = "0.16.0" }
 ff-format   = { path = "crates/ff-format",   version = "0.16.0" }
 ff-probe    = { path = "crates/ff-probe",    version = "0.16.0" }
 ff-decode   = { path = "crates/ff-decode",   version = "0.16.0" }
+ff-analysis = { path = "crates/ff-analysis", version = "0.16.0" }
 ff-encode   = { path = "crates/ff-encode",   version = "0.16.0" }
 ff-filter   = { path = "crates/ff-filter",   version = "0.16.0" }
 ff-remux    = { path = "crates/ff-remux",    version = "0.16.0" }

@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use ff_format::SampleFormat;
 
-use crate::{AudioDecoder, DecodeError};
+use ff_decode::AudioDecoder;
+
+use crate::AnalysisError;
 
 /// A single waveform measurement over a configurable time interval.
 ///
@@ -34,7 +36,7 @@ pub struct WaveformSample {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_decode::WaveformAnalyzer;
+/// use ff_analysis::WaveformAnalyzer;
 /// use std::time::Duration;
 ///
 /// let samples = WaveformAnalyzer::new("audio.mp3")
@@ -67,7 +69,7 @@ impl WaveformAnalyzer {
     ///
     /// Peak and RMS are computed independently for each interval of this
     /// length.  Passing [`Duration::ZERO`] causes [`run`](Self::run) to
-    /// return [`DecodeError::AnalysisFailed`].
+    /// return [`AnalysisError::Failed`].
     ///
     /// Default: 100 ms.
     #[must_use]
@@ -84,12 +86,13 @@ impl WaveformAnalyzer {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — interval is [`Duration::ZERO`].
-    /// - [`DecodeError::FileNotFound`] — input path does not exist.
-    /// - Any other [`DecodeError`] propagated from [`AudioDecoder`].
-    pub fn run(self) -> Result<Vec<WaveformSample>, DecodeError> {
+    /// - [`AnalysisError::Failed`] — interval is [`Duration::ZERO`].
+    /// - [`ff_decode::DecodeError::FileNotFound`] — input path does not exist.
+    /// - Any other [`ff_decode::DecodeError`] propagated from [`AudioDecoder`],
+    ///   wrapped in [`AnalysisError::Decode`].
+    pub fn run(self) -> Result<Vec<WaveformSample>, AnalysisError> {
         if self.interval.is_zero() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: "interval must be non-zero".to_string(),
             });
         }
@@ -168,6 +171,8 @@ pub(super) fn amplitude_to_db(amplitude: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use ff_decode::DecodeError;
+
     use super::*;
 
     #[test]
@@ -199,8 +204,8 @@ mod tests {
             .interval(Duration::ZERO)
             .run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed, got {result:?}"
         );
     }
 
@@ -208,8 +213,11 @@ mod tests {
     fn waveform_analyzer_nonexistent_file_should_return_file_not_found() {
         let result = WaveformAnalyzer::new("does_not_exist_12345.mp3").run();
         assert!(
-            matches!(result, Err(DecodeError::FileNotFound { .. })),
-            "expected FileNotFound, got {result:?}"
+            matches!(
+                result,
+                Err(AnalysisError::Decode(DecodeError::FileNotFound { .. }))
+            ),
+            "expected Decode(FileNotFound), got {result:?}"
         );
     }
 

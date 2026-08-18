@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use ff_format::PixelFormat;
 
-use crate::{DecodeError, VideoDecoder};
+use ff_decode::VideoDecoder;
+
+use crate::AnalysisError;
 
 /// Per-channel color histogram for a single video frame.
 ///
@@ -37,7 +39,7 @@ pub struct FrameHistogram {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_decode::HistogramExtractor;
+/// use ff_analysis::HistogramExtractor;
 ///
 /// let histograms = HistogramExtractor::new("video.mp4")
 ///     .interval_frames(30)
@@ -71,7 +73,7 @@ impl HistogramExtractor {
     /// histogram per second.
     ///
     /// Passing `0` causes [`run`](Self::run) to return
-    /// [`DecodeError::AnalysisFailed`].
+    /// [`AnalysisError::Failed`].
     ///
     /// Default: `1` (every frame).
     #[must_use]
@@ -90,17 +92,18 @@ impl HistogramExtractor {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — `interval_frames` is `0`, the input
+    /// - [`AnalysisError::Failed`] — `interval_frames` is `0`, the input
     ///   file is not found, or a decode error occurs.
-    /// - Any [`DecodeError`] propagated from [`VideoDecoder`].
-    pub fn run(self) -> Result<Vec<FrameHistogram>, DecodeError> {
+    /// - Any [`ff_decode::DecodeError`] propagated from [`VideoDecoder`],
+    ///   wrapped in [`AnalysisError::Decode`].
+    pub fn run(self) -> Result<Vec<FrameHistogram>, AnalysisError> {
         if self.interval_frames == 0 {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: "interval_frames must be non-zero".to_string(),
             });
         }
         if !self.input.exists() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
@@ -184,8 +187,8 @@ mod tests {
     fn histogram_extractor_missing_file_should_return_analysis_failed() {
         let result = HistogramExtractor::new("does_not_exist_99999.mp4").run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for missing file, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for missing file, got {result:?}"
         );
     }
 
@@ -195,8 +198,8 @@ mod tests {
             .interval_frames(0)
             .run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for interval_frames=0, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for interval_frames=0, got {result:?}"
         );
     }
 
