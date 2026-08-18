@@ -218,10 +218,10 @@ pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
     AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder, ChannelLayout,
     ChapterInfo, ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer,
-    ContainerInfo, ContainerInfoBuilder, FormatError, FrameError, Hdr10Metadata, MasteringDisplay,
-    MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat, Rational, SampleFormat,
-    SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder, Timestamp, VideoCodec,
-    VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
+    ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError, Hdr10Metadata,
+    MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat,
+    Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder,
+    Timestamp, VideoCodec, VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────

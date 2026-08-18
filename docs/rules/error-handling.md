@@ -51,6 +51,34 @@ pub enum DecodeError {
 }
 ```
 
+Keep this variant shape (`Ffmpeg { code, message }`) so callers can pattern-match the fields
+directly without an extra nested type.
+
+---
+
+## Classifying errors (recoverable vs fatal)
+
+Every `ff-*` error type implements `ff_format::MediaError`, which classifies an error by
+`severity() -> ErrorSeverity` (`Fatal` / `Recoverable` / `Other`) and derives `is_recoverable()` /
+`is_fatal()` from it. This lets a caller branch on recoverability generically, without matching each
+crate's variants:
+
+```rust
+use ff_format::MediaError;
+
+if let Err(e) = decoder.decode_one() {
+    if e.is_recoverable() { /* skip the frame / reconnect */ } else { return Err(e); }
+}
+```
+
+- `Recoverable`: the failing operation can be retried without rebuilding (a corrupt frame, a
+  transient network fault).
+- `Fatal`: the component must be discarded and reconfigured (missing file, unsupported codec, I/O).
+- `Other`: neither of the above; a one-off condition handled in context.
+
+Wrapper error types (`PipelineError`, `PreviewError`, `StreamError`, …) **delegate** `severity()` to
+the inner error of their `#[from]` variants.
+
 ---
 
 ## Nesting errors

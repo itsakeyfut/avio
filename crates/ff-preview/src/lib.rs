@@ -42,6 +42,7 @@ pub use audio::{AudioMixer, AudioTrackHandle};
 pub use error::PreviewError;
 pub use event::PlayerEvent;
 pub use ff_decode::HardwareAccel;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use playback::{
     DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PlayerCommand,
     PlayerHandle, PlayerRunner, PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,

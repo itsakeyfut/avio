@@ -138,6 +138,7 @@ pub use ff_format::{
 };
 
 pub use error::ProbeError;
+pub use ff_format::{ErrorSeverity, MediaError};
 
 // Re-export the open function at the crate level
 pub use probe::open;

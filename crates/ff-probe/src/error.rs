@@ -1,5 +1,6 @@
 //! Error types for media probing.
 
+use ff_format::{ErrorSeverity, MediaError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -50,6 +51,19 @@ pub enum ProbeError {
         /// Human-readable error message from `av_strerror` or an internal description.
         message: String,
     },
+}
+
+impl MediaError for ProbeError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Ffmpeg { .. } => ErrorSeverity::Other,
+            Self::FileNotFound { .. }
+            | Self::CannotOpen { .. }
+            | Self::InvalidMedia { .. }
+            | Self::NoStreams { .. }
+            | Self::Io(_) => ErrorSeverity::Fatal,
+        }
+    }
 }
 
 #[cfg(test)]
