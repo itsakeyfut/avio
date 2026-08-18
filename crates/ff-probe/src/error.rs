@@ -129,4 +129,19 @@ mod tests {
         let err: ProbeError = io_err.into();
         assert!(matches!(err, ProbeError::Io(_)));
     }
+
+    #[test]
+    fn probe_io_should_be_fatal() {
+        let e: ProbeError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn probe_ffmpeg_should_be_other() {
+        let e = ProbeError::Ffmpeg {
+            code: -22,
+            message: "x".into(),
+        };
+        assert!(!e.is_fatal() && !e.is_recoverable());
+    }
 }

@@ -99,6 +99,8 @@ impl MediaError for PipelineError {
 mod tests {
     use std::error::Error;
 
+    use ff_format::MediaError;
+
     use super::PipelineError;
 
     // --- Display messages: unit variants ---
@@ -215,5 +217,24 @@ mod tests {
         let inner = std::io::Error::new(std::io::ErrorKind::Other, "some error");
         let err: PipelineError = inner.into();
         assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn pipeline_io_should_be_fatal() {
+        let e: PipelineError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn pipeline_cancelled_should_be_other() {
+        let e = PipelineError::Cancelled;
+        assert!(!e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn pipeline_decode_should_delegate_recoverable() {
+        // A recoverable inner DecodeError must remain recoverable through the wrapper.
+        let e = PipelineError::Decode(ff_decode::DecodeError::decoding_failed("x"));
+        assert!(e.is_recoverable() && !e.is_fatal());
     }
 }

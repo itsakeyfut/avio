@@ -91,6 +91,8 @@ impl MediaError for FilterError {
 
 #[cfg(test)]
 mod tests {
+    use ff_format::MediaError;
+
     use super::FilterError;
     use std::error::Error;
 
@@ -167,5 +169,17 @@ mod tests {
             code: 0,
             message: String::new(),
         });
+    }
+
+    #[test]
+    fn filter_build_failed_should_be_fatal() {
+        let e = FilterError::BuildFailed;
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn filter_process_failed_should_be_other() {
+        let e = FilterError::ProcessFailed;
+        assert!(!e.is_fatal() && !e.is_recoverable());
     }
 }
