@@ -62,6 +62,7 @@ pub mod video_pipeline;
 pub use audio_pipeline::AudioPipeline;
 pub use encoder_config::{EncoderConfig, EncoderConfigBuilder};
 pub use error::PipelineError;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use pipeline::{Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;

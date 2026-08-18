@@ -209,6 +209,7 @@ pub use audio::{
     Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 pub use error::EncodeError;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use media_ops::{AudioAdder, AudioExtractor, AudioReplacement};
 pub use preset::{AudioEncoderConfig, ExportPreset, VideoEncoderConfig};

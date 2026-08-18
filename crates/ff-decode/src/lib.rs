@@ -124,6 +124,7 @@ pub use error::DecodeError;
 pub use extract::{FrameExtractor, ThumbnailSelector};
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use image::{ImageDecoder, ImageDecoderBuilder};
 pub use scope::{Histogram, RgbParade, ScopeAnalyzer};
 pub use shared::{HardwareAccel, SeekMode};

@@ -1,5 +1,6 @@
 //! Error types for filter graph operations.
 
+use ff_format::{ErrorSeverity, MediaError};
 use thiserror::Error;
 
 /// Errors that can occur during filter graph construction and processing.
@@ -71,6 +72,21 @@ pub enum FilterError {
         /// Name of the filter or capability that requires GPL.
         feature: &'static str,
     },
+}
+
+impl MediaError for FilterError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Ffmpeg { .. } | Self::ProcessFailed | Self::InvalidInput { .. } => {
+                ErrorSeverity::Other
+            }
+            Self::BuildFailed
+            | Self::InvalidConfig { .. }
+            | Self::CompositionFailed { .. }
+            | Self::AnalysisFailed { .. }
+            | Self::GplRequired { .. } => ErrorSeverity::Fatal,
+        }
+    }
 }
 
 #[cfg(test)]

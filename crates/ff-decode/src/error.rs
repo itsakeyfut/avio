@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ff_format::{ErrorSeverity, MediaError};
 use thiserror::Error;
 
 use crate::HardwareAccel;
@@ -258,7 +259,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     ///
     /// let error = DecodeError::decoding_failed("Corrupted frame data");
     /// assert!(error.to_string().contains("Corrupted frame data"));
@@ -282,7 +283,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::decoding_failed_at(
@@ -310,7 +311,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::seek_failed(
@@ -366,94 +367,17 @@ impl DecodeError {
             message: message.into(),
         }
     }
+}
 
-    /// Returns `true` if this error is recoverable.
-    ///
-    /// Recoverable errors are those where the operation that raised the error
-    /// can be retried (or the decoder can transparently reconnect) without
-    /// rebuilding the decoder from scratch.
-    ///
-    /// | Variant | Recoverable |
-    /// |---|---|
-    /// | [`DecodingFailed`](Self::DecodingFailed) | ✓ — corrupt frame; skip and continue |
-    /// | [`SeekFailed`](Self::SeekFailed) | ✓ — retry at a different position |
-    /// | [`NetworkTimeout`](Self::NetworkTimeout) | ✓ — transient; reconnect |
-    /// | [`StreamInterrupted`](Self::StreamInterrupted) | ✓ — transient; reconnect |
-    /// | all others | ✗ |
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::DecodeError;
-    /// use std::time::Duration;
-    ///
-    /// // Decoding failures are recoverable
-    /// assert!(DecodeError::decoding_failed("test").is_recoverable());
-    ///
-    /// // Seek failures are recoverable
-    /// assert!(DecodeError::seek_failed(Duration::from_secs(1), "test").is_recoverable());
-    ///
-    /// ```
-    #[must_use]
-    pub fn is_recoverable(&self) -> bool {
+impl MediaError for DecodeError {
+    /// Recoverable errors are retryable without rebuilding the decoder (a corrupt
+    /// frame, a transient network fault); fatal errors mean it must be discarded.
+    fn severity(&self) -> ErrorSeverity {
         match self {
             Self::DecodingFailed { .. }
             | Self::SeekFailed { .. }
             | Self::NetworkTimeout { .. }
-            | Self::StreamInterrupted { .. } => true,
-            Self::FileNotFound { .. }
-            | Self::NoVideoStream { .. }
-            | Self::NoAudioStream { .. }
-            | Self::UnsupportedCodec { .. }
-            | Self::DecoderUnavailable { .. }
-            | Self::HwAccelUnavailable { .. }
-            | Self::InvalidOutputDimensions { .. }
-            | Self::ConnectionFailed { .. }
-            | Self::Io(_)
-            | Self::Ffmpeg { .. }
-            | Self::SeekNotSupported
-            | Self::UnsupportedResolution { .. }
-            | Self::StreamCorrupted { .. }
-            | Self::NoFrameAtTimestamp { .. }
-            | Self::AnalysisFailed { .. }
-            | Self::BpmDetectionFailed { .. } => false,
-        }
-    }
-
-    /// Returns `true` if this error is fatal.
-    ///
-    /// Fatal errors indicate that the decoder cannot continue operating and
-    /// must be discarded; re-opening or reconfiguring is required.
-    ///
-    /// | Variant | Fatal |
-    /// |---|---|
-    /// | [`FileNotFound`](Self::FileNotFound) | ✓ |
-    /// | [`NoVideoStream`](Self::NoVideoStream) | ✓ |
-    /// | [`NoAudioStream`](Self::NoAudioStream) | ✓ |
-    /// | [`UnsupportedCodec`](Self::UnsupportedCodec) | ✓ |
-    /// | [`DecoderUnavailable`](Self::DecoderUnavailable) | ✓ |
-    /// | [`HwAccelUnavailable`](Self::HwAccelUnavailable) | ✓ — must reconfigure without HW |
-    /// | [`InvalidOutputDimensions`](Self::InvalidOutputDimensions) | ✓ — bad config |
-    /// | [`ConnectionFailed`](Self::ConnectionFailed) | ✓ — host unreachable |
-    /// | [`Io`](Self::Io) | ✓ — I/O failure |
-    /// | all others | ✗ |
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::DecodeError;
-    /// use std::path::PathBuf;
-    ///
-    /// // File not found is fatal
-    /// assert!(DecodeError::FileNotFound { path: PathBuf::new() }.is_fatal());
-    ///
-    /// // Unsupported codec is fatal
-    /// assert!(DecodeError::UnsupportedCodec { codec: "test".to_string() }.is_fatal());
-    ///
-    /// ```
-    #[must_use]
-    pub fn is_fatal(&self) -> bool {
-        match self {
+            | Self::StreamInterrupted { .. } => ErrorSeverity::Recoverable,
             Self::FileNotFound { .. }
             | Self::NoVideoStream { .. }
             | Self::NoAudioStream { .. }
@@ -465,15 +389,11 @@ impl DecodeError {
             | Self::Io(_)
             | Self::StreamCorrupted { .. }
             | Self::AnalysisFailed { .. }
-            | Self::BpmDetectionFailed { .. } => true,
-            Self::DecodingFailed { .. }
-            | Self::SeekFailed { .. }
-            | Self::NetworkTimeout { .. }
-            | Self::StreamInterrupted { .. }
-            | Self::Ffmpeg { .. }
+            | Self::BpmDetectionFailed { .. } => ErrorSeverity::Fatal,
+            Self::Ffmpeg { .. }
             | Self::SeekNotSupported
             | Self::UnsupportedResolution { .. }
-            | Self::NoFrameAtTimestamp { .. } => false,
+            | Self::NoFrameAtTimestamp { .. } => ErrorSeverity::Other,
         }
     }
 }

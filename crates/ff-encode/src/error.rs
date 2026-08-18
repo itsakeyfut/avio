@@ -1,5 +1,6 @@
 //! Error types for encoding operations.
 
+use ff_format::{ErrorSeverity, MediaError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -174,6 +175,32 @@ impl EncodeError {
         EncodeError::Ffmpeg {
             code: errnum,
             message: ff_sys::av_error_string(errnum),
+        }
+    }
+}
+
+impl MediaError for EncodeError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Ffmpeg { .. } | Self::Cancelled => ErrorSeverity::Other,
+            Self::CannotCreateFile { .. }
+            | Self::UnsupportedCodec { .. }
+            | Self::NoSuitableEncoder { .. }
+            | Self::EncodingFailed { .. }
+            | Self::InvalidConfig { .. }
+            | Self::HwEncoderUnavailable { .. }
+            | Self::EncoderUnavailable { .. }
+            | Self::MuxingFailed { .. }
+            | Self::Io(_)
+            | Self::InvalidOption { .. }
+            | Self::UnsupportedContainerCodecCombination { .. }
+            | Self::InvalidDimensions { .. }
+            | Self::InvalidBitrate { .. }
+            | Self::InvalidChannelCount { .. }
+            | Self::InvalidSampleRate { .. }
+            | Self::WorkerPanicked
+            | Self::MediaOperationFailed { .. }
+            | Self::PresetConstraintViolation { .. } => ErrorSeverity::Fatal,
         }
     }
 }

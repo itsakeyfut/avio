@@ -48,6 +48,7 @@ pub use effects::{
     AnalyzeOptions, Interpolation, LensProfile, NoiseType, StabilizeOptions, Stabilizer,
 };
 pub use error::FilterError;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use graph::{
     AudioConcatenator, AudioTrack, CrossfadeJoiner, DrawTextOptions, EqBand, FilterGraph,
     FilterGraphBuilder, FilterStep, HwAccel, LavfiSource, MultiTrackAudioMixer, MultiTrackComposer,

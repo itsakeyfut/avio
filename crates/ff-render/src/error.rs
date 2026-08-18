@@ -1,3 +1,5 @@
+use ff_format::{ErrorSeverity, MediaError};
+
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
     #[error("GPU device creation failed: {message}")]
@@ -30,4 +32,19 @@ pub enum RenderError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl MediaError for RenderError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Ffmpeg { .. } | Self::UnsupportedFormat { .. } => ErrorSeverity::Other,
+            Self::DeviceCreation { .. }
+            | Self::ShaderCompile { .. }
+            | Self::TextureCreation { .. }
+            | Self::Composite { .. }
+            | Self::LutLoad { .. }
+            | Self::GpuTimeout { .. }
+            | Self::Io(_) => ErrorSeverity::Fatal,
+        }
+    }
 }

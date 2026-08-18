@@ -3,6 +3,8 @@
 //! This module provides [`PipelineError`], which covers all failure modes that
 //! can arise when building or running a [`Pipeline`](crate::Pipeline).
 
+use ff_format::{ErrorSeverity, MediaError};
+
 /// Errors that can occur while building or running a pipeline.
 ///
 /// # Error Categories
@@ -77,6 +79,20 @@ pub enum PipelineError {
     /// decodable frame exists at that point.
     #[error("no frame available at the requested position")]
     FrameNotAvailable,
+}
+
+impl MediaError for PipelineError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Decode(e) => e.severity(),
+            Self::Filter(e) => e.severity(),
+            Self::Encode(e) => e.severity(),
+            Self::Cancelled | Self::FrameNotAvailable => ErrorSeverity::Other,
+            Self::NoInput | Self::NoOutput | Self::SecondaryInputWithoutFilter | Self::Io(_) => {
+                ErrorSeverity::Fatal
+            }
+        }
+    }
 }
 
 #[cfg(test)]
