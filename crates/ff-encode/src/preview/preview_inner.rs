@@ -438,11 +438,12 @@ unsafe fn encode_frame_as_png_inner(
     }
 
     // ── Find and open PNG encoder ─────────────────────────────────────────────
-    let codec = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_PNG).ok_or_else(|| {
-        PreviewImageError::UnsupportedCodec {
+    let Some(codec) = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_PNG) else {
+        avformat_free_context(fmt_ctx);
+        return Err(PreviewImageError::UnsupportedCodec {
             codec: "png".to_string(),
-        }
-    })?;
+        });
+    };
 
     let codec_ctx = match avcodec::alloc_context3(codec) {
         Ok(ctx) => ctx,
@@ -1114,17 +1115,20 @@ unsafe fn encode_gif_unsafe(
 
     // ── Open GIF output ───────────────────────────────────────────────────────
     let mut fmt_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
-    let c_path =
-        CString::new(
-            output
-                .to_str()
-                .ok_or_else(|| PreviewImageError::CannotCreateFile {
-                    path: output.to_path_buf(),
-                })?,
-        )
-        .map_err(|_| PreviewImageError::CannotCreateFile {
+    let Some(path_str) = output.to_str() else {
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(PreviewImageError::CannotCreateFile {
             path: output.to_path_buf(),
-        })?;
+        });
+    };
+    let Ok(c_path) = CString::new(path_str) else {
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(PreviewImageError::CannotCreateFile {
+            path: output.to_path_buf(),
+        });
+    };
 
     let ret = avformat_alloc_output_context2(
         &mut fmt_ctx,
@@ -1149,11 +1153,14 @@ unsafe fn encode_gif_unsafe(
         });
     }
 
-    let codec = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_GIF).ok_or_else(|| {
-        PreviewImageError::UnsupportedCodec {
+    let Some(codec) = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_GIF) else {
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(PreviewImageError::UnsupportedCodec {
             codec: "gif".to_string(),
-        }
-    })?;
+        });
+    };
 
     let codec_ctx = match avcodec::alloc_context3(codec) {
         Ok(ctx) => ctx,
