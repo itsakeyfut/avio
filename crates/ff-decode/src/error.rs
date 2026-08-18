@@ -259,7 +259,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     ///
     /// let error = DecodeError::decoding_failed("Corrupted frame data");
     /// assert!(error.to_string().contains("Corrupted frame data"));
@@ -283,7 +283,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::decoding_failed_at(
@@ -311,7 +311,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::seek_failed(
