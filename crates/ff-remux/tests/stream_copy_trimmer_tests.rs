@@ -9,7 +9,7 @@
 
 mod fixtures;
 
-use ff_encode::{EncodeError, StreamCopyTrimmer};
+use ff_remux::{RemuxError, StreamCopyTrimmer};
 use fixtures::{FileGuard, test_output_path};
 
 // ============================================================================
@@ -20,7 +20,7 @@ use fixtures::{FileGuard, test_output_path};
 fn stream_copy_trimmer_should_reject_start_greater_than_end() {
     let result = StreamCopyTrimmer::new("input.mp4", 7.0, 2.0, "output.mp4").run();
     assert!(
-        matches!(result, Err(EncodeError::InvalidConfig { .. })),
+        matches!(result, Err(RemuxError::InvalidConfig { .. })),
         "expected InvalidConfig for start > end, got {result:?}"
     );
 }
@@ -29,7 +29,7 @@ fn stream_copy_trimmer_should_reject_start_greater_than_end() {
 fn stream_copy_trimmer_should_reject_equal_start_and_end() {
     let result = StreamCopyTrimmer::new("input.mp4", 5.0, 5.0, "output.mp4").run();
     assert!(
-        matches!(result, Err(EncodeError::InvalidConfig { .. })),
+        matches!(result, Err(RemuxError::InvalidConfig { .. })),
         "expected InvalidConfig for start == end, got {result:?}"
     );
 }

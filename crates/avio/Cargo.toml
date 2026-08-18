@@ -14,7 +14,7 @@ categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding", 
 default = ["probe", "decode", "encode", "hwaccel"]
 probe    = ["dep:ff-probe"]
 decode   = ["dep:ff-decode"]
-encode   = ["dep:ff-encode"]
+encode   = ["dep:ff-encode", "dep:ff-remux", "ff-encode/preview-image"]
 filter   = ["dep:ff-filter"]
 pipeline = ["dep:ff-pipeline", "dep:thiserror", "dep:log", "decode", "encode", "filter", "ff-preview?/timeline"]
 stream   = ["dep:ff-stream", "pipeline"]
@@ -38,6 +38,7 @@ ff-common = { workspace = true }
 ff-probe    = { workspace = true, optional = true }
 ff-decode   = { workspace = true, optional = true }
 ff-encode   = { workspace = true, optional = true }
+ff-remux    = { workspace = true, optional = true }
 ff-filter   = { workspace = true, optional = true }
 ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }

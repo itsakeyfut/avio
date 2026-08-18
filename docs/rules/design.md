@@ -81,6 +81,7 @@ Deviating without a deliberate, documented reason is a bug, not a style choice.
 | `ff-probe` | Read-only metadata extraction | ff-format |
 | `ff-decode` | Decode pipelines (video / audio / image) | ff-format |
 | `ff-encode` | Encode pipelines | ff-format |
+| `ff-remux` | Stream-copy remux (trim / audio replace / extract / add), no re-encoding | ff-format |
 | `ff-filter` | libavfilter graph construction + primitive compositor | ff-format |
 | `ff-pipeline` | Decode -> filter -> encode execution pipelines | ff-filter |
 | `ff-stream` | HLS / DASH adaptive streaming output | ff-pipeline |
@@ -91,7 +92,7 @@ Deviating without a deliberate, documented reason is a bug, not a style choice.
 Dependency direction (no cycles):
 
 ```
-ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode -> ff-filter
+ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode / ff-remux -> ff-filter
        -> ff-pipeline -> ff-stream / ff-preview / ff-render -> avio (engine, top)
 ```
 

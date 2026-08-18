@@ -4,7 +4,7 @@ mod media_inner;
 
 use std::path::PathBuf;
 
-use crate::error::EncodeError;
+use crate::error::RemuxError;
 
 /// Replace a video file's audio track with audio from a separate source file.
 ///
@@ -12,13 +12,13 @@ use crate::error::EncodeError;
 /// audio track from `audio_input` replaces any existing audio in
 /// `video_input`.
 ///
-/// Returns [`EncodeError::MediaOperationFailed`] when no audio stream is found
+/// Returns [`RemuxError::OperationFailed`] when no audio stream is found
 /// in `audio_input`, or no video stream is found in `video_input`.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ff_encode::AudioReplacement;
+/// use ff_remux::AudioReplacement;
 ///
 /// AudioReplacement::new("source.mp4", "new_audio.aac", "output.mp4").run()?;
 /// ```
@@ -50,10 +50,10 @@ impl AudioReplacement {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] if `video_input` has no video
+    /// - [`RemuxError::OperationFailed`] if `video_input` has no video
     ///   stream or `audio_input` has no audio stream.
-    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio replacement start video_input={} audio_input={} output={}",
             self.video_input.display(),
@@ -72,14 +72,14 @@ impl AudioReplacement {
 /// the first audio stream is selected; call [`stream_index`](Self::stream_index)
 /// to pick a specific one.
 ///
-/// Returns [`EncodeError::MediaOperationFailed`] when:
+/// Returns [`RemuxError::OperationFailed`] when:
 /// - no audio stream is found (or `stream_index` points to a non-audio stream), or
 /// - the audio codec is incompatible with the output container.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ff_encode::AudioExtractor;
+/// use ff_remux::AudioExtractor;
 ///
 /// AudioExtractor::new("source.mp4", "audio.mp3").run()?;
 /// ```
@@ -114,11 +114,11 @@ impl AudioExtractor {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] if no audio stream is found,
+    /// - [`RemuxError::OperationFailed`] if no audio stream is found,
     ///   the requested stream index is invalid or not audio, or the codec is
     ///   incompatible with the output container.
-    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio extraction start input={} output={} stream_index={:?}",
             self.input.display(),
@@ -138,13 +138,13 @@ impl AudioExtractor {
 /// has been called, the audio is looped by re-seeking and advancing the PTS
 /// offset until the video is exhausted.
 ///
-/// Returns [`EncodeError::MediaOperationFailed`] when no video stream is found
+/// Returns [`RemuxError::OperationFailed`] when no video stream is found
 /// in `video_input` or no audio stream is found in `audio_input`.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ff_encode::AudioAdder;
+/// use ff_remux::AudioAdder;
 ///
 /// AudioAdder::new("silent.mp4", "soundtrack.mp3", "output.mp4")
 ///     .loop_audio()
@@ -190,10 +190,10 @@ impl AudioAdder {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] if `video_input` has no video
+    /// - [`RemuxError::OperationFailed`] if `video_input` has no video
     ///   stream or `audio_input` has no audio stream.
-    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio addition start video_input={} audio_input={} output={} loop_audio={}",
             self.video_input.display(),

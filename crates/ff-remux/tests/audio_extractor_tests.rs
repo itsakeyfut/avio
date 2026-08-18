@@ -10,7 +10,7 @@
 
 mod fixtures;
 
-use ff_encode::{AudioExtractor, EncodeError};
+use ff_remux::{AudioExtractor, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
 // ── Error-path tests ──────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ fn audio_extractor_should_fail_when_input_has_no_audio_stream() {
 
     let result = AudioExtractor::new(&video_only_path, &output_path).run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+        matches!(result, Err(RemuxError::OperationFailed { .. })),
         "expected MediaOperationFailed for input with no audio stream, got {result:?}"
     );
 }
@@ -107,7 +107,7 @@ fn audio_extractor_should_fail_when_stream_index_out_of_range() {
         .stream_index(99)
         .run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+        matches!(result, Err(RemuxError::OperationFailed { .. })),
         "expected MediaOperationFailed for out-of-range stream_index, got {result:?}"
     );
 }
@@ -246,7 +246,7 @@ fn audio_extractor_stream_index_should_extract_selected_stream() {
         .run();
     match result {
         Ok(()) => {}
-        Err(EncodeError::MediaOperationFailed { reason }) if reason.contains("not an audio") => {
+        Err(RemuxError::OperationFailed { reason }) if reason.contains("not an audio") => {
             // stream 1 is video (container reordered) — acceptable, skip
             println!("Skipping: stream 1 is not audio in this container ({reason})");
             return;

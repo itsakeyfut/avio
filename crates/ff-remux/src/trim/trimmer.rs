@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::error::EncodeError;
+use crate::error::RemuxError;
 
 use super::trim_inner;
 
@@ -16,7 +16,7 @@ use super::trim_inner;
 /// # Example
 ///
 /// ```ignore
-/// use ff_encode::StreamCopyTrimmer;
+/// use ff_remux::StreamCopyTrimmer;
 ///
 /// StreamCopyTrimmer::new("input.mp4", 2.0, 7.0, "output.mp4")
 ///     .run()?;
@@ -35,7 +35,7 @@ impl StreamCopyTrimmer {
     ///
     /// `start_sec` and `end_sec` are absolute timestamps in seconds measured
     /// from the start of the source file.  [`run`](Self::run) returns
-    /// [`EncodeError::InvalidConfig`] if `start_sec >= end_sec`.
+    /// [`RemuxError::InvalidConfig`] if `start_sec >= end_sec`.
     pub fn new(
         input: impl Into<PathBuf>,
         start_sec: f64,
@@ -54,11 +54,11 @@ impl StreamCopyTrimmer {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::InvalidConfig`] if `start_sec >= end_sec`.
-    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`RemuxError::InvalidConfig`] if `start_sec >= end_sec`.
+    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), RemuxError> {
         if self.start_sec >= self.end_sec {
-            return Err(EncodeError::InvalidConfig {
+            return Err(RemuxError::InvalidConfig {
                 reason: format!(
                     "start_sec ({}) must be less than end_sec ({})",
                     self.start_sec, self.end_sec
@@ -82,12 +82,12 @@ impl StreamCopyTrimmer {
 ///
 /// Equivalent to [`StreamCopyTrimmer`] but accepts [`Duration`] for `start` and
 /// `end` instead of raw seconds, and returns
-/// [`EncodeError::MediaOperationFailed`] when the time range is invalid.
+/// [`RemuxError::OperationFailed`] when the time range is invalid.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ff_encode::StreamCopyTrim;
+/// use ff_remux::StreamCopyTrim;
 /// use std::time::Duration;
 ///
 /// StreamCopyTrim::new(
@@ -110,7 +110,7 @@ impl StreamCopyTrim {
     ///
     /// `start` and `end` are absolute timestamps measured from the start of
     /// the source file.  [`run`](Self::run) returns
-    /// [`EncodeError::MediaOperationFailed`] if `start >= end`.
+    /// [`RemuxError::OperationFailed`] if `start >= end`.
     pub fn new(
         input: impl Into<PathBuf>,
         start: Duration,
@@ -129,11 +129,11 @@ impl StreamCopyTrim {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] if `start >= end`.
-    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`RemuxError::OperationFailed`] if `start >= end`.
+    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), RemuxError> {
         if self.start >= self.end {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(RemuxError::OperationFailed {
                 reason: format!(
                     "start ({:?}) must be less than end ({:?})",
                     self.start, self.end
@@ -159,7 +159,7 @@ mod tests {
     fn stream_copy_trimmer_should_reject_start_greater_than_end() {
         let result = StreamCopyTrimmer::new("input.mp4", 7.0, 2.0, "output.mp4").run();
         assert!(
-            matches!(result, Err(EncodeError::InvalidConfig { .. })),
+            matches!(result, Err(RemuxError::InvalidConfig { .. })),
             "expected InvalidConfig for start > end, got {result:?}"
         );
     }
@@ -168,7 +168,7 @@ mod tests {
     fn stream_copy_trimmer_should_reject_equal_start_and_end() {
         let result = StreamCopyTrimmer::new("input.mp4", 5.0, 5.0, "output.mp4").run();
         assert!(
-            matches!(result, Err(EncodeError::InvalidConfig { .. })),
+            matches!(result, Err(RemuxError::InvalidConfig { .. })),
             "expected InvalidConfig for start == end, got {result:?}"
         );
     }
@@ -183,7 +183,7 @@ mod tests {
         )
         .run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+            matches!(result, Err(RemuxError::OperationFailed { .. })),
             "expected MediaOperationFailed for start > end, got {result:?}"
         );
     }
@@ -198,7 +198,7 @@ mod tests {
         )
         .run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+            matches!(result, Err(RemuxError::OperationFailed { .. })),
             "expected MediaOperationFailed for start == end, got {result:?}"
         );
     }

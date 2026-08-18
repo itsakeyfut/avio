@@ -140,17 +140,6 @@ pub enum EncodeError {
     #[error("Async encoder worker panicked or disconnected")]
     WorkerPanicked,
 
-    /// A media operation (trim, extract, replace, …) failed.
-    ///
-    /// Returned by [`StreamCopyTrim`](crate::StreamCopyTrim) and other
-    /// `media_ops` types when a structural precondition is violated or an
-    /// FFmpeg mux/remux call fails.
-    #[error("media operation failed: {reason}")]
-    MediaOperationFailed {
-        /// Human-readable description of the failure.
-        reason: String,
-    },
-
     /// An export preset violated a platform-specific constraint.
     ///
     /// Returned by [`ExportPreset::validate()`](crate::ExportPreset::validate)
@@ -199,7 +188,6 @@ impl MediaError for EncodeError {
             | Self::InvalidChannelCount { .. }
             | Self::InvalidSampleRate { .. }
             | Self::WorkerPanicked
-            | Self::MediaOperationFailed { .. }
             | Self::PresetConstraintViolation { .. } => ErrorSeverity::Fatal,
         }
     }
@@ -316,26 +304,6 @@ mod tests {
         assert!(
             msg.contains("[8000, 384000]"),
             "expected '[8000, 384000]' in '{msg}'"
-        );
-    }
-
-    #[test]
-    fn encode_error_media_operation_failed_should_display_correctly() {
-        let err = EncodeError::MediaOperationFailed {
-            reason: "input file has no audio stream".to_string(),
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("media operation failed"),
-            "expected 'media operation failed' in '{msg}'"
-        );
-        assert!(
-            msg.contains("input file has no audio stream"),
-            "expected reason in '{msg}'"
-        );
-        assert!(
-            matches!(err, EncodeError::MediaOperationFailed { .. }),
-            "pattern match with struct syntax must work"
         );
     }
 }
