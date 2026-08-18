@@ -1,6 +1,6 @@
 [package]
 name = "ff-stream"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "HLS and DASH adaptive streaming output for the ff-* crate family"

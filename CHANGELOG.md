@@ -11,6 +11,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.16.0] - 2026-08-18
+
+This release splits the project into an editing **engine** (`avio`) and a family of **model-free primitive libraries** (the `ff-*` crates). The editing model moves up into `avio`, the primitives are purified so they impose no editing vocabulary, all crates share one version (lockstep), and every crate is prepared for its first standalone crates.io publish. Two new primitive crates are carved out of the existing ones, and a shared error-classification contract is added across the family.
+
+### Added
+
+#### ff-analysis (new crate)
+- Media-analysis suite (scene / silence / black-frame / keyframe detection, histogram and waveform extraction, `BpmResult`, and video scopes) extracted from `ff-decode` into its own crate ([#1391](https://github.com/itsakeyfut/avio/issues/1391))
+
+#### ff-remux (new crate)
+- Stream-copy remuxing (trim, and audio replace / extract / add) without re-encoding, extracted from `ff-encode` ([#1393](https://github.com/itsakeyfut/avio/issues/1393))
+
+#### ff-format
+- `MediaError` trait and `ErrorSeverity` classification (`Fatal` / `Recoverable` / `Other`), implemented by every `ff-*` error type so callers can branch on recoverability generically ([#1392](https://github.com/itsakeyfut/avio/issues/1392))
+
+#### avio
+- The editing model now lives in the engine: an `Editor` with snapshot history for Do/Undo/Redo, and a Command edit API with a pure apply step ([#1327](https://github.com/itsakeyfut/avio/issues/1327))
+
+#### ff-filter
+- Raw-filter escape hatch (`FilterStep::Raw`) for passing an arbitrary filter string
+- Animated rotation via a self-animating expression, supersampled and alpha-premultiplied to remove edge halos
+- `pitch_shift()` extended to +/-24 semitones via an atempo chain
+
+#### ff-preview
+- Render `xfade` transition kinds in preview
+- Converge audio derivation and apply per-clip volume / speed / fades in preview
+- Per-clip volume automation track
+
+#### CI / release
+- Change-driven crates.io publishing via release-plz with Trusted Publishing ([#1369](https://github.com/itsakeyfut/avio/issues/1369)), and a lockstep single-tag release that draws its notes from this changelog ([#1407](https://github.com/itsakeyfut/avio/issues/1407))
+- Publishing-readiness gate validating metadata for all library crates ([#1371](https://github.com/itsakeyfut/avio/issues/1371))
+
+### Changed
+
+- **Engine / primitive split:** the editing model (Timeline / Clip, model-to-scene derivation, edit history) was relocated into `avio`, and the `ff-*` crates were purified into model-free primitives; the boundary is now enforced by dependency direction ([#1326](https://github.com/itsakeyfut/avio/issues/1326))
+- De-editorialized public names on the primitive surface so the primitives impose no editing vocabulary
+
+#### ff-decode
+- `DecodeError` drops the analysis-only `AnalysisFailed` / `BpmDetectionFailed` variants (moved to `ff-analysis`'s `AnalysisError`) and gains `ExtractionFailed` for the frame / thumbnail extractor ([#1391](https://github.com/itsakeyfut/avio/issues/1391))
+
+#### ff-encode
+- `EncodeError` drops `MediaOperationFailed`; remux operations move to `ff-remux`'s `RemuxError`, and the preview-image encoders are gated behind a `preview-image` feature ([#1393](https://github.com/itsakeyfut/avio/issues/1393))
+
+#### ff-filter
+- Extensible public enums are marked `#[non_exhaustive]` so future variants stay non-breaking
+
+### Removed
+
+#### ff-filter
+- Editorial `dissolve` / `join` `FilterStep`s and the timeline / editorial fields on `VideoLayer` / `AudioTrack`, so the primitives no longer carry model concepts
+
+### Fixed
+
+#### ff-encode
+- Free the `AVFormatContext` / filter graph on early-return error paths in the preview-image encoders ([#1399](https://github.com/itsakeyfut/avio/issues/1399))
+
+### Docs
+
+- Published the engine / primitive architecture and coding rules, and reframed the crate READMEs so `avio` reads as an editing engine and the `ff-*` crates as standalone primitive libraries ([#1373](https://github.com/itsakeyfut/avio/issues/1373))
+- Aligned the `ff-render` README with the crate's actual implementation status ([#1394](https://github.com/itsakeyfut/avio/issues/1394))
+
+### Internal
+
+- `MediaError::severity()` classification is now unit-tested per crate ([#1398](https://github.com/itsakeyfut/avio/issues/1398))
+
+---
+
 ## [0.15.1] - 2026-08-07
 
 This release unifies the preview and export compositing paths on a single `RealtimeComposer` and ships the fixes uncovered along the way, plus the `wgpu` 30 upgrade for the GPU renderer.

@@ -1,6 +1,6 @@
 [package]
 name = "ff-remux"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Stream-copy remuxing (trim, audio replace/extract/add) over FFmpeg - the Rust way"

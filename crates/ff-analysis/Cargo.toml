@@ -1,6 +1,6 @@
 [package]
 name = "ff-analysis"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Media analysis (scene, silence, BPM, histogram, keyframe, black-frame, scopes) - the Rust way"

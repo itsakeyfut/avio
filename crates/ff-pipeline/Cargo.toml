@@ -1,6 +1,6 @@
 [package]
 name = "ff-pipeline"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Unified decode-filter-encode pipeline for the ff-* crate family"

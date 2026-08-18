@@ -1,6 +1,6 @@
 [package]
 name = "ff-probe"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Media file metadata extraction - the Rust way"

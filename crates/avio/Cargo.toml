@@ -1,6 +1,6 @@
 [package]
 name = "avio"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Safe, high-level audio/video/image processing for Rust — backend-agnostic multimedia toolkit"

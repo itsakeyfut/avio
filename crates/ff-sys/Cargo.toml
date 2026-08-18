@@ -1,6 +1,6 @@
 [package]
 name = "ff-sys"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Low-level FFmpeg FFI bindings for Rust"
