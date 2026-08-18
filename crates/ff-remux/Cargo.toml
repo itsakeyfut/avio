@@ -21,9 +21,9 @@ thiserror = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-ff-encode = { workspace = true }
-ff-format = { workspace = true }
-ff-probe = { workspace = true }
+ff-encode = { path = "../ff-encode" }
+ff-format = { path = "../ff-format" }
+ff-probe = { path = "../ff-probe" }
 
 [lints]
 workspace = true

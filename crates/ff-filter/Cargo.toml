@@ -26,9 +26,9 @@ thiserror  = { workspace = true }
 serde      = { version = "1.0.228", features = ["derive"], optional = true }
 
 [dev-dependencies]
-ff-decode  = { workspace = true }
-ff-encode  = { workspace = true }
-ff-probe   = { workspace = true }
+ff-decode  = { path = "../ff-decode" }
+ff-encode  = { path = "../ff-encode" }
+ff-probe   = { path = "../ff-probe" }
 image      = { workspace = true, features = ["png"] }
 serde_json = "1.0.149"
 

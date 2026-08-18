@@ -541,11 +541,11 @@ futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
 # Used directly by the relocated editing-model integration tests
 # (tests/timeline_tests.rs, tests/composition_framerate.rs, tests/fixtures/).
-ff-format = { workspace = true }
-ff-probe  = { workspace = true }
-ff-decode = { workspace = true }
-ff-encode = { workspace = true }
-ff-filter = { workspace = true }
+ff-format = { path = "../ff-format" }
+ff-probe  = { path = "../ff-probe" }
+ff-decode = { path = "../ff-decode" }
+ff-encode = { path = "../ff-encode" }
+ff-filter = { path = "../ff-filter" }
 
 [lints]
 workspace = true
