@@ -1,6 +1,6 @@
 [package]
 name = "ff-common"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Common types and utilities for FFmpeg-based media processing"

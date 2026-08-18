@@ -1,6 +1,6 @@
 [package]
 name = "ff-render"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "GPU compositing pipeline for real-time preview (wgpu-based)"

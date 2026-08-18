@@ -2,9 +2,13 @@
 members = ["crates/*", "examples"]
 resolver = "2"
 
-# Per-crate versions are independent (declared in each crate's `[package].version`)
-# as of v0.16.0; only the fields below stay shared.
+# Lockstep versioning: every crate shares this one version (crates inherit it via
+# `version.workspace = true`). On a release bump, update `version` here AND the
+# matching `version = "..."` on each internal dependency in `[workspace.dependencies]`
+# below. Per-crate independent versioning is revisited at the Organization /
+# multi-repo migration.
 [workspace.package]
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"

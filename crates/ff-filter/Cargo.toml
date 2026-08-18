@@ -1,6 +1,6 @@
 [package]
 name = "ff-filter"
-version = "0.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Video and audio filter graph operations - the Rust way"
