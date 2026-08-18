@@ -5,6 +5,12 @@
 # crates.io are published (in dependency order). See `.github/workflows/release-plz.yml`.
 
 [workspace]
+# HOLD: block all releasing/publishing until the 0.16.0 clean-primitive gate
+# (#1395) is complete. With this set, the `release` job is a no-op (it publishes
+# nothing) while CI stays green. Remove this line to enable the 0.16.0 publish
+# once #1395 lands.
+release = false
+
 # Skip the `cargo publish` verification build. The publish step then never compiles
 # or links FFmpeg, so all uploads finish inside the crates.io OIDC token window.
 publish_no_verify = true
@@ -19,10 +25,13 @@ semver_check = false
 # dependency is not yet visible.
 publish_timeout = "10m"
 
-# Non-library workspace members: not versioned, tagged, or released. Cargo's
-# `publish = false` is also honored automatically; this makes the intent explicit.
+# Non-library workspace members: not published, versioned, tagged, or released.
+# `publish = false` must be set here to match the crate's own `publish = false`
+# in Cargo.toml (release-plz validates that the two agree); `release = false`
+# additionally skips versioning/tagging/changelog for it.
 # (The `tools` and `fuzz` crates are separate workspaces, so they are outside
 # release-plz's set already.)
 [[package]]
 name = "avio-examples"
+publish = false
 release = false
