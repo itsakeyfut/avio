@@ -1,10 +1,13 @@
 //! # ff-render
 //!
-//! GPU compositing pipeline for real-time video preview, built on [wgpu].
+//! GPU compositing and effects pipeline for video, built on [wgpu].
 //!
 //! `ff-render` sits above `ff-preview` in the crate stack and implements
-//! [`ff_preview::FrameSink`] so it integrates directly with
-//! [`ff_preview::PlayerRunner`].
+//! [`ff_preview::FrameSink`], so a [`RenderGraph`] can be attached to a
+//! [`ff_preview::PlayerRunner`] as an opt-in [`GpuFrameSink`]. It is not the
+//! default preview compositor: avio composites preview on the CPU today, and
+//! making GPU compositing the default across avio is tracked separately in
+//! issue #1365.
 //!
 //! ## Feature flags
 //!
