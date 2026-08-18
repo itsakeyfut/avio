@@ -48,3 +48,23 @@ impl MediaError for RenderError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_io_should_be_fatal() {
+        let e: RenderError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn render_ffmpeg_should_be_other() {
+        let e = RenderError::Ffmpeg {
+            code: -22,
+            message: "x".into(),
+        };
+        assert!(!e.is_fatal() && !e.is_recoverable());
+    }
+}

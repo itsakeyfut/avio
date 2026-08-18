@@ -195,6 +195,8 @@ impl MediaError for EncodeError {
 
 #[cfg(test)]
 mod tests {
+    use ff_format::MediaError;
+
     use super::EncodeError;
 
     #[test]
@@ -305,5 +307,17 @@ mod tests {
             msg.contains("[8000, 384000]"),
             "expected '[8000, 384000]' in '{msg}'"
         );
+    }
+
+    #[test]
+    fn encode_io_should_be_fatal() {
+        let e: EncodeError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn encode_cancelled_should_be_other() {
+        let e = EncodeError::Cancelled;
+        assert!(!e.is_fatal() && !e.is_recoverable());
     }
 }
