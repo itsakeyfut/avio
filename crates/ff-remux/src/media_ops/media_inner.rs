@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::error::EncodeError;
+use crate::error::RemuxError;
 
 /// Replace the audio stream of `video_input` with the audio from `audio_input`,
 /// writing the combined result to `output`.
@@ -18,7 +18,7 @@ pub(crate) fn run_audio_replacement(
     video_input: &Path,
     audio_input: &Path,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // SAFETY: All pointers are validated (null-checked) before use; resources
     //         are freed on every exit path.
     unsafe { run_audio_replacement_unsafe(video_input, audio_input, output) }
@@ -28,18 +28,18 @@ unsafe fn run_audio_replacement_unsafe(
     video_input: &Path,
     audio_input: &Path,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // ── Step 1: open video input ──────────────────────────────────────────────
     // SAFETY: video_input is a caller-supplied path; open_input returns Err on failure.
     let vid_ctx =
-        ff_sys::avformat::open_input(video_input).map_err(EncodeError::from_ffmpeg_error)?;
+        ff_sys::avformat::open_input(video_input).map_err(RemuxError::from_ffmpeg_error)?;
 
     // ── Step 2: find stream info for video input ──────────────────────────────
     // SAFETY: vid_ctx is non-null (open_input succeeded).
     if let Err(e) = ff_sys::avformat::find_stream_info(vid_ctx) {
         let mut p = vid_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 3: locate the first video stream ─────────────────────────────────
@@ -56,7 +56,7 @@ unsafe fn run_audio_replacement_unsafe(
     let Some(video_stream_idx) = video_stream_idx else {
         let mut p = vid_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no video stream found in video input path={}",
                 video_input.display()
@@ -71,7 +71,7 @@ unsafe fn run_audio_replacement_unsafe(
         Err(e) => {
             let mut p = vid_ctx;
             ff_sys::avformat::close_input(&mut p);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
 
@@ -82,7 +82,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 6: locate the first audio stream ─────────────────────────────────
@@ -101,7 +101,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no audio stream found in audio input path={}",
                 audio_input.display()
@@ -115,7 +115,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path is not valid UTF-8".to_string(),
         });
@@ -125,7 +125,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path contains null bytes".to_string(),
         });
@@ -144,7 +144,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // ── Step 8: copy video stream parameters to output ────────────────────────
@@ -158,7 +158,7 @@ unsafe fn run_audio_replacement_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for video".to_string(),
         });
@@ -172,7 +172,7 @@ unsafe fn run_audio_replacement_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*vid_out_stream).codecpar).codec_tag = 0;
@@ -188,7 +188,7 @@ unsafe fn run_audio_replacement_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for audio".to_string(),
         });
@@ -202,7 +202,7 @@ unsafe fn run_audio_replacement_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*aud_out_stream).codecpar).codec_tag = 0;
@@ -217,7 +217,7 @@ unsafe fn run_audio_replacement_unsafe(
             let mut pa = aud_ctx;
             ff_sys::avformat::close_input(&mut pa);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
     // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
@@ -234,7 +234,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // Read time bases after avformat_write_header — the muxer may adjust them.
@@ -260,7 +260,7 @@ unsafe fn run_audio_replacement_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
@@ -269,7 +269,7 @@ unsafe fn run_audio_replacement_unsafe(
     // ── Step 13: interleaved packet copy loop ─────────────────────────────────
     // Alternate between video and audio inputs; use av_interleaved_write_frame
     // so the muxer buffers and flushes packets in the correct timestamp order.
-    let mut loop_err: Option<EncodeError> = None;
+    let mut loop_err: Option<RemuxError> = None;
     let mut vid_eof = false;
     let mut aud_eof = false;
 
@@ -282,7 +282,7 @@ unsafe fn run_audio_replacement_unsafe(
                     vid_eof = true;
                 }
                 Err(e) => {
-                    loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                    loop_err = Some(RemuxError::from_ffmpeg_error(e));
                     break 'copy;
                 }
                 Ok(()) => {
@@ -296,7 +296,7 @@ unsafe fn run_audio_replacement_unsafe(
                         // unref to clear any remaining fields.
                         ff_sys::av_packet_unref(pkt);
                         if ret < 0 {
-                            loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+                            loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
@@ -314,7 +314,7 @@ unsafe fn run_audio_replacement_unsafe(
                     aud_eof = true;
                 }
                 Err(e) => {
-                    loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                    loop_err = Some(RemuxError::from_ffmpeg_error(e));
                     break 'copy;
                 }
                 Ok(()) => {
@@ -326,7 +326,7 @@ unsafe fn run_audio_replacement_unsafe(
                         let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
                         ff_sys::av_packet_unref(pkt);
                         if ret < 0 {
-                            loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+                            loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
@@ -383,7 +383,7 @@ pub(crate) fn run_audio_extraction(
     input: &Path,
     output: &Path,
     stream_index: Option<usize>,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // SAFETY: All pointers are validated (null-checked) before use; resources
     //         are freed on every exit path.
     unsafe { run_audio_extraction_unsafe(input, output, stream_index) }
@@ -393,17 +393,17 @@ unsafe fn run_audio_extraction_unsafe(
     input: &Path,
     output: &Path,
     requested_idx: Option<usize>,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // ── Step 1: open input ────────────────────────────────────────────────────
     // SAFETY: input is a caller-supplied path; open_input returns Err on failure.
-    let in_ctx = ff_sys::avformat::open_input(input).map_err(EncodeError::from_ffmpeg_error)?;
+    let in_ctx = ff_sys::avformat::open_input(input).map_err(RemuxError::from_ffmpeg_error)?;
 
     // ── Step 2: find stream info ──────────────────────────────────────────────
     // SAFETY: in_ctx is non-null (open_input succeeded).
     if let Err(e) = ff_sys::avformat::find_stream_info(in_ctx) {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 3: locate the audio stream ──────────────────────────────────────
@@ -414,7 +414,7 @@ unsafe fn run_audio_extraction_unsafe(
         if idx >= nb_streams {
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(RemuxError::OperationFailed {
                 reason: format!("stream index {idx} out of range (input has {nb_streams} streams)"),
             });
         }
@@ -422,7 +422,7 @@ unsafe fn run_audio_extraction_unsafe(
         if (*(*stream).codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(RemuxError::OperationFailed {
                 reason: format!("stream index {idx} is not an audio stream"),
             });
         }
@@ -442,7 +442,7 @@ unsafe fn run_audio_extraction_unsafe(
             None => {
                 let mut p = in_ctx;
                 ff_sys::avformat::close_input(&mut p);
-                return Err(EncodeError::MediaOperationFailed {
+                return Err(RemuxError::OperationFailed {
                     reason: format!("no audio stream found in input path={}", input.display()),
                 });
             }
@@ -453,7 +453,7 @@ unsafe fn run_audio_extraction_unsafe(
     let Some(output_str) = output.to_str() else {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path is not valid UTF-8".to_string(),
         });
@@ -461,7 +461,7 @@ unsafe fn run_audio_extraction_unsafe(
     let Ok(c_output) = std::ffi::CString::new(output_str) else {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path contains null bytes".to_string(),
         });
@@ -478,7 +478,7 @@ unsafe fn run_audio_extraction_unsafe(
     if ret < 0 || out_ctx.is_null() {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // ── Step 5: copy audio stream parameters to output ────────────────────────
@@ -490,7 +490,7 @@ unsafe fn run_audio_extraction_unsafe(
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed".to_string(),
         });
@@ -501,7 +501,7 @@ unsafe fn run_audio_extraction_unsafe(
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*out_stream).codecpar).codec_tag = 0;
@@ -514,7 +514,7 @@ unsafe fn run_audio_extraction_unsafe(
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
     // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
@@ -532,7 +532,7 @@ unsafe fn run_audio_extraction_unsafe(
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(RemuxError::OperationFailed {
             reason: format!(
                 "codec incompatible with output container: {}",
                 ff_sys::av_error_string(ret)
@@ -560,21 +560,21 @@ unsafe fn run_audio_extraction_unsafe(
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
     }
 
     // ── Step 9: packet copy loop (audio stream only) ──────────────────────────
-    let mut loop_err: Option<EncodeError> = None;
+    let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
         // SAFETY: in_ctx and pkt are valid non-null pointers.
         match ff_sys::avformat::read_frame(in_ctx, pkt) {
             Err(e) if e == ff_sys::error_codes::EOF => break 'read,
             Err(e) => {
-                loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                loop_err = Some(RemuxError::from_ffmpeg_error(e));
                 break 'read;
             }
             Ok(()) => {}
@@ -596,7 +596,7 @@ unsafe fn run_audio_extraction_unsafe(
         // av_interleaved_write_frame takes the packet's buf reference; unref to clear.
         ff_sys::av_packet_unref(pkt);
         if ret < 0 {
-            loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+            loop_err = Some(RemuxError::from_ffmpeg_error(ret));
             break 'read;
         }
     }
@@ -646,7 +646,7 @@ pub(crate) fn run_audio_addition(
     audio_input: &Path,
     output: &Path,
     loop_audio: bool,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // SAFETY: All pointers are validated (null-checked) before use; resources
     //         are freed on every exit path.
     unsafe { run_audio_addition_unsafe(video_input, audio_input, output, loop_audio) }
@@ -657,18 +657,18 @@ unsafe fn run_audio_addition_unsafe(
     audio_input: &Path,
     output: &Path,
     loop_audio: bool,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // ── Step 1: open video input ──────────────────────────────────────────────
     // SAFETY: video_input is a caller-supplied path; open_input returns Err on failure.
     let vid_ctx =
-        ff_sys::avformat::open_input(video_input).map_err(EncodeError::from_ffmpeg_error)?;
+        ff_sys::avformat::open_input(video_input).map_err(RemuxError::from_ffmpeg_error)?;
 
     // ── Step 2: find stream info for video input ──────────────────────────────
     // SAFETY: vid_ctx is non-null (open_input succeeded).
     if let Err(e) = ff_sys::avformat::find_stream_info(vid_ctx) {
         let mut p = vid_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 3: locate the first video stream ─────────────────────────────────
@@ -685,7 +685,7 @@ unsafe fn run_audio_addition_unsafe(
     let Some(video_stream_idx) = video_stream_idx else {
         let mut p = vid_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no video stream found in video input path={}",
                 video_input.display()
@@ -700,7 +700,7 @@ unsafe fn run_audio_addition_unsafe(
         Err(e) => {
             let mut p = vid_ctx;
             ff_sys::avformat::close_input(&mut p);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
 
@@ -711,7 +711,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 6: locate the first audio stream ─────────────────────────────────
@@ -730,7 +730,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no audio stream found in audio input path={}",
                 audio_input.display()
@@ -754,7 +754,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path is not valid UTF-8".to_string(),
         });
@@ -764,7 +764,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path contains null bytes".to_string(),
         });
@@ -783,7 +783,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // ── Step 9: copy video stream parameters ─────────────────────────────────
@@ -797,7 +797,7 @@ unsafe fn run_audio_addition_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for video".to_string(),
         });
@@ -811,7 +811,7 @@ unsafe fn run_audio_addition_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*vid_out_stream).codecpar).codec_tag = 0;
@@ -827,7 +827,7 @@ unsafe fn run_audio_addition_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for audio".to_string(),
         });
@@ -841,7 +841,7 @@ unsafe fn run_audio_addition_unsafe(
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*aud_out_stream).codecpar).codec_tag = 0;
@@ -856,7 +856,7 @@ unsafe fn run_audio_addition_unsafe(
             let mut pa = aud_ctx;
             ff_sys::avformat::close_input(&mut pa);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
     // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
@@ -873,7 +873,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // Read time bases after avformat_write_header — the muxer may adjust them.
@@ -907,7 +907,7 @@ unsafe fn run_audio_addition_unsafe(
         ff_sys::avformat::close_input(&mut pv);
         let mut pa = aud_ctx;
         ff_sys::avformat::close_input(&mut pa);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
@@ -916,7 +916,7 @@ unsafe fn run_audio_addition_unsafe(
     // ── Step 14: interleaved packet copy loop ─────────────────────────────────
     // Terminate when video is exhausted.  Audio terminates naturally (non-loop)
     // or is re-seeked with an advancing PTS offset (loop).
-    let mut add_loop_err: Option<EncodeError> = None;
+    let mut add_loop_err: Option<RemuxError> = None;
     let mut vid_eof = false;
     let mut aud_eof = false;
     // Cumulative PTS offset applied to looped audio packets (in audio IN timebase).
@@ -931,7 +931,7 @@ unsafe fn run_audio_addition_unsafe(
                     vid_eof = true;
                 }
                 Err(e) => {
-                    add_loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e));
                     break 'copy;
                 }
                 Ok(()) => {
@@ -943,7 +943,7 @@ unsafe fn run_audio_addition_unsafe(
                         let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
                         ff_sys::av_packet_unref(pkt);
                         if ret < 0 {
-                            add_loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+                            add_loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
@@ -981,7 +981,7 @@ unsafe fn run_audio_addition_unsafe(
                     }
                 }
                 Err(e) => {
-                    add_loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e));
                     break 'copy;
                 }
                 Ok(()) => {
@@ -1001,7 +1001,7 @@ unsafe fn run_audio_addition_unsafe(
                         let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
                         ff_sys::av_packet_unref(pkt);
                         if ret < 0 {
-                            add_loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+                            add_loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {

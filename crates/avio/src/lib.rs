@@ -255,15 +255,21 @@ pub use ff_decode::{
 // default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
-    AacOptions, AacProfile, AudioAdder, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
-    AudioEncoderConfig, AudioExtractor, AudioReplacement, Av1Options, Av1Usage, BitrateMode,
-    CRF_MAX, DnxhdOptions, DnxhdVariant, EncodeError, EncodeProgress, EncodeProgressCallback,
-    ExportPreset, FlacOptions, GifPreview, H264Options, H264Preset, H264Profile, H264Tune,
-    H265Options, H265Profile, H265Tier, HardwareEncoder, ImageEncoder, ImageEncoderBuilder,
-    Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer, Preset, ProResOptions,
-    ProResProfile, SpriteSheet, StreamCopyTrim, StreamCopyTrimmer, SvtAv1Options,
-    VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, VideoEncoderConfig,
-    Vp9Options,
+    AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
+    AudioEncoderConfig, Av1Options, Av1Usage, BitrateMode, CRF_MAX, DnxhdOptions, DnxhdVariant,
+    EncodeError, EncodeProgress, EncodeProgressCallback, ExportPreset, FlacOptions, GifPreview,
+    H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
+    HardwareEncoder, ImageEncoder, ImageEncoderBuilder, Mp3Options, Mp3Quality, OpusApplication,
+    OpusOptions, OutputContainer, Preset, PreviewImageError, ProResOptions, ProResProfile,
+    SpriteSheet, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder,
+    VideoEncoderBuilder, VideoEncoderConfig, Vp9Options,
+};
+
+// media-ops + trim moved to the `ff-remux` crate; re-exported here so `avio`'s
+// surface is unchanged (enabled by the `encode` feature, which pulls `ff-remux`).
+#[cfg(feature = "encode")]
+pub use ff_remux::{
+    AudioAdder, AudioExtractor, AudioReplacement, RemuxError, StreamCopyTrim, StreamCopyTrimmer,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────

@@ -1,9 +1,9 @@
 //! Integration tests for GifPreview.
 //!
 //! Tests verify:
-//! - Non-.gif output extension returns `EncodeError::MediaOperationFailed`
-//! - Missing output path returns `EncodeError::MediaOperationFailed`
-//! - Zero/negative fps returns `EncodeError::MediaOperationFailed`
+//! - Non-.gif output extension returns `PreviewImageError::OperationFailed`
+//! - Missing output path returns `PreviewImageError::OperationFailed`
+//! - Zero/negative fps returns `PreviewImageError::OperationFailed`
 //! - Missing input file returns an error
 //! - A real video produces a .gif output file
 
@@ -11,7 +11,7 @@
 
 mod fixtures;
 
-use ff_encode::{EncodeError, GifPreview};
+use ff_encode::{GifPreview, PreviewImageError};
 use std::time::Duration;
 
 fn test_video_path() -> std::path::PathBuf {
@@ -25,8 +25,8 @@ fn test_video_path() -> std::path::PathBuf {
 fn gif_preview_non_gif_extension_should_return_media_operation_failed() {
     let result = GifPreview::new("irrelevant.mp4").output("out.mp4").run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for non-.gif extension, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for non-.gif extension, got {result:?}"
     );
 }
 
@@ -34,8 +34,8 @@ fn gif_preview_non_gif_extension_should_return_media_operation_failed() {
 fn gif_preview_output_not_set_should_return_media_operation_failed() {
     let result = GifPreview::new("irrelevant.mp4").run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for missing output path, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for missing output path, got {result:?}"
     );
 }
 
@@ -46,8 +46,8 @@ fn gif_preview_zero_fps_should_return_media_operation_failed() {
         .output("out.gif")
         .run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for fps=0, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for fps=0, got {result:?}"
     );
 }
 

@@ -1,8 +1,8 @@
 //! Integration tests for SpriteSheet.
 //!
 //! Tests verify:
-//! - Zero cols/rows returns `EncodeError::MediaOperationFailed`
-//! - Missing output path returns `EncodeError::MediaOperationFailed`
+//! - Zero cols/rows returns `PreviewImageError::OperationFailed`
+//! - Missing output path returns `PreviewImageError::OperationFailed`
 //! - Missing input file returns an error
 //! - A real video produces a PNG output file
 
@@ -10,7 +10,7 @@
 
 mod fixtures;
 
-use ff_encode::{EncodeError, SpriteSheet};
+use ff_encode::{PreviewImageError, SpriteSheet};
 
 fn test_video_path() -> std::path::PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -26,8 +26,8 @@ fn sprite_sheet_zero_cols_should_return_media_operation_failed() {
         .output("out.png")
         .run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for cols=0, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for cols=0, got {result:?}"
     );
 }
 
@@ -38,8 +38,8 @@ fn sprite_sheet_zero_rows_should_return_media_operation_failed() {
         .output("out.png")
         .run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for rows=0, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for rows=0, got {result:?}"
     );
 }
 
@@ -47,8 +47,8 @@ fn sprite_sheet_zero_rows_should_return_media_operation_failed() {
 fn sprite_sheet_output_not_set_should_return_media_operation_failed() {
     let result = SpriteSheet::new("irrelevant.mp4").run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-        "expected MediaOperationFailed for missing output path, got {result:?}"
+        matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+        "expected OperationFailed for missing output path, got {result:?}"
     );
 }
 

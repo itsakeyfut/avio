@@ -38,6 +38,10 @@ gpl = []
 # Async encoding API backed by tokio::task::spawn_blocking
 tokio = ["dep:tokio"]
 
+# Preview-image generation (sprite sheet + animated GIF). Off by default: it is a
+# compose-decode+filter+encode convenience, not part of the core encoder.
+preview-image = []
+
 [dev-dependencies]
 criterion = { workspace = true }
 ff-probe  = { workspace = true }
@@ -47,6 +51,18 @@ tokio = { version = "1.50.0", features = ["macros", "rt", "rt-multi-thread", "ti
 [[bench]]
 name = "encode_bench"
 harness = false
+
+[[test]]
+name = "gif_preview_tests"
+required-features = ["preview-image"]
+
+[[test]]
+name = "preview_tests"
+required-features = ["preview-image"]
+
+[[test]]
+name = "sprite_sheet_tests"
+required-features = ["preview-image"]
 
 [lints]
 workspace = true

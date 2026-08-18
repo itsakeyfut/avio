@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::error::EncodeError;
+use crate::error::RemuxError;
 
 /// Microseconds per second — the `AV_TIME_BASE` unit used by `avformat_seek_file`.
 const AV_TIME_BASE: i64 = 1_000_000;
@@ -22,7 +22,7 @@ pub(crate) fn run_trim(
     output: &Path,
     start_sec: f64,
     end_sec: f64,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // SAFETY: All pointers are validated (null-checked) before use; resources
     //         are freed on every exit path.
     unsafe { run_trim_unsafe(input, output, start_sec, end_sec) }
@@ -33,25 +33,25 @@ unsafe fn run_trim_unsafe(
     output: &Path,
     start_sec: f64,
     end_sec: f64,
-) -> Result<(), EncodeError> {
+) -> Result<(), RemuxError> {
     // ── Step 1: open input ────────────────────────────────────────────────────
     // SAFETY: input path is provided by the caller; open_input returns a null
     //         on failure and the wrapper converts that to Err.
-    let in_ctx = ff_sys::avformat::open_input(input).map_err(EncodeError::from_ffmpeg_error)?;
+    let in_ctx = ff_sys::avformat::open_input(input).map_err(RemuxError::from_ffmpeg_error)?;
 
     // ── Step 2: find stream info ──────────────────────────────────────────────
     // SAFETY: in_ctx is non-null (open_input succeeded).
     if let Err(e) = ff_sys::avformat::find_stream_info(in_ctx) {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 3: allocate output context ──────────────────────────────────────
     let Some(output_str) = output.to_str() else {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path is not valid UTF-8".to_string(),
         });
@@ -59,7 +59,7 @@ unsafe fn run_trim_unsafe(
     let Ok(c_output) = std::ffi::CString::new(output_str) else {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path contains null bytes".to_string(),
         });
@@ -76,7 +76,7 @@ unsafe fn run_trim_unsafe(
     if ret < 0 || out_ctx.is_null() {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     // ── Step 4: copy stream parameters ───────────────────────────────────────
@@ -91,7 +91,7 @@ unsafe fn run_trim_unsafe(
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::Ffmpeg {
+            return Err(RemuxError::Ffmpeg {
                 code: 0,
                 message: "avformat_new_stream failed".to_string(),
             });
@@ -103,7 +103,7 @@ unsafe fn run_trim_unsafe(
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::from_ffmpeg_error(ret));
+            return Err(RemuxError::from_ffmpeg_error(ret));
         }
         // Clear the codec_tag so the muxer can assign the correct value.
         (*(*out_stream).codecpar).codec_tag = 0;
@@ -116,7 +116,7 @@ unsafe fn run_trim_unsafe(
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
         ff_sys::avformat_free_context(out_ctx);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 6: open output file ──────────────────────────────────────────────
@@ -127,7 +127,7 @@ unsafe fn run_trim_unsafe(
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&mut p);
             ff_sys::avformat_free_context(out_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(RemuxError::from_ffmpeg_error(e));
         }
     };
     // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
@@ -142,7 +142,7 @@ unsafe fn run_trim_unsafe(
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
     log::debug!("stream copy trim header written nb_streams={nb_streams}");
@@ -156,20 +156,20 @@ unsafe fn run_trim_unsafe(
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&mut p);
-        return Err(EncodeError::Ffmpeg {
+        return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
     }
 
-    let mut loop_err: Option<EncodeError> = None;
+    let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
         // SAFETY: in_ctx and pkt are valid non-null pointers.
         match ff_sys::avformat::read_frame(in_ctx, pkt) {
             Err(e) if e == ff_sys::error_codes::EOF => break 'read,
             Err(e) => {
-                loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                loop_err = Some(RemuxError::from_ffmpeg_error(e));
                 break 'read;
             }
             Ok(()) => {}
@@ -212,7 +212,7 @@ unsafe fn run_trim_unsafe(
         let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
         ff_sys::av_packet_unref(pkt);
         if ret < 0 {
-            loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+            loop_err = Some(RemuxError::from_ffmpeg_error(ret));
             break 'read;
         }
     }

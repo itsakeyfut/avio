@@ -1,0 +1,29 @@
+[package]
+name = "ff-remux"
+version = "0.16.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Stream-copy remuxing (trim, audio replace/extract/add) over FFmpeg - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "remux", "trim"]
+categories = ["multimedia::video", "multimedia::audio", "api-bindings"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+ff-format = { workspace = true }
+ff-sys = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+ff-encode = { workspace = true }
+ff-format = { workspace = true }
+ff-probe = { workspace = true }
+
+[lints]
+workspace = true

@@ -9,7 +9,7 @@
 
 mod fixtures;
 
-use ff_encode::{AudioReplacement, EncodeError};
+use ff_remux::{AudioReplacement, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
 // ── Error-path tests ──────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ fn audio_replacement_should_fail_when_video_input_missing() {
 }
 
 /// A video-only mp4 (no audio stream) used as the `audio_input` must return
-/// `EncodeError::MediaOperationFailed`.
+/// `RemuxError::OperationFailed`.
 #[test]
 fn audio_replacement_should_fail_when_audio_input_has_no_audio_stream() {
     use ff_encode::{BitrateMode, Preset, VideoCodec, VideoEncoder};
@@ -64,7 +64,7 @@ fn audio_replacement_should_fail_when_audio_input_has_no_audio_stream() {
     // Use the video-only file as the audio input — must fail with MediaOperationFailed.
     let result = AudioReplacement::new(&video_only_path, &video_only_path, &output_path).run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+        matches!(result, Err(RemuxError::OperationFailed { .. })),
         "expected MediaOperationFailed when audio input has no audio stream, got {result:?}"
     );
 }

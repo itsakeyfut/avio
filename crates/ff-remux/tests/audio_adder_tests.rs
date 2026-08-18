@@ -11,7 +11,7 @@
 
 mod fixtures;
 
-use ff_encode::{AudioAdder, EncodeError};
+use ff_remux::{AudioAdder, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
 // ── Error-path tests ──────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ fn audio_adder_should_fail_when_audio_input_has_no_audio_stream() {
 
     let result = AudioAdder::new(&video_path, &audio_only_video_path, &output_path).run();
     assert!(
-        matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+        matches!(result, Err(RemuxError::OperationFailed { .. })),
         "expected MediaOperationFailed when audio_input has no audio stream, got {result:?}"
     );
 }

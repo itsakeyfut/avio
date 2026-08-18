@@ -197,11 +197,10 @@ mod async_encoder;
 mod audio;
 mod error;
 mod image;
-mod media_ops;
 mod preset;
+#[cfg(feature = "preview-image")]
 mod preview;
 mod shared;
-mod trim;
 mod video;
 
 pub use audio::{
@@ -211,14 +210,13 @@ pub use audio::{
 pub use error::EncodeError;
 pub use ff_format::{ErrorSeverity, MediaError};
 pub use image::{ImageEncoder, ImageEncoderBuilder};
-pub use media_ops::{AudioAdder, AudioExtractor, AudioReplacement};
 pub use preset::{AudioEncoderConfig, ExportPreset, VideoEncoderConfig};
-pub use preview::{GifPreview, SpriteSheet};
+#[cfg(feature = "preview-image")]
+pub use preview::{GifPreview, PreviewImageError, SpriteSheet};
 pub use shared::{
     AudioCodec, BitrateMode, CRF_MAX, EncodeProgress, EncodeProgressCallback, HardwareEncoder,
     OutputContainer, Preset, VideoCodec, VideoCodecEncodeExt,
 };
-pub use trim::{StreamCopyTrim, StreamCopyTrimmer};
 pub use video::{
     Av1Options, Av1Usage, DnxhdOptions, DnxhdVariant, H264Options, H264Preset, H264Profile,
     H264Tune, H265Options, H265Profile, H265Tier, ProResOptions, ProResProfile, SvtAv1Options,
