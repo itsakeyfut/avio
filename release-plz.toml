@@ -4,7 +4,7 @@
 # is used ONLY to publish to crates.io (in dependency order, via Trusted Publishing);
 # it publishes any crate whose version is not yet on crates.io. The single `v<version>`
 # tag and the single GitHub Release (with the CHANGELOG.md section) are created by
-# `.github/workflows/release-plz.yml`, NOT by release-plz.
+# `.github/workflows/release.yml`, NOT by release-plz.
 
 [workspace]
 # release-plz publishes only; the workflow owns the single tag + GitHub Release.
