@@ -2,18 +2,20 @@
 
 Encode video and audio with a builder chain. The encoder validates codec, resolution, and bitrate settings before allocating any FFmpeg context. Invalid configurations are returned as `Err`, not discovered at the first `push_video` call.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-encode` is a safe, ergonomic wrapper over FFmpeg's encode path: libavcodec encoding and libavformat muxing, with optional hardware encoders. Settings are validated before any FFmpeg context is allocated, and errors are typed and contextual (`EncodeError`), so a bad codec/container combination or an out-of-range bitrate fails with an actionable message rather than a raw FFmpeg return code.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-encode = "0.15"
-ff-format = "0.15"
+ff-encode = "0.16"
+ff-format = "0.16"
 
 # Enable GPL-licensed encoders (libx264, libx265).
 # Requires GPL compliance or MPEG LA licensing in your project.
-# ff-encode = { version = "0.15", features = ["gpl"] }
+# ff-encode = { version = "0.16", features = ["gpl"] }
 ```
 
 By default, only LGPL-compatible encoders are enabled.
@@ -328,7 +330,7 @@ Enable the `gpl` feature to add libx264 and libx265. This changes the license te
 
 ```toml
 [dependencies]
-ff-encode = { version = "0.15", features = ["tokio"] }
+ff-encode = { version = "0.16", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoEncoder`, `AudioEncoder`, and `ImageEncoder` APIs are compiled. No tokio dependency is pulled in.

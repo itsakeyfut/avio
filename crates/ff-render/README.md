@@ -2,16 +2,18 @@
 
 GPU compositing pipeline for real-time video preview, built on [wgpu]. Applies per-frame visual effects (colour grading, blending, masking, chroma key, YUV upload) in a linear render graph wired directly to `ff-preview`'s `PlayerRunner`.
 
-Part of the [`avio`](https://github.com/itsakeyfut/avio) crate family.
+`ff-render` is a GPU compositing and effects pipeline built on [wgpu](https://github.com/gfx-rs/wgpu), not FFmpeg: WGSL shaders run colour grading, blends, blur, chroma-key, transitions, and LUTs on GPU textures, with a CPU software fallback. It consumes decoded frames and plugs into `ff-preview` through the `FrameSink` trait. Errors are typed and contextual (`RenderError`), so a shader-compile or device failure reads as an actionable message.
+
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
 
 ## Installation
 
 ```toml
 [dependencies]
-ff-render = "0.15"
+ff-render = "0.16"
 
 # Enable GPU processing (requires wgpu-compatible hardware)
-ff-render = { version = "0.15", features = ["wgpu"] }
+ff-render = { version = "0.16", features = ["wgpu"] }
 ```
 
 ## Feature Flags
