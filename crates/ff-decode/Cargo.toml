@@ -25,7 +25,7 @@ futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-ff-format = { workspace = true }
+ff-format = { path = "../ff-format" }
 tokio = { version = "1.50.0", features = ["macros", "rt", "rt-multi-thread"] }
 
 [target.'cfg(windows)'.dev-dependencies]

@@ -34,7 +34,7 @@ timeline = ["dep:ff-filter"]
 
 [dev-dependencies]
 criterion = { workspace = true }
-ff-probe  = { workspace = true }
+ff-probe  = { path = "../ff-probe" }
 
 [[bench]]
 name    = "preview_bench"

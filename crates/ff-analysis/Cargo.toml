@@ -22,8 +22,8 @@ thiserror = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-ff-decode = { workspace = true }
-ff-format = { workspace = true }
+ff-decode = { path = "../ff-decode" }
+ff-format = { path = "../ff-format" }
 
 [lints]
 workspace = true
