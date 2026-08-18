@@ -1,10 +1,16 @@
 # ff-render
 
-GPU compositing pipeline for real-time video preview, built on [wgpu]. Applies per-frame visual effects (colour grading, blending, masking, chroma key, YUV upload) in a linear render graph wired directly to `ff-preview`'s `PlayerRunner`.
+GPU compositing and effects pipeline for video, built on [wgpu]. Applies per-frame visual effects (colour grading, blending, masking, chroma key, YUV upload) in a linear render graph that can be attached to `ff-preview`'s `PlayerRunner` as an opt-in `GpuFrameSink`.
 
-`ff-render` is a GPU compositing and effects pipeline built on [wgpu](https://github.com/gfx-rs/wgpu), not FFmpeg: WGSL shaders run colour grading, blends, blur, chroma-key, transitions, and LUTs on GPU textures, with a CPU software fallback. It consumes decoded frames and plugs into `ff-preview` through the `FrameSink` trait. Errors are typed and contextual (`RenderError`), so a shader-compile or device failure reads as an actionable message.
+`ff-render` is a GPU compositing and effects pipeline built on [wgpu](https://github.com/gfx-rs/wgpu), not FFmpeg: WGSL shaders run colour grading, blends, chroma-key, masks, transforms, scaling, and a crossfade transition on GPU textures, with a CPU software fallback. It consumes decoded frames and plugs into `ff-preview` through the `FrameSink` trait. Errors are typed and contextual (`RenderError`), so a shader-compile or device failure reads as an actionable message.
 
 It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+
+## Status
+
+Implemented today: the CPU and GPU render graph (`RenderGraph`), all built-in nodes listed below, the 18 `BlendMode` variants (CPU and GPU), the native YUV upload path, the multi-layer `Compositor` (wgpu feature), and `GpuFrameSink` for `ff-preview` integration.
+
+`GpuFrameSink` is **opt-in**: you attach it explicitly with `runner.set_sink(...)`. It is not the default preview compositor. avio's standard preview path composites on the CPU today; making GPU compositing the default preview and export compositor across avio is a separate, deferred effort tracked in [#1365](https://github.com/itsakeyfut/avio/issues/1365).
 
 ## Installation
 
