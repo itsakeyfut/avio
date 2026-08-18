@@ -185,4 +185,26 @@ mod tests {
         assert!(msg.contains("Cannot open codec"), "got: {msg}");
         assert!(msg.contains("code=-22"), "got: {msg}");
     }
+
+    #[test]
+    fn stream_io_should_be_fatal() {
+        let e: StreamError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn stream_ffmpeg_should_be_other() {
+        let e = StreamError::Ffmpeg {
+            code: -22,
+            message: "x".into(),
+        };
+        assert!(!e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn stream_encode_should_delegate_other() {
+        // A wrapped EncodeError::Cancelled (Other) must classify as Other, not Fatal.
+        let e = StreamError::Encode(ff_encode::EncodeError::Cancelled);
+        assert!(!e.is_fatal() && !e.is_recoverable());
+    }
 }

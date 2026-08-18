@@ -84,3 +84,30 @@ impl MediaError for PreviewError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_io_should_be_fatal() {
+        let e: PreviewError = std::io::Error::other("x").into();
+        assert!(e.is_fatal() && !e.is_recoverable());
+    }
+
+    #[test]
+    fn preview_seek_failed_should_be_recoverable() {
+        let e = PreviewError::SeekFailed {
+            target: std::time::Duration::from_secs(1),
+            reason: "x".into(),
+        };
+        assert!(e.is_recoverable() && !e.is_fatal());
+    }
+
+    #[test]
+    fn preview_decode_should_delegate_recoverable() {
+        // A recoverable inner DecodeError must remain recoverable through the wrapper.
+        let e = PreviewError::Decode(ff_decode::DecodeError::decoding_failed("x"));
+        assert!(e.is_recoverable() && !e.is_fatal());
+    }
+}
