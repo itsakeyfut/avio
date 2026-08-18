@@ -1,14 +1,14 @@
 //! Integration tests for SceneDetector.
 //!
 //! Tests verify:
-//! - Out-of-range threshold returns `DecodeError::AnalysisFailed`
-//! - Missing input file returns `DecodeError::AnalysisFailed`
+//! - Out-of-range threshold returns `AnalysisError::Failed`
+//! - Missing input file returns `AnalysisError::Failed`
 //! - A real video file returns a `Vec<Duration>` (possibly empty for static video)
 //! - Returned timestamps are monotonically non-decreasing
 
 #![allow(clippy::unwrap_used)]
 
-use ff_decode::{DecodeError, SceneDetector};
+use ff_analysis::{AnalysisError, SceneDetector};
 use std::time::Duration;
 
 fn test_video_path() -> std::path::PathBuf {
@@ -22,8 +22,8 @@ fn test_video_path() -> std::path::PathBuf {
 fn scene_detector_threshold_below_zero_should_return_analysis_failed() {
     let result = SceneDetector::new("irrelevant.mp4").threshold(-0.1).run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for threshold=-0.1, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for threshold=-0.1, got {result:?}"
     );
 }
 
@@ -31,8 +31,8 @@ fn scene_detector_threshold_below_zero_should_return_analysis_failed() {
 fn scene_detector_threshold_above_one_should_return_analysis_failed() {
     let result = SceneDetector::new("irrelevant.mp4").threshold(1.1).run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for threshold=1.1, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for threshold=1.1, got {result:?}"
     );
 }
 
@@ -40,8 +40,8 @@ fn scene_detector_threshold_above_one_should_return_analysis_failed() {
 fn scene_detector_missing_file_should_return_analysis_failed() {
     let result = SceneDetector::new("does_not_exist_99999.mp4").run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for missing file, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for missing file, got {result:?}"
     );
 }
 

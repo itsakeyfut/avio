@@ -8,11 +8,11 @@
 
 use std::time::Duration;
 
-use ff_decode::SceneDetector;
+use ff_analysis::SceneDetector;
 
 fn hard_cut_video_path() -> std::path::PathBuf {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // crates/ff-decode  →  ../../assets/test/
+    // crates/ff-analysis  →  ../../assets/test/
     manifest_dir
         .join("../..")
         .join("assets/test/hard_cut_video.mp4")

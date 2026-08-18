@@ -1,14 +1,14 @@
 //! Integration tests for KeyframeEnumerator.
 //!
 //! Tests verify:
-//! - Missing input file returns `DecodeError::AnalysisFailed`
-//! - Out-of-range stream_index returns `DecodeError::AnalysisFailed`
+//! - Missing input file returns `AnalysisError::Failed`
+//! - Out-of-range stream_index returns `AnalysisError::Failed`
 //! - A real video file returns a non-empty `Vec<Duration>`
 //! - Returned timestamps are monotonically non-decreasing
 
 #![allow(clippy::unwrap_used)]
 
-use ff_decode::{DecodeError, KeyframeEnumerator};
+use ff_analysis::{AnalysisError, KeyframeEnumerator};
 
 fn test_video_path() -> std::path::PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -21,8 +21,8 @@ fn test_video_path() -> std::path::PathBuf {
 fn keyframe_enumerator_missing_file_should_return_analysis_failed() {
     let result = KeyframeEnumerator::new("does_not_exist_99999.mp4").run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for missing file, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for missing file, got {result:?}"
     );
 }
 
@@ -36,8 +36,8 @@ fn keyframe_enumerator_invalid_stream_index_should_return_analysis_failed() {
 
     let result = KeyframeEnumerator::new(&path).stream_index(9999).run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for stream_index=9999, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for stream_index=9999, got {result:?}"
     );
 }
 

@@ -11,6 +11,7 @@
 //! |------------------|--------------------|---------|---------------------|
 //! | `probe`          | `ff-probe`         | yes     |                     |
 //! | `decode`         | `ff-decode`        | yes     |                     |
+//! | `analysis`       | `ff-analysis`      | yes     | `decode`            |
 //! | `encode`         | `ff-encode`        | yes     |                     |
 //! | `hwaccel`        | `ff-encode`        | yes     |                     |
 //! | `filter`         | `ff-filter`        | no      |                     |
@@ -28,7 +29,7 @@
 //! # Usage
 //!
 //! ```toml
-//! # Default: probe + decode + encode + hwaccel
+//! # Default: probe + decode + analysis + encode + hwaccel
 //! [dependencies]
 //! avio = "0.15"
 //!
@@ -239,10 +240,18 @@ pub use ff_probe::{ProbeError, open};
 pub use ff_common::{PooledBuffer, VecPool};
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, AudioDecoderBuilder, BlackFrameDetector, BpmResult, DecodeError, FrameExtractor,
-    FrameHistogram, FramePool, HardwareAccel, Histogram, HistogramExtractor, ImageDecoder,
-    ImageDecoderBuilder, KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SeekMode,
-    SilenceDetector, SilenceRange, ThumbnailSelector, VideoDecoder, VideoDecoderBuilder,
+    AudioDecoder, AudioDecoderBuilder, DecodeError, FrameExtractor, FramePool, HardwareAccel,
+    ImageDecoder, ImageDecoderBuilder, SeekMode, ThumbnailSelector, VideoDecoder,
+    VideoDecoderBuilder,
+};
+
+// ── analysis feature ──────────────────────────────────────────────────────────
+// Media-analysis primitives (scene / silence / BPM / histogram / keyframe /
+// black-frame detection and video scopes), extracted into `ff-analysis`.
+#[cfg(feature = "analysis")]
+pub use ff_analysis::{
+    AnalysisError, BlackFrameDetector, BpmResult, FrameHistogram, Histogram, HistogramExtractor,
+    KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SilenceDetector, SilenceRange,
     WaveformAnalyzer, WaveformSample,
 };
 

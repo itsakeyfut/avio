@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::DecodeError;
+use crate::AnalysisError;
 
 /// Detects scene changes in a video file and returns their timestamps.
 ///
@@ -17,7 +17,7 @@ use crate::DecodeError;
 /// # Examples
 ///
 /// ```ignore
-/// use ff_decode::SceneDetector;
+/// use ff_analysis::SceneDetector;
 ///
 /// let cuts = SceneDetector::new("video.mp4")
 ///     .threshold(0.3)
@@ -49,7 +49,7 @@ impl SceneDetector {
     /// Must be in the range `[0.0, 1.0]`.  Lower values make the detector more
     /// sensitive (more cuts reported); higher values require a larger visual
     /// difference.  Passing a value outside this range causes
-    /// [`run`](Self::run) to return [`DecodeError::AnalysisFailed`].
+    /// [`run`](Self::run) to return [`AnalysisError::Failed`].
     ///
     /// Default: `0.4`.
     #[must_use]
@@ -67,16 +67,16 @@ impl SceneDetector {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — threshold outside `[0.0, 1.0]`,
+    /// - [`AnalysisError::Failed`] — threshold outside `[0.0, 1.0]`,
     ///   input file not found, or an internal filter-graph error.
-    pub fn run(self) -> Result<Vec<Duration>, DecodeError> {
+    pub fn run(self) -> Result<Vec<Duration>, AnalysisError> {
         if !(0.0..=1.0).contains(&self.threshold) {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("threshold must be in [0.0, 1.0], got {}", self.threshold),
             });
         }
         if !self.input.exists() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
@@ -95,8 +95,8 @@ mod tests {
     fn scene_detector_invalid_threshold_below_zero_should_return_analysis_failed() {
         let result = SceneDetector::new("irrelevant.mp4").threshold(-0.1).run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for threshold=-0.1, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for threshold=-0.1, got {result:?}"
         );
     }
 
@@ -104,8 +104,8 @@ mod tests {
     fn scene_detector_invalid_threshold_above_one_should_return_analysis_failed() {
         let result = SceneDetector::new("irrelevant.mp4").threshold(1.1).run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for threshold=1.1, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for threshold=1.1, got {result:?}"
         );
     }
 
@@ -113,8 +113,8 @@ mod tests {
     fn scene_detector_missing_file_should_return_analysis_failed() {
         let result = SceneDetector::new("does_not_exist_99999.mp4").run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for missing file, got {result:?}"
+            matches!(result, Err(AnalysisError::Failed { .. })),
+            "expected Failed for missing file, got {result:?}"
         );
     }
 
@@ -126,12 +126,12 @@ mod tests {
         let r1 = SceneDetector::new("irrelevant.mp4").threshold(1.0).run();
         // Both should fail with AnalysisFailed (file not found), NOT threshold error.
         assert!(
-            matches!(r0, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed (file), got {r0:?}"
+            matches!(r0, Err(AnalysisError::Failed { .. })),
+            "expected Failed (file), got {r0:?}"
         );
         assert!(
-            matches!(r1, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed (file), got {r1:?}"
+            matches!(r1, Err(AnalysisError::Failed { .. })),
+            "expected Failed (file), got {r1:?}"
         );
     }
 }

@@ -22,7 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::silence_detector::SilenceRange;
-use crate::DecodeError;
+use crate::AnalysisError;
 
 // ── SceneDetector inner ───────────────────────────────────────────────────────
 
@@ -48,12 +48,12 @@ use crate::DecodeError;
 pub(super) unsafe fn detect_scenes_unsafe(
     path: &Path,
     threshold: f64,
-) -> Result<Vec<Duration>, DecodeError> {
+) -> Result<Vec<Duration>, AnalysisError> {
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -67,22 +67,21 @@ pub(super) unsafe fn detect_scenes_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_args =
-        CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
+        CString::new(format!("filename={path_str}")).map_err(|_| AnalysisError::Failed {
             reason: "path contains null byte".to_string(),
         })?;
 
     // select=gt(scene\,{threshold}) — the backslash escapes the comma inside
     // the filter option string so FFmpeg's option parser treats it as a literal
     // comma rather than a separator between filter options.
-    let select_args = CString::new(format!("gt(scene\\,{threshold:.6})")).map_err(|_| {
-        DecodeError::AnalysisFailed {
+    let select_args =
+        CString::new(format!("gt(scene\\,{threshold:.6})")).map_err(|_| AnalysisError::Failed {
             reason: "select args contained null byte".to_string(),
-        }
-    })?;
+        })?;
 
     let graph = ff_sys::avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(DecodeError::AnalysisFailed {
+        return Err(AnalysisError::Failed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -237,12 +236,12 @@ pub(super) unsafe fn detect_silence_unsafe(
     path: &Path,
     threshold_db: f32,
     min_duration: Duration,
-) -> Result<Vec<SilenceRange>, DecodeError> {
+) -> Result<Vec<SilenceRange>, AnalysisError> {
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -253,7 +252,7 @@ pub(super) unsafe fn detect_silence_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let amovie_args =
-        CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
+        CString::new(format!("filename={path_str}")).map_err(|_| AnalysisError::Failed {
             reason: "path contains null byte".to_string(),
         })?;
 
@@ -262,14 +261,14 @@ pub(super) unsafe fn detect_silence_unsafe(
     // threshold_db is already negative (e.g. -40.0) → formats as "n=-40dB"
     let silence_args =
         CString::new(format!("n={threshold_db}dB:d={min_sec:.6}")).map_err(|_| {
-            DecodeError::AnalysisFailed {
+            AnalysisError::Failed {
                 reason: "silencedetect args contained null byte".to_string(),
             }
         })?;
 
     let graph = ff_sys::avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(DecodeError::AnalysisFailed {
+        return Err(AnalysisError::Failed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -451,12 +450,12 @@ unsafe fn read_f64_meta(
 pub(super) unsafe fn detect_black_frames_unsafe(
     path: &Path,
     threshold: f64,
-) -> Result<Vec<Duration>, DecodeError> {
+) -> Result<Vec<Duration>, AnalysisError> {
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -467,7 +466,7 @@ pub(super) unsafe fn detect_black_frames_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_args =
-        CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
+        CString::new(format!("filename={path_str}")).map_err(|_| AnalysisError::Failed {
             reason: "path contains null byte".to_string(),
         })?;
 
@@ -475,14 +474,14 @@ pub(super) unsafe fn detect_black_frames_unsafe(
     //   d     — minimum black-interval duration (0.1 s)
     //   pic_th — fraction of black pixels required per frame (0.0–1.0)
     let blackdetect_args = CString::new(format!("d=0.1:pic_th={threshold:.6}")).map_err(|_| {
-        DecodeError::AnalysisFailed {
+        AnalysisError::Failed {
             reason: "blackdetect args contained null byte".to_string(),
         }
     })?;
 
     let graph = ff_sys::avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(DecodeError::AnalysisFailed {
+        return Err(AnalysisError::Failed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -627,7 +626,7 @@ pub(super) unsafe fn detect_black_frames_unsafe(
 pub(super) unsafe fn enumerate_keyframes_unsafe(
     path: &Path,
     stream_index: Option<usize>,
-) -> Result<Vec<Duration>, DecodeError> {
+) -> Result<Vec<Duration>, AnalysisError> {
     // AV_PKT_FLAG_KEY = 1 (from FFmpeg's avcodec.h; not exported by ff_sys constants).
     const AV_PKT_FLAG_KEY: i32 = 1;
 
@@ -636,7 +635,7 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
     macro_rules! bail_ctx {
         ($ctx:ident, $reason:expr) => {{
             ff_sys::avformat::close_input(std::ptr::addr_of_mut!($ctx));
-            return Err(DecodeError::AnalysisFailed {
+            return Err(AnalysisError::Failed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -644,7 +643,7 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
 
     // 1. Open input.
     let mut format_ctx =
-        ff_sys::avformat::open_input(path).map_err(|code| DecodeError::AnalysisFailed {
+        ff_sys::avformat::open_input(path).map_err(|code| AnalysisError::Failed {
             reason: format!("avformat_open_input failed code={code}"),
         })?;
 

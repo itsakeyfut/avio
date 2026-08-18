@@ -80,6 +80,7 @@ Deviating without a deliberate, documented reason is a bug, not a style choice.
 | `ff-format` | Shared pure-Rust type system (no FFmpeg dep) | ff-common |
 | `ff-probe` | Read-only metadata extraction | ff-format |
 | `ff-decode` | Decode pipelines (video / audio / image) | ff-format |
+| `ff-analysis` | Media analysis (scene / silence / BPM / histogram / keyframe / black-frame detection, video scopes) | ff-decode |
 | `ff-encode` | Encode pipelines | ff-format |
 | `ff-remux` | Stream-copy remux (trim / audio replace / extract / add), no re-encoding | ff-format |
 | `ff-filter` | libavfilter graph construction + primitive compositor | ff-format |
@@ -94,6 +95,8 @@ Dependency direction (no cycles):
 ```
 ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode / ff-remux -> ff-filter
        -> ff-pipeline -> ff-stream / ff-preview / ff-render -> avio (engine, top)
+
+ff-decode -> ff-analysis   (analysis reads decoded frames; sits above ff-decode)
 ```
 
 - Dependencies point **downward** only. No cycles.

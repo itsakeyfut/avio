@@ -1,7 +1,7 @@
 //! Integration tests for ThumbnailSelector.
 //!
 //! Tests verify:
-//! - Zero candidate_interval returns `DecodeError::AnalysisFailed`
+//! - Zero candidate_interval returns `DecodeError::ExtractionFailed`
 //! - Missing input file returns an error
 //! - A real video returns a valid VideoFrame
 
@@ -23,8 +23,8 @@ fn thumbnail_selector_zero_interval_should_return_analysis_failed() {
         .candidate_interval(Duration::ZERO)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for zero interval, got {result:?}"
+        matches!(result, Err(DecodeError::ExtractionFailed { .. })),
+        "expected ExtractionFailed for zero interval, got {result:?}"
     );
 }
 

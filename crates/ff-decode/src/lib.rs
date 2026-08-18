@@ -100,14 +100,12 @@
 #![warn(clippy::pedantic)]
 
 // Module declarations
-pub mod analysis;
 #[cfg(feature = "tokio")]
 pub(crate) mod async_decoder;
 pub mod audio;
 pub mod error;
 pub mod extract;
 pub mod image;
-pub mod scope;
 mod shared;
 pub mod video;
 
@@ -115,10 +113,6 @@ pub mod video;
 pub(crate) use shared::network;
 
 // Re-exports for convenience
-pub use analysis::{
-    BlackFrameDetector, BpmResult, FrameHistogram, HistogramExtractor, KeyframeEnumerator,
-    SceneDetector, SilenceDetector, SilenceRange, WaveformAnalyzer, WaveformSample,
-};
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use extract::{FrameExtractor, ThumbnailSelector};
@@ -126,7 +120,6 @@ pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
 pub use ff_format::{ErrorSeverity, MediaError};
 pub use image::{ImageDecoder, ImageDecoderBuilder};
-pub use scope::{Histogram, RgbParade, ScopeAnalyzer};
 pub use shared::{HardwareAccel, SeekMode};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 

@@ -1,14 +1,14 @@
 //! Integration tests for BlackFrameDetector.
 //!
 //! Tests verify:
-//! - Out-of-range threshold returns `DecodeError::AnalysisFailed`
-//! - Missing input file returns `DecodeError::AnalysisFailed`
+//! - Out-of-range threshold returns `AnalysisError::Failed`
+//! - Missing input file returns `AnalysisError::Failed`
 //! - A real video file returns a `Vec<Duration>` without errors
 //! - Returned timestamps are monotonically non-decreasing
 
 #![allow(clippy::unwrap_used)]
 
-use ff_decode::{BlackFrameDetector, DecodeError};
+use ff_analysis::{AnalysisError, BlackFrameDetector};
 use std::time::Duration;
 
 fn test_video_path() -> std::path::PathBuf {
@@ -24,8 +24,8 @@ fn black_frame_detector_threshold_below_zero_should_return_analysis_failed() {
         .threshold(-0.1)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for threshold=-0.1, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for threshold=-0.1, got {result:?}"
     );
 }
 
@@ -35,8 +35,8 @@ fn black_frame_detector_threshold_above_one_should_return_analysis_failed() {
         .threshold(1.1)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for threshold=1.1, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for threshold=1.1, got {result:?}"
     );
 }
 
@@ -44,8 +44,8 @@ fn black_frame_detector_threshold_above_one_should_return_analysis_failed() {
 fn black_frame_detector_missing_file_should_return_analysis_failed() {
     let result = BlackFrameDetector::new("does_not_exist_99999.mp4").run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for missing file, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for missing file, got {result:?}"
     );
 }
 

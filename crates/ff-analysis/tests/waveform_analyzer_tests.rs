@@ -11,7 +11,8 @@
 mod fixtures;
 use fixtures::*;
 
-use ff_decode::{AudioDecoder, DecodeError, WaveformAnalyzer, WaveformSample};
+use ff_analysis::{AnalysisError, WaveformAnalyzer, WaveformSample};
+use ff_decode::AudioDecoder;
 use std::time::Duration;
 
 // ── Error-path tests ──────────────────────────────────────────────────────────
@@ -22,8 +23,8 @@ fn waveform_analyzer_zero_interval_should_return_analysis_failed() {
         .interval(Duration::ZERO)
         .run();
     assert!(
-        matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-        "expected AnalysisFailed for zero interval, got {result:?}"
+        matches!(result, Err(AnalysisError::Failed { .. })),
+        "expected Failed for zero interval, got {result:?}"
     );
 }
 
