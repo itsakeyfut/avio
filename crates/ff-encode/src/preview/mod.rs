@@ -6,12 +6,13 @@
 //! [`GifPreview`] generates an animated GIF from a configurable time range
 //! using FFmpeg's two-pass `palettegen` + `paletteuse` approach.
 
+mod error;
 mod preview_inner;
+
+pub use error::PreviewImageError;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-
-use crate::EncodeError;
 
 /// Generates a thumbnail sprite sheet from a video file.
 ///
@@ -102,22 +103,22 @@ impl SpriteSheet {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] — `cols` or `rows` is zero,
+    /// - [`PreviewImageError::OperationFailed`] — `cols` or `rows` is zero,
     ///   `frame_width` or `frame_height` is zero, or `output` path is not set.
-    /// - [`EncodeError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`PreviewImageError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
+    pub fn run(self) -> Result<(), PreviewImageError> {
         if self.cols == 0 || self.rows == 0 {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "cols/rows must be > 0".to_string(),
             });
         }
         if self.frame_width == 0 || self.frame_height == 0 {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "frame_width/frame_height must be > 0".to_string(),
             });
         }
         if self.output.as_os_str().is_empty() {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "output path not set".to_string(),
             });
         }
@@ -219,27 +220,27 @@ impl GifPreview {
     ///
     /// # Errors
     ///
-    /// - [`EncodeError::MediaOperationFailed`] — output path not set, output
+    /// - [`PreviewImageError::OperationFailed`] — output path not set, output
     ///   extension is not `.gif`, `fps` ≤ 0, or `width` is zero.
-    /// - [`EncodeError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
-    pub fn run(self) -> Result<(), EncodeError> {
+    /// - [`PreviewImageError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
+    pub fn run(self) -> Result<(), PreviewImageError> {
         if self.output.as_os_str().is_empty() {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "output path not set".to_string(),
             });
         }
         if self.output.extension().and_then(|e| e.to_str()) != Some("gif") {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "output path must have .gif extension".to_string(),
             });
         }
         if self.fps <= 0.0 {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "fps must be positive".to_string(),
             });
         }
         if self.width == 0 {
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: "width must be > 0".to_string(),
             });
         }
@@ -265,8 +266,8 @@ mod tests {
             .output("out.png")
             .run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for cols=0, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for cols=0, got {result:?}"
         );
     }
 
@@ -277,8 +278,8 @@ mod tests {
             .output("out.png")
             .run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for frame_width=0, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for frame_width=0, got {result:?}"
         );
     }
 
@@ -286,8 +287,8 @@ mod tests {
     fn sprite_sheet_missing_output_should_return_media_operation_failed() {
         let result = SpriteSheet::new("irrelevant.mp4").run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for empty output path, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for empty output path, got {result:?}"
         );
     }
 
@@ -295,8 +296,8 @@ mod tests {
     fn gif_preview_non_gif_extension_should_return_media_operation_failed() {
         let result = GifPreview::new("irrelevant.mp4").output("out.mp4").run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for non-.gif extension, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for non-.gif extension, got {result:?}"
         );
     }
 
@@ -304,8 +305,8 @@ mod tests {
     fn gif_preview_missing_output_should_return_media_operation_failed() {
         let result = GifPreview::new("irrelevant.mp4").run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for missing output path, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for missing output path, got {result:?}"
         );
     }
 
@@ -316,8 +317,8 @@ mod tests {
             .output("out.gif")
             .run();
         assert!(
-            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
-            "expected MediaOperationFailed for fps=0, got {result:?}"
+            matches!(result, Err(PreviewImageError::OperationFailed { .. })),
+            "expected OperationFailed for fps=0, got {result:?}"
         );
     }
 }

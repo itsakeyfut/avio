@@ -11,6 +11,7 @@
 //! |------------------|--------------------|---------|---------------------|
 //! | `probe`          | `ff-probe`         | yes     |                     |
 //! | `decode`         | `ff-decode`        | yes     |                     |
+//! | `analysis`       | `ff-analysis`      | yes     | `decode`            |
 //! | `encode`         | `ff-encode`        | yes     |                     |
 //! | `hwaccel`        | `ff-encode`        | yes     |                     |
 //! | `filter`         | `ff-filter`        | no      |                     |
@@ -28,7 +29,7 @@
 //! # Usage
 //!
 //! ```toml
-//! # Default: probe + decode + encode + hwaccel
+//! # Default: probe + decode + analysis + encode + hwaccel
 //! [dependencies]
 //! avio = "0.15"
 //!
@@ -218,10 +219,10 @@ pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
     AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder, ChannelLayout,
     ChapterInfo, ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer,
-    ContainerInfo, ContainerInfoBuilder, FormatError, FrameError, Hdr10Metadata, MasteringDisplay,
-    MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat, Rational, SampleFormat,
-    SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder, Timestamp, VideoCodec,
-    VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
+    ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError, Hdr10Metadata,
+    MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat,
+    Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder,
+    Timestamp, VideoCodec, VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────
@@ -239,10 +240,18 @@ pub use ff_probe::{ProbeError, open};
 pub use ff_common::{PooledBuffer, VecPool};
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, AudioDecoderBuilder, BlackFrameDetector, BpmResult, DecodeError, FrameExtractor,
-    FrameHistogram, FramePool, HardwareAccel, Histogram, HistogramExtractor, ImageDecoder,
-    ImageDecoderBuilder, KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SeekMode,
-    SilenceDetector, SilenceRange, ThumbnailSelector, VideoDecoder, VideoDecoderBuilder,
+    AudioDecoder, AudioDecoderBuilder, DecodeError, FrameExtractor, FramePool, HardwareAccel,
+    ImageDecoder, ImageDecoderBuilder, SeekMode, ThumbnailSelector, VideoDecoder,
+    VideoDecoderBuilder,
+};
+
+// ── analysis feature ──────────────────────────────────────────────────────────
+// Media-analysis primitives (scene / silence / BPM / histogram / keyframe /
+// black-frame detection and video scopes), extracted into `ff-analysis`.
+#[cfg(feature = "analysis")]
+pub use ff_analysis::{
+    AnalysisError, BlackFrameDetector, BpmResult, FrameHistogram, Histogram, HistogramExtractor,
+    KeyframeEnumerator, RgbParade, SceneDetector, ScopeAnalyzer, SilenceDetector, SilenceRange,
     WaveformAnalyzer, WaveformSample,
 };
 
@@ -255,15 +264,21 @@ pub use ff_decode::{
 // default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
-    AacOptions, AacProfile, AudioAdder, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
-    AudioEncoderConfig, AudioExtractor, AudioReplacement, Av1Options, Av1Usage, BitrateMode,
-    CRF_MAX, DnxhdOptions, DnxhdVariant, EncodeError, EncodeProgress, EncodeProgressCallback,
-    ExportPreset, FlacOptions, GifPreview, H264Options, H264Preset, H264Profile, H264Tune,
-    H265Options, H265Profile, H265Tier, HardwareEncoder, ImageEncoder, ImageEncoderBuilder,
-    Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer, Preset, ProResOptions,
-    ProResProfile, SpriteSheet, StreamCopyTrim, StreamCopyTrimmer, SvtAv1Options,
-    VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, VideoEncoderConfig,
-    Vp9Options,
+    AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
+    AudioEncoderConfig, Av1Options, Av1Usage, BitrateMode, CRF_MAX, DnxhdOptions, DnxhdVariant,
+    EncodeError, EncodeProgress, EncodeProgressCallback, ExportPreset, FlacOptions, GifPreview,
+    H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
+    HardwareEncoder, ImageEncoder, ImageEncoderBuilder, Mp3Options, Mp3Quality, OpusApplication,
+    OpusOptions, OutputContainer, Preset, PreviewImageError, ProResOptions, ProResProfile,
+    SpriteSheet, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder,
+    VideoEncoderBuilder, VideoEncoderConfig, Vp9Options,
+};
+
+// media-ops + trim moved to the `ff-remux` crate; re-exported here so `avio`'s
+// surface is unchanged (enabled by the `encode` feature, which pulls `ff-remux`).
+#[cfg(feature = "encode")]
+pub use ff_remux::{
+    AudioAdder, AudioExtractor, AudioReplacement, RemuxError, StreamCopyTrim, StreamCopyTrimmer,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────

@@ -48,7 +48,7 @@ impl FrameExtractor {
     /// Sets the time interval between extracted frames.
     ///
     /// Passing [`Duration::ZERO`] causes [`run`](Self::run) to return
-    /// [`DecodeError::AnalysisFailed`].
+    /// [`DecodeError::ExtractionFailed`].
     #[must_use]
     pub fn interval(self, d: Duration) -> Self {
         Self {
@@ -66,12 +66,12 @@ impl FrameExtractor {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — interval is zero, or the input
+    /// - [`DecodeError::ExtractionFailed`] — interval is zero, or the input
     ///   file cannot be opened.
     /// - Any other [`DecodeError`] propagated from the decoder.
     pub fn run(self) -> Result<Vec<VideoFrame>, DecodeError> {
         if self.interval.is_zero() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(DecodeError::ExtractionFailed {
                 reason: "interval must be positive".to_string(),
             });
         }
@@ -153,12 +153,12 @@ impl ThumbnailSelector {
     ///
     /// # Errors
     ///
-    /// - [`DecodeError::AnalysisFailed`] — the interval is zero, or no frame
+    /// - [`DecodeError::ExtractionFailed`] — the interval is zero, or no frame
     ///   can be sampled from the video.
     /// - Any other [`DecodeError`] propagated from the decoder.
     pub fn run(self) -> Result<VideoFrame, DecodeError> {
         if self.candidate_interval.is_zero() {
-            return Err(DecodeError::AnalysisFailed {
+            return Err(DecodeError::ExtractionFailed {
                 reason: "candidate_interval must be positive".to_string(),
             });
         }
@@ -218,7 +218,7 @@ impl ThumbnailSelector {
             return Ok(frame);
         }
 
-        Err(DecodeError::AnalysisFailed {
+        Err(DecodeError::ExtractionFailed {
             reason: "no suitable thumbnail frame found".to_string(),
         })
     }
@@ -321,8 +321,8 @@ mod tests {
             .interval(Duration::ZERO)
             .run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for zero interval, got {result:?}"
+            matches!(result, Err(DecodeError::ExtractionFailed { .. })),
+            "expected ExtractionFailed for zero interval, got {result:?}"
         );
     }
 
@@ -341,8 +341,8 @@ mod tests {
             .candidate_interval(Duration::ZERO)
             .run();
         assert!(
-            matches!(result, Err(DecodeError::AnalysisFailed { .. })),
-            "expected AnalysisFailed for zero interval, got {result:?}"
+            matches!(result, Err(DecodeError::ExtractionFailed { .. })),
+            "expected ExtractionFailed for zero interval, got {result:?}"
         );
     }
 

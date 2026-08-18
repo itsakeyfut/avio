@@ -11,10 +11,11 @@ keywords = ["video", "audio", "ffmpeg", "codec", "async"]
 categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding", "api-bindings", "asynchronous"]
 
 [features]
-default = ["probe", "decode", "encode", "hwaccel"]
+default = ["probe", "decode", "encode", "analysis", "hwaccel"]
 probe    = ["dep:ff-probe"]
 decode   = ["dep:ff-decode"]
-encode   = ["dep:ff-encode"]
+analysis = ["dep:ff-analysis", "decode"]
+encode   = ["dep:ff-encode", "dep:ff-remux", "ff-encode/preview-image"]
 filter   = ["dep:ff-filter"]
 pipeline = ["dep:ff-pipeline", "dep:thiserror", "dep:log", "decode", "encode", "filter", "ff-preview?/timeline"]
 stream   = ["dep:ff-stream", "pipeline"]
@@ -37,7 +38,9 @@ ff-format = { workspace = true }
 ff-common = { workspace = true }
 ff-probe    = { workspace = true, optional = true }
 ff-decode   = { workspace = true, optional = true }
+ff-analysis = { workspace = true, optional = true }
 ff-encode   = { workspace = true, optional = true }
+ff-remux    = { workspace = true, optional = true }
 ff-filter   = { workspace = true, optional = true }
 ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }
@@ -396,32 +399,32 @@ required-features = ["encode"]
 [[example]]
 name = "scene_detection"
 path = "examples/analysis/scene_detection.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "waveform"
 path = "examples/analysis/waveform.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "silence_detection"
 path = "examples/analysis/silence_detection.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "keyframes"
 path = "examples/analysis/keyframes.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "histogram"
 path = "examples/analysis/histogram.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "black_frames"
 path = "examples/analysis/black_frames.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "frame_extraction"
@@ -521,7 +524,7 @@ required-features = ["filter", "pipeline", "encode"]
 [[example]]
 name = "scope_analyzer"
 path = "examples/analysis/scope_analyzer.rs"
-required-features = ["decode"]
+required-features = ["analysis"]
 
 [[example]]
 name = "advanced_video_effects"

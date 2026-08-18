@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ff_format::{ErrorSeverity, MediaError};
 use thiserror::Error;
 
 use crate::HardwareAccel;
@@ -227,23 +228,14 @@ pub enum DecodeError {
         timestamp: Duration,
     },
 
-    /// An analysis operation failed for a structural reason.
+    /// Frame or thumbnail extraction failed for a structural reason.
     ///
-    /// Returned by tools in [`crate::analysis`] when the operation cannot
-    /// proceed (e.g. zero interval, missing audio stream, unsupported format).
-    #[error("analysis failed: {reason}")]
-    AnalysisFailed {
-        /// Human-readable description of why the analysis failed.
-        reason: String,
-    },
-
-    /// BPM detection failed for a structural reason.
-    ///
-    /// Returned by the BPM detector when tempo cannot be estimated (e.g. no
-    /// audio stream, or a clip too short to analyse).
-    #[error("BPM detection failed: {reason}")]
-    BpmDetectionFailed {
-        /// Human-readable description of why BPM detection failed.
+    /// Returned by [`FrameExtractor`](crate::extract::FrameExtractor) and
+    /// [`ThumbnailSelector`](crate::extract::ThumbnailSelector) when extraction
+    /// cannot proceed (e.g. a zero interval, or no suitable frame was found).
+    #[error("extraction failed: {reason}")]
+    ExtractionFailed {
+        /// Human-readable description of why extraction failed.
         reason: String,
     },
 }
@@ -258,7 +250,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     ///
     /// let error = DecodeError::decoding_failed("Corrupted frame data");
     /// assert!(error.to_string().contains("Corrupted frame data"));
@@ -282,7 +274,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::decoding_failed_at(
@@ -310,7 +302,7 @@ impl DecodeError {
     /// # Examples
     ///
     /// ```
-    /// use ff_decode::DecodeError;
+    /// use ff_decode::{DecodeError, MediaError};
     /// use std::time::Duration;
     ///
     /// let error = DecodeError::seek_failed(
@@ -366,94 +358,17 @@ impl DecodeError {
             message: message.into(),
         }
     }
+}
 
-    /// Returns `true` if this error is recoverable.
-    ///
-    /// Recoverable errors are those where the operation that raised the error
-    /// can be retried (or the decoder can transparently reconnect) without
-    /// rebuilding the decoder from scratch.
-    ///
-    /// | Variant | Recoverable |
-    /// |---|---|
-    /// | [`DecodingFailed`](Self::DecodingFailed) | ✓ — corrupt frame; skip and continue |
-    /// | [`SeekFailed`](Self::SeekFailed) | ✓ — retry at a different position |
-    /// | [`NetworkTimeout`](Self::NetworkTimeout) | ✓ — transient; reconnect |
-    /// | [`StreamInterrupted`](Self::StreamInterrupted) | ✓ — transient; reconnect |
-    /// | all others | ✗ |
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::DecodeError;
-    /// use std::time::Duration;
-    ///
-    /// // Decoding failures are recoverable
-    /// assert!(DecodeError::decoding_failed("test").is_recoverable());
-    ///
-    /// // Seek failures are recoverable
-    /// assert!(DecodeError::seek_failed(Duration::from_secs(1), "test").is_recoverable());
-    ///
-    /// ```
-    #[must_use]
-    pub fn is_recoverable(&self) -> bool {
+impl MediaError for DecodeError {
+    /// Recoverable errors are retryable without rebuilding the decoder (a corrupt
+    /// frame, a transient network fault); fatal errors mean it must be discarded.
+    fn severity(&self) -> ErrorSeverity {
         match self {
             Self::DecodingFailed { .. }
             | Self::SeekFailed { .. }
             | Self::NetworkTimeout { .. }
-            | Self::StreamInterrupted { .. } => true,
-            Self::FileNotFound { .. }
-            | Self::NoVideoStream { .. }
-            | Self::NoAudioStream { .. }
-            | Self::UnsupportedCodec { .. }
-            | Self::DecoderUnavailable { .. }
-            | Self::HwAccelUnavailable { .. }
-            | Self::InvalidOutputDimensions { .. }
-            | Self::ConnectionFailed { .. }
-            | Self::Io(_)
-            | Self::Ffmpeg { .. }
-            | Self::SeekNotSupported
-            | Self::UnsupportedResolution { .. }
-            | Self::StreamCorrupted { .. }
-            | Self::NoFrameAtTimestamp { .. }
-            | Self::AnalysisFailed { .. }
-            | Self::BpmDetectionFailed { .. } => false,
-        }
-    }
-
-    /// Returns `true` if this error is fatal.
-    ///
-    /// Fatal errors indicate that the decoder cannot continue operating and
-    /// must be discarded; re-opening or reconfiguring is required.
-    ///
-    /// | Variant | Fatal |
-    /// |---|---|
-    /// | [`FileNotFound`](Self::FileNotFound) | ✓ |
-    /// | [`NoVideoStream`](Self::NoVideoStream) | ✓ |
-    /// | [`NoAudioStream`](Self::NoAudioStream) | ✓ |
-    /// | [`UnsupportedCodec`](Self::UnsupportedCodec) | ✓ |
-    /// | [`DecoderUnavailable`](Self::DecoderUnavailable) | ✓ |
-    /// | [`HwAccelUnavailable`](Self::HwAccelUnavailable) | ✓ — must reconfigure without HW |
-    /// | [`InvalidOutputDimensions`](Self::InvalidOutputDimensions) | ✓ — bad config |
-    /// | [`ConnectionFailed`](Self::ConnectionFailed) | ✓ — host unreachable |
-    /// | [`Io`](Self::Io) | ✓ — I/O failure |
-    /// | all others | ✗ |
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::DecodeError;
-    /// use std::path::PathBuf;
-    ///
-    /// // File not found is fatal
-    /// assert!(DecodeError::FileNotFound { path: PathBuf::new() }.is_fatal());
-    ///
-    /// // Unsupported codec is fatal
-    /// assert!(DecodeError::UnsupportedCodec { codec: "test".to_string() }.is_fatal());
-    ///
-    /// ```
-    #[must_use]
-    pub fn is_fatal(&self) -> bool {
-        match self {
+            | Self::StreamInterrupted { .. } => ErrorSeverity::Recoverable,
             Self::FileNotFound { .. }
             | Self::NoVideoStream { .. }
             | Self::NoAudioStream { .. }
@@ -464,16 +379,11 @@ impl DecodeError {
             | Self::ConnectionFailed { .. }
             | Self::Io(_)
             | Self::StreamCorrupted { .. }
-            | Self::AnalysisFailed { .. }
-            | Self::BpmDetectionFailed { .. } => true,
-            Self::DecodingFailed { .. }
-            | Self::SeekFailed { .. }
-            | Self::NetworkTimeout { .. }
-            | Self::StreamInterrupted { .. }
-            | Self::Ffmpeg { .. }
+            | Self::ExtractionFailed { .. } => ErrorSeverity::Fatal,
+            Self::Ffmpeg { .. }
             | Self::SeekNotSupported
             | Self::UnsupportedResolution { .. }
-            | Self::NoFrameAtTimestamp { .. } => false,
+            | Self::NoFrameAtTimestamp { .. } => ErrorSeverity::Other,
         }
     }
 }
@@ -849,14 +759,17 @@ mod tests {
     }
 
     #[test]
-    fn decode_error_analysis_failed_should_display_correctly() {
-        let e = DecodeError::AnalysisFailed {
-            reason: "interval must be non-zero".to_string(),
+    fn decode_error_extraction_failed_should_display_correctly() {
+        let e = DecodeError::ExtractionFailed {
+            reason: "interval must be positive".to_string(),
         };
         let msg = e.to_string();
-        assert!(msg.contains("analysis failed"), "unexpected message: {msg}");
         assert!(
-            msg.contains("interval must be non-zero"),
+            msg.contains("extraction failed"),
+            "unexpected message: {msg}"
+        );
+        assert!(
+            msg.contains("interval must be positive"),
             "expected reason in message: {msg}"
         );
     }
@@ -871,34 +784,9 @@ mod tests {
     }
 
     #[test]
-    fn analysis_failed_should_be_fatal_and_not_recoverable() {
-        let e = DecodeError::AnalysisFailed {
-            reason: "zero interval".to_string(),
-        };
-        assert!(e.is_fatal());
-        assert!(!e.is_recoverable());
-    }
-
-    #[test]
-    fn bpm_detection_failed_should_display_correctly() {
-        let e = DecodeError::BpmDetectionFailed {
-            reason: "no audio stream".to_string(),
-        };
-        let msg = e.to_string();
-        assert!(
-            msg.contains("BPM detection failed"),
-            "unexpected message: {msg}"
-        );
-        assert!(
-            msg.contains("no audio stream"),
-            "expected reason in message: {msg}"
-        );
-    }
-
-    #[test]
-    fn bpm_detection_failed_should_be_fatal_and_not_recoverable() {
-        let e = DecodeError::BpmDetectionFailed {
-            reason: "clip too short".to_string(),
+    fn extraction_failed_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::ExtractionFailed {
+            reason: "no suitable frame".to_string(),
         };
         assert!(e.is_fatal());
         assert!(!e.is_recoverable());

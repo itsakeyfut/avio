@@ -4,6 +4,8 @@
 //! possible errors that can occur during HLS / DASH output and ABR ladder
 //! generation.
 
+use ff_format::{ErrorSeverity, MediaError};
+
 /// Errors that can occur during streaming output operations.
 ///
 /// This enum covers all error conditions that may arise when configuring,
@@ -93,6 +95,19 @@ pub enum StreamError {
         /// Human-readable description of the `FFmpeg` error.
         message: String,
     },
+}
+
+impl MediaError for StreamError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Encode(e) => e.severity(),
+            Self::Ffmpeg { .. } | Self::FanoutFailure { .. } => ErrorSeverity::Other,
+            Self::InvalidConfig { .. }
+            | Self::UnsupportedCodec { .. }
+            | Self::ProtocolUnavailable { .. }
+            | Self::Io(_) => ErrorSeverity::Fatal,
+        }
+    }
 }
 
 #[cfg(test)]

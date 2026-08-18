@@ -71,6 +71,7 @@ pub mod context;
 #[cfg(feature = "wgpu")]
 pub use compositor::{Compositor, FrameLayer, LayerTransform};
 pub use error::RenderError;
+pub use ff_format::{ErrorSeverity, MediaError};
 pub use graph::RenderGraph;
 pub use nodes::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,

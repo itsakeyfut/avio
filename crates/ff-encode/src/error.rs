@@ -1,5 +1,6 @@
 //! Error types for encoding operations.
 
+use ff_format::{ErrorSeverity, MediaError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -139,17 +140,6 @@ pub enum EncodeError {
     #[error("Async encoder worker panicked or disconnected")]
     WorkerPanicked,
 
-    /// A media operation (trim, extract, replace, …) failed.
-    ///
-    /// Returned by [`StreamCopyTrim`](crate::StreamCopyTrim) and other
-    /// `media_ops` types when a structural precondition is violated or an
-    /// FFmpeg mux/remux call fails.
-    #[error("media operation failed: {reason}")]
-    MediaOperationFailed {
-        /// Human-readable description of the failure.
-        reason: String,
-    },
-
     /// An export preset violated a platform-specific constraint.
     ///
     /// Returned by [`ExportPreset::validate()`](crate::ExportPreset::validate)
@@ -174,6 +164,31 @@ impl EncodeError {
         EncodeError::Ffmpeg {
             code: errnum,
             message: ff_sys::av_error_string(errnum),
+        }
+    }
+}
+
+impl MediaError for EncodeError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Ffmpeg { .. } | Self::Cancelled => ErrorSeverity::Other,
+            Self::CannotCreateFile { .. }
+            | Self::UnsupportedCodec { .. }
+            | Self::NoSuitableEncoder { .. }
+            | Self::EncodingFailed { .. }
+            | Self::InvalidConfig { .. }
+            | Self::HwEncoderUnavailable { .. }
+            | Self::EncoderUnavailable { .. }
+            | Self::MuxingFailed { .. }
+            | Self::Io(_)
+            | Self::InvalidOption { .. }
+            | Self::UnsupportedContainerCodecCombination { .. }
+            | Self::InvalidDimensions { .. }
+            | Self::InvalidBitrate { .. }
+            | Self::InvalidChannelCount { .. }
+            | Self::InvalidSampleRate { .. }
+            | Self::WorkerPanicked
+            | Self::PresetConstraintViolation { .. } => ErrorSeverity::Fatal,
         }
     }
 }
@@ -289,26 +304,6 @@ mod tests {
         assert!(
             msg.contains("[8000, 384000]"),
             "expected '[8000, 384000]' in '{msg}'"
-        );
-    }
-
-    #[test]
-    fn encode_error_media_operation_failed_should_display_correctly() {
-        let err = EncodeError::MediaOperationFailed {
-            reason: "input file has no audio stream".to_string(),
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("media operation failed"),
-            "expected 'media operation failed' in '{msg}'"
-        );
-        assert!(
-            msg.contains("input file has no audio stream"),
-            "expected reason in '{msg}'"
-        );
-        assert!(
-            matches!(err, EncodeError::MediaOperationFailed { .. }),
-            "pattern match with struct syntax must work"
         );
     }
 }

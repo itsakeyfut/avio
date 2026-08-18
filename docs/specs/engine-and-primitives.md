@@ -258,8 +258,10 @@ SceneAudioPlacement { source: PathBuf, offset, in_point, out_point: Option<Durat
 ## 5. Crate roles and dependency direction (new)
 
 ```
-ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode → ff-filter
+ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode / ff-remux → ff-filter
        → ff-pipeline → ff-stream / ff-preview / ff-render → avio (engine, top)
+
+ff-decode → ff-analysis   (media analysis reads decoded frames; sits above ff-decode)
 ```
 
 - **The editing model lives at the top (`avio`).** Nothing in `ff-*` depends on it, so `ff-*` are

@@ -62,6 +62,7 @@ pub mod error;
 pub mod frame;
 pub mod hdr;
 pub mod media;
+pub mod media_error;
 pub mod network;
 pub mod pixel;
 pub mod sample;
@@ -79,6 +80,7 @@ pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};
 pub use hdr::{Hdr10Metadata, MasteringDisplay};
 pub use media::{MediaInfo, MediaInfoBuilder};
+pub use media_error::{ErrorSeverity, MediaError};
 pub use network::NetworkOptions;
 pub use pixel::PixelFormat;
 pub use sample::SampleFormat;
@@ -98,8 +100,9 @@ pub use time::{Rational, Timestamp};
 pub mod prelude {
     pub use crate::{
         AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ColorPrimaries,
-        ColorRange, ColorSpace, FormatError, FrameError, MediaInfo, NetworkOptions, PixelFormat,
-        PooledBuffer, Rational, SampleFormat, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
+        ColorRange, ColorSpace, ErrorSeverity, FormatError, FrameError, MediaError, MediaInfo,
+        NetworkOptions, PixelFormat, PooledBuffer, Rational, SampleFormat, Timestamp, VideoCodec,
+        VideoFrame, VideoStreamInfo,
     };
 }
 

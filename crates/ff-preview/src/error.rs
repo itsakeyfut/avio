@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use ff_format::{ErrorSeverity, MediaError};
 use thiserror::Error;
 
 /// Errors that can occur during preview and proxy operations.
@@ -66,4 +67,20 @@ pub enum PreviewError {
         /// The requested presentation timestamp that fell outside all clips.
         pts: std::time::Duration,
     },
+}
+
+impl MediaError for PreviewError {
+    fn severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Decode(e) => e.severity(),
+            Self::Probe(e) => e.severity(),
+            #[cfg(feature = "proxy")]
+            Self::Pipeline(e) => e.severity(),
+            Self::SeekFailed { .. } => ErrorSeverity::Recoverable,
+            Self::Ffmpeg { .. } | Self::SeekOutOfRange { .. } => ErrorSeverity::Other,
+            Self::FileNotFound { .. } | Self::NoVideoStream { .. } | Self::Io(_) => {
+                ErrorSeverity::Fatal
+            }
+        }
+    }
 }

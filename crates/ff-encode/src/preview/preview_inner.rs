@@ -24,20 +24,20 @@ use ff_sys::{
     avformat_write_header, swscale,
 };
 
-use crate::EncodeError;
+use crate::PreviewImageError;
 
 /// Probes the video at `path` and returns its duration in seconds.
 ///
 /// # Safety
 ///
 /// All FFmpeg pointers are null-checked and freed on every exit path.
-unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, EncodeError> {
-    let fmt_ctx = avformat::open_input(path).map_err(EncodeError::from_ffmpeg_error)?;
+unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, PreviewImageError> {
+    let fmt_ctx = avformat::open_input(path).map_err(PreviewImageError::from_ffmpeg_error)?;
 
     if let Err(e) = avformat::find_stream_info(fmt_ctx) {
         let mut p = fmt_ctx;
         avformat::close_input(&mut p);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(PreviewImageError::from_ffmpeg_error(e));
     }
 
     // SAFETY: fmt_ctx is non-null (open_input succeeded).
@@ -46,7 +46,7 @@ unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, EncodeError> {
     avformat::close_input(&mut p);
 
     if duration_av <= 0 {
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: "cannot determine video duration".to_string(),
         });
     }
@@ -79,7 +79,7 @@ pub(super) fn generate_sprite_sheet(
     frame_width: u32,
     frame_height: u32,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     // SAFETY: generate_sprite_sheet_unsafe manages all raw pointer lifetimes
     //         per avfilter and avcodec ownership rules.
     unsafe { generate_sprite_sheet_unsafe(input, cols, rows, frame_width, frame_height, output) }
@@ -92,7 +92,7 @@ unsafe fn generate_sprite_sheet_unsafe(
     frame_width: u32,
     frame_height: u32,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     // ── Step 1: probe duration ────────────────────────────────────────────────
     let duration_secs = probe_video_duration_secs(input)?;
     let n = cols * rows;
@@ -104,7 +104,7 @@ unsafe fn generate_sprite_sheet_unsafe(
         ($graph:expr, $reason:expr) => {{
             let mut g = $graph;
             avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -118,28 +118,28 @@ unsafe fn generate_sprite_sheet_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_args = CString::new(format!("filename={path_str}")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "input path contains null byte".to_string(),
         }
     })?;
     let fps_cstr =
-        CString::new(fps_arg.as_str()).map_err(|_| EncodeError::MediaOperationFailed {
+        CString::new(fps_arg.as_str()).map_err(|_| PreviewImageError::OperationFailed {
             reason: "fps arg contains null byte".to_string(),
         })?;
     let scale_args = CString::new(format!("{frame_width}:{frame_height}")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "scale args contain null byte".to_string(),
         }
     })?;
     let tile_args = CString::new(format!("{cols}x{rows}:padding=0:margin=0")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "tile args contain null byte".to_string(),
         }
     })?;
 
     let graph = avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -309,7 +309,7 @@ unsafe fn encode_frame_as_png(
     rows: u32,
     frame_width: u32,
     frame_height: u32,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     let _ = (cols, rows, frame_width, frame_height); // used via frame dimensions
 
     let width = (*frame).width;
@@ -325,7 +325,7 @@ unsafe fn encode_frame_as_png(
     if needs_conversion {
         let cf = av_frame_alloc();
         if cf.is_null() {
-            return Err(EncodeError::Ffmpeg {
+            return Err(PreviewImageError::Ffmpeg {
                 code: 0,
                 message: "av_frame_alloc failed for rgb24 conversion frame".to_string(),
             });
@@ -337,7 +337,7 @@ unsafe fn encode_frame_as_png(
         if ret < 0 {
             let mut f = cf;
             av_frame_free(std::ptr::addr_of_mut!(f));
-            return Err(EncodeError::from_ffmpeg_error(ret));
+            return Err(PreviewImageError::from_ffmpeg_error(ret));
         }
         // SAFETY: src_pix_fmt and AVPixelFormat_AV_PIX_FMT_RGB24 are valid;
         // frame and cf buffers are allocated and large enough.
@@ -353,7 +353,7 @@ unsafe fn encode_frame_as_png(
         .map_err(|e| {
             let mut f = cf;
             av_frame_free(std::ptr::addr_of_mut!(f));
-            EncodeError::from_ffmpeg_error(e)
+            PreviewImageError::from_ffmpeg_error(e)
         })?;
         let scale_ret = swscale::scale(
             sws_ctx,
@@ -368,7 +368,7 @@ unsafe fn encode_frame_as_png(
         if let Err(e) = scale_ret {
             let mut f = cf;
             av_frame_free(std::ptr::addr_of_mut!(f));
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e));
         }
         converted_frame = cf;
     } else {
@@ -396,21 +396,22 @@ unsafe fn encode_frame_as_png_inner(
     output: &Path,
     width: i32,
     height: i32,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     let pix_fmt = AVPixelFormat_AV_PIX_FMT_RGB24;
 
     // ── Allocate output format context ────────────────────────────────────────
     let mut fmt_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
-    let c_path = CString::new(
-        output
-            .to_str()
-            .ok_or_else(|| EncodeError::CannotCreateFile {
-                path: output.to_path_buf(),
-            })?,
-    )
-    .map_err(|_| EncodeError::CannotCreateFile {
-        path: output.to_path_buf(),
-    })?;
+    let c_path =
+        CString::new(
+            output
+                .to_str()
+                .ok_or_else(|| PreviewImageError::CannotCreateFile {
+                    path: output.to_path_buf(),
+                })?,
+        )
+        .map_err(|_| PreviewImageError::CannotCreateFile {
+            path: output.to_path_buf(),
+        })?;
 
     // Use the image2 muxer explicitly: it accepts the png encoder for single-
     // frame output, regardless of the file extension.  The "apng" muxer only
@@ -423,14 +424,14 @@ unsafe fn encode_frame_as_png_inner(
         c_path.as_ptr(),
     );
     if ret < 0 || fmt_ctx.is_null() {
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
 
     // ── Create video stream ───────────────────────────────────────────────────
     let stream = avformat_new_stream(fmt_ctx, ptr::null());
     if stream.is_null() {
         avformat_free_context(fmt_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(PreviewImageError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed".to_string(),
         });
@@ -438,7 +439,7 @@ unsafe fn encode_frame_as_png_inner(
 
     // ── Find and open PNG encoder ─────────────────────────────────────────────
     let codec = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_PNG).ok_or_else(|| {
-        EncodeError::UnsupportedCodec {
+        PreviewImageError::UnsupportedCodec {
             codec: "png".to_string(),
         }
     })?;
@@ -447,7 +448,7 @@ unsafe fn encode_frame_as_png_inner(
         Ok(ctx) => ctx,
         Err(e) => {
             avformat_free_context(fmt_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e));
         }
     };
 
@@ -460,7 +461,7 @@ unsafe fn encode_frame_as_png_inner(
     if let Err(e) = avcodec::open2(codec_ctx, codec, ptr::null_mut()) {
         avcodec::free_context(&mut { codec_ctx });
         avformat_free_context(fmt_ctx);
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(PreviewImageError::from_ffmpeg_error(e));
     }
 
     // Copy codec parameters to stream.
@@ -479,7 +480,7 @@ unsafe fn encode_frame_as_png_inner(
             let mut cc = codec_ctx;
             avcodec::free_context(&mut cc);
             avformat_free_context(fmt_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e));
         }
     };
     (*fmt_ctx).pb = io_ctx;
@@ -490,7 +491,7 @@ unsafe fn encode_frame_as_png_inner(
         let mut cc = codec_ctx;
         avcodec::free_context(&mut cc);
         avformat_free_context(fmt_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
 
     // ── Allocate packet ───────────────────────────────────────────────────────
@@ -501,7 +502,7 @@ unsafe fn encode_frame_as_png_inner(
         let mut cc = codec_ctx;
         avcodec::free_context(&mut cc);
         avformat_free_context(fmt_ctx);
-        return Err(EncodeError::Ffmpeg {
+        return Err(PreviewImageError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
@@ -510,10 +511,11 @@ unsafe fn encode_frame_as_png_inner(
     // ── Encode: send frame → flush → drain packets ────────────────────────────
     (*frame).pts = 0;
 
-    let encode_result = (|| -> Result<(), EncodeError> {
-        avcodec::send_frame(codec_ctx, frame).map_err(EncodeError::from_ffmpeg_error)?;
+    let encode_result = (|| -> Result<(), PreviewImageError> {
+        avcodec::send_frame(codec_ctx, frame).map_err(PreviewImageError::from_ffmpeg_error)?;
         drain_packets(codec_ctx, fmt_ctx, packet, false)?;
-        avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
+        avcodec::send_frame(codec_ctx, ptr::null())
+            .map_err(PreviewImageError::from_ffmpeg_error)?;
         drain_packets(codec_ctx, fmt_ctx, packet, true)?;
         Ok(())
     })();
@@ -540,7 +542,7 @@ unsafe fn drain_packets(
     fmt_ctx: *mut ff_sys::AVFormatContext,
     packet: *mut ff_sys::AVPacket,
     until_eof: bool,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     loop {
         match avcodec::receive_packet(codec_ctx, packet) {
             Ok(()) => {
@@ -548,12 +550,12 @@ unsafe fn drain_packets(
                 let ret = av_interleaved_write_frame(fmt_ctx, packet);
                 av_packet_unref(packet);
                 if ret < 0 {
-                    return Err(EncodeError::from_ffmpeg_error(ret));
+                    return Err(PreviewImageError::from_ffmpeg_error(ret));
                 }
             }
             Err(e) if e == ff_sys::error_codes::EOF => break,
             Err(e) if !until_eof && e == ff_sys::error_codes::EAGAIN => break,
-            Err(e) => return Err(EncodeError::from_ffmpeg_error(e)),
+            Err(e) => return Err(PreviewImageError::from_ffmpeg_error(e)),
         }
     }
     Ok(())
@@ -583,7 +585,7 @@ pub(super) fn generate_gif_preview(
     fps: f64,
     width: u32,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     // SAFETY: generate_gif_preview_unsafe manages all raw pointer lifetimes
     //         per avfilter and avcodec ownership rules.
     unsafe { generate_gif_preview_unsafe(input, start, duration, fps, width, output) }
@@ -596,7 +598,7 @@ unsafe fn generate_gif_preview_unsafe(
     fps: f64,
     width: u32,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     let start_sec = start.as_secs_f64();
     let dur_sec = duration.as_secs_f64();
 
@@ -644,12 +646,12 @@ unsafe fn generate_palette_unsafe(
     fps: f64,
     width: u32,
     palette_path: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     macro_rules! bail {
         ($graph:expr, $reason:expr) => {{
             let mut g = $graph;
             avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -660,29 +662,29 @@ unsafe fn generate_palette_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_args = CString::new(format!("filename={path_str}")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "input path contains null byte".to_string(),
         }
     })?;
     let trim_args =
         CString::new(format!("start={start_sec:.6}:duration={dur_sec:.6}")).map_err(|_| {
-            EncodeError::MediaOperationFailed {
+            PreviewImageError::OperationFailed {
                 reason: "trim args contain null byte".to_string(),
             }
         })?;
     let fps_cstr =
-        CString::new(format!("{fps:.4}")).map_err(|_| EncodeError::MediaOperationFailed {
+        CString::new(format!("{fps:.4}")).map_err(|_| PreviewImageError::OperationFailed {
             reason: "fps arg contains null byte".to_string(),
         })?;
     let scale_args = CString::new(format!("{width}:-2:flags=lanczos")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "scale args contain null byte".to_string(),
         }
     })?;
 
     let graph = avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -854,7 +856,7 @@ unsafe fn generate_palette_unsafe(
     avfilter_graph_free(std::ptr::addr_of_mut!(g));
 
     if palette_frame.is_null() {
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: "palettegen produced no palette frame".to_string(),
         });
     }
@@ -886,12 +888,12 @@ unsafe fn encode_gif_unsafe(
     width: u32,
     palette_path: &Path,
     output: &Path,
-) -> Result<(), EncodeError> {
+) -> Result<(), PreviewImageError> {
     macro_rules! bail {
         ($graph:expr, $reason:expr) => {{
             let mut g = $graph;
             avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(EncodeError::MediaOperationFailed {
+            return Err(PreviewImageError::OperationFailed {
                 reason: format!("{}", $reason),
             });
         }};
@@ -902,7 +904,7 @@ unsafe fn encode_gif_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_vid_args = CString::new(format!("filename={path_str}")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "input path contains null byte".to_string(),
         }
     })?;
@@ -915,29 +917,29 @@ unsafe fn encode_gif_unsafe(
         .replace('\\', "/")
         .replace(':', "\\:");
     let movie_pal_args = CString::new(format!("filename={pal_str}")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "palette path contains null byte".to_string(),
         }
     })?;
     let trim_args =
         CString::new(format!("start={start_sec:.6}:duration={dur_sec:.6}")).map_err(|_| {
-            EncodeError::MediaOperationFailed {
+            PreviewImageError::OperationFailed {
                 reason: "trim args contain null byte".to_string(),
             }
         })?;
     let fps_cstr =
-        CString::new(format!("{fps:.4}")).map_err(|_| EncodeError::MediaOperationFailed {
+        CString::new(format!("{fps:.4}")).map_err(|_| PreviewImageError::OperationFailed {
             reason: "fps arg contains null byte".to_string(),
         })?;
     let scale_args = CString::new(format!("{width}:-2:flags=lanczos")).map_err(|_| {
-        EncodeError::MediaOperationFailed {
+        PreviewImageError::OperationFailed {
             reason: "scale args contain null byte".to_string(),
         }
     })?;
 
     let graph = avfilter_graph_alloc();
     if graph.is_null() {
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: "avfilter_graph_alloc failed".to_string(),
         });
     }
@@ -1112,16 +1114,17 @@ unsafe fn encode_gif_unsafe(
 
     // ── Open GIF output ───────────────────────────────────────────────────────
     let mut fmt_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
-    let c_path = CString::new(
-        output
-            .to_str()
-            .ok_or_else(|| EncodeError::CannotCreateFile {
-                path: output.to_path_buf(),
-            })?,
-    )
-    .map_err(|_| EncodeError::CannotCreateFile {
-        path: output.to_path_buf(),
-    })?;
+    let c_path =
+        CString::new(
+            output
+                .to_str()
+                .ok_or_else(|| PreviewImageError::CannotCreateFile {
+                    path: output.to_path_buf(),
+                })?,
+        )
+        .map_err(|_| PreviewImageError::CannotCreateFile {
+            path: output.to_path_buf(),
+        })?;
 
     let ret = avformat_alloc_output_context2(
         &mut fmt_ctx,
@@ -1132,7 +1135,7 @@ unsafe fn encode_gif_unsafe(
     if ret < 0 || fmt_ctx.is_null() {
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
 
     let stream = avformat_new_stream(fmt_ctx, ptr::null());
@@ -1140,14 +1143,14 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::Ffmpeg {
+        return Err(PreviewImageError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed".to_string(),
         });
     }
 
     let codec = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_GIF).ok_or_else(|| {
-        EncodeError::UnsupportedCodec {
+        PreviewImageError::UnsupportedCodec {
             codec: "gif".to_string(),
         }
     })?;
@@ -1158,7 +1161,7 @@ unsafe fn encode_gif_unsafe(
             avformat_free_context(fmt_ctx);
             let mut g = graph;
             avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e));
         }
     };
 
@@ -1169,7 +1172,7 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::Ffmpeg {
+        return Err(PreviewImageError::Ffmpeg {
             code: 0,
             message: "av_frame_alloc failed".to_string(),
         });
@@ -1182,7 +1185,7 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::MediaOperationFailed {
+        return Err(PreviewImageError::OperationFailed {
             reason: format!("no frames from GIF filter graph code={ret}"),
         });
     }
@@ -1219,7 +1222,7 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::from_ffmpeg_error(e));
+        return Err(PreviewImageError::from_ffmpeg_error(e));
     }
 
     // Copy codec parameters to stream.
@@ -1241,7 +1244,7 @@ unsafe fn encode_gif_unsafe(
             avformat_free_context(fmt_ctx);
             let mut g = graph;
             avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(EncodeError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e));
         }
     };
     (*fmt_ctx).pb = io_ctx;
@@ -1255,7 +1258,7 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::from_ffmpeg_error(ret));
+        return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
 
     let packet = av_packet_alloc();
@@ -1268,20 +1271,21 @@ unsafe fn encode_gif_unsafe(
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(EncodeError::Ffmpeg {
+        return Err(PreviewImageError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
     }
 
     // ── Encode all frames ─────────────────────────────────────────────────────
-    let encode_result = (|| -> Result<(), EncodeError> {
+    let encode_result = (|| -> Result<(), PreviewImageError> {
         let mut frame_counter: i64 = 0;
 
         // Encode the first frame we already pulled.
         (*first_frame).pts = frame_counter;
         frame_counter += 1;
-        avcodec::send_frame(codec_ctx, first_frame).map_err(EncodeError::from_ffmpeg_error)?;
+        avcodec::send_frame(codec_ctx, first_frame)
+            .map_err(PreviewImageError::from_ffmpeg_error)?;
         drain_packets(codec_ctx, fmt_ctx, packet, false)?;
 
         // Pull and encode remaining frames.
@@ -1299,7 +1303,7 @@ unsafe fn encode_gif_unsafe(
             (*frame).pts = frame_counter;
             frame_counter += 1;
             let send_result =
-                avcodec::send_frame(codec_ctx, frame).map_err(EncodeError::from_ffmpeg_error);
+                avcodec::send_frame(codec_ctx, frame).map_err(PreviewImageError::from_ffmpeg_error);
             let mut f = frame;
             av_frame_free(std::ptr::addr_of_mut!(f));
             send_result?;
@@ -1307,7 +1311,8 @@ unsafe fn encode_gif_unsafe(
         }
 
         // Flush encoder.
-        avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
+        avcodec::send_frame(codec_ctx, ptr::null())
+            .map_err(PreviewImageError::from_ffmpeg_error)?;
         drain_packets(codec_ctx, fmt_ctx, packet, true)?;
         Ok(())
     })();
