@@ -1,13 +1,21 @@
 name: Release-plz
 
 # Lockstep release for the workspace: every crate shares `[workspace.package].version`.
-# On every push to `main`:
 #
-#   - `release-plz-release` publishes any crate whose Cargo.toml version is not yet
-#     on crates.io (in dependency order), then cuts a SINGLE `v<version>` tag and a
-#     SINGLE GitHub Release whose body is the matching section of `CHANGELOG.md`.
-#     It is idempotent: nothing is published once the version is on crates.io, and
-#     the tag/release step is skipped once `v<version>` exists.
+# The release runs ONLY when `[workspace.package].version` is raised. The
+# `check-version` job (no environment, no approval) compares the version in
+# `Cargo.toml` against the last released `v*` tag and:
+#   - version unchanged (== last release) -> does nothing (the `release-plz-release`
+#     job is skipped, so no "pending approval" appears);
+#   - version raised (> last release, or no tag yet) -> runs `release-plz-release`;
+#   - version LOWER than the last release -> fails the workflow (a mistaken/downgraded
+#     bump stops safely instead of publishing).
+#
+# `release-plz-release` publishes any crate whose version is not yet on crates.io
+# (in dependency order), then cuts a SINGLE `v<version>` tag and a SINGLE GitHub
+# Release whose body is the matching section of `CHANGELOG.md`. It is idempotent:
+# nothing is published once the version is on crates.io, and the tag/release step is
+# skipped once `v<version>` exists.
 #
 # There is no version-bump PR job: versions and the changelog are curated by hand.
 # To release, merge a PR that bumps `[workspace.package].version` (and the matching
@@ -16,33 +24,76 @@ name: Release-plz
 #
 # Publishing uses crates.io Trusted Publishing (OIDC) NATIVELY: release-plz performs
 # the token exchange itself, so there is NO long-lived `CARGO_REGISTRY_TOKEN`. Each
-# crate must have a Trusted Publisher configured on crates.io (workflow
-# `release.yml`, environment `crates-io`). release-plz creates no tags or GitHub
-# Releases itself (`git_tag_enable` / `git_release_enable` are false in release-plz.toml);
-# this workflow owns the single tag + Release.
+# crate must have a Trusted Publisher configured on crates.io (workflow `release.yml`,
+# environment `crates-io`). release-plz creates no tags or GitHub Releases itself
+# (`git_tag_enable` / `git_release_enable` are false in release-plz.toml); this
+# workflow owns the single tag + Release.
 #
 # The release job runs in the `crates-io` GitHub environment: it scopes the OIDC
-# token and (if the environment has required reviewers) gates each publish behind
-# manual approval. As a result the release job enters "pending approval" on every
-# push to main; approve it only when a version-bump PR has been merged and a release
-# is intended.
+# token and (if the environment has required reviewers) gates publishing behind
+# manual approval. Because it is gated on a genuine version increase, the pending
+# approval only appears when a version-bump PR has been merged.
 #
-# The release-plz action is pinned to a full commit SHA (it holds the OIDC token
-# and contents:write), matching how the other workflows pin third-party actions.
+# Third-party actions are pinned to a full commit SHA (release-plz holds the OIDC
+# token and contents:write), matching how the other workflows pin actions.
 
 on:
   push:
     branches:
       - main
+    # Only start the workflow when the version (or this workflow) could have changed.
+    # The version lives in `Cargo.toml`, so a downgrade always touches it and is still
+    # caught by `check-version`.
+    paths:
+      - Cargo.toml
+      - .github/workflows/release.yml
 
 permissions:
   contents: read
 
 jobs:
+  check-version:
+    name: Check version bump
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'itsakeyfut' }}
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true # need the release tags to find the last released version
+          persist-credentials: false
+
+      - name: Compare the workspace version against the last released tag
+        id: check
+        run: |
+          set -euo pipefail
+          new="$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")"
+          latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -1)"
+          latest="${latest_tag#v}"
+          echo "version=${new}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${latest}" ]; then
+            echo "No release tag yet; ${new} is the first release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          elif [ "${new}" = "${latest}" ]; then
+            echo "Version ${new} equals the last release; nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          elif [ "$(printf '%s\n%s\n' "${latest}" "${new}" | sort -V | tail -1)" = "${new}" ]; then
+            echo "Version raised ${latest} -> ${new}; releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::version ${new} is lower than the last released ${latest} - refusing to release (downgrade)"
+            exit 1
+          fi
+
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'itsakeyfut' }}
+    needs: check-version
+    if: ${{ github.repository_owner == 'itsakeyfut' && needs.check-version.outputs.should_release == 'true' }}
     # Scopes the crates.io OIDC token to this environment (matching each crate's
     # Trusted Publisher config) and gates publishing behind manual approval.
     environment: crates-io
@@ -73,17 +124,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # NO CARGO_REGISTRY_TOKEN: release-plz performs the OIDC exchange itself.
 
-      - name: Read the workspace version
-        id: ver
-        run: |
-          version="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.name == "avio") | .version')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Cut the single v<version> tag and GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
           set -euo pipefail
           if gh release view "v${VERSION}" >/dev/null 2>&1; then
