@@ -1,66 +1,111 @@
-# v0.17.0 — Professional Interchange & GPU Acceleration
+# v0.17.0 — Editing Model Maturity & Library Hardening
 
-**Goal**: Enable round-trip interoperability with industry-standard NLE tools (Final Cut Pro, Premiere Pro, DaVinci Resolve, Avid) via EDL and FCPXML, add OMF/AAF audio project support, and provide GPU-accelerated filter processing for real-time capable throughput.
+**Goal**: Make `avio`'s editing model genuinely adoptable as an editor host's *single editing
+document* — a lean, modern NLE model edited through a usable command/history API — and harden the
+`ff-*` primitives while adding the source and audio primitives that the new model relies on.
+
+The engine requirements are drawn from #1414, the capability catalog produced by making
+`avio::Timeline` / `avio::Clip` the single editing document of `avio-editor-demo`. The design goal
+is a lean, modern model built without waste — not a one-to-one copy of the demo's host-side model.
 
 **Prerequisite**: v0.16.0 complete.
 
-**Crates in scope**: `ff-interchange` (new crate), `ff-filter`, `ff-decode`, `ff-encode`
+**Crates in scope**: `avio` (engine), `ff-filter`, `ff-encode`, `ff-remux`, `ff-preview`, `ff-render`.
+
+**Out of scope (deferred to later model milestones)**: a per-clip retiming / segment model (freeze
+that extends clip length, speed ramps / time remap); a typed, re-editable per-clip effect-parameter
+model. Both are independent subsystems and get their own milestones.
 
 ---
 
-## Requirements
+## Requirements — Engine (`avio`): a modern editing model
 
-### EDL (Edit Decision List) Support
+### Stable identity
 
-- An EDL file (CMX 3600 format) can be parsed into a Rust data structure representing the cut list: clip source, in/out points, record in/out points, and transition type.
-- An EDL can be exported from a clip list assembled in the library.
-- EDL round-trip: import → reconstruct timeline → export produces a semantically equivalent EDL.
-- Supported EDL event types: cut, dissolve, wipe (basic).
-- Reel names are preserved through import/export.
-- Common use case: conforming an offline edit (proxy) to online (full-res) material.
+- Every clip and every track has a stable identity assigned at construction and preserved across
+  edits, undo/redo, insertion, removal, and reordering.
+- Edit commands address clips and tracks by identity, not by position, so an in-progress gesture
+  stays valid when the timeline changes around it.
+- A host can key its own authoring state (selection, thumbnails, per-clip UI) to a clip by its
+  identity without stuffing a surrogate id into clip metadata.
 
-### Final Cut Pro XML (FCPXML) Support
+### Track model
 
-- An FCPXML file (version 1.9 and 1.10) can be parsed into a Rust data structure representing the project: sequences, clips, asset references, basic effects, and markers.
-- An FCPXML can be exported from a project assembled in the library.
-- Asset references (file paths) are resolved relative to a configurable media root.
-- Supported FCPXML elements: `project`, `sequence`, `clip`, `audio-clip`, `title` (basic), `marker`, `chapter-marker`, `transition`.
-- Common use case: exporting a cut list from a Rust application for finishing in Final Cut Pro.
+- Tracks are first-class objects (video and audio) carrying at least name, mute, solo, enabled, and
+  lock state.
+- Mute, solo, and enabled are honored consistently by both export render and preview derivation.
 
-### Premiere Pro / DaVinci Resolve XML
+### Host-adoptable edit & history API
 
-- A Premiere Pro-compatible XML (based on the Final Cut Pro 7 XML schema) can be exported, enabling import into Premiere Pro and DaVinci Resolve.
-- Supported elements: sequences, video/audio tracks, clips, in/out points, basic transitions.
+- The editor can update the current document version in place, without pushing a new undo step
+  (amend), so an in-place rich edit or a live drag does not flood the history.
+- A set of commands can be grouped so that one user gesture (a drag emitting many values, a ripple,
+  a multi-clip edit) collapses to exactly one undo step.
+- An externally constructed or externally mutated `Timeline` can be seated as the current version, so
+  a host that assembles a timeline outside the command stream can still adopt the editor's history.
+- The full per-clip property surface — color correction, fades, transition, scale, rotation, the
+  effect chain, keyframe/animation tracks, metadata, proxy, and pitch — is editable through the
+  undoable command path (for example, an opaque per-clip patch command alongside the existing typed
+  commands), so per-clip editing is no longer limited to a handful of typed properties.
 
-### OMF / AAF (Audio Post-Production)
+### Core timeline operations
 
-- An OMF (Open Media Framework) or AAF (Advanced Authoring Format) file can be exported containing the audio tracks from a project, suitable for delivery to a Pro Tools or Nuendo audio post session.
-- Clip metadata (reel name, timecode, sample rate) is preserved.
-- Audio media can be embedded in the OMF or referenced externally.
-- Common use case: sending a picture-locked timeline's audio to a mixer for final audio post.
+- A clip can be split at a point into two contiguous clips; the right-hand clip keeps the source
+  properties and clears any leading transition/fade.
+- A clip can be moved to a different track in a single operation that preserves its identity.
+- Ripple delete/edit — removing or trimming a clip and closing the resulting gap by shifting later
+  clips — is expressible as a single atomic (one-undo-step) operation.
 
-### GPU-Accelerated Filter Processing
+### Per-clip transform, framing, and audio completeness
 
-- The following commonly used filters can be executed on the GPU when a compatible device is available, falling back to CPU when not:
-  - Scale / resize
-  - Color correction (brightness, contrast, saturation, curves)
-  - 3D LUT application
-  - Overlay / composite
-  - Blur (Gaussian)
-- GPU acceleration is available via:
-  - **CUDA** (NVIDIA): requires FFmpeg built with `--enable-cuda-llvm`
-  - **VideoToolbox** (Apple Silicon / macOS): hardware-native
-  - **VAAPI** (Linux / Intel / AMD): requires `--enable-vaapi`
-- GPU acceleration is opt-in: enabled by passing `GpuAccel::Cuda` / `GpuAccel::VideoToolbox` / `GpuAccel::Vaapi` to the filter graph builder.
-- When the selected GPU device is unavailable, the library transparently falls back to the CPU path and logs `log::warn!("gpu_accel unavailable, falling back to cpu device={:?}")`.
-- GPU texture output: a `GpuFrameSink` variant allows delivering decoded + filtered frames as GPU-resident textures (CUDA device memory or Metal textures) to avoid a GPU→CPU→GPU round-trip in render pipelines.
+- Per-clip scale and rotation are first-class fields with keyframe tracks, at parity with the
+  existing per-clip opacity, position, and volume.
+- Each clip has a framing mode against the project canvas — fill (cover + crop) and fit
+  (contain + letterbox) — applied by the compositor without a hand-built crop/scale/pad chain.
+- Per-clip audio pitch is a first-class, animatable (keyframe-able), undoable field.
+- A track- or timeline-level audio effect chain (for example, EBU R128 loudness normalization) can be
+  applied on render, mirroring per-clip audio effects.
 
-### Hardware-Accelerated Encode with GPU Filters
+### Source model
 
-- A pipeline of GPU-decoded → GPU-filtered → GPU-encoded is supported end-to-end without any CPU round-trip for the pixel data, using:
-  - NVIDIA: `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` after CUDA filter graph
-  - Apple: `h264_videotoolbox` / `hevc_videotoolbox` after VideoToolbox decode
-- This enables real-time 4K transcoding with filter application on supported hardware.
+- A clip's source is a typed value (a `ClipSource`), not only a file path: at minimum a media file
+  and a text/title source (a solid-color source is desirable in this milestone; further generated
+  sources are future work).
+- Text/title clips are first-class: each carries its own text, style, position, and duration, is
+  independently movable and trimmable, can appear multiple times on its own lane, and is composited
+  per clip — distinct from a single whole-canvas overlay string.
+
+### Persistence
+
+- The editing document (timeline, tracks, clips, and their animation tracks) can be serialized and
+  deserialized behind an optional `serde` feature, so a host can save and reload a project.
+
+---
+
+## Requirements — Primitives (`ff-*`): hardening and aligned capabilities
+
+### Robustness and safety
+
+- `ff-encode` and `ff-remux` build clean under the workspace clippy configuration without a
+  crate-wide lint-suppression block; any remaining allowances are narrowed to justified, per-item
+  cases.
+- `ff-preview` reports a poisoned decode thread as a typed, recoverable error rather than panicking,
+  and its playback/seek/AV-sync paths have integration coverage.
+- `ff-render` GPU nodes have test coverage, exercised headlessly where the environment permits.
+
+### Source primitives (backing the engine's `ClipSource`)
+
+- A text/title layer can be rendered from a text spec (string, style, position) into a compositable
+  frame/layer, with no knowledge of timeline, track, or clip (model-agnostic).
+- A solid/color source can generate a compositable frame/layer.
+
+### High-quality audio pitch and time-stretch (Oto-MAD)
+
+- Pitch-shift and time-stretch offer a high-quality, formant-preserving backend (for example,
+  librubberband) in addition to the existing `asetrate`/`atempo` path, selectable by the caller, so a
+  voice clip can be mapped across roughly two octaves without the artifacts of the simple method.
+- When the high-quality backend is unavailable in the FFmpeg build, the primitive falls back to the
+  existing path.
 
 ---
 
@@ -68,20 +113,32 @@
 
 | Topic | Decision |
 |---|---|
-| New crate | `ff-interchange`: pure-Rust parser/writer for EDL, FCPXML, Premiere XML, OMF/AAF; no FFmpeg dependency |
-| EDL format | CMX 3600 (industry standard); additional formats added if demand arises |
-| FCPXML version | 1.9 and 1.10 (current as of 2025); older versions handled on best-effort basis |
-| OMF/AAF | Export-only at this stage; import is complex and deferred |
-| GPU filter backend | libavfilter CUDA/VAAPI graph; VideoToolbox via `vf_scale_vt` |
-| GPU fallback | Silent CPU fallback with `log::warn!`; no error returned for missing GPU |
-| GPU texture sink | Optional; behind `gpu-sink` feature flag |
+| Clip / track identity | Opaque stable ids assigned at construction; commands are id-addressed |
+| Command coverage | An opaque per-clip patch command plus `Batch`, rather than one command per property |
+| Editor API | Gains amend / in-place update, group (coalesce) commit, and seating an external `Timeline` |
+| Source model | `ClipSource` enum replaces `source: PathBuf`; file + text this milestone (solid color desirable) |
+| Text/solid sources | Provided as `ff-filter` source primitives; no new crate unless design requires it |
+| Framing | A per-clip fit/fill mode composed from existing scale/crop/pad; no new filter primitive |
+| Per-clip pitch | Engine exposes a declarative/animatable field over the existing `ff-filter` pitch step |
+| HQ pitch backend | librubberband behind availability/feature detection, with graceful fallback |
+| serde | Optional, behind a `serde` feature (the `ff-filter` animation types already gate one this way) |
+| Deferred | Retiming / freeze-length / speed ramps and typed effect parameters are separate milestones |
 
 ---
 
 ## Definition of Done
 
-- EDL round-trip test: CMX 3600 file imported, timeline reconstructed, re-exported, and diff'd against original (ignoring whitespace)
-- FCPXML export test: exported file opens in Final Cut Pro without errors
-- Premiere XML import tested in DaVinci Resolve
-- GPU scale filter (CUDA or VAAPI) produces pixel-identical output to CPU path on a test frame
-- GPU end-to-end pipeline (decode → filter → encode, no CPU copy) completes a 1080p transcode in CI
+- An editor host can adopt `avio::Timeline` / `avio::Clip` / `avio::Editor` as its single editing
+  document without the #1414 host-side workarounds for the in-scope gaps (surrogate ids, serde mirror
+  DTO, parallel track flags, a re-implemented history, hand-composed split / cross-track move / ripple,
+  and sidecar title clips).
+- A project can be saved and reloaded round-trip, reconstructing an equivalent document.
+- A gesture that emits many values collapses to a single undo step; undo and redo restore prior
+  versions.
+- Splitting, cross-track move, and ripple delete are each achievable as one atomic operation.
+- Per-clip scale, rotation, fit/fill, and pitch render and preview identically through the shared
+  derivation.
+- The high-quality pitch/time-stretch backend produces formant-preserving output, verifiable against
+  the existing `asetrate`/`atempo` path.
+- `ff-encode` and `ff-remux` build with no crate-wide clippy-allow block; `ff-preview` no longer
+  panics on a decode-thread failure.
