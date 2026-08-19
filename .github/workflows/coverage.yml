@@ -1,0 +1,64 @@
+name: Coverage
+
+# Informational code coverage. This workflow is deliberately SEPARATE from ci.yml
+# and is NOT part of ci.yml's required `ci` aggregation gate, so a coverage or
+# Codecov hiccup can never block a merge (see codecov.yml for the policy).
+#
+# It runs on macOS because the Linux CI FFmpeg is built with no individual filters
+# (.github/actions/setup-ffmpeg), so filter/integration tests skip there and would
+# under-report coverage. macOS uses Homebrew's full FFmpeg, so those tests execute.
+
+on:
+  # PR delta is the actionable signal (Codecov comments the change before merge).
+  pull_request:
+    branches: [main]
+  # Weekly main-branch snapshot for the coverage trend. A solo, low-volume repo
+  # does not need a heavy macOS run on every merge, so push[main] is intentionally
+  # omitted in favour of this periodic run (Codecov's base refreshes weekly).
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  # On-demand run.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same PR; never cancel scheduled/manual runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  coverage:
+    name: Coverage (macOS, full FFmpeg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Full FFmpeg (all filters), matching the macOS test leg in ci.yml, so
+      # filter/integration tests actually run under instrumentation.
+      - name: Install FFmpeg (macOS)
+        run: brew install ffmpeg pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # Same coverage surface as the test job (`--all --all-features`).
+      - name: Collect coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          # Informational only: a Codecov outage must not fail this job.
+          fail_ci_if_error: false
