@@ -22,8 +22,8 @@
 use std::{path::PathBuf, process};
 
 use avio::{
-    AnimatedValue, AudioCodec, AudioTrack, ChannelLayout, MultiTrackAudioMixer, MultiTrackComposer,
-    VideoCodec, VideoEncoder, VideoLayer,
+    AnimatedValue, AudioCodec, AudioTrack, ChannelLayout, LayerSource, MultiTrackAudioMixer,
+    MultiTrackComposer, VideoCodec, VideoEncoder, VideoLayer,
 };
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -89,9 +89,8 @@ fn main() {
 
     let mut video_graph = match MultiTrackComposer::new(args.width, args.height)
         .add_layer(VideoLayer {
-            source: args.base.clone(),
+            source: LayerSource::File(args.base.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -103,9 +102,8 @@ fn main() {
             effects: vec![],
         })
         .add_layer(VideoLayer {
-            source: args.overlay.clone(),
+            source: LayerSource::File(args.overlay.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(f64::from(overlay_x)),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(0.5),

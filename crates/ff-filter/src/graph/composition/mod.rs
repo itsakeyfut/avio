@@ -20,7 +20,7 @@ mod video_concatenator;
 
 pub use audio_concatenator::AudioConcatenator;
 pub use crossfade_joiner::CrossfadeJoiner;
-pub use multi_track_composer::{MultiTrackComposer, ProxySource, VideoLayer};
+pub use multi_track_composer::{LayerSource, MultiTrackComposer, ProxySource, VideoLayer};
 pub use multi_track_mixer::{AudioTrack, MultiTrackAudioMixer};
 pub use realtime_composer::{
     LavfiSource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor,

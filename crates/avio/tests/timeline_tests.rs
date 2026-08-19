@@ -421,3 +421,67 @@ fn timeline_with_volume_animation_should_encode_successfully() {
         "output must have non-zero duration"
     );
 }
+
+/// A timeline built entirely from generated (Solid + Text) clips renders to a
+/// probe-valid file with no source media on disk. Exercises the compositor's
+/// generated-source path (color/drawtext, not the lavfi demuxer — RK-013) end to
+/// end through the engine. Filter/encoder unavailable → skip (RK-002).
+#[test]
+fn timeline_render_generated_clips_should_produce_valid_output() {
+    use ff_format::{Color, TextSpec};
+
+    let out_path = test_output_path("timeline_generated_out.mp4");
+    let _g_out = FileGuard::new(out_path.clone());
+
+    // Generated sources are infinite; trim gives each a 1-second out_point.
+    let solid = Clip::solid(Color::rgb(0, 0, 255)).trim(Duration::ZERO, Duration::from_secs(1));
+    let text = Clip::text(TextSpec::new("title"))
+        .trim(Duration::ZERO, Duration::from_secs(1))
+        .with_opacity(0.8);
+
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![solid])
+        .video_track(vec![text])
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(TimelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(TimelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(TimelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+    assert!(
+        info.has_video(),
+        "generated-clip render must contain a video stream"
+    );
+    let video = info.video_stream(0).expect("video stream must be present");
+    assert_eq!(video.width(), W, "output width must match canvas");
+    assert_eq!(video.height(), H, "output height must match canvas");
+}

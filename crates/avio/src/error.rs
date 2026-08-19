@@ -49,6 +49,15 @@ pub enum TimelineError {
         /// Absolute or relative path that could not be found.
         path: String,
     },
+
+    /// A generated (`Text`/`Solid`) clip was placed on an active track without an
+    /// out-point.
+    ///
+    /// A generated source synthesizes frames indefinitely, so it has no intrinsic
+    /// end; the clip must set an [`out_point`](crate::Clip::out_point) (e.g. via
+    /// [`Clip::trim`](crate::Clip::trim)) to bound its duration before rendering.
+    #[error("generated source clip needs an out_point to bound its duration")]
+    GeneratedSourceNeedsDuration,
 }
 
 #[cfg(test)]

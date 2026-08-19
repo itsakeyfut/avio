@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
-    AnimatedValue, AudioConcatenator, AudioTrack, FilterStep, MultiTrackAudioMixer,
+    AnimatedValue, AudioConcatenator, AudioTrack, FilterStep, LayerSource, MultiTrackAudioMixer,
     MultiTrackComposer, VideoConcatenator, VideoLayer, XfadeTransition,
     animation::{AnimationTrack, Easing, Keyframe},
 };
@@ -81,9 +81,8 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
     // ── Step 2: build MultiTrackComposer with three layers ─────────────────────
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
-            source: src1_path.clone(),
+            source: LayerSource::File(src1_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -95,9 +94,8 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             effects: vec![],
         })
         .add_layer(VideoLayer {
-            source: src2_path.clone(),
+            source: LayerSource::File(src2_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(160.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -109,9 +107,8 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             effects: vec![],
         })
         .add_layer(VideoLayer {
-            source: src3_path.clone(),
+            source: LayerSource::File(src3_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(134.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -551,9 +548,8 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
 
     let mut composer = match MultiTrackComposer::new(W, H)
         .add_layer(VideoLayer {
-            source: bg_path.clone(),
+            source: LayerSource::File(bg_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -565,9 +561,8 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             effects: vec![],
         })
         .add_layer(VideoLayer {
-            source: layer_path.clone(),
+            source: LayerSource::File(layer_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -816,9 +811,8 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
 
     let mut composer = match MultiTrackComposer::new(W, H)
         .add_layer(VideoLayer {
-            source: src_path.clone(),
+            source: LayerSource::File(src_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -867,9 +861,8 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
 #[test]
 fn composite_op_in_layer_should_build_and_produce_frame() {
     let layer = VideoLayer {
-        source: "color=c=white:s=64x64:r=25:d=1".into(),
+        source: LayerSource::Lavfi("color=c=white:s=64x64:r=25:d=1".to_string()),
         proxy: None,
-        input_format: Some("lavfi".to_string()),
         x: AnimatedValue::Static(0.0),
         y: AnimatedValue::Static(0.0),
         scale_x: AnimatedValue::Static(1.0),
@@ -913,9 +906,8 @@ fn composite_op_in_layer_should_build_and_produce_frame() {
 #[test]
 fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
     let layer = VideoLayer {
-        source: "color=c=white:s=64x64:r=25:d=1".into(),
+        source: LayerSource::Lavfi("color=c=white:s=64x64:r=25:d=1".to_string()),
         proxy: None,
-        input_format: Some("lavfi".to_string()),
         x: AnimatedValue::Static(0.0),
         y: AnimatedValue::Static(0.0),
         scale_x: AnimatedValue::Static(1.0),
@@ -961,9 +953,8 @@ fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
 #[test]
 fn trim_and_offset_effects_should_build_and_produce_frame() {
     let layer = VideoLayer {
-        source: "color=c=white:s=64x64:r=25:d=2".into(),
+        source: LayerSource::Lavfi("color=c=white:s=64x64:r=25:d=2".to_string()),
         proxy: None,
-        input_format: Some("lavfi".to_string()),
         x: AnimatedValue::Static(0.0),
         y: AnimatedValue::Static(0.0),
         scale_x: AnimatedValue::Static(1.0),
@@ -1057,9 +1048,8 @@ fn audio_trim_and_offset_effects_should_build_mix_and_pull() {
 #[test]
 fn xfade_effect_layer_should_build_and_produce_frame() {
     let layer_a = VideoLayer {
-        source: "color=c=red:s=64x64:r=25:d=2".into(),
+        source: LayerSource::Lavfi("color=c=red:s=64x64:r=25:d=2".to_string()),
         proxy: None,
-        input_format: Some("lavfi".to_string()),
         x: AnimatedValue::Static(0.0),
         y: AnimatedValue::Static(0.0),
         scale_x: AnimatedValue::Static(1.0),
@@ -1071,9 +1061,8 @@ fn xfade_effect_layer_should_build_and_produce_frame() {
         effects: vec![],
     };
     let layer_b = VideoLayer {
-        source: "color=c=blue:s=64x64:r=25:d=2".into(),
+        source: LayerSource::Lavfi("color=c=blue:s=64x64:r=25:d=2".to_string()),
         proxy: None,
-        input_format: Some("lavfi".to_string()),
         x: AnimatedValue::Static(0.0),
         y: AnimatedValue::Static(0.0),
         scale_x: AnimatedValue::Static(1.0),
@@ -1105,6 +1094,51 @@ fn xfade_effect_layer_should_build_and_produce_frame() {
             assert_eq!(frame.height(), 64, "xfade must not change frame height");
         }
         Ok(None) => println!("Skipping: xfade graph produced no frame"),
+        Err(e) => println!("Skipping: pull_video failed: {e}"),
+    }
+}
+
+/// A generated Solid layer and a generated Text layer compose in one multi-layer
+/// graph and produce a canvas-sized frame. Generated sources build from the
+/// `color`(+`drawtext`) filter nodes, not the lavfi demuxer (RK-013), so this
+/// verifies the compositor's generated-source path end to end. `build`/`pull`
+/// failure → skip (RK-002).
+#[test]
+fn generated_solid_and_text_layers_should_compose_and_produce_frame() {
+    use ff_format::{Color, TextSpec};
+
+    let base = |source: LayerSource| VideoLayer {
+        source,
+        proxy: None,
+        x: AnimatedValue::Static(0.0),
+        y: AnimatedValue::Static(0.0),
+        scale_x: AnimatedValue::Static(1.0),
+        scale_y: AnimatedValue::Static(1.0),
+        rotation: AnimatedValue::Static(0.0),
+        opacity: AnimatedValue::Static(1.0),
+        blend_mode: ff_filter::BlendMode::Normal,
+        composite_op: ff_filter::CompositeOp::Over,
+        effects: vec![],
+    };
+
+    let mut graph = match MultiTrackComposer::new(128, 64)
+        .frame_rate(25.0)
+        .add_layer(base(LayerSource::Solid(Color::rgb(0, 0, 255))))
+        .add_layer(base(LayerSource::Text(TextSpec::new("hi"))))
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+    match graph.pull_video() {
+        Ok(Some(frame)) => {
+            assert_eq!(frame.width(), 128, "generated layers must fill the canvas");
+            assert_eq!(frame.height(), 64, "generated layers must fill the canvas");
+        }
+        Ok(None) => println!("Skipping: generated composition produced no frame"),
         Err(e) => println!("Skipping: pull_video failed: {e}"),
     }
 }

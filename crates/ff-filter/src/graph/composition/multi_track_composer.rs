@@ -4,12 +4,34 @@
 
 use std::path::PathBuf;
 
+use ff_format::{Color, TextSpec};
+
 use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
 use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::Rgb;
+
+// ── LayerSource ───────────────────────────────────────────────────────────────
+
+/// The source of a composited [`VideoLayer`]'s frames.
+///
+/// `File`/`Lavfi` are opened via the `movie` filter (a media file, or a `lavfi`
+/// filtergraph string via the lavfi demuxer). `Text`/`Solid` are **generated**
+/// inline via the `color` filter source (and `drawtext` for text), so they render
+/// without any file or the lavfi demuxer.
+#[derive(Debug, Clone)]
+pub enum LayerSource {
+    /// A media file opened via `movie=filename=<path>`.
+    File(PathBuf),
+    /// A `lavfi` filtergraph string opened via `movie=<str>:format_name=lavfi`.
+    Lavfi(String),
+    /// A generated text/title layer over a transparent canvas.
+    Text(TextSpec),
+    /// A generated solid-color fill.
+    Solid(Color),
+}
 
 // ── ProxySource ───────────────────────────────────────────────────────────────
 
@@ -47,23 +69,16 @@ pub struct ProxySource {
 /// the value at `Duration::ZERO`; per-frame updates are added in issue #363.
 #[derive(Debug, Clone)]
 pub struct VideoLayer {
-    /// Source media file path, or a `lavfi` filtergraph string when
-    /// [`input_format`](Self::input_format) is `Some("lavfi")`.
-    pub source: PathBuf,
+    /// Where this layer's frames come from (a file, a `lavfi` string, or a
+    /// generated text/solid source).
+    pub source: LayerSource,
     /// Optional low-resolution proxy to decode from instead of `source`.
     ///
     /// When `Some`, frames are decoded from the proxy and scaled up to the
     /// original source resolution before trim/effects/compositing, so the
-    /// output is identical in size to a non-proxy render. Ignored when
-    /// [`input_format`](Self::input_format) is `Some("lavfi")`.
+    /// output is identical in size to a non-proxy render. Only meaningful for a
+    /// [`LayerSource::File`] source.
     pub proxy: Option<ProxySource>,
-    /// Optional `FFmpeg` input format name passed to the `movie` filter.
-    ///
-    /// When `Some("lavfi")`, `source` is interpreted as a filtergraph string
-    /// (e.g. `"color=s=1920x1080:c=black@0.0,drawtext=text='Title'"`) and opened
-    /// via `FFmpeg`'s `lavfi` virtual demuxer. When `None` (the default), `source`
-    /// is opened as an ordinary media file.
-    pub input_format: Option<String>,
     /// X offset on the canvas in pixels (top-left origin).
     pub x: AnimatedValue<f64>,
     /// Y offset on the canvas in pixels.
@@ -120,13 +135,12 @@ pub struct VideoLayer {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_filter::{AnimatedValue, MultiTrackComposer, VideoLayer};
+/// use ff_filter::{AnimatedValue, LayerSource, MultiTrackComposer, VideoLayer};
 ///
 /// let mut graph = MultiTrackComposer::new(1920, 1080)
 ///     .add_layer(VideoLayer {
-///         source: "clip.mp4".into(),
+///         source: LayerSource::File("clip.mp4".into()),
 ///         proxy: None,
-///         input_format: None,
 ///         x: AnimatedValue::Static(0.0),
 ///         y: AnimatedValue::Static(0.0),
 ///         scale_x: AnimatedValue::Static(1.0),
@@ -258,9 +272,8 @@ mod tests {
         // width = 0
         let result = MultiTrackComposer::new(0, 1080)
             .add_layer(VideoLayer {
-                source: "clip.mp4".into(),
+                source: LayerSource::File("clip.mp4".into()),
                 proxy: None,
-                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -280,9 +293,8 @@ mod tests {
         // height = 0
         let result = MultiTrackComposer::new(1920, 0)
             .add_layer(VideoLayer {
-                source: "clip.mp4".into(),
+                source: LayerSource::File("clip.mp4".into()),
                 proxy: None,
-                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -310,9 +322,8 @@ mod tests {
         // not found), not because of canvas size.
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
-                source: "nonexistent_640x480.mp4".into(),
+                source: LayerSource::File("nonexistent_640x480.mp4".into()),
                 proxy: None,
-                input_format: None,
                 x: AnimatedValue::Static(100.0),
                 y: AnimatedValue::Static(100.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -349,13 +360,12 @@ mod tests {
         // file) but must NOT fail at "filter not found: scale".
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
-                source: "nonexistent.mp4".into(),
+                source: LayerSource::File("nonexistent.mp4".into()),
                 proxy: Some(ProxySource {
                     path: "nonexistent_proxy_quarter.mp4".into(),
                     width: 1920,
                     height: 1080,
                 }),
-                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -383,9 +393,8 @@ mod tests {
         // "filter not found: setpts".
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
-                source: "nonexistent.mp4".into(),
+                source: LayerSource::File("nonexistent.mp4".into()),
                 proxy: None,
-                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),
@@ -411,9 +420,8 @@ mod tests {
         // A layer whose effects carry no Trim/OffsetPts inserts no `setpts` node.
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
-                source: "nonexistent.mp4".into(),
+                source: LayerSource::File("nonexistent.mp4".into()),
                 proxy: None,
-                input_format: None,
                 x: AnimatedValue::Static(0.0),
                 y: AnimatedValue::Static(0.0),
                 scale_x: AnimatedValue::Static(1.0),

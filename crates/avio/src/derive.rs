@@ -15,15 +15,16 @@
 //! #1351 (see `docs/specs/engine-and-primitives.md` §2.1).
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
 use ff_filter::{
-    AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, ProxySource,
-    RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
+    AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, LayerSource,
+    ProxySource, RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
-use crate::clip::{Clip, FitMode};
+use crate::clip::{Clip, ClipSource, FitMode};
 
 /// Resolves a track-level animation: `AnimatedValue::Track` when the map holds a
 /// track for `"{prefix}_{track_idx}_{prop}"`, else `Static(default)`.
@@ -218,11 +219,16 @@ pub(crate) fn video_layer(
         }
     }
 
+    // Pure model→primitive source mapping (no FFmpeg translation here).
+    let source = match &clip.source {
+        ClipSource::File(path) => LayerSource::File(path.clone()),
+        ClipSource::Text(spec) => LayerSource::Text(spec.clone()),
+        ClipSource::Solid(color) => LayerSource::Solid(*color),
+    };
     let transform = video_transform(clip, track_idx, animations);
     VideoLayer {
-        source: clip.source.clone(),
+        source,
         proxy,
-        input_format: None,
         x: transform.x,
         y: transform.y,
         scale_x: transform.scale_x,
@@ -244,8 +250,9 @@ pub(crate) fn video_layer(
 /// omitted because the preview runner realises them from `ScenePlacement` (in/out
 /// points, speed, transition).
 ///
-/// The timeline-level `lavfi_overlay` and a clip's `input_format` are not projected
-/// here (preview drops them today); closing that is C4d, not this backbone.
+/// The timeline-level `lavfi_overlay` and a clip's generated (Text/Solid) source
+/// are not projected here (preview drops them today); closing that is C4d, not this
+/// backbone.
 pub(crate) fn realtime_descriptor(
     clip: &Clip,
     track_idx: usize,
@@ -302,6 +309,13 @@ pub(crate) fn audio_track(
     fade_out_eff_dur: Option<Duration>,
 ) -> AudioTrack {
     let volume = audio_volume(clip, track_idx, animations);
+    // Generated (Text/Solid) clips carry no audio and are skipped by the render's
+    // audio loop before reaching here, so a File source is expected; the fallback
+    // to an empty path is defensive only.
+    let source_path = clip
+        .source_path()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
 
     // Timeline trim + placement first, then speed/fade/effect steps, matching
     // the mixer node order (atrim → asetpts=PTS-STARTPTS → adelay).
@@ -356,13 +370,13 @@ pub(crate) fn audio_track(
                 log::warn!(
                     "fade_out ({:.3}s) >= clip duration — skipping fade_out for {}",
                     clip.fade_out.as_secs_f64(),
-                    clip.source.display(),
+                    source_path.display(),
                 );
             }
             None => {
                 log::warn!(
                     "cannot determine clip duration — skipping fade_out for {}",
-                    clip.source.display(),
+                    source_path.display(),
                 );
             }
         }
@@ -371,7 +385,7 @@ pub(crate) fn audio_track(
     effects.extend(clip.audio_effects.iter().cloned());
 
     AudioTrack {
-        source: clip.source.clone(),
+        source: source_path,
         volume,
         pan: track_animation(animations, "audio", track_idx, "pan", 0.0),
         effects,
@@ -392,6 +406,38 @@ mod tests {
     }
 
     // ── video_layer ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn video_layer_file_clip_should_map_to_file_source() {
+        let clip = Clip::new("a.mp4");
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        match layer.source {
+            LayerSource::File(path) => assert_eq!(path.to_str(), Some("a.mp4")),
+            other => panic!("expected File source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_layer_text_clip_should_map_to_text_source() {
+        use ff_format::TextSpec;
+        let clip = Clip::text(TextSpec::new("title"));
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        match layer.source {
+            LayerSource::Text(spec) => assert_eq!(spec.text, "title"),
+            other => panic!("expected Text source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_layer_solid_clip_should_map_to_solid_source() {
+        use ff_format::Color;
+        let clip = Clip::solid(Color::rgb(1, 2, 3));
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        match layer.source {
+            LayerSource::Solid(color) => assert_eq!(color, Color::rgb(1, 2, 3)),
+            other => panic!("expected Solid source, got {other:?}"),
+        }
+    }
 
     #[test]
     fn video_layer_trim_should_lead_with_trim_and_resetpts() {

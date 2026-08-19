@@ -22,7 +22,7 @@ use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::{DrawTextOptions, Rgb, ScaleAlgorithm};
 
-use super::multi_track_composer::VideoLayer;
+use super::multi_track_composer::{LayerSource, VideoLayer};
 use super::multi_track_mixer::AudioTrack;
 
 /// Maps a `BlendMode` to the `FFmpeg` `blend` filter `all_mode` name.
@@ -122,51 +122,66 @@ pub(super) unsafe fn build_video_composition(
     for (idx, layer) in layers.iter().enumerate() {
         let is_last = idx == layer_count - 1;
 
-        // ── movie= source ─────────────────────────────────────────────────────
-        let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
-        if movie_filter.is_null() {
-            bail!(graph, "filter not found: movie");
-        }
-        let Ok(movie_name) = CString::new(format!("movie{idx}")) else {
-            bail!(graph, "CString::new failed for movie name");
+        // ── Layer source node ─────────────────────────────────────────────────
+        // File/Lavfi decode through a `movie` source; Text/Solid synthesize their
+        // frames from `color`(+`drawtext`) nodes (RK-013: the lavfi *demuxer* is
+        // absent on dev/CI, so generated layers must not route through it).
+        let mut chain_end = match &layer.source {
+            LayerSource::File(path) => {
+                // Decode from the proxy file when one is set; otherwise the source.
+                let decode_path = match &layer.proxy {
+                    Some(p) => p.path.as_path(),
+                    None => path.as_path(),
+                };
+                let arg = decode_path
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .replace(':', "\\:");
+                let Some(ctx) = add_movie(graph, idx, &format!("filename={arg}")) else {
+                    bail!(graph, format!("failed to build movie source layer={idx}"));
+                };
+                log::debug!("video composition layer={idx} movie source");
+                ctx
+            }
+            LayerSource::Lavfi(spec) => {
+                // A lavfi filtergraph string opened via FFmpeg's lavfi demuxer;
+                // escape "\" and ":" for the option parser.
+                let Some(ctx) = add_movie(graph, idx, &lavfi_movie_args(spec)) else {
+                    bail!(graph, format!("failed to build lavfi source layer={idx}"));
+                };
+                log::debug!("video composition layer={idx} lavfi source");
+                ctx
+            }
+            LayerSource::Solid(color) => {
+                let args = super::solid_source::solid_color_args(
+                    *color,
+                    canvas_width,
+                    canvas_height,
+                    frame_rate,
+                );
+                let Some(ctx) = add_color_rgba(graph, &format!("l{idx}"), &args) else {
+                    bail!(graph, format!("failed to build solid source layer={idx}"));
+                };
+                log::debug!("video composition layer={idx} solid source");
+                ctx
+            }
+            LayerSource::Text(spec) => {
+                let color_args =
+                    format!("c=black@0.0:s={canvas_width}x{canvas_height}:r={fps_str}");
+                let Some(base) = add_color_rgba(graph, &format!("l{idx}"), &color_args) else {
+                    bail!(graph, format!("failed to build text base layer={idx}"));
+                };
+                let dt_args = crate::FilterStep::DrawText {
+                    opts: super::text_source::spec_to_drawtext(spec),
+                }
+                .args();
+                let Some(ctx) = add_drawtext(graph, &format!("l{idx}"), base, &dt_args) else {
+                    bail!(graph, format!("failed to build text drawtext layer={idx}"));
+                };
+                log::debug!("video composition layer={idx} text source");
+                ctx
+            }
         };
-        // When input_format is "lavfi", source is a filtergraph string opened via
-        // FFmpeg's lavfi virtual demuxer; escape "\" and ":" for the option parser.
-        // For regular files, normalise Windows backslashes and escape the drive colon.
-        let movie_args_str = if layer.input_format.as_deref() == Some("lavfi") {
-            lavfi_movie_args(&layer.source.to_string_lossy())
-        } else {
-            // Decode from the proxy file when one is set; otherwise the original source.
-            let decode_path = match &layer.proxy {
-                Some(p) => p.path.as_path(),
-                None => layer.source.as_path(),
-            };
-            let path = decode_path
-                .to_string_lossy()
-                .replace('\\', "/")
-                .replace(':', "\\:");
-            format!("filename={path}")
-        };
-        let Ok(movie_args) = CString::new(movie_args_str) else {
-            bail!(graph, "CString::new failed for movie args");
-        };
-        let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-        let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut movie_ctx,
-            movie_filter,
-            movie_name.as_ptr(),
-            movie_args.as_ptr(),
-            std::ptr::null_mut(),
-            graph,
-        );
-        if ret < 0 {
-            bail!(
-                graph,
-                format!("failed to create movie filter layer={idx} code={ret}")
-            );
-        }
-        log::debug!("video composition layer={idx} movie source");
-        let mut chain_end = movie_ctx;
 
         // ── Proxy upscale ─────────────────────────────────────────────────────
         // When decoding from a proxy, scale the low-resolution frames up to the
@@ -2533,6 +2548,139 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
+// ── Generated-source node helpers (shared by the source graphs and the compositor)
+
+/// Creates a `movie` source node named `movie{idx}` with `movie_args` and
+/// returns it. Returns `None` on any failure; the caller owns and frees the
+/// graph.
+///
+/// # Safety
+///
+/// `graph` must be a valid `AVFilterGraph` the caller owns.
+unsafe fn add_movie(
+    graph: *mut ff_sys::AVFilterGraph,
+    idx: usize,
+    movie_args: &str,
+) -> Option<*mut ff_sys::AVFilterContext> {
+    use std::ffi::CString;
+
+    let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filter.is_null() {
+        return None;
+    }
+    let movie_name = CString::new(format!("movie{idx}")).ok()?;
+    let args = CString::new(movie_args).ok()?;
+    let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut movie_ctx,
+        movie_filter,
+        movie_name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+    Some(movie_ctx)
+}
+
+/// Creates a `color` source (`<color_args>`) followed by `format=rgba`, links
+/// them, and returns the `format` context. `tag` disambiguates the filter
+/// instance names. Returns `None` on any failure; the caller owns and frees the
+/// graph.
+///
+/// # Safety
+///
+/// `graph` must be a valid `AVFilterGraph` the caller owns.
+unsafe fn add_color_rgba(
+    graph: *mut ff_sys::AVFilterGraph,
+    tag: &str,
+    color_args: &str,
+) -> Option<*mut ff_sys::AVFilterContext> {
+    use std::ffi::CString;
+
+    let color_filter = ff_sys::avfilter_get_by_name(c"color".as_ptr());
+    if color_filter.is_null() {
+        return None;
+    }
+    let color_name = CString::new(format!("color_{tag}")).ok()?;
+    let args = CString::new(color_args).ok()?;
+    let mut color_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut color_ctx,
+        color_filter,
+        color_name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+
+    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if fmt_filter.is_null() {
+        return None;
+    }
+    let fmt_name = CString::new(format!("fmt_{tag}")).ok()?;
+    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut fmt_ctx,
+        fmt_filter,
+        fmt_name.as_ptr(),
+        c"pix_fmts=rgba".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+    if ff_sys::avfilter_link(color_ctx, 0, fmt_ctx, 0) < 0 {
+        return None;
+    }
+    Some(fmt_ctx)
+}
+
+/// Creates a `drawtext` node fed by `prev` and returns it. `dt_args` is the full
+/// drawtext argument string; `tag` disambiguates the name. Returns `None` on
+/// failure; the caller owns and frees the graph.
+///
+/// # Safety
+///
+/// `graph` and `prev` must be valid pointers owned by the same `AVFilterGraph`.
+unsafe fn add_drawtext(
+    graph: *mut ff_sys::AVFilterGraph,
+    tag: &str,
+    prev: *mut ff_sys::AVFilterContext,
+    dt_args: &str,
+) -> Option<*mut ff_sys::AVFilterContext> {
+    use std::ffi::CString;
+
+    let filter = ff_sys::avfilter_get_by_name(c"drawtext".as_ptr());
+    if filter.is_null() {
+        return None;
+    }
+    let name = CString::new(format!("draw_{tag}")).ok()?;
+    let args = CString::new(dt_args).ok()?;
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+    if ff_sys::avfilter_link(prev, 0, ctx, 0) < 0 {
+        return None;
+    }
+    Some(ctx)
+}
+
 // ── Text layer source graph (generated title/caption layer) ───────────────────
 
 /// Builds a source-only graph that renders a text layer onto a transparent canvas:
@@ -2553,8 +2701,6 @@ pub(super) unsafe fn build_text_source(
     height: u32,
     fps: f64,
 ) -> Result<FilterGraph, FilterError> {
-    use std::ffi::CString;
-
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
@@ -2572,78 +2718,15 @@ pub(super) unsafe fn build_text_source(
         });
     }
 
-    // ── color source (transparent base canvas) ────────────────────────────────
-    let color_filter = ff_sys::avfilter_get_by_name(c"color".as_ptr());
-    if color_filter.is_null() {
-        bail!(graph, "filter not found: color");
-    }
-    let color_args_str = format!("c=black@0.0:s={width}x{height}:r={fps}");
-    let Ok(color_args) = CString::new(color_args_str.as_str()) else {
-        bail!(graph, "CString::new failed for color filter args");
+    // color(transparent) → format=rgba → drawtext (shared node helpers).
+    let color_args = format!("c=black@0.0:s={width}x{height}:r={fps}");
+    let Some(fmt_ctx) = add_color_rgba(graph, "text", &color_args) else {
+        bail!(graph, "failed to build color/format source");
     };
-    let mut color_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut color_ctx,
-        color_filter,
-        c"text_base".as_ptr(),
-        color_args.as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        bail!(graph, format!("failed to create color source code={ret}"));
-    }
-
-    // ── format=rgba (establish the transparent alpha canvas) ──────────────────
-    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
-    if fmt_filter.is_null() {
-        bail!(graph, "filter not found: format");
-    }
-    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut fmt_ctx,
-        fmt_filter,
-        c"text_fmt".as_ptr(),
-        c"pix_fmts=rgba".as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        bail!(graph, format!("failed to create format filter code={ret}"));
-    }
-    let ret = ff_sys::avfilter_link(color_ctx, 0, fmt_ctx, 0);
-    if ret < 0 {
-        bail!(graph, "link failed: color→format");
-    }
-
-    // ── drawtext (reuse the FilterStep arg rendering) ─────────────────────────
-    let drawtext_filter = ff_sys::avfilter_get_by_name(c"drawtext".as_ptr());
-    if drawtext_filter.is_null() {
-        bail!(graph, "filter not found: drawtext");
-    }
-    let dt_args_str = FilterStep::DrawText { opts: opts.clone() }.args();
-    let Ok(dt_args) = CString::new(dt_args_str.as_str()) else {
-        bail!(graph, "CString::new failed for drawtext args");
+    let dt_args = FilterStep::DrawText { opts: opts.clone() }.args();
+    let Some(dt_ctx) = add_drawtext(graph, "text", fmt_ctx, &dt_args) else {
+        bail!(graph, "failed to build drawtext node");
     };
-    let mut dt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut dt_ctx,
-        drawtext_filter,
-        c"text_draw".as_ptr(),
-        dt_args.as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        bail!(
-            graph,
-            format!("failed to create drawtext filter code={ret}")
-        );
-    }
-    let ret = ff_sys::avfilter_link(fmt_ctx, 0, dt_ctx, 0);
-    if ret < 0 {
-        bail!(graph, "link failed: format→drawtext");
-    }
 
     // ── buffersink ────────────────────────────────────────────────────────────
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
@@ -2702,8 +2785,6 @@ pub(super) unsafe fn build_text_source(
 /// Follows the same avfilter ownership rules as [`build_video_composition`]: the
 /// returned graph owns every context it created.
 pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph, FilterError> {
-    use std::ffi::CString;
-
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
@@ -2721,48 +2802,10 @@ pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph,
         });
     }
 
-    // ── color source ──────────────────────────────────────────────────────────
-    let color_filter = ff_sys::avfilter_get_by_name(c"color".as_ptr());
-    if color_filter.is_null() {
-        bail!(graph, "filter not found: color");
-    }
-    let Ok(args) = CString::new(color_args) else {
-        bail!(graph, "CString::new failed for color filter args");
+    // color(<args>) → format=rgba (shared node helper).
+    let Some(fmt_ctx) = add_color_rgba(graph, "solid", color_args) else {
+        bail!(graph, "failed to build color/format source");
     };
-    let mut color_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut color_ctx,
-        color_filter,
-        c"solid_base".as_ptr(),
-        args.as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        bail!(graph, format!("failed to create color source code={ret}"));
-    }
-
-    // ── format=rgba (preserve the fill's alpha) ───────────────────────────────
-    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
-    if fmt_filter.is_null() {
-        bail!(graph, "filter not found: format");
-    }
-    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-    let ret = ff_sys::avfilter_graph_create_filter(
-        &raw mut fmt_ctx,
-        fmt_filter,
-        c"solid_fmt".as_ptr(),
-        c"pix_fmts=rgba".as_ptr(),
-        std::ptr::null_mut(),
-        graph,
-    );
-    if ret < 0 {
-        bail!(graph, format!("failed to create format filter code={ret}"));
-    }
-    let ret = ff_sys::avfilter_link(color_ctx, 0, fmt_ctx, 0);
-    if ret < 0 {
-        bail!(graph, "link failed: color→format");
-    }
 
     // ── buffersink ────────────────────────────────────────────────────────────
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());

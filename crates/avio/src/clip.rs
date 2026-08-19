@@ -12,10 +12,26 @@ use ff_filter::{
     AnimationTrack, BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer,
     RealtimeLayerDescriptor, XfadeTransition,
 };
-use ff_format::{PixelFormat, VideoFrame};
+use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
 
 use crate::error::TimelineError;
 use crate::ids::ClipId;
+
+/// The origin of a clip's frames.
+///
+/// A clip is either backed by a media file on disk or **generated** from a pure
+/// specification. Generated sources (`Text`/`Solid`) synthesize their frames at
+/// render time and carry no file, so they are infinite and require the clip's
+/// [`out_point`](Clip::out_point) to bound their duration.
+#[derive(Debug, Clone)]
+pub enum ClipSource {
+    /// A media file on disk (video, audio, or image), decoded at render time.
+    File(PathBuf),
+    /// A generated text/title layer rendered from a [`TextSpec`].
+    Text(TextSpec),
+    /// A generated solid-color fill.
+    Solid(Color),
+}
 
 /// How a clip's source frame is framed against the project canvas.
 ///
@@ -71,8 +87,8 @@ pub struct Clip {
     /// stamps a real id when the clip is added (via the builder or
     /// [`Command::AddClip`](crate::Command::AddClip)).
     pub id: ClipId,
-    /// Path to the source media file.
-    pub source: PathBuf,
+    /// Where this clip's frames come from: a media file or a generated source.
+    pub source: ClipSource,
     /// Start point within the source file. `None` = beginning of file.
     pub in_point: Option<Duration>,
     /// End point within the source file. `None` = end of file.
@@ -277,9 +293,46 @@ pub struct Clip {
 impl Clip {
     /// Creates a new clip from a source path with no trim points and zero timeline offset.
     pub fn new(source: impl AsRef<Path>) -> Self {
+        Self::from_source(ClipSource::File(source.as_ref().to_path_buf()))
+    }
+
+    /// Creates a new **text/title** clip from a [`TextSpec`], with no trim points
+    /// and zero timeline offset.
+    ///
+    /// A text clip is a generated source: it synthesizes frames at render time and
+    /// has no intrinsic duration, so an [`out_point`](Self::out_point) (e.g. via
+    /// [`trim`](Self::trim)) must bound it before the timeline is rendered.
+    pub fn text(spec: TextSpec) -> Self {
+        Self::from_source(ClipSource::Text(spec))
+    }
+
+    /// Creates a new **solid-color** clip from a [`Color`], with no trim points and
+    /// zero timeline offset.
+    ///
+    /// A solid clip is a generated source: it synthesizes frames at render time and
+    /// has no intrinsic duration, so an [`out_point`](Self::out_point) (e.g. via
+    /// [`trim`](Self::trim)) must bound it before the timeline is rendered.
+    pub fn solid(color: Color) -> Self {
+        Self::from_source(ClipSource::Solid(color))
+    }
+
+    /// Returns the source file path when this clip is backed by a file, or `None`
+    /// for a generated ([`Text`](ClipSource::Text)/[`Solid`](ClipSource::Solid))
+    /// source.
+    #[must_use]
+    pub fn source_path(&self) -> Option<&Path> {
+        match &self.source {
+            ClipSource::File(path) => Some(path.as_path()),
+            ClipSource::Text(_) | ClipSource::Solid(_) => None,
+        }
+    }
+
+    /// Shared constructor: builds a clip with the given source and every other
+    /// field at its default.
+    fn from_source(source: ClipSource) -> Self {
         Self {
             id: ClipId::UNSET,
-            source: source.as_ref().to_path_buf(),
+            source,
             in_point: None,
             out_point: None,
             offset: Duration::ZERO,
@@ -1338,6 +1391,41 @@ mod tests {
         use ff_filter::BlendMode;
         let clip = Clip::new("overlay.mp4").with_blend_mode(BlendMode::Screen);
         assert_eq!(clip.blend_mode, BlendMode::Screen);
+    }
+
+    #[test]
+    fn clip_new_source_should_be_a_file() {
+        let clip = Clip::new("video.mp4");
+        assert!(matches!(clip.source, ClipSource::File(_)));
+        assert_eq!(clip.source_path().and_then(Path::to_str), Some("video.mp4"));
+    }
+
+    #[test]
+    fn clip_text_source_should_be_a_text_variant() {
+        let clip = Clip::text(TextSpec::new("hello"));
+        match &clip.source {
+            ClipSource::Text(spec) => assert_eq!(spec.text, "hello"),
+            other => panic!("expected Text source, got {other:?}"),
+        }
+        assert_eq!(
+            clip.source_path(),
+            None,
+            "generated source has no file path"
+        );
+    }
+
+    #[test]
+    fn clip_solid_source_should_be_a_solid_variant() {
+        let clip = Clip::solid(Color::rgb(10, 20, 30));
+        match &clip.source {
+            ClipSource::Solid(color) => assert_eq!(*color, Color::rgb(10, 20, 30)),
+            other => panic!("expected Solid source, got {other:?}"),
+        }
+        assert_eq!(
+            clip.source_path(),
+            None,
+            "generated source has no file path"
+        );
     }
 
     #[test]
