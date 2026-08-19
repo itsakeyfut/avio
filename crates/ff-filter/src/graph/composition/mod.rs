@@ -14,6 +14,7 @@ mod crossfade_joiner;
 mod multi_track_composer;
 mod multi_track_mixer;
 mod realtime_composer;
+mod text_source;
 mod video_concatenator;
 
 pub use audio_concatenator::AudioConcatenator;
@@ -23,4 +24,5 @@ pub use multi_track_mixer::{AudioTrack, MultiTrackAudioMixer};
 pub use realtime_composer::{
     LavfiSource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor,
 };
+pub use text_source::TextSource;
 pub use video_concatenator::VideoConcatenator;

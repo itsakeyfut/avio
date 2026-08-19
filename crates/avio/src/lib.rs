@@ -217,12 +217,13 @@
 // in from ff-format anyway).
 pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
-    AlphaMode, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder, ChannelLayout,
-    ChapterInfo, ChapterInfoBuilder, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer,
-    ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError, Hdr10Metadata,
-    MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat,
-    Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder,
-    Timestamp, VideoCodec, VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
+    AlphaMode, Anchor, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder,
+    ChannelLayout, ChapterInfo, ChapterInfoBuilder, Color, ColorPrimaries, ColorRange, ColorSpace,
+    ColorTransfer, ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError,
+    Hdr10Metadata, MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions,
+    PixelFormat, Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo,
+    SubtitleStreamInfoBuilder, TextSpec, TextStyle, Timestamp, VideoCodec, VideoFrame,
+    VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────
@@ -303,8 +304,8 @@ pub use ff_filter::{
     FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource,
     LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer,
     NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer,
-    RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap,
-    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
+    RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, StabilizeOptions, Stabilizer, TextSource,
+    ToneMap, VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────
