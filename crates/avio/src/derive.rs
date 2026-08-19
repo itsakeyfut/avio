@@ -309,8 +309,9 @@ pub(crate) fn audio_track(
     fade_out_eff_dur: Option<Duration>,
 ) -> AudioTrack {
     let volume = audio_volume(clip, track_idx, animations);
-    // A generated (Text/Solid) clip has no audio and is never placed on an audio
-    // track; an empty path yields no audio, which is the intended no-op.
+    // Generated (Text/Solid) clips carry no audio and are skipped by the render's
+    // audio loop before reaching here, so a File source is expected; the fallback
+    // to an empty path is defensive only.
     let source_path = clip
         .source_path()
         .map(Path::to_path_buf)

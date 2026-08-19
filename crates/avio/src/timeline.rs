@@ -268,9 +268,10 @@ impl Timeline {
                         }
                     }
                     // Generated (Text/Solid) source: infinite, so an out_point is
-                    // required to bound its duration.
+                    // required to bound its duration. Only out_point matters — the
+                    // derive emits `Trim { end }` from it (in_point may be unset).
                     None => {
-                        if clip.duration().is_none() {
+                        if clip.out_point.is_none() {
                             return Err(TimelineError::GeneratedSourceNeedsDuration);
                         }
                     }
@@ -408,6 +409,11 @@ impl Timeline {
                     continue;
                 }
                 for clip in &track.clips {
+                    // Generated (Text/Solid) clips carry no audio; skip them so a
+                    // non-File clip never yields an empty-path audio source.
+                    if clip.source_path().is_none() {
+                        continue;
+                    }
                     // Resolve the effective clip duration only when a fade-out
                     // needs it to compute its start offset (probing is I/O; the
                     // pure per-clip build lives in `derive`).
@@ -1268,6 +1274,30 @@ mod tests {
             result,
             Err(TimelineError::GeneratedSourceNeedsDuration)
         ));
+    }
+
+    #[test]
+    fn render_should_accept_generated_clip_with_out_point_only() {
+        use ff_format::Color;
+        // Only out_point bounds a generated source (in_point may be unset); the
+        // derive emits `Trim { end }` from it. The pre-check must NOT reject this
+        // valid, bounded clip. Deterministic on any machine: whatever the render
+        // outcome, it must not be GeneratedSourceNeedsDuration.
+        let mut clip = Clip::solid(Color::rgb(0, 0, 0));
+        clip.out_point = Some(Duration::from_secs(1));
+        assert!(clip.in_point.is_none());
+        let timeline = Timeline::builder()
+            .canvas(160, 90)
+            .frame_rate(30.0)
+            .video_track(vec![clip])
+            .build()
+            .unwrap();
+        let out = std::env::temp_dir().join("avio_generated_outpoint_only_test.mp4");
+        let result = timeline.render(out, EncoderConfig::builder().build());
+        assert!(
+            !matches!(result, Err(TimelineError::GeneratedSourceNeedsDuration)),
+            "an out_point-only generated clip must not be rejected"
+        );
     }
 
     #[test]

@@ -1367,13 +1367,23 @@ impl FilterStep {
                     .replace('\'', "\\'");
                 let mut parts = vec![
                     format!("text='{escaped}'"),
+                    // The text is drawn literally; disable `%{...}` expansion so a
+                    // user string cannot inject drawtext expansions (`%{gmtime}`, ...).
+                    "expansion=none".to_string(),
                     format!("x={}", opts.x),
                     format!("y={}", opts.y),
                     format!("fontsize={}", opts.font_size),
                     format!("fontcolor={}@{:.2}", opts.font_color, opts.opacity),
                 ];
                 if let Some(ref ff) = opts.font_file {
-                    parts.push(format!("fontfile={ff}"));
+                    // Escape like a filter path: an unescaped `:` (e.g. a Windows
+                    // drive letter) would be read as an option separator and could
+                    // inject drawtext options (`textfile=`, ...).
+                    let ff_escaped = ff
+                        .replace('\\', "/")
+                        .replace(':', "\\:")
+                        .replace('\'', "\\'");
+                    parts.push(format!("fontfile={ff_escaped}"));
                 }
                 if let Some(ref bc) = opts.box_color {
                     parts.push("box=1".to_string());

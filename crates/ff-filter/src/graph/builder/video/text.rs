@@ -182,6 +182,36 @@ mod tests {
     }
 
     #[test]
+    fn filter_step_drawtext_should_escape_colon_in_fontfile() {
+        // A Windows-style drive-letter path must not be read as an option
+        // separator (which would break parsing and allow option injection).
+        let opts = DrawTextOptions {
+            font_file: Some("C:\\Windows\\Fonts\\arial.ttf".to_string()),
+            ..make_drawtext_opts()
+        };
+        let step = FilterStep::DrawText { opts };
+        let args = step.args();
+        assert!(
+            args.contains("fontfile=C\\:/Windows/Fonts/arial.ttf"),
+            "fontfile colon/backslash must be escaped/normalised: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_drawtext_should_disable_text_expansion() {
+        // Text is drawn literally; `%{...}` expansion must be off so a user
+        // string cannot inject drawtext expansions.
+        let step = FilterStep::DrawText {
+            opts: make_drawtext_opts(),
+        };
+        let args = step.args();
+        assert!(
+            args.contains("expansion=none"),
+            "drawtext must disable text expansion: {args}"
+        );
+    }
+
+    #[test]
     fn filter_step_drawtext_should_escape_colon_in_text() {
         let opts = DrawTextOptions {
             text: "Time: 12:00".to_string(),
