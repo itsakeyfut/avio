@@ -14,5 +14,7 @@ This directory collects the conventions to follow when writing code across the a
 | [gpu.md](./gpu.md) | wgpu resource lifecycle, bytemuck, color (`ff-render`) |
 | [wgsl.md](./wgsl.md) | Shader naming, struct alignment, bindings (`ff-render`) |
 
-Design specs live in [`../specs/`](../specs/). Internal review-knowledge and process docs live in
-`docs/dev/`.
+Design specs live in [`../specs/`](../specs/), and the rationale behind significant design and
+architecture decisions in [`../adr/`](../adr/) (Architecture Decision Records; see
+[when to write one](../adr/README.md#when-to-write-one)). Internal review-knowledge and process docs
+live in `docs/dev/`.

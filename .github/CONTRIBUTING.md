@@ -13,6 +13,7 @@ If you're unsure where to start, feel free to open an issue and ask.
 - [Issue Labels](#issue-labels)
 - [Reporting Bugs](#reporting-bugs)
 - [Feature Requests](#feature-requests)
+- [Architecture Decision Records (ADR)](#architecture-decision-records-adr)
 - [Pull Requests](#pull-requests)
 - [Commit Messages](#commit-messages)
 - [Code Style](#code-style)
@@ -122,6 +123,24 @@ Open an issue describing:
 
 For changes that touch multiple crates or the public API surface, please discuss in an issue
 before starting implementation.
+
+---
+
+## Architecture Decision Records (ADR)
+
+Significant design and architecture decisions are recorded as ADRs in
+[`docs/adr/`](../docs/adr/) using the [MADR 4.0](https://adr.github.io/madr/) format. Please write one
+when:
+
+- two or more implementations are possible and you are choosing between them,
+- the choice shapes the editing model or crosses crate boundaries, or
+- you are reversing an earlier decision (add a new record and mark the old one `superseded by ADR-NNNN`).
+
+To add one, copy [`docs/adr/adr-template.md`](../docs/adr/adr-template.md), number it consecutively,
+fill in the **Confirmation** section (which test fails if the decision is violated), and add a row to
+the index in [`docs/adr/README.md`](../docs/adr/README.md). Keep the rationale in the ADR; the specs
+and per-crate design docs state the outcome and link to it. Naming, formatting, and single-call-site
+changes do not need an ADR.
 
 ---
 
