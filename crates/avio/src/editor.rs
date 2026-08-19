@@ -557,4 +557,63 @@ mod tests {
             "undo restores the single clip"
         );
     }
+
+    #[test]
+    fn editor_move_clip_to_track_should_be_undoable() {
+        use std::time::Duration;
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .video_track(vec![])
+            .build()
+            .unwrap();
+        let mut ed = Editor::new(t);
+        let clip_id = ed.current().video_tracks()[0].clips[0].id;
+        let to = ed.current().video_tracks()[1].id;
+        ed.apply(&Command::MoveClipToTrack {
+            clip: clip_id,
+            to,
+            offset: Duration::from_secs(2),
+        })
+        .unwrap();
+        assert!(ed.current().video_tracks()[0].clips.is_empty());
+        let prev = ed.undo().unwrap();
+        assert_eq!(
+            prev.video_tracks()[0].clips.len(),
+            1,
+            "undo restores the clip on the original track"
+        );
+    }
+
+    #[test]
+    fn editor_ripple_delete_should_be_one_undoable_step() {
+        use std::time::Duration;
+        let a = Clip::new("a.mp4")
+            .trim(Duration::ZERO, Duration::from_secs(4))
+            .offset(Duration::ZERO);
+        let b = Clip::new("b.mp4").offset(Duration::from_secs(4));
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![a, b])
+            .build()
+            .unwrap();
+        let mut ed = Editor::new(t);
+        let a_id = ed.current().video_tracks()[0].clips[0].id;
+        ed.apply(&Command::RippleDelete { clip: a_id }).unwrap();
+        assert_eq!(ed.current().video_tracks()[0].clips.len(), 1);
+        assert_eq!(
+            ed.current().video_tracks()[0].clips[0].offset,
+            Duration::ZERO,
+            "b shifted left to close the gap"
+        );
+        // One undo restores both the clip and the pre-ripple offsets.
+        let prev = ed.undo().unwrap();
+        assert_eq!(prev.video_tracks()[0].clips.len(), 2);
+        assert_eq!(
+            prev.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(4)
+        );
+    }
 }

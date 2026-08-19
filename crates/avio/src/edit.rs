@@ -114,6 +114,31 @@ pub enum Command {
         /// Timeline position of the cut.
         at: Duration,
     },
+    /// Move the clip with id `clip` to the track with id `to`, at timeline `offset`.
+    ///
+    /// The clip keeps its id and all other properties, and is appended to the end of
+    /// the destination track's clip list. Moving within the same track is allowed
+    /// (the clip is re-offset and re-appended). Fails with
+    /// [`EditError::TrackNotFound`] if `to` does not exist (the timeline is left
+    /// unchanged), or [`EditError::ClipNotFound`] if the clip does not exist.
+    MoveClipToTrack {
+        /// Clip to move.
+        clip: ClipId,
+        /// Destination track.
+        to: TrackId,
+        /// New timeline offset on the destination track.
+        offset: Duration,
+    },
+    /// Remove the clip with id `clip` and close the gap it leaves (a ripple delete).
+    ///
+    /// Clips on the same track that start after the removed clip (a greater `offset`)
+    /// move left by the removed clip's timeline footprint; other tracks are not
+    /// touched. When the removed clip runs to end-of-file (its footprint is unknown)
+    /// nothing is shifted — it is a plain remove.
+    RippleDelete {
+        /// Clip to remove.
+        clip: ClipId,
+    },
     /// Append a new, empty track of `kind` (assigned a fresh [`TrackId`]).
     AddTrack {
         /// Kind of track to append.
@@ -283,6 +308,36 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             clips.insert(idx + 1, right);
             next.next_clip_id += 1;
         }
+        Command::MoveClipToTrack { clip, to, offset } => {
+            // Verify the destination exists before removing the clip, so a bad
+            // target leaves the timeline unchanged.
+            if find_track_mut(&mut next, *to).is_none() {
+                return Err(EditError::TrackNotFound { id: *to });
+            }
+            let mut moved =
+                take_clip(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            moved.offset = *offset;
+            // Re-resolve the destination after the take (borrows/indices changed).
+            find_track_mut(&mut next, *to)
+                .ok_or(EditError::TrackNotFound { id: *to })?
+                .clips
+                .push(moved);
+        }
+        Command::RippleDelete { clip } => {
+            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?;
+            let removed_offset = clips[idx].offset;
+            let footprint = clip_footprint(&clips[idx]);
+            clips.remove(idx);
+            // Close the gap: later clips on this track shift left by the footprint.
+            if let Some(shift) = footprint {
+                for c in clips.iter_mut() {
+                    if c.offset > removed_offset {
+                        c.offset = c.offset.saturating_sub(shift);
+                    }
+                }
+            }
+        }
         Command::AddTrack { kind } => {
             let id = TrackId::from_raw(next.next_track_id);
             let mut tr = Track::new(Vec::new());
@@ -438,6 +493,27 @@ fn split_clip(orig: &Clip, at: Duration) -> Option<(Clip, Clip)> {
     right.fade_in = Duration::ZERO;
 
     Some((left, right))
+}
+
+/// Removes the clip with `id` from whichever track holds it and returns it.
+fn take_clip(timeline: &mut Timeline, id: ClipId) -> Option<Clip> {
+    for tr in timeline
+        .video_tracks
+        .iter_mut()
+        .chain(timeline.audio_tracks.iter_mut())
+    {
+        if let Some(pos) = tr.clips.iter().position(|c| c.id == id) {
+            return Some(tr.clips.remove(pos));
+        }
+    }
+    None
+}
+
+/// The clip's timeline footprint: its source duration divided by `speed`, or `None`
+/// when the source runs to end-of-file (`out_point` unset).
+fn clip_footprint(clip: &Clip) -> Option<Duration> {
+    let source = clip.duration()?;
+    Duration::try_from_secs_f64(source.as_secs_f64() / clip.speed.max(0.01)).ok()
 }
 
 #[cfg(test)]
@@ -1226,5 +1302,232 @@ mod tests {
         assert_eq!(clips[1].out_point, Some(Duration::from_secs(8)));
         assert!(clips[1].id.is_set());
         assert_ne!(clips[1].id, id);
+    }
+
+    #[test]
+    fn apply_move_clip_to_track_should_preserve_id_and_properties() {
+        let mut clip = Clip::new("a.mp4");
+        clip.brightness = 0.5;
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![clip])
+            .video_track(vec![]) // empty destination track
+            .build()
+            .unwrap();
+        let clip_id = t.video_tracks()[0].clips[0].id;
+        let to = t.video_tracks()[1].id;
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: clip_id,
+                to,
+                offset: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert!(out.video_tracks()[0].clips.is_empty());
+        let moved = &out.video_tracks()[1].clips[0];
+        assert_eq!(moved.id, clip_id, "the id is preserved across the move");
+        assert!((moved.brightness - 0.5).abs() < f32::EPSILON);
+        assert_eq!(moved.offset, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn apply_move_clip_to_missing_track_should_err_and_not_change() {
+        let (t, id) = split_setup(Clip::new("a.mp4"));
+        let err = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: id,
+                to: TrackId::UNSET,
+                offset: Duration::from_secs(1),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::TrackNotFound { id: TrackId::UNSET });
+        assert_eq!(t.video_tracks()[0].clips.len(), 1, "timeline unchanged");
+    }
+
+    #[test]
+    fn apply_move_missing_clip_should_err() {
+        let (t, _id) = split_setup(Clip::new("a.mp4"));
+        let to = t.video_tracks()[0].id;
+        let err = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: ClipId::UNSET,
+                to,
+                offset: Duration::ZERO,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
+    }
+
+    #[test]
+    fn apply_move_clip_to_track_should_preserve_effects_and_transition() {
+        use ff_filter::{FilterStep, XfadeTransition};
+        let mut clip = Clip::new("a.mp4");
+        clip.transition = Some(XfadeTransition::Fade);
+        clip.transition_duration = Duration::from_millis(300);
+        clip.video_effects.push(FilterStep::Lut3d {
+            path: "look.cube".into(),
+        });
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![clip])
+            .video_track(vec![])
+            .build()
+            .unwrap();
+        let clip_id = t.video_tracks()[0].clips[0].id;
+        let to = t.video_tracks()[1].id;
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: clip_id,
+                to,
+                offset: Duration::ZERO,
+            },
+        )
+        .unwrap();
+        let moved = &out.video_tracks()[1].clips[0];
+        assert_eq!(moved.transition, Some(XfadeTransition::Fade));
+        assert_eq!(moved.transition_duration, Duration::from_millis(300));
+        assert_eq!(moved.video_effects.len(), 1);
+    }
+
+    #[test]
+    fn apply_move_clip_same_track_should_re_offset() {
+        let (t, id) = split_setup(Clip::new("a.mp4"));
+        let to = t.video_tracks()[0].id;
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: id,
+                to,
+                offset: Duration::from_secs(7),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 1);
+        assert_eq!(
+            out.video_tracks()[0].clips[0].offset,
+            Duration::from_secs(7)
+        );
+        assert_eq!(out.video_tracks()[0].clips[0].id, id);
+    }
+
+    /// Three back-to-back 4s clips at offsets 0/4/8 on one video track.
+    fn ripple_setup() -> Timeline {
+        let mk = |name: &str, off: u64| {
+            Clip::new(name)
+                .trim(Duration::ZERO, Duration::from_secs(4))
+                .offset(Duration::from_secs(off))
+        };
+        Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4), mk("c.mp4", 8)])
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn apply_ripple_delete_should_close_the_gap() {
+        let t = ripple_setup();
+        let b_id = t.video_tracks()[0].clips[1].id;
+        let out = apply(&t, &Command::RippleDelete { clip: b_id }).unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips.len(), 2);
+        // `a` (offset 0) stays; `c` (was 8) shifts left by b's footprint (4) to 4.
+        assert_eq!(clips[0].source.to_str(), Some("a.mp4"));
+        assert_eq!(clips[0].offset, Duration::ZERO);
+        assert_eq!(clips[1].source.to_str(), Some("c.mp4"));
+        assert_eq!(clips[1].offset, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn apply_ripple_delete_should_not_disturb_other_tracks() {
+        let mk = |name: &str, off: u64| {
+            Clip::new(name)
+                .trim(Duration::ZERO, Duration::from_secs(4))
+                .offset(Duration::from_secs(off))
+        };
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4)])
+            .video_track(vec![Clip::new("o.mp4").offset(Duration::from_secs(4))])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(&t, &Command::RippleDelete { clip: a_id }).unwrap();
+        assert_eq!(out.video_tracks()[0].clips[0].offset, Duration::ZERO);
+        assert_eq!(
+            out.video_tracks()[1].clips[0].offset,
+            Duration::from_secs(4),
+            "the other track is untouched"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_delete_should_shift_by_speed_scaled_footprint() {
+        // `a`: source 0..10 at speed 2 -> timeline footprint 5. `b` starts at 5.
+        let mut a = Clip::new("a.mp4")
+            .trim(Duration::ZERO, Duration::from_secs(10))
+            .offset(Duration::ZERO);
+        a.speed = 2.0;
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![a, Clip::new("b.mp4").offset(Duration::from_secs(5))])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(&t, &Command::RippleDelete { clip: a_id }).unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[0].offset,
+            Duration::ZERO,
+            "shift uses the speed-scaled footprint (5), not the source duration (10)"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_delete_open_ended_should_just_remove() {
+        // `a` is open-ended (no trim); its footprint is unknown, so nothing shifts.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("a.mp4").offset(Duration::ZERO),
+                Clip::new("b.mp4").offset(Duration::from_secs(5)),
+            ])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(&t, &Command::RippleDelete { clip: a_id }).unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].source.to_str(), Some("b.mp4"));
+        assert_eq!(
+            clips[0].offset,
+            Duration::from_secs(5),
+            "no shift when the removed clip's footprint is unknown"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_delete_missing_clip_should_err() {
+        let (t, _id) = split_setup(Clip::new("a.mp4"));
+        let err = apply(
+            &t,
+            &Command::RippleDelete {
+                clip: ClipId::UNSET,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
     }
 }
