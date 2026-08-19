@@ -100,6 +100,20 @@ pub enum Command {
         /// New clip value; its id is forced to `clip`.
         value: Box<Clip>,
     },
+    /// Split the clip with id `clip` at timeline position `at` into two contiguous
+    /// clips (a razor cut).
+    ///
+    /// The left clip keeps the original id, its offset, in-point, leading transition
+    /// and fade-in, and ends at the cut. The right clip gets a fresh id, starts at
+    /// `at`, keeps the original properties and the trailing fade-out, and clears the
+    /// leading transition and fade-in (a hard cut carries no fade). `at` must be
+    /// strictly inside the clip's timeline span, else [`EditError::SplitOutOfRange`].
+    SplitClip {
+        /// Clip to split.
+        clip: ClipId,
+        /// Timeline position of the cut.
+        at: Duration,
+    },
     /// Append a new, empty track of `kind` (assigned a fresh [`TrackId`]).
     AddTrack {
         /// Kind of track to append.
@@ -154,6 +168,14 @@ pub enum EditError {
         /// The (set) id found on the patch value.
         found: ClipId,
     },
+    /// A [`Command::SplitClip`] point is not strictly inside the clip's span.
+    #[error("split point {at:?} is not inside clip {clip:?}")]
+    SplitOutOfRange {
+        /// The clip that could not be split.
+        clip: ClipId,
+        /// The requested split position.
+        at: Duration,
+    },
     /// Canvas dimensions must be non-zero.
     #[error("invalid canvas: {width}x{height}")]
     InvalidCanvas {
@@ -179,8 +201,9 @@ pub enum EditError {
 /// # Errors
 ///
 /// Returns [`EditError`] when the target track or clip id is not present, a
-/// [`Command::SetCanvas`] / [`Command::SetFrameRate`] value is invalid, or a
-/// [`Command::SetClip`] value's id names a different clip.
+/// [`Command::SetCanvas`] / [`Command::SetFrameRate`] value is invalid, a
+/// [`Command::SetClip`] value's id names a different clip, or a
+/// [`Command::SplitClip`] point is outside the clip's span.
 pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditError> {
     let mut next = timeline.clone();
     match command {
@@ -244,6 +267,21 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             let mut new_value = (**value).clone();
             new_value.id = *clip; // preserve identity
             *target = new_value;
+        }
+        Command::SplitClip { clip, at } => {
+            // Reserve a fresh id for the right half before borrowing the tracks.
+            let right_id = ClipId::from_raw(next.next_clip_id);
+            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?;
+            let (left, mut right) =
+                split_clip(&clips[idx], *at).ok_or(EditError::SplitOutOfRange {
+                    clip: *clip,
+                    at: *at,
+                })?;
+            right.id = right_id;
+            clips[idx] = left;
+            clips.insert(idx + 1, right);
+            next.next_clip_id += 1;
         }
         Command::AddTrack { kind } => {
             let id = TrackId::from_raw(next.next_track_id);
@@ -344,6 +382,62 @@ fn remove_track(timeline: &mut Timeline, id: TrackId) -> bool {
         return true;
     }
     false
+}
+
+/// Finds the track list holding the clip with `id` and the clip's index in it.
+fn find_clip_track_mut(timeline: &mut Timeline, id: ClipId) -> Option<(&mut Vec<Clip>, usize)> {
+    for track in &mut timeline.video_tracks {
+        if let Some(idx) = track.clips.iter().position(|c| c.id == id) {
+            return Some((&mut track.clips, idx));
+        }
+    }
+    for track in &mut timeline.audio_tracks {
+        if let Some(idx) = track.clips.iter().position(|c| c.id == id) {
+            return Some((&mut track.clips, idx));
+        }
+    }
+    None
+}
+
+/// Splits `orig` at timeline position `at` into `(left, right)`, or `None` when the
+/// cut is not strictly inside the clip's timeline span.
+///
+/// The source advances `speed` times as fast as the timeline, so the source split
+/// point is `in + (at - offset) * speed`. The left half keeps the leading
+/// transition/fade-in and ends at the cut (its trailing fade is cleared); the right
+/// half starts at the cut, keeps the trailing fade-out, and clears the leading
+/// transition/fade-in. The right half's id is left unset for the caller to stamp.
+fn split_clip(orig: &Clip, at: Duration) -> Option<(Clip, Clip)> {
+    // Timeline elapsed from the clip start to the cut; must be strictly positive.
+    let elapsed = at.checked_sub(orig.offset)?;
+    if elapsed.is_zero() {
+        return None;
+    }
+    let in_pt = orig.in_point.unwrap_or(Duration::ZERO);
+    let source_advance = Duration::try_from_secs_f64(elapsed.as_secs_f64() * orig.speed).ok()?;
+    // `checked_add` keeps this panic-free even for an absurd `at`/speed.
+    let source_split = in_pt.checked_add(source_advance)?;
+    if source_split <= in_pt {
+        return None; // degenerate (e.g. non-positive speed): left half would be empty
+    }
+    if let Some(out) = orig.out_point
+        && source_split >= out
+    {
+        return None; // the cut is at or past the clip's end
+    }
+
+    let mut left = orig.clone();
+    left.out_point = Some(source_split);
+    left.fade_out = Duration::ZERO; // the left half now ends at a hard cut
+
+    let mut right = orig.clone();
+    right.in_point = Some(source_split);
+    right.offset = at;
+    right.transition = None; // a hard cut carries no leading transition/fade
+    right.transition_duration = Duration::ZERO;
+    right.fade_in = Duration::ZERO;
+
+    Some((left, right))
 }
 
 #[cfg(test)]
@@ -923,5 +1017,214 @@ mod tests {
             Some("patched.mp3")
         );
         assert_eq!(out.audio_tracks()[0].clips[0].id, id);
+    }
+
+    /// A single-video-track timeline holding `clip`, and that clip's id.
+    fn split_setup(clip: Clip) -> (Timeline, ClipId) {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![clip])
+            .build()
+            .unwrap();
+        let id = t.video_tracks()[0].clips[0].id;
+        (t, id)
+    }
+
+    #[test]
+    fn apply_split_clip_should_produce_two_contiguous_clips() {
+        let (t, id) = split_setup(Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10)));
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips.len(), 2);
+        // Left keeps the id and ends at the cut.
+        assert_eq!(clips[0].id, id);
+        assert_eq!(clips[0].offset, Duration::ZERO);
+        assert_eq!(clips[0].out_point, Some(Duration::from_secs(4)));
+        // Right gets a fresh id and starts at the cut, running to the original end.
+        assert!(clips[1].id.is_set());
+        assert_ne!(clips[1].id, id);
+        assert_eq!(clips[1].offset, Duration::from_secs(4));
+        assert_eq!(clips[1].in_point, Some(Duration::from_secs(4)));
+        assert_eq!(clips[1].out_point, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn apply_split_clip_should_preserve_properties_on_both_halves() {
+        let mut clip = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10));
+        clip.brightness = 0.5;
+        clip.volume_db = -6.0;
+        let (t, id) = split_setup(clip);
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap();
+        for c in &out.video_tracks()[0].clips {
+            assert!((c.brightness - 0.5).abs() < f32::EPSILON);
+            assert!((c.volume_db + 6.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn apply_split_clip_should_move_fades_and_transition() {
+        use ff_filter::XfadeTransition;
+        let mut clip = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10));
+        clip.fade_in = Duration::from_millis(500);
+        clip.fade_out = Duration::from_millis(800);
+        clip.transition = Some(XfadeTransition::Fade);
+        clip.transition_duration = Duration::from_millis(300);
+        let (t, id) = split_setup(clip);
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        // Left keeps the leading fade-in + transition and clears the trailing fade.
+        assert_eq!(clips[0].fade_in, Duration::from_millis(500));
+        assert_eq!(clips[0].transition, Some(XfadeTransition::Fade));
+        assert_eq!(clips[0].fade_out, Duration::ZERO);
+        // Right clears the leading fade-in + transition and keeps the trailing fade.
+        assert_eq!(clips[1].fade_in, Duration::ZERO);
+        assert_eq!(clips[1].transition, None);
+        assert_eq!(clips[1].fade_out, Duration::from_millis(800));
+    }
+
+    #[test]
+    fn apply_split_clip_should_map_source_position_with_speed() {
+        let mut clip = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10));
+        clip.speed = 2.0;
+        let (t, id) = split_setup(clip);
+        // At timeline 2s the source has advanced 2s * 2.0 = 4s.
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(2),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips[0].out_point, Some(Duration::from_secs(4)));
+        assert_eq!(clips[1].in_point, Some(Duration::from_secs(4)));
+        assert_eq!(clips[1].offset, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn apply_split_clip_should_split_an_open_ended_clip() {
+        // No trim: the clip runs to end-of-file (out_point is None).
+        let (t, id) = split_setup(Clip::new("a.mp4"));
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(3),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips[0].out_point, Some(Duration::from_secs(3)));
+        assert_eq!(clips[1].in_point, Some(Duration::from_secs(3)));
+        assert_eq!(clips[1].out_point, None, "the right half still runs to EOF");
+        assert_eq!(clips[1].offset, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn apply_split_clip_at_the_start_should_err() {
+        let (t, id) = split_setup(Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10)));
+        let err = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::ZERO,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::SplitOutOfRange {
+                clip: id,
+                at: Duration::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn apply_split_clip_past_the_end_should_err() {
+        let (t, id) = split_setup(Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10)));
+        let err = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(10),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::SplitOutOfRange {
+                clip: id,
+                at: Duration::from_secs(10)
+            }
+        );
+    }
+
+    #[test]
+    fn apply_split_unknown_clip_should_err() {
+        let (t, _id) =
+            split_setup(Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10)));
+        let err = apply(
+            &t,
+            &Command::SplitClip {
+                clip: ClipId::UNSET,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
+    }
+
+    #[test]
+    fn apply_split_clip_should_split_a_clip_on_an_audio_track() {
+        // `find_clip_track_mut` scans both lists, so SplitClip resolves an audio clip.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![
+                Clip::new("a.mp3").trim(Duration::ZERO, Duration::from_secs(8)),
+            ])
+            .build()
+            .unwrap();
+        let id = t.audio_tracks()[0].clips[0].id;
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(3),
+            },
+        )
+        .unwrap();
+        let clips = &out.audio_tracks()[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].out_point, Some(Duration::from_secs(3)));
+        assert_eq!(clips[1].in_point, Some(Duration::from_secs(3)));
+        assert_eq!(clips[1].out_point, Some(Duration::from_secs(8)));
+        assert!(clips[1].id.is_set());
+        assert_ne!(clips[1].id, id);
     }
 }

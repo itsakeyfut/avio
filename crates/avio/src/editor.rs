@@ -538,4 +538,23 @@ mod tests {
             "undo restores the pre-patch clip"
         );
     }
+
+    #[test]
+    fn editor_split_clip_should_be_undoable() {
+        use std::time::Duration;
+        let mut ed = Editor::new(timeline(30.0));
+        let id = ed.current().video_tracks()[0].clips[0].id;
+        ed.apply(&Command::SplitClip {
+            clip: id,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+        assert_eq!(ed.current().video_tracks()[0].clips.len(), 2);
+        let prev = ed.undo().unwrap();
+        assert_eq!(
+            prev.video_tracks()[0].clips.len(),
+            1,
+            "undo restores the single clip"
+        );
+    }
 }
