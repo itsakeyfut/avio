@@ -88,13 +88,40 @@ fn video_transform(
     } else {
         track_animation(animations, "video", track_idx, "y", 0.0)
     };
+    // The uniform per-clip `scale` drives both axes; a per-clip track wins, then a
+    // static non-neutral value, then the per-axis timeline animation (kept
+    // independent for `scale_x` vs `scale_y` in the fallback).
+    #[allow(clippy::float_cmp)]
+    let scale_x = if let Some(track) = &clip.scale_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.scale != 1.0 {
+        AnimatedValue::Static(clip.scale)
+    } else {
+        track_animation(animations, "video", track_idx, "scale_x", 1.0)
+    };
+    #[allow(clippy::float_cmp)]
+    let scale_y = if let Some(track) = &clip.scale_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.scale != 1.0 {
+        AnimatedValue::Static(clip.scale)
+    } else {
+        track_animation(animations, "video", track_idx, "scale_y", 1.0)
+    };
+    #[allow(clippy::float_cmp)]
+    let rotation = if let Some(track) = &clip.rotation_track {
+        AnimatedValue::Track(track.clone())
+    } else if clip.rotation != 0.0 {
+        AnimatedValue::Static(clip.rotation)
+    } else {
+        track_animation(animations, "video", track_idx, "rotation", 0.0)
+    };
     VideoTransform {
         opacity,
         x,
         y,
-        scale_x: track_animation(animations, "video", track_idx, "scale_x", 1.0),
-        scale_y: track_animation(animations, "video", track_idx, "scale_y", 1.0),
-        rotation: track_animation(animations, "video", track_idx, "rotation", 0.0),
+        scale_x,
+        scale_y,
+        rotation,
         blend_mode: clip.blend_mode,
         composite_op: clip.composite_op,
     }
@@ -595,5 +622,81 @@ mod tests {
         clip.composite_op = CompositeOp::Under;
         let d = realtime_descriptor(&clip, 0, &no_anim());
         assert!(matches!(d.composite_op, CompositeOp::Under));
+    }
+
+    // ── per-clip scale / rotation (3-way merge) ───────────────────────────────
+
+    #[test]
+    fn video_layer_static_scale_should_drive_both_axes() {
+        let clip = Clip::new("a.mp4").with_scale(0.5);
+        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+        assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn video_layer_scale_track_should_win_on_both_axes() {
+        let mut clip = Clip::new("a.mp4");
+        clip.scale_track =
+            Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 2.0, Easing::Linear)));
+        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
+        assert!(matches!(layer.scale_y, AnimatedValue::Track(_)));
+    }
+
+    #[test]
+    fn video_layer_neutral_scale_should_fall_back_to_timeline_animation() {
+        let mut anims = HashMap::new();
+        anims.insert(
+            "video_0_scale_x".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+        );
+        let clip = Clip::new("a.mp4"); // scale defaults to 1.0 (neutral)
+        let layer = video_layer(&clip, 0, &anims, None, None);
+        assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
+        // scale_y has no timeline animation -> the default static 1.0.
+        assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn video_layer_static_scale_should_win_over_timeline_animation() {
+        let mut anims = HashMap::new();
+        anims.insert(
+            "video_0_scale_x".to_string(),
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.25, Easing::Linear)),
+        );
+        // A per-clip static non-neutral scale wins the 3-way merge over the
+        // timeline `scale_x` animation.
+        let clip = Clip::new("a.mp4").with_scale(0.5);
+        let layer = video_layer(&clip, 0, &anims, None, None);
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+        assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn video_layer_static_rotation_should_be_static() {
+        let clip = Clip::new("a.mp4").with_rotation(30.0);
+        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        assert!(matches!(layer.rotation, AnimatedValue::Static(v) if (v - 30.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn video_layer_rotation_track_should_win() {
+        let mut clip = Clip::new("a.mp4");
+        clip.rotation_track =
+            Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)));
+        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        assert!(matches!(layer.rotation, AnimatedValue::Track(_)));
+    }
+
+    #[test]
+    fn realtime_descriptor_should_share_scale_and_rotation_with_export() {
+        // Preview uses the same `video_transform`, so per-clip scale/rotation reach
+        // preview identically to export.
+        let clip = Clip::new("a.mp4").with_scale(0.5).with_rotation(45.0);
+        let d = realtime_descriptor(&clip, 0, &no_anim());
+        assert!(matches!(d.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+        assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+        assert!(matches!(d.rotation, AnimatedValue::Static(v) if (v - 45.0).abs() < 1e-9));
     }
 }
