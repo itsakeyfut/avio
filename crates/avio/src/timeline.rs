@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
 use ff_filter::{
-    AnimatedValue, AnimationTrack, MultiTrackAudioMixer, MultiTrackComposer, ProxySource,
-    VideoLayer,
+    AnimatedValue, AnimationTrack, FilterGraph, FilterStep, MultiTrackAudioMixer,
+    MultiTrackComposer, ProxySource, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
@@ -90,6 +90,14 @@ pub struct Timeline {
     /// color=s=1920x1080:c=black@0.0,drawtext=text='Hello':fontsize=48:fontcolor=white
     /// ```
     pub(crate) lavfi_overlay: Option<String>,
+    /// Timeline-level (master bus) audio effect chain applied to the final mix on
+    /// render. Empty by default (no processing).
+    ///
+    /// Applied after the multi-track mix, so it operates on the whole program's
+    /// audio — the natural place for loudness normalization
+    /// ([`FilterStep::LoudnessNormalize`]). Per-track (pre-mix) effects are a
+    /// separate feature (see issue #1446).
+    pub(crate) audio_filter: Vec<FilterStep>,
 }
 
 impl Timeline {
@@ -223,6 +231,7 @@ impl Timeline {
             video_animations,
             audio_animations,
             lavfi_overlay,
+            audio_filter,
         } = self;
 
         let nv = video_tracks.len();
@@ -411,6 +420,21 @@ impl Timeline {
             audio_graph = Some(mixer.build().map_err(TimelineError::Filter)?);
         }
 
+        // Timeline-level (master bus) audio effect chain, applied post-mix. Built
+        // only when there is audio to process. A two-pass step (`LoudnessNormalize`)
+        // works here because a builder-made `FilterGraph` carries the `steps` its
+        // push/pull path keys off — unlike the source-only mixer graph, where it
+        // would be inert.
+        let master_audio = if audio_graph.is_some() && !audio_filter.is_empty() {
+            let mut builder = FilterGraph::builder();
+            for step in &audio_filter {
+                builder = builder.add_step(step.clone());
+            }
+            Some(builder.build().map_err(TimelineError::Filter)?)
+        } else {
+            None
+        };
+
         // 5. Build encoder.
         let hw = hwaccel_to_hardware_encoder(config.hardware);
         let mut enc_builder = VideoEncoder::create(output)
@@ -454,20 +478,51 @@ impl Timeline {
             }
         }
 
-        // 7. Drain audio graph → encoder.
+        // 7. Drain audio graph → (optional master bus) → encoder.
         //    tick() advances the audio animation clock by the actual duration
         //    of each chunk so PTS stays sample-accurate.
         if let Some(mut agraph) = audio_graph {
-            let mut audio_pts = Duration::ZERO;
-            loop {
-                agraph.tick(audio_pts);
-                match agraph.pull_audio().map_err(TimelineError::Filter)? {
-                    Some(frame) => {
-                        let chunk_dur = frame.duration();
-                        encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
-                        audio_pts += chunk_dur;
+            if let Some(mut master) = master_audio {
+                // Route the mix through the master effect chain, interleaving pulls
+                // so a plain-node chain streams (low memory) rather than buffering
+                // the whole program. A two-pass step (loudness normalization) buffers
+                // internally and emits nothing until `flush_audio` signals EOF, so
+                // the interleaved pull naturally degrades to buffer-all for it; the
+                // trailing flush + drain then emits the processed output.
+                let mut audio_pts = Duration::ZERO;
+                loop {
+                    agraph.tick(audio_pts);
+                    match agraph.pull_audio().map_err(TimelineError::Filter)? {
+                        Some(frame) => {
+                            audio_pts += frame.duration();
+                            master
+                                .push_audio(0, &frame)
+                                .map_err(TimelineError::Filter)?;
+                            while let Some(out) =
+                                master.pull_audio().map_err(TimelineError::Filter)?
+                            {
+                                encoder.push_audio(&out).map_err(TimelineError::Encode)?;
+                            }
+                        }
+                        None => break,
                     }
-                    None => break,
+                }
+                master.flush_audio();
+                while let Some(frame) = master.pull_audio().map_err(TimelineError::Filter)? {
+                    encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
+                }
+            } else {
+                let mut audio_pts = Duration::ZERO;
+                loop {
+                    agraph.tick(audio_pts);
+                    match agraph.pull_audio().map_err(TimelineError::Filter)? {
+                        Some(frame) => {
+                            let chunk_dur = frame.duration();
+                            encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
+                            audio_pts += chunk_dur;
+                        }
+                        None => break,
+                    }
                 }
             }
         }
@@ -496,6 +551,8 @@ pub struct TimelineBuilder {
     audio_animations: HashMap<String, AnimationTrack<f64>>,
     /// See [`TimelineBuilder::lavfi_overlay`].
     lavfi_overlay: Option<String>,
+    /// See [`TimelineBuilder::audio_filter`].
+    audio_filter: Vec<FilterStep>,
 }
 
 impl Default for TimelineBuilder {
@@ -516,6 +573,7 @@ impl TimelineBuilder {
             video_animations: HashMap::new(),
             audio_animations: HashMap::new(),
             lavfi_overlay: None,
+            audio_filter: Vec::new(),
         }
     }
 
@@ -632,6 +690,22 @@ impl TimelineBuilder {
         }
     }
 
+    /// Sets a timeline-level (master bus) audio effect chain applied to the final
+    /// mix on render.
+    ///
+    /// The steps run in order on the whole program's mixed audio, after the
+    /// multi-track mix and before the encoder — the natural place for loudness
+    /// normalization ([`FilterStep::LoudnessNormalize`]). When not set (the
+    /// default, an empty chain) the audio path is unchanged. Per-track (pre-mix)
+    /// effects are a separate feature (see issue #1446).
+    #[must_use]
+    pub fn audio_filter(self, steps: Vec<FilterStep>) -> Self {
+        Self {
+            audio_filter: steps,
+            ..self
+        }
+    }
+
     /// Builds the [`Timeline`].
     ///
     /// # Errors
@@ -676,6 +750,7 @@ impl TimelineBuilder {
             video_animations: self.video_animations,
             audio_animations: self.audio_animations,
             lavfi_overlay: self.lavfi_overlay,
+            audio_filter: self.audio_filter,
         })
     }
 
@@ -988,6 +1063,33 @@ mod tests {
             scene.lavfi_overlay.as_deref(),
             Some("color=s=1920x1080:c=black@0.0")
         );
+    }
+
+    #[test]
+    fn timeline_default_audio_filter_should_be_empty() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+        assert!(timeline.audio_filter.is_empty());
+    }
+
+    #[test]
+    fn timeline_builder_audio_filter_should_set_chain() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .audio_filter(vec![FilterStep::Volume(-6.0)])
+            .build()
+            .unwrap();
+        assert_eq!(timeline.audio_filter.len(), 1);
+        assert!(matches!(
+            timeline.audio_filter[0],
+            FilterStep::Volume(v) if (v - (-6.0)).abs() < 1e-9
+        ));
     }
 
     #[cfg(feature = "preview")]

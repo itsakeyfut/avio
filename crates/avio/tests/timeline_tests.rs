@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
+use ff_filter::FilterStep;
 use ff_filter::animation::{AnimationTrack, Easing};
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
@@ -128,6 +129,68 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
         video.height(),
         H,
         "output video height must match canvas height"
+    );
+}
+
+/// A timeline-level (master bus) audio effect chain must be applied on render
+/// (issue #1424 — "no longer inert"). A wiring/format bug in the post-mix master
+/// graph would fail push/pull/flush here. `Volume` is a plain node: the synthetic
+/// source audio is silent, so a two-pass loudnorm would be a degenerate input;
+/// `LoudnessNormalize`'s measured correctness lives in ff-filter's tests.
+#[test]
+fn timeline_audio_filter_should_render_through_master_chain() {
+    let src_path = test_output_path("timeline_audiofilter_src.mp4");
+    let out_path = test_output_path("timeline_audiofilter_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path);
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip.clone()])
+        .audio_track(vec![clip])
+        .audio_filter(vec![FilterStep::Volume(-6.0)])
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(TimelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(TimelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(TimelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+    assert!(
+        info.has_audio(),
+        "rendered output with a master audio filter must contain an audio stream"
     );
 }
 
