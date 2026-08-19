@@ -107,6 +107,13 @@ pub enum Command {
         /// Frames per second.
         fps: f64,
     },
+    /// Apply several commands as one atomic edit (and, through [`Editor`](crate::Editor),
+    /// one undo step).
+    ///
+    /// The sub-commands are applied in order to the same timeline. If any one
+    /// fails, the whole batch is rejected and the timeline is left unchanged. An
+    /// empty batch is a no-op, and batches may nest.
+    Batch(Vec<Command>),
 }
 
 /// An edit that could not be applied to a [`Timeline`].
@@ -142,7 +149,9 @@ pub enum EditError {
 /// This is a pure function: `timeline` is not modified (it is borrowed
 /// immutably), no I/O is performed, and no source is re-probed — an edit carries
 /// the already-resolved canvas/fps. Invalid edits (an unknown track/clip id, zero
-/// canvas, non-positive fps) return an [`EditError`] and change nothing.
+/// canvas, non-positive fps) return an [`EditError`] and change nothing. A
+/// [`Command::Batch`] applies its sub-commands atomically: if any one fails, none
+/// take effect.
 ///
 /// # Errors
 ///
@@ -223,6 +232,14 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                 return Err(EditError::InvalidFrameRate(*fps));
             }
             next.frame_rate = *fps;
+        }
+        Command::Batch(commands) => {
+            // Apply each sub-command to the accumulating timeline. On failure `?`
+            // returns and `next` is dropped, so the input timeline is unchanged
+            // (the batch is atomic). The id counters carry forward through `next`.
+            for command in commands {
+                next = apply(&next, command)?;
+            }
         }
     }
     Ok(next)
@@ -663,5 +680,92 @@ mod tests {
                 height: 720
             }
         );
+    }
+
+    #[test]
+    fn apply_batch_should_apply_all_sub_commands() {
+        let t = timeline_with(1);
+        let out = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddClip {
+                    track: track0(&t),
+                    clip: Box::new(Clip::new("a.mp4")),
+                },
+                Command::SetFrameRate { fps: 24.0 },
+            ]),
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 2);
+        assert!((out.frame_rate() - 24.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_batch_should_be_atomic_on_failure() {
+        let t = timeline_with(1);
+        let err = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddClip {
+                    track: track0(&t),
+                    clip: Box::new(Clip::new("a.mp4")),
+                },
+                // Fails: unknown clip id. The whole batch must be rejected.
+                Command::RemoveClip {
+                    clip: ClipId::UNSET,
+                },
+                Command::SetFrameRate { fps: 24.0 },
+            ]),
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
+        // apply returned Err, so the caller keeps the original timeline unchanged.
+        assert_eq!(t.video_tracks()[0].clips.len(), 1);
+        assert!((t.frame_rate() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_empty_batch_should_be_a_no_op() {
+        let t = timeline_with(1);
+        let out = apply(&t, &Command::Batch(vec![])).unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 1);
+        assert!((out.frame_rate() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_nested_batch_should_apply() {
+        let t = timeline_with(1);
+        let out = apply(
+            &t,
+            &Command::Batch(vec![Command::Batch(vec![Command::AddClip {
+                track: track0(&t),
+                clip: Box::new(Clip::new("a.mp4")),
+            }])]),
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn apply_batch_of_two_add_clip_should_mint_distinct_ids() {
+        let t = timeline_with(1);
+        let out = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddClip {
+                    track: track0(&t),
+                    clip: Box::new(Clip::new("a.mp4")),
+                },
+                Command::AddClip {
+                    track: track0(&t),
+                    clip: Box::new(Clip::new("b.mp4")),
+                },
+            ]),
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips.len(), 3);
+        assert_ne!(clips[1].id, clips[2].id, "batch must mint distinct ids");
+        assert!(clips[1].id.is_set() && clips[2].id.is_set());
     }
 }
