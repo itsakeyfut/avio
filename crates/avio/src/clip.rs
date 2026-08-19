@@ -15,6 +15,7 @@ use ff_filter::{
 use ff_format::{PixelFormat, VideoFrame};
 
 use crate::error::TimelineError;
+use crate::ids::ClipId;
 
 /// A single media clip on a timeline.
 ///
@@ -36,6 +37,12 @@ use crate::error::TimelineError;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Clip {
+    /// Stable identity within a [`Timeline`](crate::Timeline).
+    ///
+    /// [`ClipId::UNSET`] until the clip is placed in a document; the timeline
+    /// stamps a real id when the clip is added (via the builder or
+    /// [`Command::AddClip`](crate::Command::AddClip)).
+    pub id: ClipId,
     /// Path to the source media file.
     pub source: PathBuf,
     /// Start point within the source file. `None` = beginning of file.
@@ -206,6 +213,7 @@ impl Clip {
     /// Creates a new clip from a source path with no trim points and zero timeline offset.
     pub fn new(source: impl AsRef<Path>) -> Self {
         Self {
+            id: ClipId::UNSET,
             source: source.as_ref().to_path_buf(),
             in_point: None,
             out_point: None,

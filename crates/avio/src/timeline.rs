@@ -20,6 +20,8 @@ use ff_format::ChannelLayout;
 use crate::clip::Clip;
 use crate::derive;
 use crate::error::TimelineError;
+use crate::ids::{ClipId, TrackId};
+use crate::track::Track;
 use ff_pipeline::EncoderConfig;
 use ff_pipeline::Progress;
 use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
@@ -59,9 +61,14 @@ pub struct Timeline {
     /// as the real-time preview know a deliberate output aspect was requested.
     pub(crate) canvas_explicit: bool,
     pub(crate) frame_rate: f64,
-    /// `video_tracks[track_idx][clip_idx]`; track 0 = bottom layer.
-    pub(crate) video_tracks: Vec<Vec<Clip>>,
-    pub(crate) audio_tracks: Vec<Vec<Clip>>,
+    /// `video_tracks[track_idx].clips[clip_idx]`; track 0 = bottom layer.
+    pub(crate) video_tracks: Vec<Track>,
+    pub(crate) audio_tracks: Vec<Track>,
+    /// Next [`ClipId`](crate::ClipId) value to hand out. Monotonic, never reused;
+    /// stamped onto clips as they are added. `1` for a fresh document (`0` = unset).
+    pub(crate) next_clip_id: u64,
+    /// Next [`TrackId`](crate::TrackId) value to hand out (see `next_clip_id`).
+    pub(crate) next_track_id: u64,
     /// Animation tracks for video layer properties.
     ///
     /// Key format: `"video_{track_index}_{property}"`, e.g. `"video_0_opacity"`.
@@ -119,12 +126,12 @@ impl Timeline {
     }
 
     /// Returns a slice of all video tracks.
-    pub fn video_tracks(&self) -> &[Vec<Clip>] {
+    pub fn video_tracks(&self) -> &[Track] {
         &self.video_tracks
     }
 
     /// Returns a slice of all audio tracks.
-    pub fn audio_tracks(&self) -> &[Vec<Clip>] {
+    pub fn audio_tracks(&self) -> &[Track] {
         &self.audio_tracks
     }
 
@@ -199,7 +206,7 @@ impl Timeline {
         let total_frames: Option<u64> = self
             .video_tracks
             .iter()
-            .flat_map(|track| track.iter())
+            .flat_map(|track| track.clips.iter())
             .map(Clip::duration)
             .try_fold(Duration::ZERO, |acc, dur| dur.map(|d| acc + d))
             .map(|total_dur| (total_dur.as_secs_f64() * self.frame_rate).round().max(0.0) as u64);
@@ -211,6 +218,8 @@ impl Timeline {
             frame_rate,
             video_tracks,
             audio_tracks,
+            next_clip_id: _,
+            next_track_id: _,
             video_animations,
             audio_animations,
             lavfi_overlay,
@@ -219,9 +228,24 @@ impl Timeline {
         let nv = video_tracks.len();
         let na = audio_tracks.len();
 
-        // 1. Pre-check: all clip sources must exist on disk.
-        for track in video_tracks.iter().chain(audio_tracks.iter()) {
-            for clip in track {
+        // Solo is scoped per media list; a track is active unless disabled, muted,
+        // or shadowed by a solo elsewhere in its list. Computed once here and
+        // reused by the pre-check and both derivation loops.
+        let any_video_solo = video_tracks.iter().any(|t| t.solo);
+        let any_audio_solo = audio_tracks.iter().any(|t| t.solo);
+
+        // 1. Pre-check: sources of active tracks must exist on disk. Inactive
+        //    tracks contribute nothing to the render, so an offline source on a
+        //    disabled/muted/soloed-out track must not fail the whole export.
+        for (track, any_solo) in video_tracks
+            .iter()
+            .map(|t| (t, any_video_solo))
+            .chain(audio_tracks.iter().map(|t| (t, any_audio_solo)))
+        {
+            if !track.is_active(any_solo) {
+                continue;
+            }
+            for clip in &track.clips {
                 if !clip.source.exists() {
                     return Err(TimelineError::ClipNotFound {
                         path: clip.source.to_string_lossy().into_owned(),
@@ -267,8 +291,14 @@ impl Timeline {
             // relative to the audio for non-30fps timelines.
             let mut composer =
                 MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
+            // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in
+            // this list) contribute no layers. The enumerate index is preserved so
+            // the timeline animation keys (`video_{idx}_*`) still line up.
             for (track_idx, track) in video_tracks.iter().enumerate() {
-                for (clip_idx, clip) in track.iter().enumerate() {
+                if !track.is_active(any_video_solo) {
+                    continue;
+                }
+                for (clip_idx, clip) in track.clips.iter().enumerate() {
                     let prev_end =
                         (clip_idx > 0).then(|| *prev_end_by_track.get(&track_idx).unwrap_or(&0.0));
 
@@ -346,8 +376,12 @@ impl Timeline {
         let mut audio_graph = None;
         if !audio_tracks.is_empty() {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
+            // Honor mute/solo/enabled: an inactive audio track is silent.
             for (track_idx, track) in audio_tracks.iter().enumerate() {
-                for clip in track {
+                if !track.is_active(any_audio_solo) {
+                    continue;
+                }
+                for clip in &track.clips {
                     // Resolve the effective clip duration only when a fade-out
                     // needs it to compute its start offset (probing is I/O; the
                     // pure per-clip build lives in `derive`).
@@ -454,8 +488,8 @@ pub struct TimelineBuilder {
     canvas_width: Option<u32>,
     canvas_height: Option<u32>,
     frame_rate: Option<f64>,
-    video_tracks: Vec<Vec<Clip>>,
-    audio_tracks: Vec<Vec<Clip>>,
+    video_tracks: Vec<Track>,
+    audio_tracks: Vec<Track>,
     video_animations: HashMap<String, AnimationTrack<f64>>,
     audio_animations: HashMap<String, AnimationTrack<f64>>,
     /// See [`TimelineBuilder::lavfi_overlay`].
@@ -502,22 +536,38 @@ impl TimelineBuilder {
         }
     }
 
-    /// Appends a video track. Track 0 (first call) is the bottom layer.
+    /// Appends a video track holding `clips` (default flags, no name). Track 0
+    /// (first call) is the bottom layer.
+    ///
+    /// Use [`video_track_with`](Self::video_track_with) to append a track with a
+    /// name or mute/solo/enabled/lock flags set.
     #[must_use]
     pub fn video_track(self, clips: Vec<Clip>) -> Self {
+        self.video_track_with(Track::new(clips))
+    }
+
+    /// Appends a preconfigured video [`Track`] (name, mute/solo/enabled/lock).
+    #[must_use]
+    pub fn video_track_with(self, track: Track) -> Self {
         let mut video_tracks = self.video_tracks;
-        video_tracks.push(clips);
+        video_tracks.push(track);
         Self {
             video_tracks,
             ..self
         }
     }
 
-    /// Appends an audio track.
+    /// Appends an audio track holding `clips` (default flags, no name).
     #[must_use]
     pub fn audio_track(self, clips: Vec<Clip>) -> Self {
+        self.audio_track_with(Track::new(clips))
+    }
+
+    /// Appends a preconfigured audio [`Track`] (name, mute/solo/enabled/lock).
+    #[must_use]
+    pub fn audio_track_with(self, track: Track) -> Self {
         let mut audio_tracks = self.audio_tracks;
-        audio_tracks.push(clips);
+        audio_tracks.push(track);
         Self {
             audio_tracks,
             ..self
@@ -596,13 +646,31 @@ impl TimelineBuilder {
         let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
         let (canvas_width, canvas_height, frame_rate) = self.resolve_canvas_and_fps()?;
 
+        // Stamp stable ids from monotonic counters (0 = unset; ids start at 1),
+        // video tracks first. The final counter values are stored so later edits
+        // (`AddClip` / `AddTrack`) keep minting fresh, never-reused ids.
+        let mut next_track_id: u64 = 1;
+        let mut next_clip_id: u64 = 1;
+        let mut video_tracks = self.video_tracks;
+        let mut audio_tracks = self.audio_tracks;
+        for track in video_tracks.iter_mut().chain(audio_tracks.iter_mut()) {
+            track.id = TrackId::from_raw(next_track_id);
+            next_track_id += 1;
+            for clip in &mut track.clips {
+                clip.id = ClipId::from_raw(next_clip_id);
+                next_clip_id += 1;
+            }
+        }
+
         Ok(Timeline {
             canvas_width,
             canvas_height,
             canvas_explicit,
             frame_rate,
-            video_tracks: self.video_tracks,
-            audio_tracks: self.audio_tracks,
+            video_tracks,
+            audio_tracks,
+            next_clip_id,
+            next_track_id,
             video_animations: self.video_animations,
             audio_animations: self.audio_animations,
             lavfi_overlay: self.lavfi_overlay,
@@ -619,7 +687,9 @@ impl TimelineBuilder {
             || self.canvas_height.is_none()
             || self.frame_rate.is_none();
 
-        if need_probe && let Some(first_clip) = self.video_tracks.first().and_then(|t| t.first()) {
+        if need_probe
+            && let Some(first_clip) = self.video_tracks.first().and_then(|t| t.clips.first())
+        {
             if !first_clip.source.exists() {
                 return Err(TimelineError::ClipNotFound {
                     path: first_clip.source.to_string_lossy().into_owned(),
@@ -715,29 +785,44 @@ impl Timeline {
     /// are overlays (transitions forced off, matching the compositor).
     #[must_use]
     pub fn to_scene(&self) -> ff_preview::Scene {
+        // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in the
+        // list) project no placements, but keep their slot so the base-track
+        // (index 0) rule and the `video_{idx}_*` animation keys stay aligned.
+        let any_video_solo = self.video_tracks.iter().any(|t| t.solo);
         let video_tracks = self
-            .video_tracks()
+            .video_tracks
             .iter()
             .enumerate()
             .map(|(track_idx, track)| ff_preview::SceneVideoTrack {
-                placements: track
-                    .iter()
-                    .map(|clip| {
-                        video_placement(clip, track_idx, track_idx == 0, &self.video_animations)
-                    })
-                    .collect(),
+                placements: if track.is_active(any_video_solo) {
+                    track
+                        .clips
+                        .iter()
+                        .map(|clip| {
+                            video_placement(clip, track_idx, track_idx == 0, &self.video_animations)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             })
             .collect();
 
+        let any_audio_solo = self.audio_tracks.iter().any(|t| t.solo);
         let audio_tracks = self
-            .audio_tracks()
+            .audio_tracks
             .iter()
             .enumerate()
             .map(|(track_idx, track)| ff_preview::SceneAudioTrack {
-                placements: track
-                    .iter()
-                    .map(|clip| audio_placement(clip, track_idx, &self.audio_animations))
-                    .collect(),
+                placements: if track.is_active(any_audio_solo) {
+                    track
+                        .clips
+                        .iter()
+                        .map(|clip| audio_placement(clip, track_idx, &self.audio_animations))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             })
             .collect();
 
@@ -909,6 +994,103 @@ mod tests {
         assert!((audio.speed - 2.0).abs() < f64::EPSILON);
         // The neutral clip volume falls back to the timeline `audio_0_volume` automation.
         assert!(matches!(audio.volume, AnimatedValue::Track(_)));
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_drop_disabled_video_track_placements() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track_with(Track::new(vec![Clip::new("base.mp4")]).enabled(false))
+            .video_track(vec![Clip::new("overlay.mp4")])
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert_eq!(scene.video_tracks.len(), 2, "track slots are preserved");
+        assert!(
+            scene.video_tracks[0].placements.is_empty(),
+            "a disabled track projects no placements"
+        );
+        assert_eq!(scene.video_tracks[1].placements.len(), 1);
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_drop_muted_video_track_placements() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track_with(Track::new(vec![Clip::new("base.mp4")]).muted(true))
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert!(scene.video_tracks[0].placements.is_empty());
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_solo_should_keep_only_soloed_video_tracks() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("base.mp4")]) // not soloed
+            .video_track_with(Track::new(vec![Clip::new("overlay.mp4")]).soloed(true))
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert!(
+            scene.video_tracks[0].placements.is_empty(),
+            "a non-soloed track is shadowed when another is soloed"
+        );
+        assert_eq!(scene.video_tracks[1].placements.len(), 1);
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_drop_muted_audio_track_placements() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track_with(Track::new(vec![Clip::new("a.mp3")]).muted(true))
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert!(scene.audio_tracks[0].placements.is_empty());
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_drop_disabled_audio_track_placements() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track_with(Track::new(vec![Clip::new("a.mp3")]).enabled(false))
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert!(scene.audio_tracks[0].placements.is_empty());
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_solo_should_keep_only_soloed_audio_tracks() {
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")]) // not soloed
+            .audio_track_with(Track::new(vec![Clip::new("b.mp3")]).soloed(true))
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        assert!(
+            scene.audio_tracks[0].placements.is_empty(),
+            "a non-soloed audio track is shadowed when another is soloed"
+        );
+        assert_eq!(scene.audio_tracks[1].placements.len(), 1);
     }
 
     #[test]

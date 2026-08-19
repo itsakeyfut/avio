@@ -326,18 +326,26 @@ mod editor;
 #[cfg(feature = "pipeline")]
 mod error;
 #[cfg(feature = "pipeline")]
+mod ids;
+#[cfg(feature = "pipeline")]
 mod timeline;
+#[cfg(feature = "pipeline")]
+mod track;
 
 #[cfg(feature = "pipeline")]
 pub use clip::{Clip, VideoEffectRenderer};
 #[cfg(feature = "pipeline")]
-pub use edit::{ClipProperty, Command, EditError, TrackId, TrackKind, apply};
+pub use edit::{ClipProperty, Command, EditError, apply};
 #[cfg(feature = "pipeline")]
 pub use editor::Editor;
 #[cfg(feature = "pipeline")]
 pub use error::TimelineError;
 #[cfg(feature = "pipeline")]
+pub use ids::{ClipId, TrackId, TrackKind};
+#[cfg(feature = "pipeline")]
 pub use timeline::{Timeline, TimelineBuilder};
+#[cfg(feature = "pipeline")]
+pub use track::Track;
 
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
