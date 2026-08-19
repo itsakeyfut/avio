@@ -328,6 +328,8 @@ impl Timeline {
                         clip,
                         track_idx,
                         &video_animations,
+                        canvas_width,
+                        canvas_height,
                         prev_end,
                         proxy,
                     ));
@@ -722,6 +724,8 @@ fn video_placement(
     track_idx: usize,
     is_base: bool,
     animations: &HashMap<String, AnimationTrack<f64>>,
+    canvas_width: u32,
+    canvas_height: u32,
 ) -> ff_preview::ScenePlacement {
     let xfade_dur = if is_base && clip.transition.is_some() {
         clip.transition_duration
@@ -743,7 +747,13 @@ fn video_placement(
         // The single derive: preview and export build their video layers from the
         // same `avio::derive`, so the timeline-level animations (scale/rotation and
         // the opacity/x/y track-level fallbacks) reach the preview too.
-        layer: crate::derive::realtime_descriptor(clip, track_idx, animations),
+        layer: crate::derive::realtime_descriptor(
+            clip,
+            track_idx,
+            animations,
+            canvas_width,
+            canvas_height,
+        ),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
         // V1 clip audio has no dedicated audio-track counterpart in export (which
@@ -799,7 +809,14 @@ impl Timeline {
                         .clips
                         .iter()
                         .map(|clip| {
-                            video_placement(clip, track_idx, track_idx == 0, &self.video_animations)
+                            video_placement(
+                                clip,
+                                track_idx,
+                                track_idx == 0,
+                                &self.video_animations,
+                                self.canvas_width,
+                                self.canvas_height,
+                            )
                         })
                         .collect()
                 } else {

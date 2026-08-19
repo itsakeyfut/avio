@@ -271,6 +271,24 @@ impl FilterGraphBuilder {
         });
         self
     }
+
+    /// Scale the source frame to *cover* `width × height` while preserving its
+    /// aspect ratio, then centre-crop the overflow onto a `width × height` canvas
+    /// (no bars). The cover counterpart to [`fit_to_aspect`](Self::fit_to_aspect).
+    ///
+    /// Sources with a different aspect ratio than the target are scaled up until
+    /// both dimensions cover the canvas, then the excess is cropped equally from
+    /// both sides (centred).
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `width` or `height` is zero.
+    #[must_use]
+    pub fn fill_to_aspect(mut self, width: u32, height: u32) -> Self {
+        self.steps.push(FilterStep::FillToAspect { width, height });
+        self
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +519,39 @@ mod tests {
     #[test]
     fn builder_pad_with_zero_height_should_return_invalid_config() {
         let result = FilterGraph::builder().pad(1920, 0, -1, -1, "black").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for height=0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fill_to_aspect_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().fill_to_aspect(1920, 1080).build();
+        assert!(
+            result.is_ok(),
+            "fill_to_aspect with valid params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fill_to_aspect_with_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder().fill_to_aspect(0, 1080).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for width=0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("fill_to_aspect width and height must be > 0"),
+                "reason should mention fill_to_aspect dimensions: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_fill_to_aspect_with_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder().fill_to_aspect(1920, 0).build();
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for height=0, got {result:?}"

@@ -333,7 +333,7 @@ mod timeline;
 mod track;
 
 #[cfg(feature = "pipeline")]
-pub use clip::{Clip, VideoEffectRenderer};
+pub use clip::{Clip, FitMode, VideoEffectRenderer};
 #[cfg(feature = "pipeline")]
 pub use edit::{ClipProperty, Command, EditError, apply};
 #[cfg(feature = "pipeline")]

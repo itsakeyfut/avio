@@ -1052,6 +1052,52 @@ fn push_4x3_frame_through_fit_to_aspect_16x9_should_return_target_dimensions() {
 }
 
 #[test]
+fn push_4x3_frame_through_fill_to_aspect_16x9_should_cover_and_crop_to_target() {
+    // 64×48 is 4:3; covering 128×72 (16:9) should crop the vertical overflow.
+    // Scale factor = max(128/64, 72/48) = max(2.0, 1.5) = 2.0
+    // Scaled: 64×2.0=128, 48×2.0=96 → centre-crop to 128×72 (12px removed top/bottom).
+    let mut graph = match FilterGraph::builder().fill_to_aspect(128, 72).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 48);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fill_to_aspect push");
+    assert_eq!(
+        out.width(),
+        128,
+        "width should match target after fill_to_aspect"
+    );
+    assert_eq!(
+        out.height(),
+        72,
+        "height should exactly match target (overflow cropped) after fill_to_aspect"
+    );
+    // Cover, not letterbox/pillarbox: the 4:3 source into 16:9 would pillarbox
+    // under Fit (black bars at the left/right edges, so x=0 is a bar). Fill scales
+    // up to cover and crops, so the top-left pixel is source content (grey Y≈128),
+    // not a bar. This separates cover+crop from contain+pad at the pixel level
+    // (dimensions alone are identical for both modes).
+    if let Some(y_plane) = out.plane(0) {
+        assert!(
+            y_plane[0] > 64,
+            "top-left pixel should be source content, not a letterbox/pillarbox bar; got Y={}",
+            y_plane[0]
+        );
+    }
+}
+
+#[test]
 fn push_wide_frame_through_fit_to_aspect_should_produce_letterbox() {
     // 128×54 is ~2.37:1; fitting into 128×72 (16:9) should produce letterbox bars.
     // Scale factor = min(128/128, 72/54) = min(1.0, 1.33) = 1.0 (no scale needed)
