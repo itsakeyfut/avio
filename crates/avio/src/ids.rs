@@ -23,6 +23,7 @@
 /// Assigned by the document (see the module docs); [`Clip::new`](crate::Clip::new)
 /// leaves it [`UNSET`](ClipId::UNSET) until the clip is placed in a timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClipId(u64);
 
 impl ClipId {
@@ -50,6 +51,7 @@ impl ClipId {
 /// **both** the video and audio track lists (they share one counter), so a
 /// `TrackId` identifies a track without also naming its [`TrackKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackId(u64);
 
 impl TrackId {
@@ -70,6 +72,7 @@ impl TrackId {
 
 /// Which track list a [`TrackId`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TrackKind {
     /// A video track ([`Timeline::video_tracks`](crate::Timeline::video_tracks)).
     Video,

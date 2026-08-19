@@ -53,6 +53,7 @@ use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
 /// assert!(result.is_ok());
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timeline {
     pub(crate) canvas_width: u32,
     pub(crate) canvas_height: u32,
@@ -98,6 +99,10 @@ pub struct Timeline {
     /// audio — the natural place for loudness normalization
     /// ([`FilterStep::LoudnessNormalize`]). Per-track (pre-mix) effects are a
     /// separate feature (see issue #1446).
+    ///
+    /// Not persisted by the `serde` feature yet: `FilterStep` is not serializable,
+    /// so this field is skipped and deserializes to an empty vec (see #1426).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) audio_filter: Vec<FilterStep>,
 }
 

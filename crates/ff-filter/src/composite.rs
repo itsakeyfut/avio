@@ -14,6 +14,7 @@
 // Open catalog: the Porter-Duff operator set is added to incrementally.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CompositeOp {
     /// Top layer rendered over the bottom (standard alpha compositing).
     ///

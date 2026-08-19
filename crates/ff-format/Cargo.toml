@@ -14,10 +14,14 @@ categories = ["multimedia::video", "multimedia::audio"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 ff-common = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [lints]
 workspace = true
