@@ -15,8 +15,9 @@ standard. Copy [`adr-template.md`](./adr-template.md) to start one.
 | # | Decision | Status | Confirmed by |
 |---|---|---|---|
 | [0001](./0001-clip-and-track-identity.md) | Address clips and tracks by a document-scoped, monotonic `u64` id | accepted | unit tests in `crates/avio/src/edit.rs` (id set/unique, stability, not-found) |
+| [0002](./0002-per-clip-animation-in-the-model.md) | Carry all per-clip animation in the model; a primitive may static-evaluate what it cannot yet animate | accepted | derive unit tests in `crates/avio/src/derive.rs` (scale/rotation, pitch tracks flow; export == preview) |
 
-**By status** - accepted: 0001 · proposed: none · superseded: none
+**By status** - accepted: 0001, 0002 · proposed: none · superseded: none
 
 Records are numbered consecutively from `0001`.
 
