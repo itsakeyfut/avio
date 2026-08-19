@@ -98,6 +98,21 @@ pub struct Clip {
     /// time (the mix graph's output PTS). Takes precedence over the static
     /// [`volume_db`](Self::volume_db) when set. Defaults to `None`.
     pub volume_track: Option<AnimationTrack<f64>>,
+    /// Per-clip audio **pitch** shift in **semitones** (`0.0` = no shift).
+    ///
+    /// Effective render range is `[-24.0, 24.0]` (the `ff-filter` `PitchShift`
+    /// capability). Superseded by [`pitch_track`](Self::pitch_track) when a track is
+    /// set. Defaults to `0.0`.
+    ///
+    /// A set [`pitch_track`](Self::pitch_track) renders at its `t=0` value:
+    /// per-sample pitch automation is a deferred primitive capability (see ADR-0002),
+    /// so the track is stored (undoable, model-animatable) but the mixer applies a
+    /// static shift.
+    pub pitch: f64,
+    /// Per-clip **pitch automation** track (semitones), evaluated in
+    /// **timeline-global** time. Takes precedence over the static
+    /// [`pitch`](Self::pitch) when set. Defaults to `None`.
+    pub pitch_track: Option<AnimationTrack<f64>>,
     /// Audio fade-in duration at the start of the clip (`Duration::ZERO` = no fade).
     ///
     /// When non-zero, a linear ramp from silence to the clip's volume level is
@@ -273,6 +288,8 @@ impl Clip {
             transition_duration: Duration::ZERO,
             volume_db: 0.0,
             volume_track: None,
+            pitch: 0.0,
+            pitch_track: None,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
             brightness: 0.0,
@@ -547,6 +564,29 @@ impl Clip {
     pub fn with_volume_track(self, track: AnimationTrack<f64>) -> Self {
         Self {
             volume_track: Some(track),
+            ..self
+        }
+    }
+
+    /// Sets the per-clip audio pitch shift in **semitones** (`0.0` = no shift) and
+    /// returns the updated clip. Effective render range is `[-24.0, 24.0]`.
+    #[must_use]
+    pub fn with_pitch(self, semitones: f64) -> Self {
+        Self {
+            pitch: semitones,
+            ..self
+        }
+    }
+
+    /// Sets a per-clip **pitch automation** track (semitones) and returns the updated
+    /// clip.
+    ///
+    /// The track is evaluated in **timeline-global** time and takes precedence over
+    /// the static [`with_pitch`](Self::with_pitch) / [`pitch`](Self::pitch) when set.
+    #[must_use]
+    pub fn with_pitch_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            pitch_track: Some(track),
             ..self
         }
     }
@@ -1224,6 +1264,35 @@ mod tests {
         let stored = clip.volume_track.expect("volume track stored");
         // Midpoint of a 0→-12 dB linear sweep is -6 dB.
         assert!((stored.value_at(Duration::from_secs(1)) - (-6.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_new_should_default_pitch_to_zero() {
+        let clip = Clip::new("a.wav");
+        assert_eq!(clip.pitch, 0.0);
+        assert!(clip.pitch_track.is_none());
+    }
+
+    #[test]
+    fn clip_with_pitch_should_set_pitch() {
+        let clip = Clip::new("a.wav").with_pitch(7.0);
+        assert_eq!(clip.pitch, 7.0);
+    }
+
+    #[test]
+    fn clip_with_pitch_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            2.0,
+            12.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+        let clip = Clip::new("a.wav").with_pitch_track(track);
+        let stored = clip.pitch_track.expect("pitch track stored");
+        // Midpoint of a 2→12 semitone linear sweep is 7.
+        assert!((stored.value_at(Duration::from_secs(1)) - 7.0).abs() < 1e-9);
     }
 
     #[test]
