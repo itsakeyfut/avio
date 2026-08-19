@@ -323,6 +323,19 @@ pub(crate) fn audio_track(
     if (clip.speed - 1.0).abs() > 1e-9 {
         effects.push(FilterStep::Speed { factor: clip.speed });
     }
+    // Per-clip pitch shift (semitones). A set `pitch_track` is evaluated at its
+    // `t=0` value: the mixer applies a static `PitchShift` (per-sample pitch
+    // automation is a deferred primitive capability; see ADR-0002).
+    let pitch = clip
+        .pitch_track
+        .as_ref()
+        .map_or(clip.pitch, |t| t.value_at(Duration::ZERO));
+    if pitch.abs() > 1e-9 {
+        #[allow(clippy::cast_possible_truncation)]
+        effects.push(FilterStep::PitchShift {
+            semitones: pitch as f32,
+        });
+    }
     if clip.fade_in > Duration::ZERO {
         effects.push(FilterStep::AFadeIn {
             start: 0.0,
@@ -657,6 +670,42 @@ mod tests {
         let clip = Clip::new("a.mp3");
         let track = audio_track(&clip, 0, &anims, None);
         assert!(matches!(track.pan, AnimatedValue::Track(_)));
+    }
+
+    #[test]
+    fn audio_track_static_pitch_should_emit_pitch_shift() {
+        let clip = Clip::new("a.mp3").with_pitch(4.0);
+        let track = audio_track(&clip, 0, &no_anim(), None);
+        assert!(track.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::PitchShift { semitones } if (semitones - 4.0).abs() < 1e-6
+        )));
+    }
+
+    #[test]
+    fn audio_track_pitch_track_should_emit_pitch_shift_at_t0() {
+        // A per-clip pitch track wins over the static pitch and renders at its
+        // `t=0` value (per-sample automation is deferred; see ADR-0002).
+        let clip = Clip::new("a.mp3").with_pitch(1.0).with_pitch_track(
+            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 5.0, Easing::Linear)),
+        );
+        let track = audio_track(&clip, 0, &no_anim(), None);
+        assert!(track.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::PitchShift { semitones } if (semitones - 5.0).abs() < 1e-6
+        )));
+    }
+
+    #[test]
+    fn audio_track_zero_pitch_should_emit_no_pitch_shift() {
+        let clip = Clip::new("a.mp3"); // pitch defaults to 0.0
+        let track = audio_track(&clip, 0, &no_anim(), None);
+        assert!(
+            !track
+                .effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::PitchShift { .. }))
+        );
     }
 
     // ── audio_volume (shared 3-way merge) ─────────────────────────────────────
