@@ -14,7 +14,8 @@
 //! - `stream` - Stream info ([`VideoStreamInfo`], [`AudioStreamInfo`])
 //! - `container` - Container info ([`ContainerInfo`])
 //! - `media` - Media container info ([`MediaInfo`])
-//! - `color` - Color space definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`])
+//! - `color` - Color definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`], [`Color`])
+//! - `text` - Text/title layer spec types ([`TextSpec`], [`TextStyle`], [`Anchor`])
 //! - `hdr` - HDR metadata types ([`Hdr10Metadata`], [`MasteringDisplay`])
 //! - `network` - Network configuration ([`NetworkOptions`])
 //! - `codec` - Codec definitions ([`VideoCodec`], [`AudioCodec`])
@@ -68,12 +69,13 @@ pub mod pixel;
 pub mod sample;
 pub mod stream;
 pub mod subtitle;
+pub mod text;
 pub mod time;
 
 pub use channel::ChannelLayout;
 pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
-pub use color::{AlphaMode, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
+pub use color::{AlphaMode, Color, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 pub use container::{ContainerInfo, ContainerInfoBuilder};
 pub use error::{FormatError, FrameError, SubtitleError};
 pub use ff_common::PooledBuffer;
@@ -88,6 +90,7 @@ pub use stream::{
     AudioStreamInfo, AudioStreamInfoBuilder, SubtitleStreamInfo, SubtitleStreamInfoBuilder,
     VideoStreamInfo, VideoStreamInfoBuilder,
 };
+pub use text::{Anchor, TextSpec, TextStyle};
 pub use time::{Rational, Timestamp};
 
 /// Prelude module for convenient imports.

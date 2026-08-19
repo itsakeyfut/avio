@@ -20,7 +20,7 @@ use crate::filter_inner::FilterGraphInner;
 use crate::graph::FfmpegToken;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
-use crate::graph::types::{Rgb, ScaleAlgorithm};
+use crate::graph::types::{DrawTextOptions, Rgb, ScaleAlgorithm};
 
 use super::multi_track_composer::VideoLayer;
 use super::multi_track_mixer::AudioTrack;
@@ -2530,5 +2530,159 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
     let sink_nn = NonNull::new_unchecked(sink_ctx);
     let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
     log::info!("lavfi source graph built");
+    Ok(FilterGraph::from_prebuilt(inner))
+}
+
+// ── Text layer source graph (generated title/caption layer) ───────────────────
+
+/// Builds a source-only graph that renders a text layer onto a transparent canvas:
+/// `color(c=black@0.0:s=WxH:r=fps) → format=rgba → drawtext → buffersink`.
+///
+/// Unlike [`build_lavfi_source`], this uses the `color` **filter** source (not the
+/// `movie=…:format_name=lavfi` demuxer), so it does not depend on the lavfi
+/// demuxer. The transparent base + `rgba` output make the result composite as an
+/// overlay. Pulled with [`FilterGraph::pull_video`]; no `buffersrc` input.
+///
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// returned graph owns every context it created.
+pub(super) unsafe fn build_text_source(
+    opts: &DrawTextOptions,
+    width: u32,
+    height: u32,
+    fps: f64,
+) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // ── color source (transparent base canvas) ────────────────────────────────
+    let color_filter = ff_sys::avfilter_get_by_name(c"color".as_ptr());
+    if color_filter.is_null() {
+        bail!(graph, "filter not found: color");
+    }
+    let color_args_str = format!("c=black@0.0:s={width}x{height}:r={fps}");
+    let Ok(color_args) = CString::new(color_args_str.as_str()) else {
+        bail!(graph, "CString::new failed for color filter args");
+    };
+    let mut color_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut color_ctx,
+        color_filter,
+        c"text_base".as_ptr(),
+        color_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create color source code={ret}"));
+    }
+
+    // ── format=rgba (establish the transparent alpha canvas) ──────────────────
+    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if fmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut fmt_ctx,
+        fmt_filter,
+        c"text_fmt".as_ptr(),
+        c"pix_fmts=rgba".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(color_ctx, 0, fmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: color→format");
+    }
+
+    // ── drawtext (reuse the FilterStep arg rendering) ─────────────────────────
+    let drawtext_filter = ff_sys::avfilter_get_by_name(c"drawtext".as_ptr());
+    if drawtext_filter.is_null() {
+        bail!(graph, "filter not found: drawtext");
+    }
+    let dt_args_str = FilterStep::DrawText { opts: opts.clone() }.args();
+    let Ok(dt_args) = CString::new(dt_args_str.as_str()) else {
+        bail!(graph, "CString::new failed for drawtext args");
+    };
+    let mut dt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut dt_ctx,
+        drawtext_filter,
+        c"text_draw".as_ptr(),
+        dt_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create drawtext filter code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(fmt_ctx, 0, dt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: format→drawtext");
+    }
+
+    // ── buffersink ────────────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"text_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create text buffersink code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(dt_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: drawtext→buffersink");
+    }
+
+    // ── Configure ─────────────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("text source avfilter_graph_config failed code={ret}")
+        );
+    }
+
+    // SAFETY: ret >= 0 guarantees both pointers are non-null.
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
+    log::info!("text source graph built canvas={width}x{height}");
     Ok(FilterGraph::from_prebuilt(inner))
 }

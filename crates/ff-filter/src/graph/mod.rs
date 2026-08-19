@@ -12,7 +12,7 @@ pub use builder::FilterGraphBuilder;
 pub use composition::{
     AudioConcatenator, AudioTrack, CrossfadeJoiner, LavfiSource, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor,
-    VideoConcatenator, VideoLayer,
+    TextSource, VideoConcatenator, VideoLayer,
 };
 pub use ffmpeg_token::FfmpegToken;
 pub use filter_step::FilterStep;

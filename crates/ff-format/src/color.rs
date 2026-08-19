@@ -951,3 +951,60 @@ mod tests {
         }
     }
 }
+
+/// An 8-bit-per-channel RGBA color value.
+///
+/// A plain color value (fill / text / box color), independent of any colorimetry
+/// metadata ([`ColorSpace`] et al.). `a` is the alpha channel: `255` = opaque,
+/// `0` = fully transparent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Color {
+    /// Red channel (0–255).
+    pub r: u8,
+    /// Green channel (0–255).
+    pub g: u8,
+    /// Blue channel (0–255).
+    pub b: u8,
+    /// Alpha channel (0 = transparent, 255 = opaque).
+    pub a: u8,
+}
+
+impl Color {
+    /// Opaque white.
+    pub const WHITE: Self = Self::rgb(255, 255, 255);
+    /// Opaque black.
+    pub const BLACK: Self = Self::rgb(0, 0, 0);
+    /// Fully transparent (black with zero alpha).
+    pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
+
+    /// Creates an opaque color (`a = 255`).
+    #[must_use]
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+
+    /// Creates a color with an explicit alpha channel.
+    #[must_use]
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+}
+
+#[cfg(test)]
+mod color_value_tests {
+    use super::Color;
+
+    #[test]
+    fn rgb_should_be_opaque() {
+        let c = Color::rgb(10, 20, 30);
+        assert_eq!(c, Color::rgba(10, 20, 30, 255));
+        assert_eq!(c.a, 255);
+    }
+
+    #[test]
+    fn consts_should_have_expected_channels() {
+        assert_eq!(Color::WHITE, Color::rgba(255, 255, 255, 255));
+        assert_eq!(Color::BLACK, Color::rgba(0, 0, 0, 255));
+        assert_eq!(Color::TRANSPARENT.a, 0);
+    }
+}
