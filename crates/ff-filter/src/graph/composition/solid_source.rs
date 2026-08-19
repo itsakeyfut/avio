@@ -15,7 +15,7 @@ use crate::graph::graph::FilterGraph;
 ///
 /// `c=#RRGGBB@{alpha}:s={w}x{h}:r={fps}` (lowercase hex, alpha as `a/255`),
 /// mirroring the base-canvas color source in `build_video_composition`.
-fn solid_color_args(color: Color, width: u32, height: u32, fps: f64) -> String {
+pub(super) fn solid_color_args(color: Color, width: u32, height: u32, fps: f64) -> String {
     format!(
         "c=#{:02x}{:02x}{:02x}@{:.3}:s={width}x{height}:r={fps}",
         color.r,

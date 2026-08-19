@@ -528,12 +528,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            ed.current().video_tracks()[0].clips[0].source.to_str(),
+            ed.current().video_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("patched.mp4")
         );
         let prev = ed.undo().unwrap();
         assert_eq!(
-            prev.video_tracks()[0].clips[0].source.to_str(),
+            prev.video_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("a.mp4"),
             "undo restores the pre-patch clip"
         );

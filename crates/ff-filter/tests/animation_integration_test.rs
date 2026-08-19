@@ -12,7 +12,7 @@ mod fixtures;
 use std::time::Duration;
 
 use ff_filter::{
-    AnimatedValue, MultiTrackComposer, VideoLayer,
+    AnimatedValue, LayerSource, MultiTrackComposer, VideoLayer,
     animation::{AnimationTrack, Easing, Keyframe},
 };
 use fixtures::{FileGuard, make_source_file, test_output_path};
@@ -146,9 +146,8 @@ fn bezier_position_animation_should_match_reference_curve() {
 
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
-            source: bg_path.clone(),
+            source: LayerSource::File(bg_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Static(0.0),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),
@@ -160,9 +159,8 @@ fn bezier_position_animation_should_match_reference_curve() {
             effects: vec![],
         })
         .add_layer(VideoLayer {
-            source: marker_path.clone(),
+            source: LayerSource::File(marker_path.clone()),
             proxy: None,
-            input_format: None,
             x: AnimatedValue::Track(bezier_track),
             y: AnimatedValue::Static(0.0),
             scale_x: AnimatedValue::Static(1.0),

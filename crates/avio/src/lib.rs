@@ -302,8 +302,8 @@ pub use ff_filter::{
     AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
     BlendMode, CompositeOp, CrossfadeJoiner, DrawTextOptions, Easing, EqBand, FilterError,
     FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource,
-    LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer,
-    NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer,
+    LayerSource, LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer,
+    MultiTrackComposer, NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer,
     RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, SolidSource, StabilizeOptions, Stabilizer,
     TextSource, ToneMap, VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
 };
@@ -334,7 +334,7 @@ mod timeline;
 mod track;
 
 #[cfg(feature = "pipeline")]
-pub use clip::{Clip, FitMode, VideoEffectRenderer};
+pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};
 #[cfg(feature = "pipeline")]
 pub use edit::{ClipProperty, Command, EditError, apply};
 #[cfg(feature = "pipeline")]

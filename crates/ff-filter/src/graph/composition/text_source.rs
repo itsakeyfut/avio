@@ -47,7 +47,7 @@ fn anchor_exprs(anchor: Anchor, offset: (i32, i32)) -> (String, String) {
 }
 
 /// Translates a pure [`TextSpec`] into the FFmpeg-flavoured [`DrawTextOptions`].
-fn spec_to_drawtext(spec: &TextSpec) -> DrawTextOptions {
+pub(super) fn spec_to_drawtext(spec: &TextSpec) -> DrawTextOptions {
     let (x, y) = anchor_exprs(spec.anchor, spec.offset);
     let style = &spec.style;
     DrawTextOptions {

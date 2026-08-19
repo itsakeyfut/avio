@@ -570,7 +570,10 @@ mod tests {
         .unwrap();
         assert_eq!(out.video_tracks()[0].clips.len(), 2);
         let added = &out.video_tracks()[0].clips[1];
-        assert_eq!(added.source.to_str(), Some("added.mp4"));
+        assert_eq!(
+            added.source_path().and_then(std::path::Path::to_str),
+            Some("added.mp4")
+        );
         assert!(added.id.is_set());
         assert_ne!(added.id, clip_id(&t, 0), "new clip must get a distinct id");
     }
@@ -587,7 +590,9 @@ mod tests {
         .unwrap();
         assert_eq!(out.video_tracks()[0].clips.len(), 1);
         assert_eq!(
-            out.video_tracks()[0].clips[0].source.to_str(),
+            out.video_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("clip1.mp4")
         );
     }
@@ -999,7 +1004,10 @@ mod tests {
         )
         .unwrap();
         let c = &out.video_tracks()[0].clips[0];
-        assert_eq!(c.source.to_str(), Some("patched.mp4"));
+        assert_eq!(
+            c.source_path().and_then(std::path::Path::to_str),
+            Some("patched.mp4")
+        );
         assert!((c.brightness - 0.5).abs() < f32::EPSILON);
         assert_eq!(c.fade_in, Duration::from_secs(1));
         assert!((c.speed - 2.0).abs() < f64::EPSILON);
@@ -1021,7 +1029,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            out.video_tracks()[0].clips[0].source.to_str(),
+            out.video_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("patched.mp4")
         );
     }
@@ -1050,7 +1060,9 @@ mod tests {
         );
         // The original clip is untouched.
         assert_eq!(
-            t.video_tracks()[0].clips[0].source.to_str(),
+            t.video_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("clip0.mp4")
         );
     }
@@ -1089,7 +1101,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            out.audio_tracks()[0].clips[0].source.to_str(),
+            out.audio_tracks()[0].clips[0]
+                .source_path()
+                .and_then(std::path::Path::to_str),
             Some("patched.mp3")
         );
         assert_eq!(out.audio_tracks()[0].clips[0].id, id);
@@ -1442,9 +1456,15 @@ mod tests {
         let clips = &out.video_tracks()[0].clips;
         assert_eq!(clips.len(), 2);
         // `a` (offset 0) stays; `c` (was 8) shifts left by b's footprint (4) to 4.
-        assert_eq!(clips[0].source.to_str(), Some("a.mp4"));
+        assert_eq!(
+            clips[0].source_path().and_then(std::path::Path::to_str),
+            Some("a.mp4")
+        );
         assert_eq!(clips[0].offset, Duration::ZERO);
-        assert_eq!(clips[1].source.to_str(), Some("c.mp4"));
+        assert_eq!(
+            clips[1].source_path().and_then(std::path::Path::to_str),
+            Some("c.mp4")
+        );
         assert_eq!(clips[1].offset, Duration::from_secs(4));
     }
 
@@ -1510,7 +1530,10 @@ mod tests {
         let out = apply(&t, &Command::RippleDelete { clip: a_id }).unwrap();
         let clips = &out.video_tracks()[0].clips;
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0].source.to_str(), Some("b.mp4"));
+        assert_eq!(
+            clips[0].source_path().and_then(std::path::Path::to_str),
+            Some("b.mp4")
+        );
         assert_eq!(
             clips[0].offset,
             Duration::from_secs(5),

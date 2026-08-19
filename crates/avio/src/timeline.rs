@@ -83,8 +83,9 @@ pub struct Timeline {
     pub(crate) audio_animations: HashMap<String, AnimationTrack<f64>>,
     /// Optional `lavfi` filtergraph string composited as the topmost video layer.
     ///
-    /// When set, a [`VideoLayer`] with `input_format = Some("lavfi")` is added above
-    /// all regular video tracks. Use `FFmpeg` `drawtext` syntax to render text titles:
+    /// When set, a [`VideoLayer`] whose source is
+    /// [`LayerSource::Lavfi`](ff_filter::LayerSource) is added above all regular
+    /// video tracks. Use `FFmpeg` `drawtext` syntax to render text titles:
     ///
     /// ```text
     /// color=s=1920x1080:c=black@0.0,drawtext=text='Hello':fontsize=48:fontcolor=white
@@ -193,6 +194,8 @@ impl Timeline {
     /// # Errors
     ///
     /// - [`TimelineError::ClipNotFound`] — a clip's source file is missing
+    /// - [`TimelineError::GeneratedSourceNeedsDuration`] — a generated (Text/Solid)
+    ///   clip on an active track has no `out_point` to bound its duration
     /// - [`TimelineError::Cancelled`] — `on_progress` returned `false`
     /// - [`TimelineError::Encode`] — encoder failure
     /// - [`TimelineError::Filter`] — filter graph construction failure
@@ -255,10 +258,22 @@ impl Timeline {
                 continue;
             }
             for clip in &track.clips {
-                if !clip.source.exists() {
-                    return Err(TimelineError::ClipNotFound {
-                        path: clip.source.to_string_lossy().into_owned(),
-                    });
+                match clip.source_path() {
+                    // File source: it must exist on disk.
+                    Some(path) => {
+                        if !path.exists() {
+                            return Err(TimelineError::ClipNotFound {
+                                path: path.to_string_lossy().into_owned(),
+                            });
+                        }
+                    }
+                    // Generated (Text/Solid) source: infinite, so an out_point is
+                    // required to bound its duration.
+                    None => {
+                        if clip.duration().is_none() {
+                            return Err(TimelineError::GeneratedSourceNeedsDuration);
+                        }
+                    }
                 }
             }
         }
@@ -314,23 +329,24 @@ impl Timeline {
                     // When a proxy is set, probe the original source resolution so
                     // the decoded proxy frames can be scaled back up to full size.
                     // If the probe fails the proxy is ignored (original used directly).
-                    let proxy =
-                        clip.proxy.as_ref().and_then(|proxy_path| {
-                            match VideoDecoder::open(&clip.source).build() {
-                                Ok(dec) => Some(ProxySource {
-                                    path: proxy_path.clone(),
-                                    width: dec.width(),
-                                    height: dec.height(),
-                                }),
-                                Err(e) => {
-                                    log::warn!(
-                                        "proxy ignored: cannot probe source {} resolution: {e}",
-                                        clip.source.display()
-                                    );
-                                    None
-                                }
+                    // A proxy is meaningful only for a file source (generated
+                    // sources are rendered at canvas size, nothing to probe).
+                    let proxy = clip.proxy.as_ref().zip(clip.source_path()).and_then(
+                        |(proxy_path, src)| match VideoDecoder::open(src).build() {
+                            Ok(dec) => Some(ProxySource {
+                                path: proxy_path.clone(),
+                                width: dec.width(),
+                                height: dec.height(),
+                            }),
+                            Err(e) => {
+                                log::warn!(
+                                    "proxy ignored: cannot probe source {} resolution: {e}",
+                                    src.display()
+                                );
+                                None
                             }
-                        });
+                        },
+                    );
 
                     // Per-clip editorial interpretation → layer lives in `derive`.
                     composer = composer.add_layer(derive::video_layer(
@@ -347,9 +363,9 @@ impl Timeline {
                     // transition on the same track can compute the correct offset.
                     let end_secs = match clip.duration() {
                         Some(d) => d.as_secs_f64(),
-                        None => VideoDecoder::open(&clip.source)
-                            .build()
-                            .ok()
+                        None => clip
+                            .source_path()
+                            .and_then(|src| VideoDecoder::open(src).build().ok())
                             .map_or(0.0, |d| {
                                 let total = d.duration().as_secs_f64();
                                 match clip.in_point {
@@ -363,11 +379,10 @@ impl Timeline {
             }
             // Lavfi overlay sits above all regular tracks.
             if let Some(ref lavfi_str) = lavfi_overlay {
-                use ff_filter::{BlendMode, CompositeOp};
+                use ff_filter::{BlendMode, CompositeOp, LayerSource};
                 composer = composer.add_layer(VideoLayer {
-                    source: std::path::PathBuf::from(lavfi_str),
+                    source: LayerSource::Lavfi(lavfi_str.clone()),
                     proxy: None,
-                    input_format: Some("lavfi".to_string()),
                     x: AnimatedValue::Static(0.0),
                     y: AnimatedValue::Static(0.0),
                     scale_x: AnimatedValue::Static(1.0),
@@ -398,13 +413,15 @@ impl Timeline {
                     // pure per-clip build lives in `derive`).
                     let fade_out_eff_dur = if clip.fade_out > Duration::ZERO {
                         clip.duration().or_else(|| {
-                            VideoDecoder::open(&clip.source).build().ok().map(|d| {
-                                let total = d.duration();
-                                match clip.in_point {
-                                    Some(ip) => total.saturating_sub(ip),
-                                    None => total,
-                                }
-                            })
+                            clip.source_path()
+                                .and_then(|src| VideoDecoder::open(src).build().ok())
+                                .map(|d| {
+                                    let total = d.duration();
+                                    match clip.in_point {
+                                        Some(ip) => total.saturating_sub(ip),
+                                        None => total,
+                                    }
+                                })
                         })
                     } else {
                         None
@@ -764,22 +781,30 @@ impl TimelineBuilder {
             || self.canvas_height.is_none()
             || self.frame_rate.is_none();
 
+        // Probe the first video clip when it is file-backed. A leading generated
+        // (Text/Solid) clip has no file to probe (`source_path()` is `None`), so
+        // the canvas falls through to the 1920x1080@30 default.
         if need_probe
-            && let Some(first_clip) = self.video_tracks.first().and_then(|t| t.clips.first())
+            && let Some(source) = self
+                .video_tracks
+                .first()
+                .and_then(|t| t.clips.first())
+                .and_then(|c| c.source_path())
         {
-            if !first_clip.source.exists() {
+            if !source.exists() {
                 return Err(TimelineError::ClipNotFound {
-                    path: first_clip.source.to_string_lossy().into_owned(),
+                    path: source.to_string_lossy().into_owned(),
                 });
             }
-            let vdec = VideoDecoder::open(&first_clip.source).build()?;
+            let vdec = VideoDecoder::open(source).build()?;
             let w = self.canvas_width.unwrap_or_else(|| vdec.width());
             let h = self.canvas_height.unwrap_or_else(|| vdec.height());
             let fps = self.frame_rate.unwrap_or_else(|| vdec.frame_rate());
             return Ok((w, h, fps));
         }
 
-        // All values explicit, or no video tracks (audio-only) — fall back for absent values.
+        // All values explicit, no video tracks (audio-only), or a leading
+        // generated clip with no file to probe — fall back for absent values.
         Ok((
             self.canvas_width.unwrap_or(1920),
             self.canvas_height.unwrap_or(1080),
@@ -811,7 +836,12 @@ fn video_placement(
     // actual xfade kind; overlays force no transition (matching the compositor).
     let xfade_kind = if is_base { clip.transition } else { None };
     ff_preview::ScenePlacement {
-        source: clip.source.clone(),
+        // Preview compositing of generated (Text/Solid) sources is deferred; a
+        // non-file clip projects an empty path (the preview runner renders nothing).
+        source: clip
+            .source_path()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
         offset: clip.offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
@@ -846,7 +876,10 @@ fn audio_placement(
     animations: &HashMap<String, AnimationTrack<f64>>,
 ) -> ff_preview::SceneAudioPlacement {
     ff_preview::SceneAudioPlacement {
-        source: clip.source.clone(),
+        source: clip
+            .source_path()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
         offset: clip.offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
@@ -1216,6 +1249,41 @@ mod tests {
     fn timeline_builder_should_err_when_no_tracks() {
         let result = Timeline::builder().build();
         assert!(matches!(result, Err(TimelineError::NoInput)));
+    }
+
+    #[test]
+    fn render_should_reject_generated_clip_without_out_point() {
+        use ff_format::TextSpec;
+        // A Text clip with no out_point is infinite; the render pre-check must
+        // reject it before touching FFmpeg (deterministic on any machine).
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::text(TextSpec::new("no out_point"))])
+            .build()
+            .unwrap();
+        let out = std::env::temp_dir().join("avio_generated_no_outpoint_test.mp4");
+        let result = timeline.render(out, EncoderConfig::builder().build());
+        assert!(matches!(
+            result,
+            Err(TimelineError::GeneratedSourceNeedsDuration)
+        ));
+    }
+
+    #[test]
+    fn build_should_default_canvas_when_first_clip_is_generated() {
+        use ff_format::Color;
+        // A leading generated clip has no file to probe, so the canvas falls
+        // through to the 1920x1080@30 default without any I/O.
+        let timeline = Timeline::builder()
+            .video_track(vec![
+                Clip::solid(Color::rgb(0, 0, 0)).trim(Duration::ZERO, Duration::from_secs(1)),
+            ])
+            .build()
+            .unwrap();
+        assert_eq!(timeline.canvas_width, 1920);
+        assert_eq!(timeline.canvas_height, 1080);
+        assert!((timeline.frame_rate - 30.0).abs() < f64::EPSILON);
     }
 
     #[test]
