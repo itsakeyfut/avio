@@ -13,6 +13,10 @@
 //! Cross-document uniqueness (copy/paste between projects) and interchange would
 //! want UUIDs; that is deferred to the interchange work. `serde` derives arrive
 //! with the persistence work (#1426).
+//!
+//! The decision, and the alternatives weighed (a `slotmap` arena, UUIDs, or
+//! positional addressing), are recorded in ADR-0001
+//! (`docs/adr/0001-clip-and-track-identity.md`).
 
 /// Stable identity of a [`Clip`](crate::Clip) within a [`Timeline`](crate::Timeline).
 ///

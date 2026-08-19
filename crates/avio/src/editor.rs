@@ -15,6 +15,8 @@
 //! high-water mark: an `undo` restores an older snapshot (and its older
 //! counters), so seating the high-water before each edit keeps a later
 //! `AddClip` / `AddTrack` from re-minting an id a discarded branch already used.
+//! This is what makes the "never reused" guarantee of ADR-0001
+//! (`docs/adr/0001-clip-and-track-identity.md`) hold across undo.
 
 use crate::edit::{Command, EditError};
 use crate::timeline::Timeline;
