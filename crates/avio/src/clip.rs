@@ -143,6 +143,25 @@ pub struct Clip {
     pub x_track: Option<AnimationTrack<f64>>,
     /// See [`x_track`](Self::x_track).
     pub y_track: Option<AnimationTrack<f64>>,
+    /// Uniform scale factor applied to this clip's layer (`1.0` = original size).
+    ///
+    /// Drives both the horizontal and vertical scale of the clip's
+    /// [`VideoLayer`](ff_filter::VideoLayer). Default `1.0`. Superseded by
+    /// [`scale_track`](Self::scale_track) when a track is set.
+    pub scale: f64,
+    /// Optional keyframe track animating this clip's [`scale`](Self::scale) over time
+    /// (timeline-global time). Drives both scale axes; takes precedence over the
+    /// static [`scale`](Self::scale). Default `None`.
+    pub scale_track: Option<AnimationTrack<f64>>,
+    /// Rotation of this clip's layer in **degrees**, clockwise (`0.0` = none).
+    ///
+    /// Default `0.0`. Superseded by [`rotation_track`](Self::rotation_track) when a
+    /// track is set.
+    pub rotation: f64,
+    /// Optional keyframe track animating this clip's [`rotation`](Self::rotation)
+    /// (degrees) over time (timeline-global time). Takes precedence over the static
+    /// [`rotation`](Self::rotation). Default `None`.
+    pub rotation_track: Option<AnimationTrack<f64>>,
     /// Blend mode for compositing this clip over the layer(s) below it.
     /// Default: [`BlendMode::Normal`] (standard alpha-over composite).
     ///
@@ -234,6 +253,10 @@ impl Clip {
             y: 0.0,
             x_track: None,
             y_track: None,
+            scale: 1.0,
+            scale_track: None,
+            rotation: 0.0,
+            rotation_track: None,
             blend_mode: BlendMode::Normal,
             composite_op: CompositeOp::Over,
             speed: 1.0,
@@ -690,6 +713,58 @@ impl Clip {
         }
     }
 
+    /// Sets the uniform [`scale`](Self::scale) factor (`1.0` = original size).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use avio::Clip;
+    ///
+    /// let clip = Clip::new("pip.mp4").with_scale(0.5);
+    /// assert_eq!(clip.scale, 0.5);
+    /// ```
+    #[must_use]
+    pub fn with_scale(self, scale: f64) -> Self {
+        Self { scale, ..self }
+    }
+
+    /// Animates this clip's [`scale`](Self::scale) with a keyframe track
+    /// (timeline-global time). Drives both scale axes; takes precedence over the
+    /// static [`with_scale`](Self::with_scale) value.
+    #[must_use]
+    pub fn with_scale_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            scale_track: Some(track),
+            ..self
+        }
+    }
+
+    /// Sets the static [`rotation`](Self::rotation) in degrees (clockwise).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use avio::Clip;
+    ///
+    /// let clip = Clip::new("pip.mp4").with_rotation(45.0);
+    /// assert_eq!(clip.rotation, 45.0);
+    /// ```
+    #[must_use]
+    pub fn with_rotation(self, rotation: f64) -> Self {
+        Self { rotation, ..self }
+    }
+
+    /// Animates this clip's [`rotation`](Self::rotation) (degrees) with a keyframe
+    /// track (timeline-global time). Takes precedence over the static
+    /// [`with_rotation`](Self::with_rotation) value.
+    #[must_use]
+    pub fn with_rotation_track(self, track: AnimationTrack<f64>) -> Self {
+        Self {
+            rotation_track: Some(track),
+            ..self
+        }
+    }
+
     /// Sets the blend mode for compositing this clip over the layer below and returns
     /// the updated clip.
     ///
@@ -1028,6 +1103,57 @@ mod tests {
         let stored = clip.x_track.expect("x track stored");
         // Midpoint of a 0→640 linear sweep is 320.
         assert!((stored.value_at(Duration::from_secs(1)) - 320.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_new_should_default_scale_and_rotation() {
+        let clip = Clip::new("video.mp4");
+        assert!((clip.scale - 1.0).abs() < f64::EPSILON);
+        assert!((clip.rotation - 0.0).abs() < f64::EPSILON);
+        assert!(clip.scale_track.is_none() && clip.rotation_track.is_none());
+    }
+
+    #[test]
+    fn clip_with_scale_should_set_scale() {
+        let clip = Clip::new("pip.mp4").with_scale(0.5);
+        assert!((clip.scale - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clip_with_rotation_should_set_rotation() {
+        let clip = Clip::new("pip.mp4").with_rotation(45.0);
+        assert!((clip.rotation - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clip_with_scale_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            1.0,
+            2.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+        let clip = Clip::new("pip.mp4").with_scale_track(track);
+        let stored = clip.scale_track.expect("scale track stored");
+        // Midpoint of a 1→2 linear ramp is 1.5.
+        assert!((stored.value_at(Duration::from_secs(1)) - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_with_rotation_track_should_store_track() {
+        use ff_filter::{AnimationTrack, Easing};
+        let track = AnimationTrack::fade(
+            0.0,
+            90.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+        let clip = Clip::new("pip.mp4").with_rotation_track(track);
+        let stored = clip.rotation_track.expect("rotation track stored");
+        assert!((stored.value_at(Duration::from_secs(1)) - 45.0).abs() < 1e-9);
     }
 
     #[test]
