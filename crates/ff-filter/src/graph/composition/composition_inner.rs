@@ -2686,3 +2686,122 @@ pub(super) unsafe fn build_text_source(
     log::info!("text source graph built canvas={width}x{height}");
     Ok(FilterGraph::from_prebuilt(inner))
 }
+
+// ── Solid color source graph (generated fill layer) ───────────────────────────
+
+/// Builds a source-only graph that generates a solid color layer:
+/// `color(<color_args>) → format=rgba → buffersink`. `color_args` is the full
+/// `color` filter argument string (`c=…:s=…:r=…`), built by the caller.
+///
+/// A strict subset of [`build_text_source`] (no `drawtext`). Uses the `color`
+/// filter source, not the lavfi demuxer. Pulled with [`FilterGraph::pull_video`];
+/// no `buffersrc` input.
+///
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// returned graph owns every context it created.
+pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // ── color source ──────────────────────────────────────────────────────────
+    let color_filter = ff_sys::avfilter_get_by_name(c"color".as_ptr());
+    if color_filter.is_null() {
+        bail!(graph, "filter not found: color");
+    }
+    let Ok(args) = CString::new(color_args) else {
+        bail!(graph, "CString::new failed for color filter args");
+    };
+    let mut color_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut color_ctx,
+        color_filter,
+        c"solid_base".as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create color source code={ret}"));
+    }
+
+    // ── format=rgba (preserve the fill's alpha) ───────────────────────────────
+    let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if fmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut fmt_ctx,
+        fmt_filter,
+        c"solid_fmt".as_ptr(),
+        c"pix_fmts=rgba".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(color_ctx, 0, fmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: color→format");
+    }
+
+    // ── buffersink ────────────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"solid_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("failed to create solid buffersink code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(fmt_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: format→buffersink");
+    }
+
+    // ── Configure ─────────────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("solid source avfilter_graph_config failed code={ret}")
+        );
+    }
+
+    // SAFETY: ret >= 0 guarantees both pointers are non-null.
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
+    log::info!("solid source graph built args={color_args}");
+    Ok(FilterGraph::from_prebuilt(inner))
+}
