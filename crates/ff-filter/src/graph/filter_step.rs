@@ -216,6 +216,18 @@ pub enum FilterStep {
         /// Fill color for the bars (any `FFmpeg` color string, e.g. `"black"`).
         color: String,
     },
+    /// Scale (preserving aspect ratio) to *cover* the target dimensions, then
+    /// centre-crop the overflow (no bars).
+    ///
+    /// Implemented as a `scale` filter with `force_original_aspect_ratio=increase`
+    /// followed by a `crop` filter that centres the scaled frame on the canvas.
+    /// The counterpart to [`FitToAspect`](Self::FitToAspect) (cover vs contain).
+    FillToAspect {
+        /// Target canvas width in pixels.
+        width: u32,
+        /// Target canvas height in pixels.
+        height: u32,
+    },
     /// Gaussian blur with configurable radius.
     ///
     /// `sigma` is the blur radius. Valid range: 0.0 – 10.0 (values near 0.0 are
@@ -1032,6 +1044,10 @@ impl FilterStep {
             // build time.  The pad filter is inserted by filter_inner at graph
             // construction time.
             Self::FitToAspect { .. } => "scale",
+            // FillToAspect is scale (cover) + crop; "scale" is validated at build
+            // time.  The crop filter is inserted by filter_inner at graph
+            // construction time.
+            Self::FillToAspect { .. } => "scale",
             Self::GBlur { .. } => "gblur",
             Self::Unsharp { .. } => "unsharp",
             Self::Hqdn3d { .. } => "hqdn3d",
@@ -1518,6 +1534,13 @@ impl FilterStep {
                 // target canvas.
                 format!("w={width}:h={height}:force_original_aspect_ratio=decrease")
             }
+            Self::FillToAspect { width, height } => {
+                // Scale to cover the target dimensions, preserving the source
+                // aspect ratio.  The accompanying crop filter (inserted by
+                // filter_inner after this scale filter) centres the result on the
+                // target canvas.
+                format!("w={width}:h={height}:force_original_aspect_ratio=increase")
+            }
             Self::Pad {
                 width,
                 height,
@@ -1904,6 +1927,27 @@ mod tests {
             args: "reds=0.1 0 0".to_string(),
         };
         assert_eq!(step.filter_name(), "selectivecolor");
+    }
+
+    #[test]
+    fn fill_to_aspect_args_should_cover_with_increase() {
+        let step = FilterStep::FillToAspect {
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(
+            step.args(),
+            "w=1920:h=1080:force_original_aspect_ratio=increase"
+        );
+    }
+
+    #[test]
+    fn fill_to_aspect_filter_name_should_be_scale() {
+        let step = FilterStep::FillToAspect {
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(step.filter_name(), "scale");
     }
 
     #[test]

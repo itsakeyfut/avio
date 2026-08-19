@@ -17,6 +17,34 @@ use ff_format::{PixelFormat, VideoFrame};
 use crate::error::TimelineError;
 use crate::ids::ClipId;
 
+/// How a clip's source frame is framed against the project canvas.
+///
+/// The derive maps the mode to canvas-relative framing filters (crop / scale /
+/// pad) using only the canvas dimensions — the source size is resolved at render
+/// time by `FFmpeg` expressions, so the model stays pure.
+///
+/// # Interaction with per-clip transforms
+///
+/// A non-[`None`](Self::None) `fit` is the clip's sizing control against the
+/// canvas. The compositor applies the per-clip [`scale`](Clip::scale) /
+/// [`x`](Clip::x) / [`y`](Clip::y) transforms *before* the framing step, so
+/// combining a non-default `scale` with a non-`None` `fit` double-transforms —
+/// leave `scale` at `1.0` when `fit` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FitMode {
+    /// Scale to *cover* the canvas (preserving aspect), cropping the overflow.
+    Fill,
+    /// Scale to *contain* within the canvas (preserving aspect), letterboxing or
+    /// pillarboxing the remainder with black bars.
+    Fit,
+    /// Stretch to exactly fill the canvas, ignoring the source aspect ratio.
+    Stretch,
+    /// Leave the source at its native size (no framing step); the existing
+    /// per-clip transforms and position apply unchanged. The default.
+    #[default]
+    None,
+}
+
 /// A single media clip on a timeline.
 ///
 /// `Clip` is a plain Rust value type — it holds no `FFmpeg` context. All fields
@@ -162,6 +190,9 @@ pub struct Clip {
     /// (degrees) over time (timeline-global time). Takes precedence over the static
     /// [`rotation`](Self::rotation). Default `None`.
     pub rotation_track: Option<AnimationTrack<f64>>,
+    /// How this clip's source frame is framed against the project canvas.
+    /// Default: [`FitMode::None`] (native size, existing transforms apply).
+    pub fit: FitMode,
     /// Blend mode for compositing this clip over the layer(s) below it.
     /// Default: [`BlendMode::Normal`] (standard alpha-over composite).
     ///
@@ -257,6 +288,7 @@ impl Clip {
             scale_track: None,
             rotation: 0.0,
             rotation_track: None,
+            fit: FitMode::None,
             blend_mode: BlendMode::Normal,
             composite_op: CompositeOp::Over,
             speed: 1.0,
@@ -413,7 +445,10 @@ impl Clip {
         // timeline-level animations (track index 0, empty map) — so a per-clip
         // keyframe or static value still applies, and the shape matches the export
         // `VideoLayer`.
-        crate::derive::realtime_descriptor(self, 0, &std::collections::HashMap::new())
+        // No timeline canvas here, so `fit` is not applied (the derive skips the
+        // framing step for a zero canvas); a canvas-aware descriptor comes from
+        // `Timeline::to_scene`.
+        crate::derive::realtime_descriptor(self, 0, &std::collections::HashMap::new(), 0, 0)
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
@@ -763,6 +798,13 @@ impl Clip {
             rotation_track: Some(track),
             ..self
         }
+    }
+
+    /// Sets how this clip's source frame is framed against the project canvas
+    /// (cover, contain, stretch, or native) and returns the updated clip.
+    #[must_use]
+    pub fn with_fit(self, fit: FitMode) -> Self {
+        Self { fit, ..self }
     }
 
     /// Sets the blend mode for compositing this clip over the layer below and returns
@@ -1154,6 +1196,18 @@ mod tests {
         let clip = Clip::new("pip.mp4").with_rotation_track(track);
         let stored = clip.rotation_track.expect("rotation track stored");
         assert!((stored.value_at(Duration::from_secs(1)) - 45.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_new_should_default_fit_none() {
+        let clip = Clip::new("a.mp4");
+        assert_eq!(clip.fit, FitMode::None);
+    }
+
+    #[test]
+    fn clip_with_fit_should_set_fit() {
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
+        assert_eq!(clip.fit, FitMode::Fill);
     }
 
     #[test]

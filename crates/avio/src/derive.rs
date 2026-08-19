@@ -19,11 +19,11 @@ use std::time::Duration;
 
 use ff_filter::{
     AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, ProxySource,
-    RealtimeLayerDescriptor, VideoLayer,
+    RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, FitMode};
 
 /// Resolves a track-level animation: `AnimatedValue::Track` when the map holds a
 /// track for `"{prefix}_{track_idx}_{prop}"`, else `Static(default)`.
@@ -127,15 +127,46 @@ fn video_transform(
     }
 }
 
+/// Maps a clip's [`FitMode`] to the canvas-relative framing [`FilterStep`], or
+/// `None` for [`FitMode::None`] (native size, no framing). Shared by the export
+/// [`video_layer`] and preview [`realtime_descriptor`] paths so both frame a clip
+/// against the canvas identically. `cw`/`ch` are the project canvas dimensions.
+fn fit_step(clip: &Clip, cw: u32, ch: u32) -> Option<FilterStep> {
+    if cw == 0 || ch == 0 {
+        return None; // no canvas to frame against
+    }
+    match clip.fit {
+        FitMode::None => None,
+        FitMode::Stretch => Some(FilterStep::Scale {
+            width: cw,
+            height: ch,
+            algorithm: ScaleAlgorithm::Bilinear,
+        }),
+        FitMode::Fit => Some(FilterStep::FitToAspect {
+            width: cw,
+            height: ch,
+            color: "black".to_string(),
+        }),
+        FitMode::Fill => Some(FilterStep::FillToAspect {
+            width: cw,
+            height: ch,
+        }),
+    }
+}
+
 /// Derives the export [`VideoLayer`] for one clip.
 ///
-/// `prev_end` is the preceding clip's end-seconds on this track (for the
-/// cross-fade offset); `None` marks the track's first clip — a transition on it
-/// is ignored with a warning. `proxy` is the caller-probed proxy source.
+/// `canvas_width`/`canvas_height` are the project canvas dimensions (for the
+/// [`fit`](Clip::fit) framing step). `prev_end` is the preceding clip's
+/// end-seconds on this track (for the cross-fade offset); `None` marks the
+/// track's first clip — a transition on it is ignored with a warning. `proxy` is
+/// the caller-probed proxy source.
 pub(crate) fn video_layer(
     clip: &Clip,
     track_idx: usize,
     animations: &HashMap<String, AnimationTrack<f64>>,
+    canvas_width: u32,
+    canvas_height: u32,
     prev_end: Option<f64>,
     proxy: Option<ProxySource>,
 ) -> VideoLayer {
@@ -157,6 +188,11 @@ pub(crate) fn video_layer(
     }
     if (clip.speed - 1.0).abs() > 1e-9 {
         layer_effects.push(FilterStep::Speed { factor: clip.speed });
+    }
+    // Frame the source to the project canvas (cover/contain/stretch) before the
+    // colour/effect chain; `FitMode::None` emits nothing (native size).
+    if let Some(step) = fit_step(clip, canvas_width, canvas_height) {
+        layer_effects.push(step);
     }
     // Colour-correction (eq) + caller-attached per-clip video effects, shared
     // with the preview path via `Clip::video_effect_chain`.
@@ -202,9 +238,11 @@ pub(crate) fn video_layer(
 /// Derives the preview [`RealtimeLayerDescriptor`] for one clip.
 ///
 /// Uses the same [`VideoTransform`] as [`video_layer`] (so both paths share one
-/// interpretation), but carries only the per-clip effect chain: the temporal
-/// steps (trim/offset/speed) and the cross-fade are omitted because the preview
-/// runner realises them from `ScenePlacement` (in/out points, speed, transition).
+/// interpretation) and the same canvas [`fit`](Clip::fit) framing step
+/// (`canvas_width`/`canvas_height`), but otherwise carries only the per-clip
+/// effect chain: the temporal steps (trim/offset/speed) and the cross-fade are
+/// omitted because the preview runner realises them from `ScenePlacement` (in/out
+/// points, speed, transition).
 ///
 /// The timeline-level `lavfi_overlay` and a clip's `input_format` are not projected
 /// here (preview drops them today); closing that is C4d, not this backbone.
@@ -212,10 +250,19 @@ pub(crate) fn realtime_descriptor(
     clip: &Clip,
     track_idx: usize,
     animations: &HashMap<String, AnimationTrack<f64>>,
+    canvas_width: u32,
+    canvas_height: u32,
 ) -> RealtimeLayerDescriptor {
     let transform = video_transform(clip, track_idx, animations);
+    // Frame to the canvas (same step as the export path) before the colour chain,
+    // so preview and export share one framing interpretation.
+    let mut effects = Vec::new();
+    if let Some(step) = fit_step(clip, canvas_width, canvas_height) {
+        effects.push(step);
+    }
+    effects.extend(clip.video_effect_chain());
     RealtimeLayerDescriptor {
-        effects: clip.video_effect_chain(),
+        effects,
         opacity: transform.opacity,
         x: transform.x,
         y: transform.y,
@@ -336,7 +383,7 @@ mod tests {
     #[test]
     fn video_layer_trim_should_lead_with_trim_and_resetpts() {
         let clip = Clip::new("a.mp4").trim(Duration::from_secs(1), Duration::from_secs(3));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(
             layer.effects[0],
             FilterStep::Trim {
@@ -350,7 +397,7 @@ mod tests {
     #[test]
     fn video_layer_offset_should_emit_offsetpts() {
         let clip = Clip::new("a.mp4").offset(Duration::from_secs(2));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(layer.effects.iter().any(
             |s| matches!(s, FilterStep::OffsetPts { seconds } if (seconds - 2.0).abs() < 1e-9)
         ));
@@ -359,7 +406,7 @@ mod tests {
     #[test]
     fn video_layer_speed_should_emit_speed() {
         let clip = Clip::new("a.mp4").with_speed(2.0);
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(
             layer
                 .effects
@@ -372,7 +419,7 @@ mod tests {
     fn video_layer_transition_with_prev_end_should_emit_xfade() {
         let clip =
             Clip::new("b.mp4").with_transition(XfadeTransition::Fade, Duration::from_millis(500));
-        let layer = video_layer(&clip, 0, &no_anim(), Some(4.0), None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, Some(4.0), None);
         // offset = (prev_end 4.0 - dur 0.5).max(0) = 3.5
         assert!(layer.effects.iter().any(|s| matches!(
             s,
@@ -385,7 +432,7 @@ mod tests {
     fn video_layer_transition_on_first_clip_should_emit_no_xfade() {
         let clip =
             Clip::new("a.mp4").with_transition(XfadeTransition::Fade, Duration::from_millis(500));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(
             !layer
                 .effects
@@ -399,14 +446,14 @@ mod tests {
         let mut clip = Clip::new("a.mp4").with_opacity(0.5);
         clip.opacity_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear)));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
     }
 
     #[test]
     fn video_layer_static_opacity_should_be_animatedvalue_static() {
         let clip = Clip::new("a.mp4").with_opacity(0.5);
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
 
@@ -418,7 +465,7 @@ mod tests {
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
         );
         let clip = Clip::new("a.mp4"); // opacity defaults to 1.0 (neutral)
-        let layer = video_layer(&clip, 0, &anims, None, None);
+        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
         assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
     }
 
@@ -428,7 +475,7 @@ mod tests {
         let mut clip = Clip::new("a.mp4");
         clip.blend_mode = BlendMode::Multiply;
         clip.composite_op = CompositeOp::Under;
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.blend_mode, BlendMode::Multiply));
         assert!(matches!(layer.composite_op, CompositeOp::Under));
     }
@@ -441,7 +488,7 @@ mod tests {
             .with_speed(2.0)
             .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
         clip.brightness = 0.5; // makes `video_effect_chain` emit a trailing Eq step
-        let layer = video_layer(&clip, 0, &no_anim(), Some(10.0), None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, Some(10.0), None);
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Trim { .. }));
         assert!(matches!(e[1], FilterStep::ResetPts));
@@ -449,6 +496,106 @@ mod tests {
         assert!(matches!(e[3], FilterStep::Speed { .. }));
         assert!(matches!(e[4], FilterStep::Eq { .. }));
         assert!(matches!(e[5], FilterStep::XFade { .. }));
+    }
+
+    // ── fit / fill framing (#1422) ──────────────────────────────────────────
+
+    #[test]
+    fn video_layer_fit_none_should_emit_no_framing_step() {
+        let clip = Clip::new("a.mp4"); // fit defaults to None
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        assert!(!layer.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::FillToAspect { .. }
+                | FilterStep::FitToAspect { .. }
+                | FilterStep::Scale { .. }
+        )));
+    }
+
+    #[test]
+    fn video_layer_fit_fill_should_emit_fill_to_aspect() {
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        assert!(layer.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::FillToAspect {
+                width: 1920,
+                height: 1080
+            }
+        )));
+    }
+
+    #[test]
+    fn video_layer_fit_fit_should_emit_fit_to_aspect_black() {
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Fit);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        assert!(layer.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::FitToAspect { width: 1920, height: 1080, color } if color == "black"
+        )));
+    }
+
+    #[test]
+    fn video_layer_fit_stretch_should_emit_scale_to_canvas() {
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Stretch);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        assert!(layer.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::Scale {
+                width: 1920,
+                height: 1080,
+                algorithm: ScaleAlgorithm::Bilinear
+            }
+        )));
+    }
+
+    #[test]
+    fn video_layer_fit_should_sit_after_speed_and_before_effect_chain() {
+        let mut clip = Clip::new("a.mp4").with_speed(2.0).with_fit(FitMode::Fill);
+        clip.brightness = 0.5; // trailing Eq via `video_effect_chain`
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        let e = &layer.effects;
+        assert!(matches!(e[0], FilterStep::Speed { .. }));
+        assert!(matches!(e[1], FilterStep::FillToAspect { .. }));
+        assert!(matches!(e[2], FilterStep::Eq { .. }));
+    }
+
+    #[test]
+    fn realtime_descriptor_fit_fill_should_share_step_with_export() {
+        // export == preview parity: both emit the same framing step.
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        assert!(matches!(
+            d.effects.first(),
+            Some(FilterStep::FillToAspect {
+                width: 1920,
+                height: 1080
+            })
+        ));
+    }
+
+    #[test]
+    fn realtime_descriptor_fit_none_should_emit_no_framing_step() {
+        let clip = Clip::new("a.mp4"); // fit defaults to None
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        assert!(!d.effects.iter().any(|s| matches!(
+            s,
+            FilterStep::FillToAspect { .. }
+                | FilterStep::FitToAspect { .. }
+                | FilterStep::Scale { .. }
+        )));
+    }
+
+    #[test]
+    fn fit_step_should_be_skipped_when_canvas_is_zero() {
+        // The canvas-less `Clip::realtime_layer_descriptor` passes 0×0.
+        let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 0, 0);
+        assert!(
+            !d.effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::FillToAspect { .. }))
+        );
     }
 
     // ── audio_track ─────────────────────────────────────────────────────────
@@ -553,7 +700,7 @@ mod tests {
             .offset(Duration::from_secs(2))
             .with_speed(2.0)
             .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
-        let d = realtime_descriptor(&clip, 0, &no_anim());
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
         assert!(!d.effects.iter().any(|s| matches!(
             s,
             FilterStep::Trim { .. }
@@ -568,7 +715,7 @@ mod tests {
     fn realtime_descriptor_should_carry_effect_chain() {
         let mut clip = Clip::new("a.mp4");
         clip.brightness = 0.5; // forces an Eq step in `video_effect_chain`
-        let d = realtime_descriptor(&clip, 0, &no_anim());
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
         assert!(d.effects.iter().any(|s| matches!(s, FilterStep::Eq { .. })));
     }
 
@@ -584,7 +731,7 @@ mod tests {
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)),
         );
         let clip = Clip::new("a.mp4");
-        let d = realtime_descriptor(&clip, 1, &anims);
+        let d = realtime_descriptor(&clip, 1, &anims, 1920, 1080);
         assert!(matches!(d.scale_x, AnimatedValue::Track(_)));
         assert!(matches!(d.rotation, AnimatedValue::Track(_)));
         assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
@@ -599,7 +746,7 @@ mod tests {
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
         );
         let clip = Clip::new("a.mp4");
-        let d = realtime_descriptor(&clip, 0, &anims);
+        let d = realtime_descriptor(&clip, 0, &anims, 1920, 1080);
         assert!(matches!(d.opacity, AnimatedValue::Track(_)));
     }
 
@@ -612,7 +759,7 @@ mod tests {
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.2, Easing::Linear)),
         );
         let clip = Clip::new("a.mp4").with_opacity(0.5);
-        let d = realtime_descriptor(&clip, 0, &anims);
+        let d = realtime_descriptor(&clip, 0, &anims, 1920, 1080);
         assert!(matches!(d.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
 
@@ -620,7 +767,7 @@ mod tests {
     fn realtime_descriptor_should_carry_composite_op() {
         let mut clip = Clip::new("a.mp4");
         clip.composite_op = CompositeOp::Under;
-        let d = realtime_descriptor(&clip, 0, &no_anim());
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
         assert!(matches!(d.composite_op, CompositeOp::Under));
     }
 
@@ -629,7 +776,7 @@ mod tests {
     #[test]
     fn video_layer_static_scale_should_drive_both_axes() {
         let clip = Clip::new("a.mp4").with_scale(0.5);
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
@@ -639,7 +786,7 @@ mod tests {
         let mut clip = Clip::new("a.mp4");
         clip.scale_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 2.0, Easing::Linear)));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
         assert!(matches!(layer.scale_y, AnimatedValue::Track(_)));
     }
@@ -652,7 +799,7 @@ mod tests {
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
         );
         let clip = Clip::new("a.mp4"); // scale defaults to 1.0 (neutral)
-        let layer = video_layer(&clip, 0, &anims, None, None);
+        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
         // scale_y has no timeline animation -> the default static 1.0.
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
@@ -668,7 +815,7 @@ mod tests {
         // A per-clip static non-neutral scale wins the 3-way merge over the
         // timeline `scale_x` animation.
         let clip = Clip::new("a.mp4").with_scale(0.5);
-        let layer = video_layer(&clip, 0, &anims, None, None);
+        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
@@ -676,7 +823,7 @@ mod tests {
     #[test]
     fn video_layer_static_rotation_should_be_static() {
         let clip = Clip::new("a.mp4").with_rotation(30.0);
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.rotation, AnimatedValue::Static(v) if (v - 30.0).abs() < 1e-9));
     }
 
@@ -685,7 +832,7 @@ mod tests {
         let mut clip = Clip::new("a.mp4");
         clip.rotation_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)));
-        let layer = video_layer(&clip, 0, &no_anim(), None, None);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         assert!(matches!(layer.rotation, AnimatedValue::Track(_)));
     }
 
@@ -694,7 +841,7 @@ mod tests {
         // Preview uses the same `video_transform`, so per-clip scale/rotation reach
         // preview identically to export.
         let clip = Clip::new("a.mp4").with_scale(0.5).with_rotation(45.0);
-        let d = realtime_descriptor(&clip, 0, &no_anim());
+        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
         assert!(matches!(d.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(d.rotation, AnimatedValue::Static(v) if (v - 45.0).abs() < 1e-9));

@@ -650,6 +650,13 @@ impl FilterGraphBuilder {
                     reason: "fit_to_aspect width and height must be > 0".to_string(),
                 });
             }
+            if let FilterStep::FillToAspect { width, height } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "fill_to_aspect width and height must be > 0".to_string(),
+                });
+            }
             if let FilterStep::GBlur { sigma } = step
                 && *sigma < 0.0
             {

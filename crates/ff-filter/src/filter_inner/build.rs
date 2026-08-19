@@ -152,6 +152,9 @@ pub(crate) unsafe fn add_and_link_step(
             height,
             color,
         } => return add_fit_to_aspect_step(graph, prev_ctx, *width, *height, color, index),
+        FilterStep::FillToAspect { width, height } => {
+            return add_fill_to_aspect_step(graph, prev_ctx, *width, *height, index);
+        }
         FilterStep::LumaKey {
             threshold,
             tolerance,
@@ -488,6 +491,102 @@ pub(super) unsafe fn add_fit_to_aspect_step(
     }
 
     add_fit_to_aspect_pad(graph, scale_ctx, width, height, color, index)
+}
+
+/// Add a `crop` filter that centre-crops the covered frame to the target
+/// `width × height` canvas, completing the scale-then-crop compound step for
+/// [`FilterStep::FillToAspect`]. `crop` auto-centres when `x`/`y` are omitted
+/// (defaulting to `(in_w-out_w)/2` / `(in_h-out_h)/2`).
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_fill_to_aspect_crop(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    width: u32,
+    height: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let crop_filter = ff_sys::avfilter_get_by_name(c"crop".as_ptr());
+    if crop_filter.is_null() {
+        log::warn!("filter not found name=crop (fill_to_aspect)");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let name =
+        std::ffi::CString::new(format!("fillcrop{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let args_str = format!("w={width}:h={height}");
+    let args = std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        crop_filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=crop args={args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=crop args={args_str} index={index}");
+
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    Ok(ctx)
+}
+
+/// Build the full [`FilterStep::FillToAspect`] compound: a `scale`
+/// (`force_original_aspect_ratio=increase`, preserving the source aspect so the
+/// frame *covers* the canvas) followed by a centre-[`crop`](add_fill_to_aspect_crop)
+/// onto the `width × height` canvas. The cover counterpart to
+/// [`add_fit_to_aspect_step`].
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same `AVFilterGraph`.
+pub(super) unsafe fn add_fill_to_aspect_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    width: u32,
+    height: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+    if scale_filter.is_null() {
+        log::warn!("filter not found name=scale (fill_to_aspect)");
+        return Err(FilterError::BuildFailed);
+    }
+    let name = std::ffi::CString::new(format!("fillscale{index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+    let args_str = format!("w={width}:h={height}:force_original_aspect_ratio=increase");
+    let args = std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut scale_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut scale_ctx,
+        scale_filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=scale args={args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, scale_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    add_fill_to_aspect_crop(graph, scale_ctx, width, height, index)
 }
 
 // ── Speed (atempo chain) ──────────────────────────────────────────────────────
