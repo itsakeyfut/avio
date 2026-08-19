@@ -1,0 +1,44 @@
+# Codecov configuration for avio.
+#
+# Policy: INFORMATIONAL ONLY. Coverage never blocks a merge. Both the project and
+# patch statuses are `informational`, so they report a delta but always pass, and
+# the coverage workflow (.github/workflows/coverage.yml) is intentionally kept out
+# of ci.yml's required `ci` aggregation gate. This lets a baseline stabilize before
+# anyone considers gating.
+#
+# Environment rationale: coverage is collected on macOS (Homebrew full FFmpeg), NOT
+# on the Linux CI leg. The Linux CI FFmpeg is built with `--disable-everything
+# --enable-avfilter` and no individual filters (.github/actions/setup-ffmpeg), so
+# filter/integration tests skip there and would under-report coverage. Even on
+# macOS the number understates reality: some tests are probe-/hardware-/feature-
+# gated (e.g. wgpu, gpl) and skip depending on the runner. Treat coverage as a
+# TREND and GAP indicator, not a single target to hit.
+#
+# Windows is intentionally NOT a coverage target: the Windows CI job only runs
+# `cargo check` (no FFmpeg, no test suite; building FFmpeg via vcpkg dominates CI
+# time, per ci.yml), so there is nothing executed to measure. `#[cfg(windows)]`
+# code is not compiled on macOS, so it is absent from the report rather than
+# counted as uncovered. It does not lower the number, but its Windows-only
+# branches are a known measurement gap.
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true # report only; never blocks a PR
+    patch:
+      default:
+        informational: true # report only; never blocks a PR
+
+comment:
+  layout: "reach, diff, files"
+  behavior: default
+  require_changes: false
+
+# Excluded from the coverage number so it stays meaningful (non-source or
+# environment-skewed paths).
+ignore:
+  - "examples/**"            # avio-examples: a manual end-to-end harness, not library code
+  - "crates/*/tests/**"      # integration test code itself
+  - "crates/*/fuzz/**"       # fuzz targets (ff-decode/ff-encode/ff-probe)
+  - "**/docsrs_stubs.rs"     # generated docs.rs stub bindings, never linked in a real build

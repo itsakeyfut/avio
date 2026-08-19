@@ -4,7 +4,10 @@ A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
+[![Codecov](https://codecov.io/gh/itsakeyfut/avio/branch/main/graph/badge.svg)](https://codecov.io/gh/itsakeyfut/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
+> Coverage is a **trend and gap indicator, not a single target**. It is measured on macOS (Homebrew full FFmpeg), because the Linux CI FFmpeg has no individual filters, so filter/integration tests skip there. Even on macOS some tests are probe-, hardware-, or feature-gated (e.g. `wgpu`, `gpl`) and skip depending on the runner, so genuinely-tested paths can read as uncovered. Windows is not a coverage target (its CI job only runs `cargo check`, no tests), so `#[cfg(windows)]` branches are a known measurement gap. The check is informational and never blocks a merge.
 
 ## Overview
 
