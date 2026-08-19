@@ -483,9 +483,12 @@ impl Timeline {
         //    of each chunk so PTS stays sample-accurate.
         if let Some(mut agraph) = audio_graph {
             if let Some(mut master) = master_audio {
-                // Route the mix through the master effect chain. A two-pass step
-                // (loudness normalization) buffers every frame, so feed the whole
-                // mix, flush to signal EOF, then drain the processed output.
+                // Route the mix through the master effect chain, interleaving pulls
+                // so a plain-node chain streams (low memory) rather than buffering
+                // the whole program. A two-pass step (loudness normalization) buffers
+                // internally and emits nothing until `flush_audio` signals EOF, so
+                // the interleaved pull naturally degrades to buffer-all for it; the
+                // trailing flush + drain then emits the processed output.
                 let mut audio_pts = Duration::ZERO;
                 loop {
                     agraph.tick(audio_pts);
@@ -495,6 +498,11 @@ impl Timeline {
                             master
                                 .push_audio(0, &frame)
                                 .map_err(TimelineError::Filter)?;
+                            while let Some(out) =
+                                master.pull_audio().map_err(TimelineError::Filter)?
+                            {
+                                encoder.push_audio(&out).map_err(TimelineError::Encode)?;
+                            }
                         }
                         None => break,
                     }
