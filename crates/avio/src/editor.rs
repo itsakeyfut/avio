@@ -515,4 +515,27 @@ mod tests {
         let prev = ed.undo().unwrap();
         assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn editor_set_clip_should_be_undoable() {
+        let mut ed = Editor::new(timeline(30.0));
+        let id = ed.current().video_tracks()[0].clips[0].id;
+        let mut patch = Clip::new("patched.mp4");
+        patch.brightness = 0.5;
+        ed.apply(&Command::SetClip {
+            clip: id,
+            value: Box::new(patch),
+        })
+        .unwrap();
+        assert_eq!(
+            ed.current().video_tracks()[0].clips[0].source.to_str(),
+            Some("patched.mp4")
+        );
+        let prev = ed.undo().unwrap();
+        assert_eq!(
+            prev.video_tracks()[0].clips[0].source.to_str(),
+            Some("a.mp4"),
+            "undo restores the pre-patch clip"
+        );
+    }
 }

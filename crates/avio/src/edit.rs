@@ -85,6 +85,21 @@ pub enum Command {
         /// The property to set.
         property: ClipProperty,
     },
+    /// Replace the clip with id `clip` wholesale (an opaque per-clip patch).
+    ///
+    /// The result keeps the id `clip`, so identity never changes. `value.id` must
+    /// be either unset or equal to `clip`, otherwise the edit is rejected with
+    /// [`EditError::ClipIdMismatch`]. This is the general escape hatch for editing
+    /// any per-clip field (colour, fades, transition, effect chain, keyframe/
+    /// animation tracks, metadata, proxy, pitch) through the undoable path. Values
+    /// are stored as-is (not clamped like [`Command::SetClipProperty`]); the
+    /// derivation clamps at render time. The value is boxed to keep `Command` small.
+    SetClip {
+        /// Clip to replace.
+        clip: ClipId,
+        /// New clip value; its id is forced to `clip`.
+        value: Box<Clip>,
+    },
     /// Append a new, empty track of `kind` (assigned a fresh [`TrackId`]).
     AddTrack {
         /// Kind of track to append.
@@ -131,6 +146,14 @@ pub enum EditError {
         /// The id that resolved to no clip.
         id: ClipId,
     },
+    /// A [`Command::SetClip`] value carries an id that names a different clip.
+    #[error("clip id mismatch: expected {expected:?}, value has {found:?}")]
+    ClipIdMismatch {
+        /// The target clip id the patch was addressed to.
+        expected: ClipId,
+        /// The (set) id found on the patch value.
+        found: ClipId,
+    },
     /// Canvas dimensions must be non-zero.
     #[error("invalid canvas: {width}x{height}")]
     InvalidCanvas {
@@ -155,8 +178,9 @@ pub enum EditError {
 ///
 /// # Errors
 ///
-/// Returns [`EditError`] when the target track or clip id is not present, or a
-/// [`Command::SetCanvas`] / [`Command::SetFrameRate`] value is invalid.
+/// Returns [`EditError`] when the target track or clip id is not present, a
+/// [`Command::SetCanvas`] / [`Command::SetFrameRate`] value is invalid, or a
+/// [`Command::SetClip`] value's id names a different clip.
 pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditError> {
     let mut next = timeline.clone();
     match command {
@@ -203,6 +227,23 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                     c.y = *y;
                 }
             }
+        }
+        Command::SetClip { clip, value } => {
+            // Reject a patch built for a different clip; an unset value id is the
+            // common case (the host built via `Clip::new`) and is accepted. This is
+            // a caller error independent of whether the target exists, so it is
+            // checked first.
+            if value.id.is_set() && value.id != *clip {
+                return Err(EditError::ClipIdMismatch {
+                    expected: *clip,
+                    found: value.id,
+                });
+            }
+            let target =
+                find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let mut new_value = (**value).clone();
+            new_value.id = *clip; // preserve identity
+            *target = new_value;
         }
         Command::AddTrack { kind } => {
             let id = TrackId::from_raw(next.next_track_id);
@@ -767,5 +808,120 @@ mod tests {
         assert_eq!(clips.len(), 3);
         assert_ne!(clips[1].id, clips[2].id, "batch must mint distinct ids");
         assert!(clips[1].id.is_set() && clips[2].id.is_set());
+    }
+
+    #[test]
+    fn apply_set_clip_should_replace_the_whole_value_and_preserve_id() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        // A wholesale patch: a different source and several fields at once, none of
+        // which have a dedicated `ClipProperty` command.
+        let mut patch = Clip::new("patched.mp4");
+        patch.brightness = 0.5;
+        patch.fade_in = Duration::from_secs(1);
+        patch.speed = 2.0;
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip: id,
+                value: Box::new(patch),
+            },
+        )
+        .unwrap();
+        let c = &out.video_tracks()[0].clips[0];
+        assert_eq!(c.source.to_str(), Some("patched.mp4"));
+        assert!((c.brightness - 0.5).abs() < f32::EPSILON);
+        assert_eq!(c.fade_in, Duration::from_secs(1));
+        assert!((c.speed - 2.0).abs() < f64::EPSILON);
+        assert_eq!(c.id, id, "SetClip preserves the clip id");
+    }
+
+    #[test]
+    fn apply_set_clip_should_accept_a_matching_value_id() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let mut patch = Clip::new("patched.mp4");
+        patch.id = id; // explicitly matches the target
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip: id,
+                value: Box::new(patch),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[0].source.to_str(),
+            Some("patched.mp4")
+        );
+    }
+
+    #[test]
+    fn apply_set_clip_should_reject_a_mismatched_value_id() {
+        let t = timeline_with(2);
+        let id0 = clip_id(&t, 0);
+        let id1 = clip_id(&t, 1);
+        let mut patch = Clip::new("patched.mp4");
+        patch.id = id1; // a different clip's id
+        let err = apply(
+            &t,
+            &Command::SetClip {
+                clip: id0,
+                value: Box::new(patch),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::ClipIdMismatch {
+                expected: id0,
+                found: id1,
+            }
+        );
+        // The original clip is untouched.
+        assert_eq!(
+            t.video_tracks()[0].clips[0].source.to_str(),
+            Some("clip0.mp4")
+        );
+    }
+
+    #[test]
+    fn apply_set_clip_unknown_clip_should_err() {
+        let t = timeline_with(1);
+        let err = apply(
+            &t,
+            &Command::SetClip {
+                clip: ClipId::UNSET,
+                value: Box::new(Clip::new("x.mp4")),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
+    }
+
+    #[test]
+    fn apply_set_clip_should_replace_a_clip_on_an_audio_track() {
+        // `find_clip_mut` scans both track lists, so SetClip resolves an audio clip.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        let id = t.audio_tracks()[0].clips[0].id;
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip: id,
+                value: Box::new(Clip::new("patched.mp3")),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].source.to_str(),
+            Some("patched.mp3")
+        );
+        assert_eq!(out.audio_tracks()[0].clips[0].id, id);
     }
 }
