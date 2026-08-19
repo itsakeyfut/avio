@@ -76,6 +76,12 @@ Confirmed design (user-approved):
   executors unchanged, always-green); **then** a unified pure `derive(model, t) -> Scene` (per-frame)
   with converging executors so preview == export by construction — the hardest, riskiest part, split
   into its own child issues.
+- **Per-clip animation lives in the model uniformly.** Every continuous per-clip property carries its
+  animation track in the model, and `derive` passes it through uniformly; a primitive may
+  static-evaluate at `t=0` any track it does not yet animate (today the compositor static-evaluates
+  `scale`/`rotation` and the mixer applies `pitch` as a static step, while `opacity`/`x`/`y`/`volume`
+  animate), with per-frame/per-sample animation landed per-primitive as follow-up. Rationale:
+  [ADR-0002](../adr/0002-per-clip-animation-in-the-model.md).
 
 **Child issues (#1327):** **C1** `Command` + pure `apply`; **C2** `Editor` (history / undo / redo);
 **C3** extract a shared `derive` core across export/preview; **C4** unified `derive(model, t) -> Scene`
