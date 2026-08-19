@@ -577,13 +577,14 @@ mod tests {
     #[test]
     fn apply_remove_unknown_track_should_err() {
         let t = timeline_with(1);
-        let err = apply(&t, &Command::RemoveTrack { track: TrackId::UNSET }).unwrap_err();
-        assert_eq!(
-            err,
-            EditError::TrackNotFound {
-                id: TrackId::UNSET
-            }
-        );
+        let err = apply(
+            &t,
+            &Command::RemoveTrack {
+                track: TrackId::UNSET,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::TrackNotFound { id: TrackId::UNSET });
     }
 
     #[test]
@@ -619,7 +620,11 @@ mod tests {
         let n_tracks = track_ids.len();
         track_ids.sort();
         track_ids.dedup();
-        assert_eq!(track_ids.len(), n_tracks, "track ids unique across video+audio");
+        assert_eq!(
+            track_ids.len(),
+            n_tracks,
+            "track ids unique across video+audio"
+        );
 
         let mut clip_ids: Vec<ClipId> = t
             .video_tracks()

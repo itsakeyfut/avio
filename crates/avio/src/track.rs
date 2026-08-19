@@ -121,6 +121,11 @@ mod tests {
         // Soloed while a solo is present -> active.
         assert!(Track::new(vec![]).soloed(true).is_active(true));
         // Soloed but disabled -> still inactive (enabled/mute win over solo).
-        assert!(!Track::new(vec![]).soloed(true).enabled(false).is_active(true));
+        assert!(
+            !Track::new(vec![])
+                .soloed(true)
+                .enabled(false)
+                .is_active(true)
+        );
     }
 }
