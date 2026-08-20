@@ -139,6 +139,24 @@ pub enum Command {
         /// Clip to remove.
         clip: ClipId,
     },
+    /// Set the source in/out points of the clip with id `clip` and close/open the
+    /// gap this creates (a ripple trim).
+    ///
+    /// Like [`TrimClip`](Self::TrimClip), but clips on the same track that start
+    /// after the trimmed clip (a greater `offset`) also shift by the change in the
+    /// clip's timeline footprint: shrinking pulls them left (closes the gap),
+    /// growing pushes them right (opens the gap). The trimmed clip's own `offset`
+    /// is unchanged, and other tracks are not touched. When the footprint is
+    /// unknown before or after the trim (in- or out-point unset), the trim still
+    /// applies but nothing is shifted.
+    RippleTrim {
+        /// Clip to trim.
+        clip: ClipId,
+        /// New source in-point (`None` = start of file).
+        in_point: Option<Duration>,
+        /// New source out-point (`None` = end of file).
+        out_point: Option<Duration>,
+    },
     /// Append a new, empty track of `kind` (assigned a fresh [`TrackId`]).
     AddTrack {
         /// Kind of track to append.
@@ -334,6 +352,33 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                 for c in clips.iter_mut() {
                     if c.offset > removed_offset {
                         c.offset = c.offset.saturating_sub(shift);
+                    }
+                }
+            }
+        }
+        Command::RippleTrim {
+            clip,
+            in_point,
+            out_point,
+        } => {
+            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?;
+            let clip_offset = clips[idx].offset;
+            let old_footprint = clip_footprint(&clips[idx]);
+            clips[idx].in_point = *in_point;
+            clips[idx].out_point = *out_point;
+            let new_footprint = clip_footprint(&clips[idx]);
+            // Shift later same-track clips by the change in footprint: shrink pulls
+            // them left (closes the gap), grow pushes them right. Only when both
+            // footprints are known (as `RippleDelete` requires a known footprint).
+            if let (Some(old), Some(new)) = (old_footprint, new_footprint) {
+                for c in clips.iter_mut() {
+                    if c.offset > clip_offset {
+                        c.offset = if new >= old {
+                            c.offset.saturating_add(new.saturating_sub(old))
+                        } else {
+                            c.offset.saturating_sub(old.saturating_sub(new))
+                        };
                     }
                 }
             }
@@ -1538,6 +1583,239 @@ mod tests {
             clips[0].offset,
             Duration::from_secs(5),
             "no shift when the removed clip's footprint is unknown"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_shorter_should_close_the_gap() {
+        // b (offset 4, footprint 4) trimmed to source 0..2 (footprint 2, delta -2):
+        // c (was 8) pulls left by 2 to 6; b's own offset is unchanged.
+        let t = ripple_setup();
+        let b_id = t.video_tracks()[0].clips[1].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: b_id,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(2)),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips[0].offset, Duration::ZERO, "a unchanged");
+        assert_eq!(
+            clips[1].offset,
+            Duration::from_secs(4),
+            "b offset unchanged"
+        );
+        assert_eq!(
+            clips[1].out_point,
+            Some(Duration::from_secs(2)),
+            "b trimmed"
+        );
+        assert_eq!(
+            clips[2].offset,
+            Duration::from_secs(6),
+            "c pulled left by 2"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_longer_should_push_later_clips() {
+        // b trimmed to source 0..6 (footprint 6, delta +2): c (was 8) pushes to 10.
+        let t = ripple_setup();
+        let b_id = t.video_tracks()[0].clips[1].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: b_id,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(6)),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(
+            clips[2].offset,
+            Duration::from_secs(10),
+            "c pushed right by 2"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_should_not_disturb_other_tracks() {
+        let mk = |name: &str, off: u64| {
+            Clip::new(name)
+                .trim(Duration::ZERO, Duration::from_secs(4))
+                .offset(Duration::from_secs(off))
+        };
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4)])
+            .video_track(vec![Clip::new("o.mp4").offset(Duration::from_secs(4))])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: a_id,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(2)),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(2),
+            "b pulled left by 2"
+        );
+        assert_eq!(
+            out.video_tracks()[1].clips[0].offset,
+            Duration::from_secs(4),
+            "the other track is untouched"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_should_shift_by_speed_scaled_footprint() {
+        // a: source 0..10 at speed 2 -> footprint 5. b starts at 5. Trim a to
+        // source 0..4 (footprint 2, delta -3): b pulls left to 2.
+        let mut a = Clip::new("a.mp4")
+            .trim(Duration::ZERO, Duration::from_secs(10))
+            .offset(Duration::ZERO);
+        a.speed = 2.0;
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![a, Clip::new("b.mp4").offset(Duration::from_secs(5))])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: a_id,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(4)),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(2),
+            "shift uses the speed-scaled footprint delta (5 -> 2 = -3), not the source delta"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_unknown_footprint_should_trim_without_shifting() {
+        // Trimming b to an unbounded out-point makes its new footprint unknown, so
+        // nothing shifts, but the trim still applies.
+        let t = ripple_setup();
+        let b_id = t.video_tracks()[0].clips[1].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: b_id,
+                in_point: Some(Duration::ZERO),
+                out_point: None,
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips[1].out_point, None, "b trim applied");
+        assert_eq!(
+            clips[2].offset,
+            Duration::from_secs(8),
+            "c not shifted when the new footprint is unknown"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_missing_clip_should_err() {
+        let t = ripple_setup();
+        let missing = ClipId::from_raw(9999);
+        let err = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: missing,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(2)),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::ClipNotFound { id: missing });
+    }
+
+    #[test]
+    fn apply_ripple_trim_head_should_shift_by_footprint_delta() {
+        // Head-trim: b's in-point advances to 2 (source 2..4 -> footprint 2, delta
+        // -2). b's own offset is unchanged; c (was 8) pulls left to 6.
+        let t = ripple_setup();
+        let b_id = t.video_tracks()[0].clips[1].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: b_id,
+                in_point: Some(Duration::from_secs(2)),
+                out_point: Some(Duration::from_secs(4)),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(
+            clips[1].offset,
+            Duration::from_secs(4),
+            "b offset unchanged"
+        );
+        assert_eq!(
+            clips[1].in_point,
+            Some(Duration::from_secs(2)),
+            "b head trimmed"
+        );
+        assert_eq!(
+            clips[2].offset,
+            Duration::from_secs(6),
+            "c pulled left by 2"
+        );
+    }
+
+    #[test]
+    fn apply_ripple_trim_from_unbounded_should_trim_without_shifting() {
+        // The clip starts open-ended (footprint unknown). Trimming it to a bounded
+        // out-point cannot know how much it shrank, so nothing shifts, but the trim
+        // applies.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("a.mp4").offset(Duration::ZERO),
+                Clip::new("b.mp4").offset(Duration::from_secs(5)),
+            ])
+            .build()
+            .unwrap();
+        let a_id = t.video_tracks()[0].clips[0].id;
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: a_id,
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(2)),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(
+            clips[0].out_point,
+            Some(Duration::from_secs(2)),
+            "a trim applied"
+        );
+        assert_eq!(
+            clips[1].offset,
+            Duration::from_secs(5),
+            "no shift when the old footprint was unknown"
         );
     }
 
