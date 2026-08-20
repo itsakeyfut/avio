@@ -267,6 +267,26 @@ mod tests {
     }
 
     #[test]
+    fn editor_undo_redo_should_round_trip_an_added_marker() {
+        use crate::Marker;
+        use std::time::Duration;
+
+        let mut ed = Editor::new(timeline(30.0));
+        let after = ed
+            .apply(&Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(1)),
+            })
+            .unwrap();
+        assert_eq!(after.markers().len(), 1);
+
+        let undone = ed.undo().unwrap();
+        assert!(undone.markers().is_empty(), "undo removes the added marker");
+
+        let redone = ed.redo().unwrap();
+        assert_eq!(redone.markers().len(), 1, "redo restores the marker");
+    }
+
+    #[test]
     fn editor_redo_should_reapply_the_undone_version() {
         let mut ed = Editor::new(timeline(30.0));
         ed.apply(&set_fps(24.0)).unwrap();

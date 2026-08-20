@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use avio::{
-    AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Timeline,
+    AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Marker, Timeline,
     XfadeTransition, apply,
 };
 use ff_filter::FilterStep;
@@ -154,4 +154,50 @@ fn clip_effects_should_be_omitted_from_serialization() {
         back.video_effects.is_empty(),
         "skipped field must deserialize to an empty vec"
     );
+}
+
+#[test]
+fn markers_should_round_trip_through_serde() {
+    let base = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .video_track(vec![Clip::new("a.mp4")])
+        .build()
+        .unwrap();
+    let with_markers = apply(
+        &base,
+        &Command::AddMarker {
+            marker: Marker::new(Duration::from_secs(2))
+                .with_name("chapter 1")
+                .with_color(Color::rgb(255, 0, 0)),
+        },
+    )
+    .unwrap();
+    let with_markers = apply(
+        &with_markers,
+        &Command::AddMarker {
+            marker: Marker::new(Duration::from_secs(5)).with_comment("note"),
+        },
+    )
+    .unwrap();
+
+    let json = serde_json::to_string(&with_markers).unwrap();
+    let back: Timeline = serde_json::from_str(&json).unwrap();
+
+    // Value comparison is insensitive to HashMap key ordering.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(v1, v2, "markers must round-trip through serde");
+
+    assert_eq!(back.markers().len(), 2, "both markers survive");
+    assert_eq!(back.markers()[0].name.as_deref(), Some("chapter 1"));
+    assert_eq!(back.markers()[0].pts, Duration::from_secs(2));
+    assert_eq!(back.markers()[0].color, Some(Color::rgb(255, 0, 0)));
+    assert_eq!(
+        back.markers()[0].id,
+        with_markers.markers()[0].id,
+        "marker id is preserved"
+    );
+    assert_eq!(back.markers()[1].comment.as_deref(), Some("note"));
 }
