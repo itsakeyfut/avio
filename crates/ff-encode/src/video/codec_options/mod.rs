@@ -42,9 +42,9 @@ pub enum VideoCodecOptions {
     Av1Svt(SvtAv1Options),
     /// VP9 encoding options (reserved for a future issue).
     Vp9(Vp9Options),
-    /// Apple ProRes encoding options (reserved for a future issue).
+    /// Apple `ProRes` encoding options (reserved for a future issue).
     ProRes(ProResOptions),
-    /// Avid DNxHD / DNxHR encoding options (reserved for a future issue).
+    /// Avid `DNxHD` / `DNxHR` encoding options (reserved for a future issue).
     Dnxhd(DnxhdOptions),
 }
 

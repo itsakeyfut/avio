@@ -55,7 +55,7 @@ impl StreamCopyTrimmer {
     /// # Errors
     ///
     /// - [`RemuxError::InvalidConfig`] if `start_sec >= end_sec`.
-    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    /// - [`RemuxError::Ffmpeg`] if any `FFmpeg` API call fails.
     pub fn run(self) -> Result<(), RemuxError> {
         if self.start_sec >= self.end_sec {
             return Err(RemuxError::InvalidConfig {
@@ -130,7 +130,7 @@ impl StreamCopyTrim {
     /// # Errors
     ///
     /// - [`RemuxError::OperationFailed`] if `start >= end`.
-    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    /// - [`RemuxError::Ffmpeg`] if any `FFmpeg` API call fails.
     pub fn run(self) -> Result<(), RemuxError> {
         if self.start >= self.end {
             return Err(RemuxError::OperationFailed {

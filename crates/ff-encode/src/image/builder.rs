@@ -69,7 +69,7 @@ impl ImageEncoderBuilder {
     ///
     /// If not set, a codec-native default is used (e.g. `YUVJ420P` for JPEG,
     /// `RGB24` for PNG). Setting an incompatible format may cause encoding to
-    /// fail with an FFmpeg error.
+    /// fail with an `FFmpeg` error.
     #[must_use]
     pub fn pixel_format(mut self, fmt: PixelFormat) -> Self {
         self.pixel_format = Some(fmt);
@@ -154,7 +154,7 @@ impl ImageEncoder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the FFmpeg encoder is unavailable, the output file
+    /// Returns an error if the `FFmpeg` encoder is unavailable, the output file
     /// cannot be created, or encoding fails.
     pub fn encode(self, frame: &VideoFrame) -> Result<(), EncodeError> {
         let opts = encoder_inner::ImageEncodeOptions {

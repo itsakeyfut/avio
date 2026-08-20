@@ -56,7 +56,7 @@ pub struct AudioEncoderConfig {
     pub sample_rate: u32,
     /// Number of audio channels (1 = mono, 2 = stereo).
     pub channels: u32,
-    /// Audio bitrate in bits per second (e.g. 192_000 = 192 kbps).
+    /// Audio bitrate in bits per second (e.g. `192_000` = 192 kbps).
     pub bitrate: u64,
 }
 
@@ -93,13 +93,13 @@ pub struct ExportPreset {
 impl ExportPreset {
     // ── Predefined presets ────────────────────────────────────────────────────
 
-    /// YouTube 1080p preset: H.264, CRF 18, 1920×1080, 30 fps, AAC 192 kbps.
+    /// `YouTube` 1080p preset: H.264, CRF 18, 1920×1080, 30 fps, AAC 192 kbps.
     #[must_use]
     pub fn youtube_1080p() -> Self {
         presets::youtube_1080p()
     }
 
-    /// YouTube 4K preset: H.265, CRF 20, 3840×2160, 30 fps, AAC 256 kbps.
+    /// `YouTube` 4K preset: H.265, CRF 20, 3840×2160, 30 fps, AAC 256 kbps.
     #[must_use]
     pub fn youtube_4k() -> Self {
         presets::youtube_4k()
@@ -158,7 +158,7 @@ impl ExportPreset {
     /// # Errors
     ///
     /// Returns [`EncodeError::PresetConstraintViolation`] when a platform rule
-    /// is violated (e.g. fps > 60 on a YouTube preset, or wrong aspect ratio
+    /// is violated (e.g. fps > 60 on a `YouTube` preset, or wrong aspect ratio
     /// on an Instagram preset).
     pub fn validate(&self) -> Result<(), EncodeError> {
         validation::validate_preset(self)

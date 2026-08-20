@@ -131,7 +131,7 @@ impl AudioEncoderBuilder {
     }
 }
 
-/// Encodes audio frames to a file using FFmpeg.
+/// Encodes audio frames to a file using `FFmpeg`.
 ///
 /// # Construction
 ///
@@ -278,7 +278,7 @@ impl AudioEncoder {
         })
     }
 
-    /// Returns the name of the FFmpeg encoder actually used (e.g. `"aac"`, `"libopus"`).
+    /// Returns the name of the `FFmpeg` encoder actually used (e.g. `"aac"`, `"libopus"`).
     #[must_use]
     pub fn actual_codec(&self) -> &str {
         self.inner

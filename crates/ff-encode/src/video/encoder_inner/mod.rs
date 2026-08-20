@@ -5,9 +5,15 @@
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_op_in_unsafe_fn)]
-// FFmpeg C API frequently requires raw pointer casting
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 mod color;
 mod context;
@@ -178,7 +184,7 @@ impl VideoEncoderInner {
 
             let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
             let ret = avformat_alloc_output_context2(
-                &mut format_ctx,
+                &raw mut format_ctx,
                 ptr::null_mut(),
                 if is_image_sequence {
                     b"image2\0".as_ptr() as *const i8
@@ -278,17 +284,16 @@ impl VideoEncoderInner {
             // manages I/O internally (AVFMT_NOFILE) — skip avio_open in that case.
             if !config.two_pass {
                 if !is_image_sequence {
-                    match ff_sys::avformat::open_output(
+                    if let Ok(pb) = ff_sys::avformat::open_output(
                         &config.path,
                         ff_sys::avformat::avio_flags::WRITE,
                     ) {
-                        Ok(pb) => (*format_ctx).pb = pb,
-                        Err(_) => {
-                            encoder.cleanup();
-                            return Err(EncodeError::CannotCreateFile {
-                                path: config.path.clone(),
-                            });
-                        }
+                        (*format_ctx).pb = pb;
+                    } else {
+                        encoder.cleanup();
+                        return Err(EncodeError::CannotCreateFile {
+                            path: config.path.clone(),
+                        });
                     }
                 }
 
@@ -336,7 +341,7 @@ impl VideoEncoderInner {
 
                 let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
                 if let Err(e) = convert_result {
-                    av_frame_free(&mut av_frame as *mut *mut _);
+                    av_frame_free(&raw mut av_frame);
                     return Err(e);
                 }
 
@@ -375,7 +380,7 @@ impl VideoEncoderInner {
                 (*av_frame).pts = self.frame_count as i64 * 1000;
                 let send_result = avcodec::send_frame(pass1_ctx, av_frame);
                 if let Err(e) = send_result {
-                    av_frame_free(&mut av_frame as *mut *mut _);
+                    av_frame_free(&raw mut av_frame);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!(
@@ -386,7 +391,7 @@ impl VideoEncoderInner {
                 }
 
                 let drain_result = self.drain_pass1_packets(pass1_ctx);
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 drain_result?;
 
                 self.frame_count += 1;
@@ -412,7 +417,7 @@ impl VideoEncoderInner {
             // Convert VideoFrame to AVFrame
             let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
             if let Err(e) = convert_result {
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 return Err(e);
             }
 
@@ -423,7 +428,7 @@ impl VideoEncoderInner {
             // Send frame to encoder
             let send_result = avcodec::send_frame(codec_ctx, av_frame);
             if let Err(e) = send_result {
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 return Err(EncodeError::Ffmpeg {
                     code: e,
                     message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
@@ -434,7 +439,7 @@ impl VideoEncoderInner {
             let receive_result = self.receive_packets();
 
             // Always cleanup the frame
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
 
             // Check if receiving packets failed
             receive_result?;
@@ -472,7 +477,7 @@ impl VideoEncoderInner {
                 });
             }
             if let Err(e) = self.convert_audio_frame(frame, av_frame) {
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 return Err(e);
             }
 
@@ -480,7 +485,7 @@ impl VideoEncoderInner {
             if frame_size <= 0 || self.audio_fifo.is_none() {
                 (*av_frame).pts = self.audio_sample_count as i64;
                 let send_result = avcodec::send_frame(codec_ctx, av_frame);
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 if let Err(e) = send_result {
                     return Err(EncodeError::Ffmpeg {
                         code: e,
@@ -507,7 +512,7 @@ impl VideoEncoderInner {
                 (*av_frame).data.as_ptr() as *const *mut _,
                 nb_samples,
             );
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
             write_result.map_err(EncodeError::from_ffmpeg_error)?;
 
             // Drain full frame_size chunks.
@@ -523,14 +528,14 @@ impl VideoEncoderInner {
                 (*out_frame).format = (*codec_ctx).sample_fmt;
                 (*out_frame).sample_rate = (*codec_ctx).sample_rate;
                 swresample::channel_layout::copy(
-                    &mut (*out_frame).ch_layout,
-                    &(*codec_ctx).ch_layout,
+                    &raw mut (*out_frame).ch_layout,
+                    &raw const (*codec_ctx).ch_layout,
                 )
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
                 let ret = ff_sys::av_frame_get_buffer(out_frame, 0);
                 if ret < 0 {
-                    av_frame_free(&mut out_frame as *mut *mut _);
+                    av_frame_free(&raw mut out_frame);
                     return Err(EncodeError::Ffmpeg {
                         code: ret,
                         message: format!(
@@ -545,13 +550,13 @@ impl VideoEncoderInner {
                     (*out_frame).data.as_mut_ptr().cast(),
                     frame_size,
                 ) {
-                    av_frame_free(&mut out_frame as *mut *mut _);
+                    av_frame_free(&raw mut out_frame);
                     return Err(EncodeError::from_ffmpeg_error(e));
                 }
 
                 (*out_frame).pts = self.audio_sample_count as i64;
                 let send_result = avcodec::send_frame(codec_ctx, out_frame);
-                av_frame_free(&mut out_frame as *mut *mut _);
+                av_frame_free(&raw mut out_frame);
                 if let Err(e) = send_result {
                     return Err(EncodeError::Ffmpeg {
                         code: e,
@@ -598,8 +603,8 @@ impl VideoEncoderInner {
                         (*out_frame).format = (*codec_ctx).sample_fmt;
                         (*out_frame).sample_rate = (*codec_ctx).sample_rate;
                         let _ = swresample::channel_layout::copy(
-                            &mut (*out_frame).ch_layout,
-                            &(*codec_ctx).ch_layout,
+                            &raw mut (*out_frame).ch_layout,
+                            &raw const (*codec_ctx).ch_layout,
                         );
                         if ff_sys::av_frame_get_buffer(out_frame, 0) == 0 {
                             let _ = ff_sys::swresample::audio_fifo::read(
@@ -612,7 +617,7 @@ impl VideoEncoderInner {
                             let _ = self.receive_audio_packets();
                             self.audio_sample_count += remaining as u64;
                         }
-                        av_frame_free(&mut out_frame as *mut *mut _);
+                        av_frame_free(&raw mut out_frame);
                     }
                 }
             }

@@ -15,11 +15,11 @@ pub struct H265Options {
     ///
     /// `None` leaves the encoder default. Invalid or unsupported values are logged as a
     /// warning and skipped — `build()` never fails due to an unsupported preset.
-    /// Hardware HEVC encoders (hevc_nvenc, etc.) ignore this option.
+    /// Hardware HEVC encoders (`hevc_nvenc`, etc.) ignore this option.
     pub preset: Option<String>,
     /// Raw x265-params string passed verbatim to libx265 (e.g. `"ctu=32:ref=4"`).
     ///
-    /// **Note**: H.265 encoding requires an FFmpeg build with `--enable-libx265`.
+    /// **Note**: H.265 encoding requires an `FFmpeg` build with `--enable-libx265`.
     ///
     /// An invalid parameter string is logged as a warning and skipped. It never causes
     /// `build()` to return an error.

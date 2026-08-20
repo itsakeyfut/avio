@@ -151,7 +151,7 @@ impl VideoEncoderBuilder {
 
     /// Apply container-specific codec defaults before validation.
     ///
-    /// For WebM paths/containers, default to VP9 + Opus when the caller has
+    /// For `WebM` paths/containers, default to VP9 + Opus when the caller has
     /// not explicitly chosen a codec.
     fn apply_container_defaults(mut self) -> Self {
         let is_webm = self
@@ -545,7 +545,7 @@ impl VideoEncoderBuilder {
     }
 }
 
-/// Encodes video (and optionally audio) frames to a file using FFmpeg.
+/// Encodes video (and optionally audio) frames to a file using `FFmpeg`.
 ///
 /// # Construction
 ///
@@ -584,7 +584,7 @@ impl VideoEncoder {
             video_fps: builder.video_fps,
             video_codec: builder.video_codec,
             video_bitrate_mode: builder.video_bitrate_mode,
-            preset: preset_to_string(&builder.preset),
+            preset: preset_to_string(builder.preset),
             hardware_encoder: builder.hardware_encoder,
             audio_sample_rate: builder.audio_sample_rate,
             audio_channels: builder.audio_channels,
@@ -624,7 +624,7 @@ impl VideoEncoder {
         })
     }
 
-    /// Returns the name of the FFmpeg encoder actually used (e.g. `"h264_nvenc"`, `"libx264"`).
+    /// Returns the name of the `FFmpeg` encoder actually used (e.g. `"h264_nvenc"`, `"libx264"`).
     #[must_use]
     pub fn actual_video_codec(&self) -> &str {
         self.inner
@@ -632,7 +632,7 @@ impl VideoEncoder {
             .map_or("", |inner| inner.actual_video_codec.as_str())
     }
 
-    /// Returns the name of the FFmpeg audio encoder actually used.
+    /// Returns the name of the `FFmpeg` audio encoder actually used.
     #[must_use]
     pub fn actual_audio_codec(&self) -> &str {
         self.inner
@@ -769,6 +769,10 @@ impl VideoEncoder {
             0.0
         };
         #[allow(clippy::cast_precision_loss)]
+        // Bitrate is a non-negative bits-per-second rate; the f64→u64 fallback
+        // (used only when the integer division would divide by zero) cannot wrap
+        // or lose a sign in practice.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let current_bitrate = if !elapsed.is_zero() {
             let elapsed_secs = elapsed.as_secs();
             match (bytes_written * 8).checked_div(elapsed_secs) {

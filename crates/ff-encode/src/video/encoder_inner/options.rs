@@ -1,7 +1,14 @@
 //! Codec option application and encoder selection helpers.
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use super::{
     AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
@@ -36,7 +43,7 @@ pub(super) fn codec_to_id(codec: VideoCodec) -> AVCodecID {
     }
 }
 
-pub fn preset_to_string(preset: &crate::Preset) -> String {
+pub fn preset_to_string(preset: crate::Preset) -> String {
     match preset {
         crate::Preset::Ultrafast => "ultrafast",
         crate::Preset::Faster => "faster",

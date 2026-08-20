@@ -1,7 +1,14 @@
 //! Two-pass encoding helpers.
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use super::color::{
     color_primaries_to_av, color_space_to_av, color_transfer_to_av, pixel_format_to_av,
@@ -88,7 +95,7 @@ impl VideoEncoderInner {
 
         // ── Step 3: Free pass-1 codec context ───────────────────────────────
         // SAFETY: pass1_ctx is no longer needed; we own it exclusively.
-        avcodec::free_context(&mut pass1_ctx as *mut *mut _);
+        avcodec::free_context(&raw mut pass1_ctx);
         self.pass1_codec_ctx = None;
 
         // ── Step 4: Set up pass-2 codec context ─────────────────────────────
@@ -379,7 +386,7 @@ impl VideoEncoderInner {
         // Allocate the frame buffer.
         let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
         if ret < 0 {
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
             return Err(EncodeError::Ffmpeg {
                 code: ret,
                 message: format!(
@@ -426,7 +433,7 @@ impl VideoEncoderInner {
         // Send to pass-2 encoder.
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
         if let Err(e) = send_result {
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
             return Err(EncodeError::Ffmpeg {
                 code: e,
                 message: format!(
@@ -437,7 +444,7 @@ impl VideoEncoderInner {
         }
 
         let receive_result = self.receive_packets();
-        av_frame_free(&mut av_frame as *mut *mut _);
+        av_frame_free(&raw mut av_frame);
         receive_result?;
 
         self.frame_count += 1;

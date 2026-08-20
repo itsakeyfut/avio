@@ -8,6 +8,15 @@
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string literals,
+// and FFI-wrapper ergonomics concentrate in this unsafe module.
+#![allow(clippy::ptr_as_ptr)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use std::ffi::CString;
 use std::path::Path;
@@ -36,14 +45,14 @@ unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, PreviewImageErro
 
     if let Err(e) = avformat::find_stream_info(fmt_ctx) {
         let mut p = fmt_ctx;
-        avformat::close_input(&mut p);
+        avformat::close_input(&raw mut p);
         return Err(PreviewImageError::from_ffmpeg_error(e));
     }
 
     // SAFETY: fmt_ctx is non-null (open_input succeeded).
     let duration_av = (*fmt_ctx).duration;
     let mut p = fmt_ctx;
-    avformat::close_input(&mut p);
+    avformat::close_input(&raw mut p);
 
     if duration_av <= 0 {
         return Err(PreviewImageError::OperationFailed {
@@ -418,7 +427,7 @@ unsafe fn encode_frame_as_png_inner(
     // accepts the APNG (animated PNG) codec — not the plain PNG codec — and
     // would fail at avformat_write_header.
     let ret = avformat_alloc_output_context2(
-        &mut fmt_ctx,
+        &raw mut fmt_ctx,
         ptr::null_mut(),
         c"image2".as_ptr(),
         c_path.as_ptr(),
@@ -479,7 +488,7 @@ unsafe fn encode_frame_as_png_inner(
         Ok(ctx) => ctx,
         Err(e) => {
             let mut cc = codec_ctx;
-            avcodec::free_context(&mut cc);
+            avcodec::free_context(&raw mut cc);
             avformat_free_context(fmt_ctx);
             return Err(PreviewImageError::from_ffmpeg_error(e));
         }
@@ -488,9 +497,9 @@ unsafe fn encode_frame_as_png_inner(
 
     let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
     if ret < 0 {
-        avformat::close_output(&mut (*fmt_ctx).pb);
+        avformat::close_output(&raw mut (*fmt_ctx).pb);
         let mut cc = codec_ctx;
-        avcodec::free_context(&mut cc);
+        avcodec::free_context(&raw mut cc);
         avformat_free_context(fmt_ctx);
         return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
@@ -499,9 +508,9 @@ unsafe fn encode_frame_as_png_inner(
     let packet = av_packet_alloc();
     if packet.is_null() {
         av_write_trailer(fmt_ctx);
-        avformat::close_output(&mut (*fmt_ctx).pb);
+        avformat::close_output(&raw mut (*fmt_ctx).pb);
         let mut cc = codec_ctx;
-        avcodec::free_context(&mut cc);
+        avcodec::free_context(&raw mut cc);
         avformat_free_context(fmt_ctx);
         return Err(PreviewImageError::Ffmpeg {
             code: 0,
@@ -522,7 +531,7 @@ unsafe fn encode_frame_as_png_inner(
     })();
 
     av_write_trailer(fmt_ctx);
-    avformat::close_output(&mut (*fmt_ctx).pb);
+    avformat::close_output(&raw mut (*fmt_ctx).pb);
     av_packet_free(&mut { packet });
     avcodec::free_context(&mut { codec_ctx });
     avformat_free_context(fmt_ctx);
@@ -1131,7 +1140,7 @@ unsafe fn encode_gif_unsafe(
     };
 
     let ret = avformat_alloc_output_context2(
-        &mut fmt_ctx,
+        &raw mut fmt_ctx,
         ptr::null_mut(),
         c"gif".as_ptr(),
         c_path.as_ptr(),
@@ -1258,7 +1267,7 @@ unsafe fn encode_gif_unsafe(
 
     let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
     if ret < 0 {
-        avformat::close_output(&mut (*fmt_ctx).pb);
+        avformat::close_output(&raw mut (*fmt_ctx).pb);
         let mut f = first_frame;
         av_frame_free(std::ptr::addr_of_mut!(f));
         avcodec::free_context(&mut { codec_ctx });
@@ -1271,7 +1280,7 @@ unsafe fn encode_gif_unsafe(
     let packet = av_packet_alloc();
     if packet.is_null() {
         av_write_trailer(fmt_ctx);
-        avformat::close_output(&mut (*fmt_ctx).pb);
+        avformat::close_output(&raw mut (*fmt_ctx).pb);
         let mut f = first_frame;
         av_frame_free(std::ptr::addr_of_mut!(f));
         avcodec::free_context(&mut { codec_ctx });
@@ -1325,7 +1334,7 @@ unsafe fn encode_gif_unsafe(
     })();
 
     av_write_trailer(fmt_ctx);
-    avformat::close_output(&mut (*fmt_ctx).pb);
+    avformat::close_output(&raw mut (*fmt_ctx).pb);
     av_packet_free(&mut { packet });
     let mut f = first_frame;
     av_frame_free(std::ptr::addr_of_mut!(f));

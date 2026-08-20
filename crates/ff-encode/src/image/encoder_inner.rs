@@ -14,8 +14,15 @@
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use std::ffi::CString;
 use std::path::Path;
@@ -137,14 +144,14 @@ impl ImageEncoderInner {
 
         let mut ret = if let Some(fmt) = explicit_fmt {
             avformat_alloc_output_context2(
-                &mut inner.format_ctx,
+                &raw mut inner.format_ctx,
                 ptr::null_mut(),
                 fmt,
                 c_path.as_ptr(),
             )
         } else {
             avformat_alloc_output_context2(
-                &mut inner.format_ctx,
+                &raw mut inner.format_ctx,
                 ptr::null_mut(),
                 ptr::null(),
                 c_path.as_ptr(),
@@ -155,7 +162,7 @@ impl ImageEncoderInner {
         // failed (e.g. on a minimal FFmpeg build that omits the dedicated muxer).
         if ret < 0 || inner.format_ctx.is_null() {
             ret = avformat_alloc_output_context2(
-                &mut inner.format_ctx,
+                &raw mut inner.format_ctx,
                 ptr::null_mut(),
                 ptr::null(),
                 c_path.as_ptr(),
@@ -365,7 +372,7 @@ impl ImageEncoderInner {
         // ── Finalise file ─────────────────────────────────────────────────────
         av_write_trailer(self.format_ctx);
         // SAFETY: format_ctx and pb are non-null at this point.
-        avformat::close_output(&mut (*self.format_ctx).pb);
+        avformat::close_output(&raw mut (*self.format_ctx).pb);
 
         Ok(())
     }
@@ -413,11 +420,11 @@ impl Drop for ImageEncoderInner {
         unsafe {
             if !self.dst_frame.is_null() {
                 // SAFETY: dst_frame is non-null and owned by this struct.
-                av_frame_free(&mut self.dst_frame);
+                av_frame_free(&raw mut self.dst_frame);
             }
             if !self.packet.is_null() {
                 // SAFETY: packet is non-null and owned by this struct.
-                av_packet_free(&mut self.packet);
+                av_packet_free(&raw mut self.packet);
             }
             if let Some(sws) = self.sws_ctx.take() {
                 // SAFETY: sws is a valid SwsContext that hasn't been freed yet.
@@ -426,7 +433,7 @@ impl Drop for ImageEncoderInner {
             if !self.codec_ctx.is_null() {
                 // SAFETY: codec_ctx is non-null and owned by this struct.
                 // avcodec_free_context sets the pointer to null after freeing.
-                avcodec::free_context(&mut self.codec_ctx);
+                avcodec::free_context(&raw mut self.codec_ctx);
             }
             if !self.format_ctx.is_null() {
                 // SAFETY: format_ctx is non-null and owned by this struct.
@@ -434,7 +441,7 @@ impl Drop for ImageEncoderInner {
                 // to null by avio_closep, so this check prevents a double-close
                 // when encode_frame already closed it on success).
                 if !(*self.format_ctx).pb.is_null() {
-                    avformat::close_output(&mut (*self.format_ctx).pb);
+                    avformat::close_output(&raw mut (*self.format_ctx).pb);
                 }
                 avformat_free_context(self.format_ctx);
                 self.format_ctx = ptr::null_mut();

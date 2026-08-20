@@ -1,9 +1,9 @@
-//! Avid DNxHD / DNxHR per-codec encoding options.
+//! Avid `DNxHD` / `DNxHR` per-codec encoding options.
 
-/// DNxHD / DNxHR encoding variant.
+/// `DNxHD` / `DNxHR` encoding variant.
 ///
-/// Legacy DNxHD variants (`Dnxhd*`) are constrained to 1920×1080 or 1280×720
-/// and require a fixed bitrate. DNxHR variants (`Dnxhr*`) work at any resolution.
+/// Legacy `DNxHD` variants (`Dnxhd*`) are constrained to 1920×1080 or 1280×720
+/// and require a fixed bitrate. `DNxHR` variants (`Dnxhr*`) work at any resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DnxhdVariant {
     // ── DNxHD (legacy fixed-bitrate, 1920×1080 or 1280×720 only) ─────────────
@@ -57,9 +57,9 @@ impl DnxhdVariant {
         }
     }
 
-    /// For legacy DNxHD variants, returns the required fixed bitrate in bps.
+    /// For legacy `DNxHD` variants, returns the required fixed bitrate in bps.
     ///
-    /// DNxHR variants return `None` — the encoder selects the bitrate automatically.
+    /// `DNxHR` variants return `None` — the encoder selects the bitrate automatically.
     pub(in crate::video) fn fixed_bitrate_bps(self) -> Option<i64> {
         match self {
             Self::Dnxhd115 => Some(115_000_000),
@@ -69,7 +69,7 @@ impl DnxhdVariant {
         }
     }
 
-    /// Returns `true` for legacy DNxHD variants that require 1920×1080 or 1280×720.
+    /// Returns `true` for legacy `DNxHD` variants that require 1920×1080 or 1280×720.
     pub(in crate::video) fn is_dnxhd(self) -> bool {
         matches!(
             self,
@@ -78,9 +78,9 @@ impl DnxhdVariant {
     }
 }
 
-/// Avid DNxHD / DNxHR per-codec options.
+/// Avid `DNxHD` / `DNxHR` per-codec options.
 ///
-/// Output should use a `.mxf` or `.mov` container. Legacy DNxHD variants
+/// Output should use a `.mxf` or `.mov` container. Legacy `DNxHD` variants
 /// (`Dnxhd*`) are validated in `build()` to require 1920×1080 or 1280×720.
 #[derive(Debug, Clone, Default)]
 pub struct DnxhdOptions {

@@ -62,7 +62,7 @@ impl AsyncAudioEncoder {
     ///
     /// Consumes the builder, validates the configuration, opens the output
     /// file, and starts the worker thread. The worker runs the synchronous
-    /// FFmpeg encode loop in the background.
+    /// `FFmpeg` encode loop in the background.
     ///
     /// # Errors
     ///

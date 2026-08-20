@@ -2,7 +2,13 @@
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: intentional narrowing/sign casts at the C ABI and
+// acronym-heavy FFmpeg doc terms concentrate in this isolated FFI module.
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::doc_markdown)]
 
 use std::path::Path;
 
@@ -43,14 +49,14 @@ unsafe fn run_trim_unsafe(
     // SAFETY: in_ctx is non-null (open_input succeeded).
     if let Err(e) = ff_sys::avformat::find_stream_info(in_ctx) {
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 3: allocate output context ──────────────────────────────────────
     let Some(output_str) = output.to_str() else {
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path is not valid UTF-8".to_string(),
@@ -58,7 +64,7 @@ unsafe fn run_trim_unsafe(
     };
     let Ok(c_output) = std::ffi::CString::new(output_str) else {
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "output path contains null bytes".to_string(),
@@ -68,14 +74,14 @@ unsafe fn run_trim_unsafe(
     let mut out_ctx: *mut ff_sys::AVFormatContext = std::ptr::null_mut();
     // SAFETY: c_output is a valid null-terminated C string.
     let ret = ff_sys::avformat_alloc_output_context2(
-        &mut out_ctx,
+        &raw mut out_ctx,
         std::ptr::null_mut(),
         std::ptr::null(),
         c_output.as_ptr(),
     );
     if ret < 0 || out_ctx.is_null() {
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
@@ -89,7 +95,7 @@ unsafe fn run_trim_unsafe(
         let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
         if out_stream.is_null() {
             let mut p = in_ctx;
-            ff_sys::avformat::close_input(&mut p);
+            ff_sys::avformat::close_input(&raw mut p);
             ff_sys::avformat_free_context(out_ctx);
             return Err(RemuxError::Ffmpeg {
                 code: 0,
@@ -101,7 +107,7 @@ unsafe fn run_trim_unsafe(
         let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
         if ret < 0 {
             let mut p = in_ctx;
-            ff_sys::avformat::close_input(&mut p);
+            ff_sys::avformat::close_input(&raw mut p);
             ff_sys::avformat_free_context(out_ctx);
             return Err(RemuxError::from_ffmpeg_error(ret));
         }
@@ -114,7 +120,7 @@ unsafe fn run_trim_unsafe(
     // SAFETY: in_ctx is valid; seeking to AV_TIME_BASE-scaled timestamp.
     if let Err(e) = ff_sys::avformat::seek_file(in_ctx, -1, i64::MIN, start_ts, start_ts, 0) {
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         ff_sys::avformat_free_context(out_ctx);
         return Err(RemuxError::from_ffmpeg_error(e));
     }
@@ -125,7 +131,7 @@ unsafe fn run_trim_unsafe(
         Ok(pb) => pb,
         Err(e) => {
             let mut p = in_ctx;
-            ff_sys::avformat::close_input(&mut p);
+            ff_sys::avformat::close_input(&raw mut p);
             ff_sys::avformat_free_context(out_ctx);
             return Err(RemuxError::from_ffmpeg_error(e));
         }
@@ -141,7 +147,7 @@ unsafe fn run_trim_unsafe(
         ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
 
@@ -155,7 +161,7 @@ unsafe fn run_trim_unsafe(
         ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
         ff_sys::avformat_free_context(out_ctx);
         let mut p = in_ctx;
-        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
@@ -219,7 +225,7 @@ unsafe fn run_trim_unsafe(
 
     // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
     let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(&mut pkt_ptr);
+    ff_sys::av_packet_free(&raw mut pkt_ptr);
 
     // ── Step 9: write trailer ─────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.
@@ -232,7 +238,7 @@ unsafe fn run_trim_unsafe(
     ff_sys::avformat_free_context(out_ctx);
     // SAFETY: in_ctx is non-null (open_input succeeded).
     let mut in_ctx_ptr = in_ctx;
-    ff_sys::avformat::close_input(&mut in_ctx_ptr);
+    ff_sys::avformat::close_input(&raw mut in_ctx_ptr);
 
     log::debug!("stream copy trim complete");
 
