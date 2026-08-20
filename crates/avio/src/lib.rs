@@ -332,6 +332,8 @@ mod ids;
 mod timeline;
 #[cfg(feature = "pipeline")]
 mod track;
+#[cfg(feature = "pipeline")]
+mod validate;
 
 #[cfg(feature = "pipeline")]
 pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};
@@ -347,6 +349,8 @@ pub use ids::{ClipId, TrackId, TrackKind};
 pub use timeline::{Timeline, TimelineBuilder};
 #[cfg(feature = "pipeline")]
 pub use track::Track;
+#[cfg(feature = "pipeline")]
+pub use validate::TimelineIssue;
 
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{

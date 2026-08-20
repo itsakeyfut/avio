@@ -556,7 +556,7 @@ fn take_clip(timeline: &mut Timeline, id: ClipId) -> Option<Clip> {
 
 /// The clip's timeline footprint: its source duration divided by `speed`, or `None`
 /// when the source runs to end-of-file (`out_point` unset).
-fn clip_footprint(clip: &Clip) -> Option<Duration> {
+pub(crate) fn clip_footprint(clip: &Clip) -> Option<Duration> {
     let source = clip.duration()?;
     Duration::try_from_secs_f64(source.as_secs_f64() / clip.speed.max(0.01)).ok()
 }
