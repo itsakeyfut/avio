@@ -37,7 +37,7 @@ pub enum HardwareEncoder {
 impl HardwareEncoder {
     /// Get the list of concrete hardware encoder backends available on this system.
     ///
-    /// Returns only actual hardware backends (NVENC, QSV, AMF, VideoToolbox,
+    /// Returns only actual hardware backends (NVENC, QSV, AMF, `VideoToolbox`,
     /// VA-API). The control variants [`Auto`](Self::Auto) and [`None`](Self::None)
     /// are intentionally excluded — they are configuration options, not hardware
     /// backends.
@@ -89,7 +89,7 @@ impl HardwareEncoder {
 
     /// Check if this hardware encoder is available.
     ///
-    /// Queries FFmpeg to determine if the hardware encoder is available
+    /// Queries `FFmpeg` to determine if the hardware encoder is available
     /// on the current system. This checks for both H.264 and H.265 support.
     ///
     /// # Examples
@@ -124,7 +124,7 @@ impl HardwareEncoder {
 ///
 /// # Arguments
 ///
-/// * `name` - The encoder name to check (e.g., "h264_nvenc", "hevc_qsv")
+/// * `name` - The encoder name to check (e.g., "`h264_nvenc`", "`hevc_qsv`")
 ///
 /// # Returns
 ///

@@ -1,6 +1,6 @@
-//! Apple ProRes per-codec encoding options.
+//! Apple `ProRes` per-codec encoding options.
 
-/// Apple ProRes encoding profile.
+/// Apple `ProRes` encoding profile.
 ///
 /// Controls quality and chroma sampling. 422 profiles use `yuv422p10le`;
 /// 4444 profiles use `yuva444p10le`.
@@ -40,15 +40,15 @@ impl ProResProfile {
     }
 }
 
-/// Apple ProRes per-codec options.
+/// Apple `ProRes` per-codec options.
 ///
-/// Requires an FFmpeg build with `prores_ks` encoder support. Output should
+/// Requires an `FFmpeg` build with `prores_ks` encoder support. Output should
 /// use a `.mov` container.
 #[derive(Debug, Clone)]
 pub struct ProResOptions {
-    /// ProRes encoding profile controlling quality and chroma sampling.
+    /// `ProRes` encoding profile controlling quality and chroma sampling.
     pub profile: ProResProfile,
-    /// Optional 4-byte FourCC vendor tag embedded in the stream.
+    /// Optional 4-byte `FourCC` vendor tag embedded in the stream.
     ///
     /// Set to `Some([b'a', b'p', b'p', b'l'])` to mimic Apple encoders.
     /// `None` leaves the encoder default.

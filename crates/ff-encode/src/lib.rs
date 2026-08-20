@@ -2,29 +2,10 @@
 //!
 //! Video and audio encoding - the Rust way.
 
-// FFmpeg binding requires unsafe code for C API calls
+// FFmpeg's C API is called through `unsafe`; the FFI is isolated in the
+// `*_inner` modules, which carry their own scoped clippy allows for the
+// FFmpeg-boundary lints (casts, pointer idioms).
 #![allow(unsafe_code)]
-// Raw pointer operations are necessary for FFmpeg C API
-#![allow(clippy::borrow_as_ptr)]
-#![allow(clippy::ptr_as_ptr)]
-#![allow(clippy::ref_as_ptr)]
-#![allow(clippy::unnecessary_safety_doc)]
-// Casting between C and Rust types
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-// C string literals
-#![allow(clippy::manual_c_str_literals)]
-// Code structure warnings
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::single_match_else)]
-#![allow(clippy::inefficient_to_string)]
-#![allow(clippy::trivially_copy_pass_by_ref)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::assigning_clones)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::unnecessary_safety_comment)]
 //!
 //! This crate provides video and audio encoding functionality for timeline export.
 //! It supports automatic codec selection with LGPL compliance, hardware acceleration,
@@ -156,11 +137,11 @@
 //! When H.264/H.265 encoding is requested, the encoder automatically selects codecs in this priority:
 //!
 //! 1. **Hardware encoders** (LGPL-compatible, no licensing fees):
-//!    - NVIDIA NVENC (h264_nvenc, hevc_nvenc)
-//!    - Intel Quick Sync Video (h264_qsv, hevc_qsv)
-//!    - AMD AMF/VCE (h264_amf, hevc_amf)
-//!    - Apple VideoToolbox (h264_videotoolbox, hevc_videotoolbox)
-//!    - VA-API (h264_vaapi, hevc_vaapi) - Linux
+//!    - NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`)
+//!    - Intel Quick Sync Video (`h264_qsv`, `hevc_qsv`)
+//!    - AMD AMF/VCE (`h264_amf`, `hevc_amf`)
+//!    - Apple `VideoToolbox` (`h264_videotoolbox`, `hevc_videotoolbox`)
+//!    - VA-API (`h264_vaapi`, `hevc_vaapi`) - Linux
 //!
 //! 2. **Fallback to royalty-free codecs**:
 //!    - For H.264 request → VP9 (libvpx-vp9)

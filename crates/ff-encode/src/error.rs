@@ -58,7 +58,7 @@ pub enum EncodeError {
     EncoderUnavailable {
         /// Requested codec name (e.g. `"h265/hevc"`).
         codec: String,
-        /// Human-readable guidance (e.g. how to build FFmpeg with this encoder).
+        /// Human-readable guidance (e.g. how to build `FFmpeg` with this encoder).
         hint: String,
     },
 
@@ -144,7 +144,7 @@ pub enum EncodeError {
     ///
     /// Returned by [`ExportPreset::validate()`](crate::ExportPreset::validate)
     /// when the preset's configuration conflicts with a platform rule (e.g.
-    /// fps > 60 for a YouTube preset).
+    /// fps > 60 for a `YouTube` preset).
     #[error("preset constraint violated: preset={preset} reason={reason}")]
     PresetConstraintViolation {
         /// Name of the preset that failed validation.
@@ -155,7 +155,7 @@ pub enum EncodeError {
 }
 
 impl EncodeError {
-    /// Create an error from an FFmpeg error code.
+    /// Create an error from an `FFmpeg` error code.
     ///
     /// This is more type-safe than implementing `From<i32>` globally,
     /// as it makes the conversion explicit and prevents accidental

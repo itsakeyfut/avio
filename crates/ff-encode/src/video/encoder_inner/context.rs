@@ -1,7 +1,14 @@
 //! Format context, stream, and subtitle initialization helpers.
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use super::color::{
     color_primaries_to_av, color_space_to_av, color_transfer_to_av, from_av_pixel_format,
@@ -38,7 +45,7 @@ impl VideoEncoderInner {
             // SAFETY: format_ctx is valid and non-null. c_key/c_value are valid
             // CStrings covering this call. av_dict_set copies both strings.
             let ret = ff_sys::av_dict_set(
-                &mut (*format_ctx).metadata,
+                &raw mut (*format_ctx).metadata,
                 c_key.as_ptr(),
                 c_value.as_ptr(),
                 0,
@@ -141,7 +148,7 @@ impl VideoEncoderInner {
                 };
                 // SAFETY: chap->metadata is null; av_dict_set allocates and copies.
                 let ret = ff_sys::av_dict_set(
-                    &mut (*chap).metadata,
+                    &raw mut (*chap).metadata,
                     b"title\0".as_ptr() as *const _,
                     c_title.as_ptr(),
                     0,
@@ -166,6 +173,10 @@ impl VideoEncoderInner {
     /// When `two_pass` is `true` the codec context is opened with
     /// `AV_CODEC_FLAG_PASS1` and stored in `pass1_codec_ctx`; in single-pass
     /// mode it is stored in `video_codec_ctx` as usual.
+    // The encoder parameters (dimensions, fps, codec, bitrate mode, options,
+    // two-pass) map one-to-one onto FFmpeg's `AVCodecContext` fields; grouping
+    // them into a struct would only shuffle the same values across the FFI call.
+    #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn init_video_encoder(
         &mut self,
         width: u32,
@@ -185,7 +196,7 @@ impl VideoEncoderInner {
         use crate::BitrateMode;
         // Select encoder based on codec and availability
         let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
-        self.actual_video_codec = encoder_name.clone();
+        self.actual_video_codec.clone_from(&encoder_name);
 
         let c_encoder_name =
             CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
@@ -330,7 +341,7 @@ impl VideoEncoderInner {
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&mut codec_ctx as *mut *mut _);
+            avcodec::free_context(&raw mut codec_ctx);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
@@ -374,7 +385,7 @@ impl VideoEncoderInner {
     ) -> Result<(), EncodeError> {
         // Select encoder based on codec and availability
         let encoder_name = self.select_audio_encoder(codec)?;
-        self.actual_audio_codec = encoder_name.clone();
+        self.actual_audio_codec.clone_from(&encoder_name);
 
         let c_encoder_name =
             CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
@@ -399,7 +410,7 @@ impl VideoEncoderInner {
         (*codec_ctx).sample_rate = sample_rate as i32;
 
         // Set channel layout using FFmpeg 7.x API
-        swresample::channel_layout::set_default(&mut (*codec_ctx).ch_layout, channels as i32);
+        swresample::channel_layout::set_default(&raw mut (*codec_ctx).ch_layout, channels as i32);
 
         // Use the first sample format the codec actually declares; fall back to
         // FLTP only when the codec exposes no preference.  FLTP is NOT valid for
@@ -447,7 +458,7 @@ impl VideoEncoderInner {
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&mut codec_ctx as *mut *mut _);
+            avcodec::free_context(&raw mut codec_ctx);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
@@ -578,13 +589,13 @@ impl VideoEncoderInner {
             };
             // SAFETY: out_stream->metadata pointer is valid (initialized by avformat_new_stream).
             ff_sys::av_dict_set(
-                &mut (*out_stream).metadata,
+                &raw mut (*out_stream).metadata,
                 b"filename\0".as_ptr() as *const i8,
                 c_filename.as_ptr(),
                 0,
             );
             ff_sys::av_dict_set(
-                &mut (*out_stream).metadata,
+                &raw mut (*out_stream).metadata,
                 b"mimetype\0".as_ptr() as *const i8,
                 c_mime.as_ptr(),
                 0,
@@ -633,7 +644,7 @@ impl VideoEncoderInner {
                 ff_sys::av_error_string(e)
             );
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -644,7 +655,7 @@ impl VideoEncoderInner {
                  index={source_stream_index} nb_streams={nb_streams}"
             );
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -657,7 +668,7 @@ impl VideoEncoderInner {
                  is not a subtitle stream"
             );
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -668,7 +679,7 @@ impl VideoEncoderInner {
         if out_stream.is_null() {
             log::warn!("subtitle_passthrough: avformat_new_stream failed");
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -680,7 +691,7 @@ impl VideoEncoderInner {
                 ff_sys::av_error_string(ret)
             );
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -688,7 +699,7 @@ impl VideoEncoderInner {
         (*(*out_stream).codecpar).codec_tag = 0;
 
         let mut src_ctx_ptr = src_ctx;
-        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+        ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
 
         self.subtitle_passthrough = Some((
             source_path.to_string(),
@@ -739,7 +750,7 @@ impl VideoEncoderInner {
                 ff_sys::av_error_string(e)
             );
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return Ok(());
         }
 
@@ -754,7 +765,7 @@ impl VideoEncoderInner {
         let pkt = av_packet_alloc();
         if pkt.is_null() {
             let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "subtitle_passthrough: av_packet_alloc failed".to_string(),
@@ -804,9 +815,9 @@ impl VideoEncoderInner {
             av_packet_unref(pkt);
         }
 
-        av_packet_free(&mut (pkt as *mut _) as *mut *mut _);
+        av_packet_free(std::ptr::from_mut::<*mut _>(&mut (pkt as *mut _)));
         let mut src_ctx_ptr = src_ctx;
-        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+        ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
 
         Ok(())
     }
@@ -818,19 +829,19 @@ impl VideoEncoderInner {
         // Null it out BEFORE avcodec_free_context so FFmpeg does not call av_free on it.
         if let Some(mut ctx) = self.video_codec_ctx.take() {
             (*ctx).stats_in = ptr::null_mut();
-            avcodec::free_context(&mut ctx as *mut *mut _);
+            avcodec::free_context(&raw mut ctx);
         }
         // Drop the owned CString now that the codec context no longer references it.
         self.stats_in_cstr = None;
 
         // Free pass-1 codec context (only set in two-pass mode).
         if let Some(mut ctx) = self.pass1_codec_ctx.take() {
-            avcodec::free_context(&mut ctx as *mut *mut _);
+            avcodec::free_context(&raw mut ctx);
         }
 
         // Free audio codec context
         if let Some(mut ctx) = self.audio_codec_ctx.take() {
-            avcodec::free_context(&mut ctx as *mut *mut _);
+            avcodec::free_context(&raw mut ctx);
         }
 
         // Free scaling context
@@ -840,7 +851,7 @@ impl VideoEncoderInner {
 
         // Free resampling context
         if let Some(mut ctx) = self.swr_ctx.take() {
-            swresample::free(&mut ctx as *mut *mut _);
+            swresample::free(&raw mut ctx);
         }
 
         // Free audio FIFO
@@ -851,7 +862,7 @@ impl VideoEncoderInner {
         // Close output file
         if !self.format_ctx.is_null() {
             if !(*self.format_ctx).pb.is_null() {
-                ff_sys::avformat::close_output(&mut (*self.format_ctx).pb);
+                ff_sys::avformat::close_output(&raw mut (*self.format_ctx).pb);
             }
             avformat_free_context(self.format_ctx);
             self.format_ctx = ptr::null_mut();

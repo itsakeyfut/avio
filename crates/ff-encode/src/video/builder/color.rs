@@ -33,7 +33,7 @@ impl VideoEncoderBuilder {
 
     /// Override the color space (matrix coefficients) written to the codec context.
     ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata, if set
+    /// When omitted the encoder uses the `FFmpeg` default. HDR10 metadata, if set
     /// via [`hdr10_metadata()`](Self::hdr10_metadata), automatically selects
     /// BT.2020 NCL — this setter takes priority over that automatic choice.
     #[must_use]
@@ -44,7 +44,7 @@ impl VideoEncoderBuilder {
 
     /// Override the color transfer characteristic (gamma curve) written to the codec context.
     ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
+    /// When omitted the encoder uses the `FFmpeg` default. HDR10 metadata
     /// automatically selects PQ (SMPTE ST 2084) — this setter takes priority.
     /// Use [`ColorTransfer::Hlg`](ff_format::ColorTransfer::Hlg) for HLG broadcast HDR.
     #[must_use]
@@ -55,7 +55,7 @@ impl VideoEncoderBuilder {
 
     /// Override the color primaries written to the codec context.
     ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
+    /// When omitted the encoder uses the `FFmpeg` default. HDR10 metadata
     /// automatically selects BT.2020 — this setter takes priority.
     #[must_use]
     pub fn color_primaries(mut self, cp: ff_format::ColorPrimaries) -> Self {

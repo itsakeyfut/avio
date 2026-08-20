@@ -1,7 +1,14 @@
 //! Frame conversion and packet reception helpers.
 #![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use super::color::{pixel_format_to_av, sample_format_to_av};
 use super::{
@@ -49,7 +56,7 @@ impl VideoEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&mut packet as *mut *mut _);
+                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!(
@@ -61,7 +68,7 @@ impl VideoEncoderInner {
             }
         }
 
-        av_packet_free(&mut packet as *mut *mut _);
+        av_packet_free(&raw mut packet);
         Ok(())
     }
 
@@ -343,7 +350,7 @@ impl VideoEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&mut packet as *mut *mut _);
+                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!("Error receiving packet: {}", ff_sys::av_error_string(e)),
@@ -366,7 +373,7 @@ impl VideoEncoderInner {
             let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
             if write_ret < 0 {
                 av_packet_unref(packet);
-                av_packet_free(&mut packet as *mut *mut _);
+                av_packet_free(&raw mut packet);
                 return Err(EncodeError::MuxingFailed {
                     reason: ff_sys::av_error_string(write_ret),
                 });
@@ -377,7 +384,7 @@ impl VideoEncoderInner {
             av_packet_unref(packet);
         }
 
-        av_packet_free(&mut packet as *mut *mut _);
+        av_packet_free(&raw mut packet);
         Ok(())
     }
 
@@ -402,13 +409,13 @@ impl VideoEncoderInner {
         let src_format = sample_format_to_av(src.format());
         let src_ch_layout = {
             let mut layout = AVChannelLayout::default();
-            swresample::channel_layout::set_default(&mut layout, src.channels() as i32);
+            swresample::channel_layout::set_default(&raw mut layout, src.channels() as i32);
             layout
         };
 
         let needs_resampling = src_sample_rate != target_sample_rate
             || src_format != target_format
-            || !swresample::channel_layout::is_equal(&src_ch_layout, target_ch_layout);
+            || !swresample::channel_layout::is_equal(&raw const src_ch_layout, target_ch_layout);
 
         if needs_resampling {
             // Initialize resampler if needed
@@ -417,7 +424,7 @@ impl VideoEncoderInner {
                     target_ch_layout,
                     target_format,
                     target_sample_rate,
-                    &src_ch_layout,
+                    &raw const src_ch_layout,
                     src_format,
                     src_sample_rate,
                 )
@@ -445,7 +452,7 @@ impl VideoEncoderInner {
             (*dst).nb_samples = out_samples;
 
             // Copy target channel layout
-            swresample::channel_layout::copy(&mut (*dst).ch_layout, target_ch_layout)
+            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, target_ch_layout)
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
             // Allocate frame buffer
@@ -487,7 +494,7 @@ impl VideoEncoderInner {
             (*dst).nb_samples = src.samples() as i32;
 
             // Copy channel layout
-            swresample::channel_layout::copy(&mut (*dst).ch_layout, &src_ch_layout)
+            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, &raw const src_ch_layout)
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
             // Allocate frame buffer
@@ -549,7 +556,7 @@ impl VideoEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&mut packet as *mut *mut _);
+                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!(
@@ -567,7 +574,7 @@ impl VideoEncoderInner {
             let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
             if write_ret < 0 {
                 av_packet_unref(packet);
-                av_packet_free(&mut packet as *mut *mut _);
+                av_packet_free(&raw mut packet);
                 return Err(EncodeError::MuxingFailed {
                     reason: ff_sys::av_error_string(write_ret),
                 });
@@ -578,7 +585,7 @@ impl VideoEncoderInner {
             av_packet_unref(packet);
         }
 
-        av_packet_free(&mut packet as *mut *mut _);
+        av_packet_free(&raw mut packet);
         Ok(())
     }
 }

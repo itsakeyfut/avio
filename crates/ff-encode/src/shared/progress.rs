@@ -52,7 +52,7 @@ impl EncodeProgress {
     }
 }
 
-/// EncodeProgress callback trait for monitoring encoding progress.
+/// `EncodeProgress` callback trait for monitoring encoding progress.
 ///
 /// Implement this trait to receive real-time encoding progress updates
 /// and optionally support encoding cancellation.
@@ -109,7 +109,7 @@ pub trait EncodeProgressCallback: Send {
     }
 }
 
-/// Implement EncodeProgressCallback for closures.
+/// Implement `EncodeProgressCallback` for closures.
 ///
 /// This allows using simple closures as progress callbacks without
 /// needing to define a custom struct implementing the trait.

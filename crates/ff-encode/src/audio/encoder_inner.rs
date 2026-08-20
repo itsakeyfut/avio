@@ -6,9 +6,15 @@
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-// FFmpeg C API frequently requires raw pointer casting
+// FFmpeg-boundary lints: casts at the C ABI, pointer idioms, C-string
+// literals, and FFI-wrapper ergonomics concentrate in this unsafe module.
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::unused_self)]
 
 use crate::audio::codec_options::{AudioCodecOptions, Mp3Quality};
 use crate::{AudioCodec, EncodeError};
@@ -87,7 +93,7 @@ impl AudioEncoderInner {
 
             let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
             let ret = avformat_alloc_output_context2(
-                &mut format_ctx,
+                &raw mut format_ctx,
                 ptr::null_mut(),
                 ptr::null(),
                 c_path.as_ptr(),
@@ -119,14 +125,15 @@ impl AudioEncoderInner {
             encoder.init_audio_encoder(config)?;
 
             // Open output file
-            match ff_sys::avformat::open_output(&config.path, ff_sys::avformat::avio_flags::WRITE) {
-                Ok(pb) => (*format_ctx).pb = pb,
-                Err(_) => {
-                    encoder.cleanup();
-                    return Err(EncodeError::CannotCreateFile {
-                        path: config.path.clone(),
-                    });
-                }
+            if let Ok(pb) =
+                ff_sys::avformat::open_output(&config.path, ff_sys::avformat::avio_flags::WRITE)
+            {
+                (*format_ctx).pb = pb;
+            } else {
+                encoder.cleanup();
+                return Err(EncodeError::CannotCreateFile {
+                    path: config.path.clone(),
+                });
             }
 
             // Write file header
@@ -150,7 +157,7 @@ impl AudioEncoderInner {
     ) -> Result<(), EncodeError> {
         // Select encoder based on codec and availability
         let encoder_name = self.select_audio_encoder(config.codec)?;
-        self.actual_codec = encoder_name.clone();
+        self.actual_codec.clone_from(&encoder_name);
 
         let c_encoder_name =
             CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
@@ -176,7 +183,7 @@ impl AudioEncoderInner {
 
         // Set channel layout using FFmpeg 7.x API
         swresample::channel_layout::set_default(
-            &mut (*codec_ctx).ch_layout,
+            &raw mut (*codec_ctx).ch_layout,
             config.channels as i32,
         );
 
@@ -254,7 +261,7 @@ impl AudioEncoderInner {
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&mut codec_ctx as *mut *mut _);
+            avcodec::free_context(&raw mut codec_ctx);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
@@ -473,7 +480,7 @@ impl AudioEncoderInner {
 
                 let convert_result = self.convert_audio_frame(frame, av_frame);
                 if let Err(e) = convert_result {
-                    av_frame_free(&mut av_frame as *mut *mut _);
+                    av_frame_free(&raw mut av_frame);
                     return Err(e);
                 }
 
@@ -487,7 +494,7 @@ impl AudioEncoderInner {
                     nb_samples,
                 );
 
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
 
                 write_result.map_err(|e| EncodeError::Ffmpeg {
                     code: e,
@@ -514,7 +521,7 @@ impl AudioEncoderInner {
 
                 let convert_result = self.convert_audio_frame(frame, av_frame);
                 if let Err(e) = convert_result {
-                    av_frame_free(&mut av_frame as *mut *mut _);
+                    av_frame_free(&raw mut av_frame);
                     return Err(e);
                 }
 
@@ -522,7 +529,7 @@ impl AudioEncoderInner {
 
                 let send_result = avcodec::send_frame(codec_ctx, av_frame);
                 if let Err(e) = send_result {
-                    av_frame_free(&mut av_frame as *mut *mut _);
+                    av_frame_free(&raw mut av_frame);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!(
@@ -533,7 +540,7 @@ impl AudioEncoderInner {
                 }
 
                 let receive_result = self.receive_packets();
-                av_frame_free(&mut av_frame as *mut *mut _);
+                av_frame_free(&raw mut av_frame);
                 receive_result?;
 
                 self.sample_count += frame.samples() as u64;
@@ -569,16 +576,17 @@ impl AudioEncoderInner {
         (*av_frame).nb_samples = frame_size;
         (*av_frame).pts = self.sample_count as i64;
 
-        if let Err(e) =
-            swresample::channel_layout::copy(&mut (*av_frame).ch_layout, &(*codec_ctx).ch_layout)
-        {
-            av_frame_free(&mut av_frame as *mut *mut _);
+        if let Err(e) = swresample::channel_layout::copy(
+            &raw mut (*av_frame).ch_layout,
+            &raw const (*codec_ctx).ch_layout,
+        ) {
+            av_frame_free(&raw mut av_frame);
             return Err(EncodeError::from_ffmpeg_error(e));
         }
 
         let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
         if ret < 0 {
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
             return Err(EncodeError::Ffmpeg {
                 code: ret,
                 message: format!(
@@ -610,7 +618,7 @@ impl AudioEncoderInner {
             (*av_frame).data.as_ptr().cast::<*mut c_void>(),
             frame_size,
         ) {
-            av_frame_free(&mut av_frame as *mut *mut _);
+            av_frame_free(&raw mut av_frame);
             return Err(EncodeError::Ffmpeg {
                 code: e,
                 message: format!(
@@ -622,7 +630,7 @@ impl AudioEncoderInner {
         // nb_samples stays as frame_size: the encoder always receives a full frame.
 
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
-        av_frame_free(&mut av_frame as *mut *mut _);
+        av_frame_free(&raw mut av_frame);
 
         send_result.map_err(|e| EncodeError::Ffmpeg {
             code: e,
@@ -654,13 +662,13 @@ impl AudioEncoderInner {
         let src_format = sample_format_to_av(src.format());
         let src_ch_layout = {
             let mut layout = AVChannelLayout::default();
-            swresample::channel_layout::set_default(&mut layout, src.channels() as i32);
+            swresample::channel_layout::set_default(&raw mut layout, src.channels() as i32);
             layout
         };
 
         let needs_resampling = src_sample_rate != target_sample_rate
             || src_format != target_format
-            || !swresample::channel_layout::is_equal(&src_ch_layout, target_ch_layout);
+            || !swresample::channel_layout::is_equal(&raw const src_ch_layout, target_ch_layout);
 
         if needs_resampling {
             // Initialize resampler if needed
@@ -669,7 +677,7 @@ impl AudioEncoderInner {
                     target_ch_layout,
                     target_format,
                     target_sample_rate,
-                    &src_ch_layout,
+                    &raw const src_ch_layout,
                     src_format,
                     src_sample_rate,
                 )
@@ -697,7 +705,7 @@ impl AudioEncoderInner {
             (*dst).nb_samples = out_samples;
 
             // Copy target channel layout
-            swresample::channel_layout::copy(&mut (*dst).ch_layout, target_ch_layout)
+            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, target_ch_layout)
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
             // Allocate frame buffer
@@ -739,7 +747,7 @@ impl AudioEncoderInner {
             (*dst).nb_samples = src.samples() as i32;
 
             // Copy channel layout
-            swresample::channel_layout::copy(&mut (*dst).ch_layout, &src_ch_layout)
+            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, &raw const src_ch_layout)
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
             // Allocate frame buffer
@@ -799,7 +807,7 @@ impl AudioEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&mut packet as *mut *mut _);
+                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e,
                         message: format!(
@@ -817,7 +825,7 @@ impl AudioEncoderInner {
             let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
             if write_ret < 0 {
                 av_packet_unref(packet);
-                av_packet_free(&mut packet as *mut *mut _);
+                av_packet_free(&raw mut packet);
                 return Err(EncodeError::MuxingFailed {
                     reason: ff_sys::av_error_string(write_ret),
                 });
@@ -828,7 +836,7 @@ impl AudioEncoderInner {
             av_packet_unref(packet);
         }
 
-        av_packet_free(&mut packet as *mut *mut _);
+        av_packet_free(&raw mut packet);
         Ok(())
     }
 
@@ -876,18 +884,18 @@ impl AudioEncoderInner {
 
         // Free audio codec context
         if let Some(mut ctx) = self.codec_ctx.take() {
-            avcodec::free_context(&mut ctx as *mut *mut _);
+            avcodec::free_context(&raw mut ctx);
         }
 
         // Free resampling context
         if let Some(mut ctx) = self.swr_ctx.take() {
-            swresample::free(&mut ctx as *mut *mut _);
+            swresample::free(&raw mut ctx);
         }
 
         // Close output file
         if !self.format_ctx.is_null() {
             if !(*self.format_ctx).pb.is_null() {
-                ff_sys::avformat::close_output(&mut (*self.format_ctx).pb);
+                ff_sys::avformat::close_output(&raw mut (*self.format_ctx).pb);
             }
             avformat_free_context(self.format_ctx);
             self.format_ctx = ptr::null_mut();

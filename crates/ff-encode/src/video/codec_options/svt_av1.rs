@@ -2,9 +2,9 @@
 
 /// SVT-AV1 (libsvtav1) per-codec options.
 ///
-/// **Note**: Requires an FFmpeg build with `--enable-libsvtav1` (LGPL).
+/// **Note**: Requires an `FFmpeg` build with `--enable-libsvtav1` (LGPL).
 /// `build()` returns [`EncodeError::EncoderUnavailable`](crate::EncodeError::EncoderUnavailable)
-/// when libsvtav1 is absent from the FFmpeg build.
+/// when libsvtav1 is absent from the `FFmpeg` build.
 #[derive(Debug, Clone)]
 pub struct SvtAv1Options {
     /// Encoder preset: 0 = best quality / slowest, 13 = fastest / lowest quality.

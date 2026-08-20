@@ -52,7 +52,7 @@ impl AudioReplacement {
     ///
     /// - [`RemuxError::OperationFailed`] if `video_input` has no video
     ///   stream or `audio_input` has no audio stream.
-    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    /// - [`RemuxError::Ffmpeg`] if any `FFmpeg` API call fails.
     pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio replacement start video_input={} audio_input={} output={}",
@@ -117,7 +117,7 @@ impl AudioExtractor {
     /// - [`RemuxError::OperationFailed`] if no audio stream is found,
     ///   the requested stream index is invalid or not audio, or the codec is
     ///   incompatible with the output container.
-    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    /// - [`RemuxError::Ffmpeg`] if any `FFmpeg` API call fails.
     pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio extraction start input={} output={} stream_index={:?}",
@@ -192,7 +192,7 @@ impl AudioAdder {
     ///
     /// - [`RemuxError::OperationFailed`] if `video_input` has no video
     ///   stream or `audio_input` has no audio stream.
-    /// - [`RemuxError::Ffmpeg`] if any FFmpeg API call fails.
+    /// - [`RemuxError::Ffmpeg`] if any `FFmpeg` API call fails.
     pub fn run(self) -> Result<(), RemuxError> {
         log::debug!(
             "audio addition start video_input={} audio_input={} output={} loop_audio={}",

@@ -4,7 +4,7 @@
 //! into a single PNG image suitable for video-player scrub-bar hover previews.
 //!
 //! [`GifPreview`] generates an animated GIF from a configurable time range
-//! using FFmpeg's two-pass `palettegen` + `paletteuse` approach.
+//! using `FFmpeg`'s two-pass `palettegen` + `paletteuse` approach.
 
 mod error;
 mod preview_inner;
@@ -105,7 +105,7 @@ impl SpriteSheet {
     ///
     /// - [`PreviewImageError::OperationFailed`] — `cols` or `rows` is zero,
     ///   `frame_width` or `frame_height` is zero, or `output` path is not set.
-    /// - [`PreviewImageError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
+    /// - [`PreviewImageError::Ffmpeg`] — any `FFmpeg` filter graph or encoding call fails.
     pub fn run(self) -> Result<(), PreviewImageError> {
         if self.cols == 0 || self.rows == 0 {
             return Err(PreviewImageError::OperationFailed {
@@ -135,7 +135,7 @@ impl SpriteSheet {
 
 /// Generates an animated GIF preview from a configurable time range.
 ///
-/// Uses FFmpeg's two-pass `palettegen` + `paletteuse` approach for
+/// Uses `FFmpeg`'s two-pass `palettegen` + `paletteuse` approach for
 /// high-quality colour fidelity within GIF's 256-colour limit.
 ///
 /// # Examples
@@ -222,7 +222,7 @@ impl GifPreview {
     ///
     /// - [`PreviewImageError::OperationFailed`] — output path not set, output
     ///   extension is not `.gif`, `fps` ≤ 0, or `width` is zero.
-    /// - [`PreviewImageError::Ffmpeg`] — any FFmpeg filter graph or encoding call fails.
+    /// - [`PreviewImageError::Ffmpeg`] — any `FFmpeg` filter graph or encoding call fails.
     pub fn run(self) -> Result<(), PreviewImageError> {
         if self.output.as_os_str().is_empty() {
             return Err(PreviewImageError::OperationFailed {

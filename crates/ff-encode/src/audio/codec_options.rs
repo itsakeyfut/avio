@@ -55,7 +55,7 @@ pub enum OpusApplication {
     /// Optimised for general audio (music, speech mix). Default.
     #[default]
     Audio,
-    /// Optimised for VoIP / speech clarity at low bitrates.
+    /// Optimised for `VoIP` / speech clarity at low bitrates.
     Voip,
     /// Minimum latency mode — disables lookahead.
     LowDelay,
@@ -79,7 +79,7 @@ pub struct AacOptions {
     /// AAC encoding profile.
     ///
     /// `He` and `Hev2` typically require `libfdk_aac` (non-free). The built-in
-    /// FFmpeg `aac` encoder may not support them — the failure is logged as a
+    /// `FFmpeg` `aac` encoder may not support them — the failure is logged as a
     /// warning and encoding continues with the encoder's default profile.
     pub profile: AacProfile,
     /// VBR quality mode (1–5). `Some(q)` enables VBR; `None` uses CBR.
