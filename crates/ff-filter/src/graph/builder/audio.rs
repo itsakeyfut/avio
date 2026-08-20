@@ -182,7 +182,8 @@ impl FilterGraphBuilder {
         self
     }
 
-    /// Mix `inputs` audio streams together.
+    /// Mix `inputs` audio streams together (additive: the inputs are summed, not
+    /// averaged; push each stream to its slot `0..inputs`).
     #[must_use]
     pub fn amix(mut self, inputs: usize) -> Self {
         self.steps.push(FilterStep::Amix(inputs));
@@ -227,7 +228,7 @@ mod tests {
     fn filter_step_amix_should_produce_correct_args() {
         let step = FilterStep::Amix(3);
         assert_eq!(step.filter_name(), "amix");
-        assert_eq!(step.args(), "inputs=3");
+        assert_eq!(step.args(), "inputs=3:normalize=0");
     }
 
     #[test]

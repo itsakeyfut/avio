@@ -15,7 +15,7 @@ use ff_filter::{
     AnimatedValue, AnimationTrack, FilterGraph, FilterStep, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoLayer,
 };
-use ff_format::ChannelLayout;
+use ff_format::{AudioFrame, ChannelLayout};
 
 use crate::clip::Clip;
 use crate::derive;
@@ -418,8 +418,21 @@ impl Timeline {
         }
 
         // 4. Build audio mix graph.
+        //
+        //    Two paths share step 7's drain:
+        //    * Fast path (no active audio track carries a pre-mix effect chain):
+        //      a single source-only mixer over every active clip, streamed to the
+        //      encoder (low memory) — the historical behaviour.
+        //    * Per-track path (some active track has `audio_effects`): each track
+        //      is sub-mixed and run through its own push/pull graph before the
+        //      master mix, so a two-pass step (loudness normalization) there
+        //      actually fires. Built in step 7 from `audio_tracks`.
+        let has_audio = audio_tracks.iter().any(|t| t.is_active(any_audio_solo));
+        let has_track_effects = audio_tracks
+            .iter()
+            .any(|t| t.is_active(any_audio_solo) && !t.audio_effects.is_empty());
         let mut audio_graph = None;
-        if !audio_tracks.is_empty() {
+        if has_audio && !has_track_effects {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
             // Honor mute/solo/enabled: an inactive audio track is silent.
             for (track_idx, track) in audio_tracks.iter().enumerate() {
@@ -432,29 +445,11 @@ impl Timeline {
                     if clip.source_path().is_none() {
                         continue;
                     }
-                    // Resolve the effective clip duration only when a fade-out
-                    // needs it to compute its start offset (probing is I/O; the
-                    // pure per-clip build lives in `derive`).
-                    let fade_out_eff_dur = if clip.fade_out > Duration::ZERO {
-                        clip.duration().or_else(|| {
-                            clip.source_path()
-                                .and_then(|src| VideoDecoder::open(src).build().ok())
-                                .map(|d| {
-                                    let total = d.duration();
-                                    match clip.in_point {
-                                        Some(ip) => total.saturating_sub(ip),
-                                        None => total,
-                                    }
-                                })
-                        })
-                    } else {
-                        None
-                    };
                     mixer = mixer.add_track(derive::audio_track(
                         clip,
                         track_idx,
                         &audio_animations,
-                        fade_out_eff_dur,
+                        audio_fade_out_eff_dur(clip),
                     ));
                 }
             }
@@ -462,11 +457,11 @@ impl Timeline {
         }
 
         // Timeline-level (master bus) audio effect chain, applied post-mix. Built
-        // only when there is audio to process. A two-pass step (`LoudnessNormalize`)
-        // works here because a builder-made `FilterGraph` carries the `steps` its
-        // push/pull path keys off — unlike the source-only mixer graph, where it
-        // would be inert.
-        let master_audio = if audio_graph.is_some() && !audio_filter.is_empty() {
+        // whenever there is audio to process (both paths route their mixed output
+        // through it). A two-pass step (`LoudnessNormalize`) works here because a
+        // builder-made `FilterGraph` carries the `steps` its push/pull path keys
+        // off — unlike the source-only mixer graph, where it would be inert.
+        let master_audio = if has_audio && !audio_filter.is_empty() {
             let mut builder = FilterGraph::builder();
             for step in &audio_filter {
                 builder = builder.add_step(step.clone());
@@ -483,7 +478,7 @@ impl Timeline {
             .video_codec(config.video_codec)
             .bitrate_mode(config.bitrate_mode)
             .hardware_encoder(hw);
-        if audio_graph.is_some() {
+        if has_audio {
             enc_builder = enc_builder.audio(48_000, 2).audio_codec(config.audio_codec);
         }
         let mut encoder = enc_builder.build().map_err(TimelineError::Encode)?;
@@ -566,6 +561,28 @@ impl Timeline {
                     }
                 }
             }
+        } else if has_track_effects {
+            // Per-track path: each track's audio is sub-mixed and run through its
+            // own push/pull effect graph (so a two-pass step fires), then summed.
+            let mixed = mix_tracks_with_effects(&audio_tracks, any_audio_solo, &audio_animations)?;
+            // Consume `mixed` by value so each frame drops right after it is pushed
+            // downstream, freeing the mix buffer as we go (the master bus keeps its
+            // own copy for a two-pass step, so holding `mixed` too would double it).
+            if let Some(mut master) = master_audio {
+                for frame in mixed {
+                    master
+                        .push_audio(0, &frame)
+                        .map_err(TimelineError::Filter)?;
+                }
+                master.flush_audio();
+                while let Some(frame) = master.pull_audio().map_err(TimelineError::Filter)? {
+                    encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
+                }
+            } else {
+                for frame in mixed {
+                    encoder.push_audio(&frame).map_err(TimelineError::Encode)?;
+                }
+            }
         }
 
         // 8. Flush encoder.
@@ -577,6 +594,146 @@ impl Timeline {
         );
         Ok(())
     }
+}
+
+/// Resolves a clip's effective duration for a fade-out start offset, probing the
+/// source only when a fade-out actually needs it. `None` = no fade-out, or the
+/// duration could not be determined.
+fn audio_fade_out_eff_dur(clip: &Clip) -> Option<Duration> {
+    if clip.fade_out == Duration::ZERO {
+        return None;
+    }
+    clip.duration().or_else(|| {
+        clip.source_path()
+            .and_then(|src| VideoDecoder::open(src).build().ok())
+            .map(|d| {
+                let total = d.duration();
+                match clip.in_point {
+                    Some(ip) => total.saturating_sub(ip),
+                    None => total,
+                }
+            })
+    })
+}
+
+/// Pulls a source-only audio graph to end-of-stream into a frame buffer, ticking
+/// the animation clock by each chunk's duration so any volume automation stays
+/// sample-accurate.
+fn drain_source_audio(graph: &mut FilterGraph) -> Result<Vec<AudioFrame>, TimelineError> {
+    let mut out = Vec::new();
+    let mut pts = Duration::ZERO;
+    loop {
+        graph.tick(pts);
+        match graph.pull_audio().map_err(TimelineError::Filter)? {
+            Some(frame) => {
+                pts += frame.duration();
+                out.push(frame);
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// The per-track (pre-mix) audio path: sub-mix each active track's clips, run the
+/// track's [`audio_effects`](Track::audio_effects) chain through its own push/pull
+/// [`FilterGraph`] (so a two-pass step such as loudness normalization fires), then
+/// sum the processed tracks with an additive `amix`. Returns the mixed program
+/// audio (before the timeline master bus).
+fn mix_tracks_with_effects(
+    audio_tracks: &[Track],
+    any_audio_solo: bool,
+    audio_animations: &HashMap<String, AnimationTrack<f64>>,
+) -> Result<Vec<AudioFrame>, TimelineError> {
+    let mut track_buffers: Vec<Vec<AudioFrame>> = Vec::new();
+    for (track_idx, track) in audio_tracks.iter().enumerate() {
+        if !track.is_active(any_audio_solo) {
+            continue;
+        }
+        // Sub-mix this track's audio-bearing clips (generated clips carry no audio).
+        let mut sub = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
+        let mut has_clip = false;
+        for clip in &track.clips {
+            if clip.source_path().is_none() {
+                continue;
+            }
+            sub = sub.add_track(derive::audio_track(
+                clip,
+                track_idx,
+                audio_animations,
+                audio_fade_out_eff_dur(clip),
+            ));
+            has_clip = true;
+        }
+        if !has_clip {
+            continue;
+        }
+        let mut sub_graph = sub.build().map_err(TimelineError::Filter)?;
+
+        // No effect chain: the track's contribution is the raw sub-mix. Otherwise
+        // route the sub-mix through the track's push/pull effect graph.
+        let processed = if track.audio_effects.is_empty() {
+            drain_source_audio(&mut sub_graph)?
+        } else {
+            let mut fx_builder = FilterGraph::builder();
+            for step in &track.audio_effects {
+                fx_builder = fx_builder.add_step(step.clone());
+            }
+            let mut fx = fx_builder.build().map_err(TimelineError::Filter)?;
+            let mut pts = Duration::ZERO;
+            loop {
+                sub_graph.tick(pts);
+                match sub_graph.pull_audio().map_err(TimelineError::Filter)? {
+                    Some(frame) => {
+                        pts += frame.duration();
+                        fx.push_audio(0, &frame).map_err(TimelineError::Filter)?;
+                    }
+                    None => break,
+                }
+            }
+            fx.flush_audio();
+            let mut out = Vec::new();
+            while let Some(frame) = fx.pull_audio().map_err(TimelineError::Filter)? {
+                out.push(frame);
+            }
+            out
+        };
+        if !processed.is_empty() {
+            track_buffers.push(processed);
+        }
+    }
+
+    // Sum the processed tracks. One (or zero) track needs no mix; several are
+    // combined with an additive `amix`, pushed slot-by-slot in frame-index
+    // lockstep so the inputs stay aligned and no input reaches EOF early.
+    Ok(match track_buffers.len() {
+        0 => Vec::new(),
+        1 => track_buffers.into_iter().next().unwrap_or_default(),
+        n => {
+            let mut amix = FilterGraph::builder()
+                .amix(n)
+                .build()
+                .map_err(TimelineError::Filter)?;
+            let max_len = track_buffers.iter().map(Vec::len).max().unwrap_or(0);
+            let mut mixed = Vec::new();
+            for i in 0..max_len {
+                for (slot, buf) in track_buffers.iter().enumerate() {
+                    if let Some(frame) = buf.get(i) {
+                        amix.push_audio(slot, frame)
+                            .map_err(TimelineError::Filter)?;
+                    }
+                }
+                while let Some(frame) = amix.pull_audio().map_err(TimelineError::Filter)? {
+                    mixed.push(frame);
+                }
+            }
+            amix.flush_audio();
+            while let Some(frame) = amix.pull_audio().map_err(TimelineError::Filter)? {
+                mixed.push(frame);
+            }
+            mixed
+        }
+    })
 }
 
 /// Builder for [`Timeline`].

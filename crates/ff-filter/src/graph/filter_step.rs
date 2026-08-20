@@ -105,7 +105,8 @@ pub enum FilterStep {
     ToneMap(ToneMap),
     /// Adjust audio volume (in dB; negative = quieter).
     Volume(f64),
-    /// Mix `n` audio inputs together.
+    /// Mix `n` audio inputs together (additive: the inputs are summed, not
+    /// averaged, via `normalize=0`).
     Amix(usize),
     /// Multi-band parametric equalizer (low-shelf, high-shelf, or peak bands).
     ///
@@ -1242,7 +1243,10 @@ impl FilterStep {
             }
             Self::ToneMap(algorithm) => format!("tonemap={}", algorithm.as_str()),
             Self::Volume(db) => format!("volume={db}dB"),
-            Self::Amix(inputs) => format!("inputs={inputs}"),
+            // `normalize=0` sums the inputs (additive) instead of averaging by the
+            // active-input count, matching the multi-track mixer's convention so a
+            // mix has the same level however it is built.
+            Self::Amix(inputs) => format!("inputs={inputs}:normalize=0"),
             // args() for ParametricEq is not used by the build loop (which is
             // bypassed in favour of add_parametric_eq_chain); provided here for
             // completeness using the first band's args.
