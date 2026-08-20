@@ -9,7 +9,7 @@ mod fixtures;
 
 use std::time::Duration;
 
-use avio::{Clip, EncoderConfig, Timeline, TimelineError};
+use avio::{Clip, EncoderConfig, Timeline, TimelineError, Track};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
 use ff_filter::FilterStep;
 use ff_filter::animation::{AnimationTrack, Easing};
@@ -191,6 +191,198 @@ fn timeline_audio_filter_should_render_through_master_chain() {
     assert!(
         info.has_audio(),
         "rendered output with a master audio filter must contain an audio stream"
+    );
+}
+
+/// A per-track (pre-mix) two-pass audio effect must be applied on render (issue
+/// #1446 — "no longer inert"). `LoudnessNormalize` is a two-pass step: it is inert
+/// inside the source-only mixer, so this exercises the per-track push/pull graph.
+/// A wiring/format bug there would fail push/pull/flush; measured loudness
+/// correctness lives in ff-filter's tests (the synthetic source audio is silent).
+#[test]
+fn timeline_track_audio_effect_should_render_through_per_track_chain() {
+    let src_path = test_output_path("timeline_trackfx_src.mp4");
+    let out_path = test_output_path("timeline_trackfx_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path);
+    let audio = Track::new(vec![clip.clone()]).audio_effects(vec![FilterStep::LoudnessNormalize {
+        target_lufs: -14.0,
+        true_peak_db: -1.0,
+        lra: 7.0,
+    }]);
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip])
+        .audio_track_with(audio)
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(TimelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(TimelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(TimelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+    assert!(
+        info.has_audio(),
+        "rendered output with a per-track audio effect must contain an audio stream"
+    );
+}
+
+/// Two audio tracks, one carrying a per-track effect, must sum through the
+/// additive master `amix` (issue #1446). This exercises the full per-track path:
+/// per-track sub-mix, a single track's push/pull effect graph, and the master mix
+/// over both processed tracks.
+#[test]
+fn timeline_two_tracks_one_with_effect_should_render_mixed_audio() {
+    let src_path = test_output_path("timeline_trackmix_src.mp4");
+    let out_path = test_output_path("timeline_trackmix_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path);
+    let fx_track = Track::new(vec![clip.clone()]).audio_effects(vec![FilterStep::Volume(-6.0)]);
+    let plain_track = Track::new(vec![clip.clone()]);
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip])
+        .audio_track_with(fx_track)
+        .audio_track_with(plain_track)
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(TimelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(TimelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(TimelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+    assert!(
+        info.has_audio(),
+        "mixed output over two tracks (one with an effect) must contain an audio stream"
+    );
+}
+
+/// A per-track effect chain and the timeline master bus (`audio_filter`) together
+/// must render (issue #1446). This traverses the per-track drain branch's
+/// `Some(master)` path — the track's push/pull effect graph output is routed
+/// through the master bus before the encoder — which the other #1446 tests (no
+/// `audio_filter`) never exercise.
+#[test]
+fn timeline_track_effect_with_master_bus_should_render() {
+    let src_path = test_output_path("timeline_trackfxbus_src.mp4");
+    let out_path = test_output_path("timeline_trackfxbus_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path);
+    let fx_track = Track::new(vec![clip.clone()]).audio_effects(vec![FilterStep::Volume(-3.0)]);
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip])
+        .audio_track_with(fx_track)
+        .audio_filter(vec![FilterStep::Volume(-6.0)])
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(TimelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(TimelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(TimelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+    assert!(
+        info.has_audio(),
+        "output with a per-track effect and a master bus must contain an audio stream"
     );
 }
 

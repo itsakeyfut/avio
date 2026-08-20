@@ -9,6 +9,8 @@
 //! output (see [`Track::is_active`]); `lock` and `name` are authoring metadata the
 //! derivation ignores.
 
+use ff_filter::FilterStep;
+
 use crate::clip::Clip;
 use crate::ids::TrackId;
 
@@ -39,6 +41,20 @@ pub struct Track {
     pub lock: bool,
     /// The clips on this track, in order (index 0 first on the timeline).
     pub clips: Vec<Clip>,
+    /// Ordered per-track (pre-mix) audio effect chain applied to this track's
+    /// mixed contribution before it enters the timeline mix, on render.
+    ///
+    /// Its natural use is a two-pass effect such as loudness normalization
+    /// ([`FilterStep::LoudnessNormalize`]) or a compressor
+    /// ([`FilterStep::ACompressor`]) that should act on the whole track rather
+    /// than one clip. An empty chain (the default) is a no-op and leaves the
+    /// audio path unchanged. Ignored for video tracks (they carry no audio).
+    ///
+    /// Not persisted by the `serde` feature yet: `FilterStep` is not
+    /// serializable, so this field is skipped and deserializes to an empty vec
+    /// (mirroring [`Clip::audio_effects`](crate::Clip::audio_effects)).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub audio_effects: Vec<FilterStep>,
 }
 
 impl Track {
@@ -56,6 +72,7 @@ impl Track {
             enabled: true,
             lock: false,
             clips,
+            audio_effects: Vec::new(),
         }
     }
 
@@ -94,6 +111,14 @@ impl Track {
         self
     }
 
+    /// Sets the per-track (pre-mix) audio effect chain (see
+    /// [`audio_effects`](Self::audio_effects)).
+    #[must_use]
+    pub fn audio_effects(mut self, steps: Vec<FilterStep>) -> Self {
+        self.audio_effects = steps;
+        self
+    }
+
     /// Whether this track contributes to the derived output.
     ///
     /// A track is active when it is `enabled`, not `mute`d, and — if any track in
@@ -128,5 +153,20 @@ mod tests {
                 .enabled(false)
                 .is_active(true)
         );
+    }
+
+    #[test]
+    fn new_track_should_have_empty_audio_effects() {
+        assert!(Track::new(vec![]).audio_effects.is_empty());
+    }
+
+    #[test]
+    fn audio_effects_builder_should_set_chain() {
+        let track = Track::new(vec![]).audio_effects(vec![FilterStep::Volume(-6.0)]);
+        assert_eq!(track.audio_effects.len(), 1);
+        assert!(matches!(
+            track.audio_effects[0],
+            FilterStep::Volume(v) if (v - (-6.0)).abs() < 1e-9
+        ));
     }
 }

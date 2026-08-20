@@ -569,30 +569,38 @@ fn push_video_through_tone_map_should_return_frame() {
 
 #[test]
 fn push_audio_through_amix_should_return_mixed_frame() {
-    let mut graph = match FilterGraph::builder().amix(2).build() {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
+    // amix needs its extra input pads (1..n) linked in `build_audio_graph`, not
+    // just pad 0. A regression that drops that linking leaves pads 1..n
+    // unconnected, so `avfilter_graph_config` fails at the first push. Probe a
+    // trivial single-input audio graph first: if that push fails, audio filters
+    // are unavailable (CI's FFmpeg has none) → skip. If it succeeds, filters are
+    // present, so the amix multi-input graph MUST configure and mix — a failure
+    // there is a real bug, not an environment gap, so assert rather than skip.
     let frame = make_audio_frame();
+    {
+        let mut probe = FilterGraph::builder()
+            .volume(0.0)
+            .build()
+            .expect("non-empty volume graph must build");
+        if probe.push_audio(0, &frame).is_err() {
+            println!("skipping: audio filters not available in this FFmpeg build");
+            return;
+        }
+    }
+    // Filters are available → the amix multi-input graph must work.
+    let mut graph = FilterGraph::builder()
+        .amix(2)
+        .build()
+        .expect("non-empty amix graph must build");
     // Push to slot 0 — this also initialises the audio graph.
-    match graph.push_audio(0, &frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    // Push to slot 1 so amix has data on both inputs and can produce output.
-    match graph.push_audio(1, &frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
+    graph
+        .push_audio(0, &frame)
+        .expect("amix pad 0 push must succeed when filters are available");
+    // Push to slot 1 so amix has data on both inputs and can produce output; this
+    // fails if the extra input pad was left unconnected (the #1446 regression).
+    graph
+        .push_audio(1, &frame)
+        .expect("amix pad 1 must be linked (extra-input regression guard)");
     let result = graph.pull_audio().expect("pull_audio must not fail");
     let out = result.expect("expected Some(frame) after amix push to both slots");
     assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");

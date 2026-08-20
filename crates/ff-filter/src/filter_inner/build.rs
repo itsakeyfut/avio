@@ -3058,6 +3058,22 @@ impl FilterGraphInner {
                     }
                 }
             }
+
+            // Amix consumes n input pads; like ConcatAudio, `add_and_link_step`
+            // wires only pad 0 (prev_ctx), so link src_ctxs[1..n-1] to pads
+            // 1..n-1 or `avfilter_graph_config` fails on the unconnected pads.
+            if let FilterStep::Amix(n) = step {
+                for slot in 1..*n {
+                    if let Some(Some(extra_src)) = src_ctxs.get(slot) {
+                        let ret =
+                            ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, slot as u32);
+                        if ret < 0 {
+                            return Err(FilterError::BuildFailed);
+                        }
+                        log::debug!("filter linked extra_input=in{slot} to amix pad={slot}");
+                    }
+                }
+            }
         }
 
         // Link last filter to sink.
