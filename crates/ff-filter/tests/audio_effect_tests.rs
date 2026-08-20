@@ -101,6 +101,39 @@ fn push_pull_audio(graph: &mut FilterGraph, frame: &AudioFrame) -> Option<AudioF
     }
 }
 
+/// Pushes one frame through a post-build `atempo` effect (`pitch_shift` /
+/// `time_stretch`), flushes EOF, and drains all output as channel-0 `f32`
+/// samples. `atempo` (WSOLA) holds its tail until end-of-stream, so a flush is
+/// required before draining (RK-009). Returns `None` when the `atempo` filters
+/// are unavailable (`BuildFailed` on the first push) or nothing was produced, so
+/// callers skip gracefully (RK-002).
+fn drain_atempo(graph: &mut FilterGraph, frame: &AudioFrame) -> Option<Vec<f32>> {
+    match graph.push_audio(0, frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: atempo filters not available");
+            return None;
+        }
+        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
+    }
+    graph.flush_audio();
+    let mut mono: Vec<f32> = Vec::new();
+    while let Ok(Some(out)) = graph.pull_audio() {
+        let channels = out.channels().max(1) as usize;
+        if let Some(s) = out.as_f32() {
+            // Packed interleaved: take channel 0.
+            mono.extend(s.iter().step_by(channels));
+        } else if let Some(s) = out.channel_as_f32(0) {
+            mono.extend_from_slice(s);
+        }
+    }
+    if mono.is_empty() {
+        println!("Skipping: no output samples produced (buffered)");
+        return None;
+    }
+    Some(mono)
+}
+
 #[test]
 fn volume_6db_should_double_amplitude() {
     let mut graph = match FilterGraph::builder().volume(6.0).build() {
@@ -445,7 +478,8 @@ fn pitch_shift_12_semitones_should_produce_audio_output() {
 
     let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
 
-    let mut graph = match FilterGraph::builder().build() {
+    // Seed a transparent `volume(0.0)` step so `build()` succeeds (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: graph build failed: {e}");
@@ -457,25 +491,16 @@ fn pitch_shift_12_semitones_should_produce_audio_output() {
         return;
     }
 
-    match graph.push_audio(0, &frame) {
-        Ok(()) => {}
-        Err(FilterError::BuildFailed) => {
-            println!("Skipping: pitch shift filters not available");
-            return;
-        }
-        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
-    }
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // pitch-shift filters unavailable or no output — already logged.
+    };
 
-    match graph.pull_audio() {
-        Ok(Some(out)) => {
-            assert!(
-                out.channels() > 0,
-                "pitch_shift output must have at least one channel"
-            );
-        }
-        Ok(None) => println!("Note: pitch_shift buffered (no immediate output)"),
-        Err(e) => println!("Note: pull_audio returned: {e}"),
-    }
+    // The pitch-shifted signal must carry real audio, not silence.
+    assert!(
+        rms(&mono) > 0.01,
+        "pitch_shift(12) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
 }
 
 /// Verifies that `FilterGraph::pitch_shift(24.0)` builds and runs. The +24
@@ -488,7 +513,8 @@ fn pitch_shift_plus_24_semitones_should_produce_audio_output() {
 
     let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
 
-    let mut graph = match FilterGraph::builder().build() {
+    // Seed a transparent `volume(0.0)` step so `build()` succeeds (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: graph build failed: {e}");
@@ -500,25 +526,17 @@ fn pitch_shift_plus_24_semitones_should_produce_audio_output() {
         return;
     }
 
-    match graph.push_audio(0, &frame) {
-        Ok(()) => {}
-        Err(FilterError::BuildFailed) => {
-            println!("Skipping: pitch shift filters not available");
-            return;
-        }
-        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
-    }
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // pitch-shift filters unavailable or no output — already logged.
+    };
 
-    match graph.pull_audio() {
-        Ok(Some(out)) => {
-            assert!(
-                out.channels() > 0,
-                "pitch_shift output must have at least one channel"
-            );
-        }
-        Ok(None) => println!("Note: pitch_shift buffered (no immediate output)"),
-        Err(e) => println!("Note: pull_audio returned: {e}"),
-    }
+    // +24 semitones uses a chained atempo (0.25); the output must still carry
+    // real audio, not silence.
+    assert!(
+        rms(&mono) > 0.01,
+        "pitch_shift(24) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
 }
 
 /// Verifies that `FilterGraph::pitch_shift(-24.0)` builds and runs. The −24
@@ -531,7 +549,8 @@ fn pitch_shift_minus_24_semitones_should_produce_audio_output() {
 
     let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
 
-    let mut graph = match FilterGraph::builder().build() {
+    // Seed a transparent `volume(0.0)` step so `build()` succeeds (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: graph build failed: {e}");
@@ -543,25 +562,17 @@ fn pitch_shift_minus_24_semitones_should_produce_audio_output() {
         return;
     }
 
-    match graph.push_audio(0, &frame) {
-        Ok(()) => {}
-        Err(FilterError::BuildFailed) => {
-            println!("Skipping: pitch shift filters not available");
-            return;
-        }
-        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
-    }
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // pitch-shift filters unavailable or no output — already logged.
+    };
 
-    match graph.pull_audio() {
-        Ok(Some(out)) => {
-            assert!(
-                out.channels() > 0,
-                "pitch_shift output must have at least one channel"
-            );
-        }
-        Ok(None) => println!("Note: pitch_shift buffered (no immediate output)"),
-        Err(e) => println!("Note: pull_audio returned: {e}"),
-    }
+    // -24 semitones uses a chained atempo (4.0); the output must still carry
+    // real audio, not silence.
+    assert!(
+        rms(&mono) > 0.01,
+        "pitch_shift(-24) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
 }
 
 /// Estimate the dominant (fundamental) frequency of a mono sample buffer via
@@ -687,7 +698,9 @@ fn time_stretch_half_speed_should_produce_audio_output() {
 
     let frame = make_sine_frame(220.0, SAMPLE_RATE, SAMPLES);
 
-    let mut graph = match FilterGraph::builder().build() {
+    // `time_stretch` is a post-build effect and `build()` rejects an empty graph,
+    // so seed a transparent `volume(0.0)` (0 dB = x1.0) step (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: graph build failed: {e}");
@@ -699,25 +712,24 @@ fn time_stretch_half_speed_should_produce_audio_output() {
         return;
     }
 
-    match graph.push_audio(0, &frame) {
-        Ok(()) => {}
-        Err(FilterError::BuildFailed) => {
-            println!("Skipping: atempo not available");
-            return;
-        }
-        Err(e) => panic!("push_audio failed unexpectedly: {e}"),
-    }
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // atempo unavailable or no output — already logged.
+    };
 
-    match graph.pull_audio() {
-        Ok(Some(out)) => {
-            assert!(
-                out.channels() > 0,
-                "time_stretch output must have at least one channel"
-            );
-        }
-        Ok(None) => println!("Note: time_stretch buffered (no immediate output)"),
-        Err(e) => println!("Note: pull_audio returned: {e}"),
-    }
+    // atempo preserves amplitude, so the stretched output must carry a real
+    // signal (not silence) and a substantial amount of audio. The exact length
+    // ratio is unreliable here: WSOLA cannot stretch much from a single buffer
+    // flushed immediately, so assert on signal presence, not an exact duration.
+    assert!(
+        rms(&mono) > 0.01,
+        "time_stretch(0.5) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
+    assert!(
+        mono.len() >= SAMPLES / 2,
+        "time_stretch must produce a substantial amount of audio: got {} samples",
+        mono.len()
+    );
 }
 
 // ── noise_reduce ──────────────────────────────────────────────────────────────
