@@ -24,6 +24,7 @@ use crate::ids::ClipId;
 /// render time and carry no file, so they are infinite and require the clip's
 /// [`out_point`](Clip::out_point) to bound their duration.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClipSource {
     /// A media file on disk (video, audio, or image), decoded at render time.
     File(PathBuf),
@@ -47,6 +48,7 @@ pub enum ClipSource {
 /// combining a non-default `scale` with a non-`None` `fit` double-transforms —
 /// leave `scale` at `1.0` when `fit` is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FitMode {
     /// Scale to *cover* the canvas (preserving aspect), cropping the overflow.
     Fill,
@@ -80,6 +82,7 @@ pub enum FitMode {
 /// assert_eq!(clip.duration(), Some(Duration::from_secs(8)));
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Clip {
     /// Stable identity within a [`Timeline`](crate::Timeline).
     ///
@@ -280,6 +283,10 @@ pub struct Clip {
     /// colour-correction steps, allowing callers to attach any video
     /// [`FilterStep`] (e.g. `Lut3d`, `Curves`, `ChromaKey`, `GBlur`) to a
     /// single clip. An empty vec (the default) is a no-op.
+    ///
+    /// Not persisted by the `serde` feature yet: `FilterStep` is not serializable,
+    /// so this field is skipped and deserializes to an empty vec (see #1426).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub video_effects: Vec<FilterStep>,
     /// Ordered per-clip audio filter steps applied to the clip's audio track.
     ///
@@ -287,6 +294,9 @@ pub struct Clip {
     /// allowing callers to attach any audio [`FilterStep`] (e.g. `ACompressor`,
     /// `ParametricEq`, `NoiseReduce`) to a single clip. An empty vec (the
     /// default) is a no-op.
+    ///
+    /// Not persisted by the `serde` feature yet (see [`video_effects`](Self::video_effects)).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub audio_effects: Vec<FilterStep>,
 }
 

@@ -958,6 +958,7 @@ mod tests {
 /// metadata ([`ColorSpace`] et al.). `a` is the alpha channel: `255` = opaque,
 /// `0` = fully transparent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Color {
     /// Red channel (0–255).
     pub r: u8,

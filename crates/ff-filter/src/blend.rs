@@ -17,6 +17,7 @@
 // Open catalog: mirrors `FFmpeg`'s `blend all_mode` set, which can grow.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlendMode {
     // ── Standard modes ────────────────────────────────────────────────────
     /// Standard alpha-over composite (`top * opacity + bottom * (1 − opacity)`).

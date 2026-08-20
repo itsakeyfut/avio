@@ -23,6 +23,7 @@ use crate::ids::TrackId;
 // clearest model.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Track {
     /// Stable identity, assigned by the document (`TrackId::UNSET` until placed).
     pub id: TrackId,

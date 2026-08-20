@@ -14,6 +14,7 @@ use crate::color::Color;
 /// The renderer places the text box at the anchor, then applies
 /// [`TextSpec::offset`] as a pixel nudge from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Anchor {
     /// Top-left corner.
     TopLeft,
@@ -41,6 +42,7 @@ pub enum Anchor {
 /// Mirrors the typical draw-text options as plain values; opacity is carried by
 /// the alpha channel of [`color`](Self::color) (and [`box_color`](Self::box_color)).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextStyle {
     /// Font size in points.
     pub font_size: u32,
@@ -73,6 +75,7 @@ impl Default for TextStyle {
 /// Size-agnostic: the canvas dimensions are supplied by the renderer, so the same
 /// spec can render at any resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextSpec {
     /// The text to render (UTF-8).
     pub text: String,

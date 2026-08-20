@@ -140,6 +140,7 @@ pub enum YadifMode {
 /// Used with [`super::FilterGraphBuilder::xfade`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum XfadeTransition {
     /// Blend frames (cross-dissolve).
     Dissolve,
