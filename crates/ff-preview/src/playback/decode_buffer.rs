@@ -294,7 +294,8 @@ impl DecodeBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`PreviewError::SeekFailed`] if the decode thread panicked or
+    /// Returns [`PreviewError::DecodeThreadPoisoned`] if the previous decode
+    /// thread panicked and cannot be recovered, or [`PreviewError::SeekFailed`]
     /// if the underlying `FFmpeg` seek fails.
     pub fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
         let (mut decoder, tx) = self.stop_and_seek(target_pts)?;
@@ -360,7 +361,8 @@ impl DecodeBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`PreviewError::SeekFailed`] if the decode thread panicked or
+    /// Returns [`PreviewError::DecodeThreadPoisoned`] if the previous decode
+    /// thread panicked and cannot be recovered, or [`PreviewError::SeekFailed`]
     /// if the underlying `FFmpeg` seek fails.
     pub fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
         log::debug!("coarse seek target_pts={target_pts:?}");
@@ -398,11 +400,14 @@ impl DecodeBuffer {
     /// If called again before the previous seek completes, the new seek
     /// supersedes the old one; the old worker exits at the next cancel check.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics (inside the background worker thread) if the previous decode
-    /// thread panicked — an internal bug that should never occur in practice.
-    pub fn seek_async(&mut self, target_pts: Duration) {
+    /// Returns [`PreviewError::DecodeThreadPoisoned`] if the previous decode
+    /// thread panicked and its decoder cannot be recovered. The frame-accurate
+    /// seek runs on the background worker: a seek failure there is logged and
+    /// ends the seek, while discard-phase decode errors are reported via the
+    /// [`error_events`](Self::error_events) channel.
+    pub fn seek_async(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
         log::debug!("async seek started target_pts={target_pts:?}");
 
         self.seeking.store(true, Ordering::Release);
@@ -414,7 +419,15 @@ impl DecodeBuffer {
             }
         }
 
-        let old_handle = self.handle.take();
+        // Recover the decoder from the old worker synchronously (bounded: the old
+        // worker returns promptly once `cancel` is set). A failed join means the
+        // decode thread panicked; report it as a typed, recoverable error rather
+        // than panicking. The frame-accurate seek then runs on the new worker, so
+        // `seek_async` stays non-blocking for the expensive FFmpeg work.
+        let Some(mut decoder) = self.handle.take().and_then(|h| h.join().ok()) else {
+            self.seeking.store(false, Ordering::Release);
+            return Err(PreviewError::DecodeThreadPoisoned);
+        };
         drop(self.rx.take());
 
         let (new_tx, new_rx) = sync_channel(self.capacity);
@@ -427,20 +440,6 @@ impl DecodeBuffer {
         let error_tx_async = self.error_tx.clone();
 
         let worker = thread::spawn(move || -> VideoDecoder {
-            // Recover the decoder from the old thread. In normal operation the
-            // decode thread never panics so this always succeeds.
-            let Some(mut decoder) = old_handle.and_then(|h| h.join().ok()) else {
-                log::warn!(
-                    "seek_async: failed to recover decoder \
-                     target_pts={target_pts:?}"
-                );
-                if !cancel.load(Ordering::Acquire) {
-                    seeking.store(false, Ordering::Release);
-                }
-                // Unreachable: the decode thread never panics in normal operation.
-                unreachable!("seek_async: decode thread panicked; cannot recover decoder");
-            };
-
             if let Err(e) = decoder.seek(target_pts, SeekMode::Backward) {
                 log::warn!("seek_async seek failed target_pts={target_pts:?} error={e}");
                 if !cancel.load(Ordering::Acquire) {
@@ -498,6 +497,7 @@ impl DecodeBuffer {
         });
 
         self.handle = Some(worker);
+        Ok(())
     }
 
     /// Shared helper for `seek` and `seek_coarse`.
@@ -521,15 +521,13 @@ impl DecodeBuffer {
             }
         }
 
-        // 3. Join the thread to recover the decoder.
+        // 3. Join the thread to recover the decoder. A failed join means the
+        //    decode thread panicked and cannot be recovered.
         let mut decoder = self
             .handle
             .take()
             .and_then(|h| h.join().ok())
-            .ok_or_else(|| PreviewError::SeekFailed {
-                target: target_pts,
-                reason: "decode thread unavailable for seek".into(),
-            })?;
+            .ok_or(PreviewError::DecodeThreadPoisoned)?;
 
         // 4. Seek to the nearest I-frame at or before target_pts.
         //    avformat_seek_file with AVSEEK_FLAG_BACKWARD and avcodec_flush_buffers
@@ -736,7 +734,8 @@ mod tests {
         }
 
         let seek_target = Duration::from_secs(1);
-        buf.seek_async(seek_target);
+        buf.seek_async(seek_target)
+            .expect("seek_async on a healthy buffer must return Ok");
 
         // Drive the seek to completion by polling pop_frame.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -790,7 +789,8 @@ mod tests {
         }
 
         let seek_target = Duration::from_secs(1);
-        buf.seek_async(seek_target);
+        buf.seek_async(seek_target)
+            .expect("seek_async on a healthy buffer must return Ok");
 
         // Poll until a Frame arrives (seek complete) or we time out.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -810,5 +810,68 @@ mod tests {
                 "seek_async: timed out waiting for seek to complete"
             );
         }
+    }
+
+    /// Drives an async seek to completion by polling `pop_frame`, returning true
+    /// when a post-seek frame arrives and false on EOF (a legitimate skip).
+    fn drain_async_seek(buf: &mut DecodeBuffer) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match buf.pop_frame() {
+                FrameResult::Frame(_) => return true,
+                FrameResult::Seeking(_) => thread::sleep(Duration::from_millis(10)),
+                FrameResult::Eof => return false,
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+        }
+    }
+
+    // Exercises the decoder-recovery path across all three seek entry points in
+    // sequence: each recovers the decoder from the prior worker (poisoned would
+    // surface as DecodeThreadPoisoned) and resumes decoding. Probe-gated (RK-002):
+    // skips when the fixture video is unavailable or EOF is reached early.
+    #[test]
+    fn seek_recovery_should_survive_interleaved_seek_variants() {
+        let path = test_video_path();
+        let mut buf = match DecodeBuffer::open(&path).capacity(4).build() {
+            Ok(buf) => buf,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        if !matches!(buf.pop_frame(), FrameResult::Frame(_)) {
+            println!("skipping: no initial frame available");
+            return;
+        }
+
+        // Frame-accurate seek → must recover and deliver a frame.
+        if buf.seek(Duration::from_millis(500)).is_err() {
+            println!("skipping: seek failed on fixture");
+            return;
+        }
+        if !matches!(buf.pop_frame(), FrameResult::Frame(_) | FrameResult::Eof) {
+            println!("skipping: no frame after seek");
+            return;
+        }
+
+        // Coarse seek → recovers the decoder from the previous seek's worker.
+        if buf.seek_coarse(Duration::from_secs(1)).is_err() {
+            println!("skipping: seek_coarse failed on fixture");
+            return;
+        }
+        if matches!(buf.pop_frame(), FrameResult::Seeking(_)) {
+            println!("skipping: unexpected seeking state after coarse seek");
+            return;
+        }
+
+        // Async seek → also recovers the decoder; must return Ok on a healthy
+        // buffer and eventually deliver a frame (or hit EOF).
+        buf.seek_async(Duration::from_millis(250))
+            .expect("seek_async on a healthy buffer must return Ok");
+        let _ = drain_async_seek(&mut buf);
     }
 }

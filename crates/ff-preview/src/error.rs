@@ -67,6 +67,14 @@ pub enum PreviewError {
         /// The requested presentation timestamp that fell outside all clips.
         pts: std::time::Duration,
     },
+
+    /// The background decode thread panicked and could not be recovered.
+    ///
+    /// The buffer cannot continue decoding; recover at the application level by
+    /// rebuilding it (e.g. reopen the file). This replaces an earlier internal
+    /// panic on the same condition.
+    #[error("decode thread poisoned: the background decoder panicked and cannot be recovered")]
+    DecodeThreadPoisoned,
 }
 
 impl MediaError for PreviewError {
@@ -76,7 +84,7 @@ impl MediaError for PreviewError {
             Self::Probe(e) => e.severity(),
             #[cfg(feature = "proxy")]
             Self::Pipeline(e) => e.severity(),
-            Self::SeekFailed { .. } => ErrorSeverity::Recoverable,
+            Self::SeekFailed { .. } | Self::DecodeThreadPoisoned => ErrorSeverity::Recoverable,
             Self::Ffmpeg { .. } | Self::SeekOutOfRange { .. } => ErrorSeverity::Other,
             Self::FileNotFound { .. } | Self::NoVideoStream { .. } | Self::Io(_) => {
                 ErrorSeverity::Fatal
@@ -102,6 +110,16 @@ mod tests {
             reason: "x".into(),
         };
         assert!(e.is_recoverable() && !e.is_fatal());
+    }
+
+    #[test]
+    fn preview_decode_thread_poisoned_should_be_recoverable() {
+        let e = PreviewError::DecodeThreadPoisoned;
+        assert!(e.is_recoverable() && !e.is_fatal());
+        assert!(
+            e.to_string().contains("poisoned"),
+            "message must name the condition: {e}"
+        );
     }
 
     #[test]
