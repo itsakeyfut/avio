@@ -18,7 +18,8 @@ use ff_filter::BlendMode;
 use thiserror::Error;
 
 use crate::clip::Clip;
-use crate::ids::{ClipId, TrackId, TrackKind};
+use crate::ids::{ClipId, MarkerId, TrackId, TrackKind};
+use crate::marker::Marker;
 use crate::timeline::Timeline;
 use crate::track::Track;
 
@@ -167,6 +168,27 @@ pub enum Command {
         /// Track to remove.
         track: TrackId,
     },
+    /// Add an editorial [`Marker`] to the timeline.
+    ///
+    /// The marker is assigned a fresh [`MarkerId`] by the document; any id already
+    /// on the incoming marker is ignored. Markers are metadata only and do not
+    /// affect render or preview.
+    AddMarker {
+        /// Marker to add (its id is replaced with a fresh one).
+        marker: Marker,
+    },
+    /// Remove the marker with id `marker`.
+    RemoveMarker {
+        /// Marker to remove.
+        marker: MarkerId,
+    },
+    /// Set the timeline position (`pts`) of the marker with id `marker`.
+    MoveMarker {
+        /// Marker to move.
+        marker: MarkerId,
+        /// New timeline position.
+        pts: Duration,
+    },
     /// Set the output canvas dimensions (marks the canvas explicit).
     SetCanvas {
         /// Canvas width in pixels (must be non-zero).
@@ -202,6 +224,13 @@ pub enum EditError {
     ClipNotFound {
         /// The id that resolved to no clip.
         id: ClipId,
+    },
+    /// A [`Command::RemoveMarker`] / [`Command::MoveMarker`] named a marker id that
+    /// is present in no marker.
+    #[error("no marker with id {id:?}")]
+    MarkerNotFound {
+        /// The id that resolved to no marker.
+        id: MarkerId,
     },
     /// A [`Command::SetClip`] value carries an id that names a different clip.
     #[error("clip id mismatch: expected {expected:?}, value has {found:?}")]
@@ -394,6 +423,27 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             if !remove_track(&mut next, *track) {
                 return Err(EditError::TrackNotFound { id: *track });
             }
+        }
+        Command::AddMarker { marker } => {
+            let mut marker = marker.clone();
+            marker.id = MarkerId::from_raw(next.next_marker_id);
+            next.markers.push(marker);
+            next.next_marker_id += 1;
+        }
+        Command::RemoveMarker { marker } => {
+            let before = next.markers.len();
+            next.markers.retain(|m| m.id != *marker);
+            if next.markers.len() == before {
+                return Err(EditError::MarkerNotFound { id: *marker });
+            }
+        }
+        Command::MoveMarker { marker, pts } => {
+            let m = next
+                .markers
+                .iter_mut()
+                .find(|m| m.id == *marker)
+                .ok_or(EditError::MarkerNotFound { id: *marker })?;
+            m.pts = *pts;
         }
         Command::SetCanvas { width, height } => {
             if *width == 0 || *height == 0 {
@@ -1830,5 +1880,138 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
+    }
+
+    // ── markers ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_add_marker_should_append_with_fresh_id() {
+        let t = timeline_with(1);
+        let out = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(2)).with_name("intro"),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.markers().len(), 1);
+        let m = &out.markers()[0];
+        assert!(m.id.is_set(), "an added marker gets a set id");
+        assert_eq!(m.pts, Duration::from_secs(2));
+        assert_eq!(m.name.as_deref(), Some("intro"));
+    }
+
+    #[test]
+    fn apply_add_marker_should_stamp_fresh_id_over_incoming() {
+        let t = timeline_with(1);
+        let mut incoming = Marker::new(Duration::ZERO);
+        incoming.id = MarkerId::from_raw(999);
+        let out = apply(&t, &Command::AddMarker { marker: incoming }).unwrap();
+        assert_ne!(
+            out.markers()[0].id,
+            MarkerId::from_raw(999),
+            "the incoming id is replaced with a fresh one"
+        );
+        assert!(out.markers()[0].id.is_set());
+    }
+
+    #[test]
+    fn apply_add_marker_should_assign_distinct_ids() {
+        let t = timeline_with(1);
+        let t = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(1)),
+            },
+        )
+        .unwrap();
+        let t = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(2)),
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            t.markers()[0].id,
+            t.markers()[1].id,
+            "each marker gets a distinct id"
+        );
+    }
+
+    #[test]
+    fn apply_remove_marker_should_drop_it_by_id() {
+        let t = timeline_with(1);
+        let t = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(1)),
+            },
+        )
+        .unwrap();
+        let id = t.markers()[0].id;
+        let out = apply(&t, &Command::RemoveMarker { marker: id }).unwrap();
+        assert!(out.markers().is_empty());
+    }
+
+    #[test]
+    fn apply_remove_marker_missing_should_err() {
+        let t = timeline_with(1);
+        let missing = MarkerId::from_raw(9999);
+        let err = apply(&t, &Command::RemoveMarker { marker: missing }).unwrap_err();
+        assert_eq!(err, EditError::MarkerNotFound { id: missing });
+    }
+
+    #[test]
+    fn apply_move_marker_should_set_pts() {
+        let t = timeline_with(1);
+        let t = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::from_secs(1)),
+            },
+        )
+        .unwrap();
+        let id = t.markers()[0].id;
+        let out = apply(
+            &t,
+            &Command::MoveMarker {
+                marker: id,
+                pts: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.markers()[0].pts, Duration::from_secs(5));
+        assert_eq!(out.markers()[0].id, id, "the marker id is unchanged");
+    }
+
+    #[test]
+    fn apply_move_marker_missing_should_err() {
+        let t = timeline_with(1);
+        let missing = MarkerId::from_raw(9999);
+        let err = apply(
+            &t,
+            &Command::MoveMarker {
+                marker: missing,
+                pts: Duration::from_secs(1),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::MarkerNotFound { id: missing });
+    }
+
+    #[test]
+    fn apply_add_marker_should_not_change_clips() {
+        let t = timeline_with(2);
+        let before: Vec<_> = t.video_tracks()[0].clips.iter().map(|c| c.id).collect();
+        let out = apply(
+            &t,
+            &Command::AddMarker {
+                marker: Marker::new(Duration::ZERO),
+            },
+        )
+        .unwrap();
+        let after: Vec<_> = out.video_tracks()[0].clips.iter().map(|c| c.id).collect();
+        assert_eq!(before, after, "adding a marker does not touch clips");
     }
 }

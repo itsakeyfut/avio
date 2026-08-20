@@ -329,6 +329,8 @@ mod error;
 #[cfg(feature = "pipeline")]
 mod ids;
 #[cfg(feature = "pipeline")]
+mod marker;
+#[cfg(feature = "pipeline")]
 mod timeline;
 #[cfg(feature = "pipeline")]
 mod track;
@@ -344,7 +346,9 @@ pub use editor::Editor;
 #[cfg(feature = "pipeline")]
 pub use error::TimelineError;
 #[cfg(feature = "pipeline")]
-pub use ids::{ClipId, TrackId, TrackKind};
+pub use ids::{ClipId, MarkerId, TrackId, TrackKind};
+#[cfg(feature = "pipeline")]
+pub use marker::Marker;
 #[cfg(feature = "pipeline")]
 pub use timeline::{Timeline, TimelineBuilder};
 #[cfg(feature = "pipeline")]

@@ -70,6 +70,31 @@ impl TrackId {
     }
 }
 
+/// Stable identity of a [`Marker`](crate::Marker) within a [`Timeline`](crate::Timeline).
+///
+/// Assigned by the document (see the module docs); a marker built by the caller is
+/// [`UNSET`](MarkerId::UNSET) until it is added via
+/// [`Command::AddMarker`](crate::Command::AddMarker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MarkerId(u64);
+
+impl MarkerId {
+    /// The id of a marker that has not yet been added to a document.
+    pub const UNSET: MarkerId = MarkerId(0);
+
+    /// Whether this id has been assigned by a document (i.e. is not [`UNSET`](Self::UNSET)).
+    #[must_use]
+    pub fn is_set(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Mints an id from a raw counter value. Crate-internal (see `ClipId::from_raw`).
+    pub(crate) fn from_raw(value: u64) -> Self {
+        MarkerId(value)
+    }
+}
+
 /// Which track list a [`TrackId`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
