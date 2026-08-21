@@ -2,7 +2,7 @@
 
 Shared buffer-pooling abstractions for the ff-* crate family.
 
-`ff-common` is a small, FFmpeg-free foundation shared across the `ff-*` family: frame-buffer memory pooling (`FramePool`, `PooledBuffer`, `VecPool`). It links no FFmpeg and contains no `unsafe`. Applications usually get it transitively through the decode/encode crates, though `VecPool` is directly usable to control frame allocation. Each crate is versioned independently; see crates.io for current versions.
+`ff-common` is a small, FFmpeg-free foundation shared across the `ff-*` family: frame-buffer memory pooling (`FramePool`, `PooledBuffer`, `VecPool`). It links no FFmpeg and contains no `unsafe`. Applications usually get it transitively through the decode/encode crates, though `VecPool` is directly usable to control frame allocation.
 
 ## Overview
 
