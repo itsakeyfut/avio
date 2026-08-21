@@ -18,7 +18,7 @@ use ff_filter::BlendMode;
 use thiserror::Error;
 
 use crate::clip::Clip;
-use crate::ids::{ClipId, MarkerId, TrackId, TrackKind};
+use crate::ids::{ClipId, GroupId, MarkerId, TrackId, TrackKind};
 use crate::marker::Marker;
 use crate::timeline::Timeline;
 use crate::track::Track;
@@ -59,6 +59,10 @@ pub enum Command {
         clip: Box<Clip>,
     },
     /// Remove the clip with id `clip`.
+    ///
+    /// A single-clip removal: a grouped member is removed on its own (the group
+    /// keeps its remaining members). Use [`RippleDelete`](Self::RippleDelete) to
+    /// remove a whole linked group and close the gaps.
     RemoveClip {
         /// Clip to remove.
         clip: ClipId,
@@ -157,6 +161,27 @@ pub enum Command {
         in_point: Option<Duration>,
         /// New source out-point (`None` = end of file).
         out_point: Option<Duration>,
+    },
+    /// Link `clips` into one group (assigned a fresh [`GroupId`]).
+    ///
+    /// Grouped clips are edited together: a [`MoveClip`](Self::MoveClip) /
+    /// [`MoveClipToTrack`](Self::MoveClipToTrack) / [`RippleDelete`](Self::RippleDelete)
+    /// on any member propagates to the whole group as one undo step (see [`apply`]).
+    /// Every named clip must exist, otherwise the edit is rejected with
+    /// [`EditError::ClipNotFound`] and the timeline is unchanged. A clip already in a
+    /// group is reassigned to the new one; an empty `clips` list is a no-op.
+    GroupClips {
+        /// Clips to link (must all exist).
+        clips: Vec<ClipId>,
+    },
+    /// Unlink the group that the clip with id `clip` belongs to (clears `group` on
+    /// every member).
+    ///
+    /// Fails with [`EditError::ClipNotFound`] if `clip` does not exist; a no-op when
+    /// the clip is not grouped.
+    UngroupClips {
+        /// A member of the group to dissolve.
+        clip: ClipId,
     },
     /// Append a new, empty track of `kind` (assigned a fresh [`TrackId`]).
     AddTrack {
@@ -285,6 +310,10 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             let id = ClipId::from_raw(next.next_clip_id);
             let mut new_clip = (**clip).clone();
             new_clip.id = id;
+            // A freshly added clip starts ungrouped; link it explicitly via
+            // `GroupClips` (an incoming group id would be a stale, document-scoped
+            // value, like the clip's own id which is re-stamped above).
+            new_clip.group = None;
             let tr =
                 find_track_mut(&mut next, *track).ok_or(EditError::TrackNotFound { id: *track })?;
             tr.clips.push(new_clip);
@@ -296,9 +325,15 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             }
         }
         Command::MoveClip { clip, offset } => {
-            find_clip_mut(&mut next, *clip)
-                .ok_or(EditError::ClipNotFound { id: *clip })?
-                .offset = *offset;
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let old_offset = c.offset;
+            let group = c.group;
+            c.offset = *offset;
+            // A grouped move carries the linked members by the same offset delta,
+            // in this one `apply` (so it is a single undo step).
+            if let Some(g) = group {
+                shift_group_offsets(&mut next, g, *clip, old_offset, *offset);
+            }
         }
         Command::TrimClip {
             clip,
@@ -363,26 +398,32 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             }
             let mut moved =
                 take_clip(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let old_offset = moved.offset;
+            let group = moved.group;
             moved.offset = *offset;
             // Re-resolve the destination after the take (borrows/indices changed).
             find_track_mut(&mut next, *to)
                 .ok_or(EditError::TrackNotFound { id: *to })?
                 .clips
                 .push(moved);
+            // Linked members keep A/V sync: they shift by the same offset delta but
+            // stay on their own tracks (only the addressed clip changes track).
+            if let Some(g) = group {
+                shift_group_offsets(&mut next, g, *clip, old_offset, *offset);
+            }
         }
         Command::RippleDelete { clip } => {
-            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
-                .ok_or(EditError::ClipNotFound { id: *clip })?;
-            let removed_offset = clips[idx].offset;
-            let footprint = clip_footprint(&clips[idx]);
-            clips.remove(idx);
-            // Close the gap: later clips on this track shift left by the footprint.
-            if let Some(shift) = footprint {
-                for c in clips.iter_mut() {
-                    if c.offset > removed_offset {
-                        c.offset = c.offset.saturating_sub(shift);
-                    }
-                }
+            // A grouped ripple-delete removes every linked member (each closing the
+            // gap on its own track); an ungrouped one removes just this clip.
+            let group = find_clip_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?
+                .group;
+            let targets: Vec<ClipId> = match group {
+                Some(g) => collect_group_ids(&next, g),
+                None => vec![*clip],
+            };
+            for target in targets {
+                ripple_delete_one(&mut next, target);
             }
         }
         Command::RippleTrim {
@@ -408,6 +449,31 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                         } else {
                             c.offset.saturating_sub(old.saturating_sub(new))
                         };
+                    }
+                }
+            }
+        }
+        Command::GroupClips { clips } => {
+            if !clips.is_empty() {
+                let g = GroupId::from_raw(next.next_group_id);
+                // Assign in one pass; a missing clip returns Err, dropping the
+                // cloned `next` so the input timeline is unchanged (atomic).
+                for id in clips {
+                    find_clip_mut(&mut next, *id)
+                        .ok_or(EditError::ClipNotFound { id: *id })?
+                        .group = Some(g);
+                }
+                next.next_group_id += 1;
+            }
+        }
+        Command::UngroupClips { clip } => {
+            let group = find_clip_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?
+                .group;
+            if let Some(g) = group {
+                for c in all_clips_mut(&mut next) {
+                    if c.group == Some(g) {
+                        c.group = None;
                     }
                 }
             }
@@ -549,6 +615,66 @@ fn find_clip_track_mut(timeline: &mut Timeline, id: ClipId) -> Option<(&mut Vec<
     None
 }
 
+/// Iterates every clip in the document (video tracks then audio tracks), mutably.
+fn all_clips_mut(timeline: &mut Timeline) -> impl Iterator<Item = &mut Clip> {
+    timeline
+        .video_tracks
+        .iter_mut()
+        .chain(timeline.audio_tracks.iter_mut())
+        .flat_map(|tr| tr.clips.iter_mut())
+}
+
+/// Collects the ids of every clip linked into `group`.
+fn collect_group_ids(timeline: &Timeline, group: GroupId) -> Vec<ClipId> {
+    timeline
+        .video_tracks
+        .iter()
+        .chain(timeline.audio_tracks.iter())
+        .flat_map(|tr| tr.clips.iter())
+        .filter(|c| c.group == Some(group))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// Shifts every member of `group` except `except` by the offset delta `new - old`
+/// (saturating), so the group keeps its relative timing when one member moves.
+fn shift_group_offsets(
+    timeline: &mut Timeline,
+    group: GroupId,
+    except: ClipId,
+    old: Duration,
+    new: Duration,
+) {
+    for c in all_clips_mut(timeline) {
+        if c.id != except && c.group == Some(group) {
+            c.offset = if new >= old {
+                c.offset.saturating_add(new.saturating_sub(old))
+            } else {
+                c.offset.saturating_sub(old.saturating_sub(new))
+            };
+        }
+    }
+}
+
+/// Removes the clip with `id` and closes the gap on its track: later same-track
+/// clips shift left by the removed clip's timeline footprint. No-op when the clip
+/// is absent or its footprint is unknown (a plain remove, no shift).
+fn ripple_delete_one(timeline: &mut Timeline, clip: ClipId) {
+    let Some((clips, idx)) = find_clip_track_mut(timeline, clip) else {
+        return;
+    };
+    let removed_offset = clips[idx].offset;
+    let footprint = clip_footprint(&clips[idx]);
+    clips.remove(idx);
+    if let Some(shift) = footprint {
+        for c in clips.iter_mut() {
+            if c.offset > removed_offset {
+                c.offset = c.offset.saturating_sub(shift);
+            }
+        }
+    }
+}
+
 /// Splits `orig` at timeline position `at` into `(left, right)`, or `None` when the
 /// cut is not strictly inside the clip's timeline span.
 ///
@@ -636,6 +762,19 @@ mod tests {
     /// The id of clip `i` on the first video track.
     fn clip_id(t: &Timeline, i: usize) -> ClipId {
         t.video_tracks()[0].clips[i].id
+    }
+
+    /// A one-video-track timeline with two clips at the given second offsets.
+    fn two_clips_at(off0: u64, off1: u64) -> Timeline {
+        Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("a.mp4").offset(Duration::from_secs(off0)),
+                Clip::new("b.mp4").offset(Duration::from_secs(off1)),
+            ])
+            .build()
+            .unwrap()
     }
 
     #[test]
@@ -2013,5 +2152,245 @@ mod tests {
         .unwrap();
         let after: Vec<_> = out.video_tracks()[0].clips.iter().map(|c| c.id).collect();
         assert_eq!(before, after, "adding a marker does not touch clips");
+    }
+
+    // ── clip linking / groups (#1456) ─────────────────────────────────────────
+
+    #[test]
+    fn apply_group_clips_should_link_members_with_one_fresh_group() {
+        let t = timeline_with(3);
+        let (a, b) = (clip_id(&t, 0), clip_id(&t, 1));
+        let out = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let ga = out.video_tracks()[0].clips[0].group;
+        let gb = out.video_tracks()[0].clips[1].group;
+        let gc = out.video_tracks()[0].clips[2].group;
+        assert!(
+            ga.is_some() && ga == gb,
+            "grouped members share one group id"
+        );
+        assert!(ga.unwrap().is_set());
+        assert_eq!(gc, None, "an unnamed clip stays ungrouped");
+    }
+
+    #[test]
+    fn apply_group_clips_missing_clip_should_err_and_change_nothing() {
+        let t = timeline_with(2);
+        let a = clip_id(&t, 0);
+        let res = apply(
+            &t,
+            &Command::GroupClips {
+                clips: vec![a, ClipId::UNSET],
+            },
+        );
+        assert!(matches!(res, Err(EditError::ClipNotFound { .. })));
+    }
+
+    #[test]
+    fn apply_group_clips_should_reassign_an_already_grouped_clip() {
+        let t = timeline_with(3);
+        let (a, b, c) = (clip_id(&t, 0), clip_id(&t, 1), clip_id(&t, 2));
+        let t = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let out = apply(&t, &Command::GroupClips { clips: vec![b, c] }).unwrap();
+        let ga = out.video_tracks()[0].clips[0].group;
+        let gb = out.video_tracks()[0].clips[1].group;
+        let gc = out.video_tracks()[0].clips[2].group;
+        assert_ne!(gb, ga, "b left a's group");
+        assert_eq!(gb, gc, "b joined c's group");
+    }
+
+    #[test]
+    fn apply_ungroup_clips_should_clear_group_of_all_members() {
+        let t = timeline_with(2);
+        let (a, b) = (clip_id(&t, 0), clip_id(&t, 1));
+        let t = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let out = apply(&t, &Command::UngroupClips { clip: a }).unwrap();
+        assert_eq!(out.video_tracks()[0].clips[0].group, None);
+        assert_eq!(out.video_tracks()[0].clips[1].group, None);
+    }
+
+    #[test]
+    fn apply_ungroup_clips_ungrouped_should_be_noop() {
+        let t = timeline_with(1);
+        let a = clip_id(&t, 0);
+        let out = apply(&t, &Command::UngroupClips { clip: a }).unwrap();
+        assert_eq!(out.video_tracks()[0].clips[0].group, None);
+    }
+
+    #[test]
+    fn apply_move_clip_should_carry_grouped_member_by_the_same_delta() {
+        let t = two_clips_at(0, 10);
+        let (a, b) = (clip_id(&t, 0), clip_id(&t, 1));
+        let t = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        // Move a right (0 -> 5, delta +5): b keeps the 10s gap (10 -> 15).
+        let out = apply(
+            &t,
+            &Command::MoveClip {
+                clip: a,
+                offset: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[0].offset,
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(15)
+        );
+        // Move a left (5 -> 2, delta -3): b 15 -> 12.
+        let out2 = apply(
+            &out,
+            &Command::MoveClip {
+                clip: a,
+                offset: Duration::from_secs(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out2.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(12)
+        );
+    }
+
+    #[test]
+    fn apply_move_clip_ungrouped_should_not_shift_other_clips() {
+        let t = two_clips_at(0, 10);
+        let a = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::MoveClip {
+                clip: a,
+                offset: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(10),
+            "a non-grouped move leaves other clips put"
+        );
+    }
+
+    #[test]
+    fn apply_move_clip_to_track_should_carry_grouped_member_and_keep_its_track() {
+        // A/V pair (video v, audio a, both @0), grouped. Move v to a 2nd video track @5s.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let t = apply(
+            &t,
+            &Command::AddTrack {
+                kind: TrackKind::Video,
+            },
+        )
+        .unwrap();
+        let dest = t.video_tracks()[1].id;
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: v,
+                to: dest,
+                offset: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[1].clips.len(), 1);
+        assert_eq!(
+            out.video_tracks()[1].clips[0].offset,
+            Duration::from_secs(5)
+        );
+        // The linked audio clip shifts by the same delta but stays on its track.
+        assert_eq!(out.audio_tracks()[0].clips.len(), 1);
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].offset,
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn apply_ripple_delete_should_remove_the_whole_group() {
+        // Grouped video v + audio a; an ungrouped video clip w must survive.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4"),
+                Clip::new("w.mp4").offset(Duration::from_secs(30)),
+            ])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(&t, &Command::RippleDelete { clip: v }).unwrap();
+        assert_eq!(
+            out.video_tracks()[0].clips.len(),
+            1,
+            "grouped video clip removed, ungrouped one kept"
+        );
+        assert_eq!(
+            out.audio_tracks()[0].clips.len(),
+            0,
+            "grouped audio clip removed"
+        );
+    }
+
+    #[test]
+    fn apply_trim_clip_should_not_propagate_to_grouped_member() {
+        let t = timeline_with(2);
+        let (a, b) = (clip_id(&t, 0), clip_id(&t, 1));
+        let t = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::TrimClip {
+                clip: a,
+                in_point: Some(Duration::from_secs(1)),
+                out_point: Some(Duration::from_secs(3)),
+            },
+        )
+        .unwrap();
+        // Trim is per-clip: the linked member's source window is untouched.
+        assert_eq!(out.video_tracks()[0].clips[1].in_point, None);
+        assert_eq!(out.video_tracks()[0].clips[1].out_point, None);
+    }
+
+    #[test]
+    fn apply_split_clip_should_keep_both_halves_in_the_group() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(10)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v] }).unwrap();
+        let g = t.video_tracks()[0].clips[0].group;
+        assert!(g.is_some());
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: v,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 2);
+        assert_eq!(out.video_tracks()[0].clips[0].group, g);
+        assert_eq!(
+            out.video_tracks()[0].clips[1].group,
+            g,
+            "the right half inherits the group"
+        );
     }
 }

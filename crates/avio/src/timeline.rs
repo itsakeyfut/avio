@@ -73,6 +73,8 @@ pub struct Timeline {
     pub(crate) next_track_id: u64,
     /// Next [`MarkerId`](crate::MarkerId) value to hand out (see `next_clip_id`).
     pub(crate) next_marker_id: u64,
+    /// Next [`GroupId`](crate::GroupId) value to hand out (see `next_clip_id`).
+    pub(crate) next_group_id: u64,
     /// Editorial markers on the timeline. Metadata only — they do not affect
     /// derivation, render, or preview. Addressed by [`MarkerId`](crate::MarkerId).
     pub(crate) markers: Vec<Marker>,
@@ -248,6 +250,7 @@ impl Timeline {
             next_clip_id: _,
             next_track_id: _,
             next_marker_id: _,
+            next_group_id: _,
             markers: _,
             video_animations,
             audio_animations,
@@ -946,6 +949,7 @@ impl TimelineBuilder {
             next_clip_id,
             next_track_id,
             next_marker_id: 1,
+            next_group_id: 1,
             markers: Vec::new(),
             video_animations: self.video_animations,
             audio_animations: self.audio_animations,

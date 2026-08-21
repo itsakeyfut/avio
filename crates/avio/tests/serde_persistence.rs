@@ -201,3 +201,45 @@ fn markers_should_round_trip_through_serde() {
     );
     assert_eq!(back.markers()[1].comment.as_deref(), Some("note"));
 }
+
+#[test]
+fn groups_should_round_trip_through_serde() {
+    let base = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .video_track(vec![
+            Clip::new("a.mp4"),
+            Clip::new("b.mp4"),
+            Clip::new("c.mp4"),
+        ])
+        .build()
+        .unwrap();
+    let a = base.video_tracks()[0].clips[0].id;
+    let b = base.video_tracks()[0].clips[1].id;
+    let grouped = apply(&base, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+
+    let json = serde_json::to_string(&grouped).unwrap();
+    let back: Timeline = serde_json::from_str(&json).unwrap();
+
+    // Value comparison is insensitive to HashMap key ordering.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(v1, v2, "groups must round-trip through serde");
+
+    let ga = back.video_tracks()[0].clips[0].group;
+    let gb = back.video_tracks()[0].clips[1].group;
+    let gc = back.video_tracks()[0].clips[2].group;
+    assert!(ga.is_some() && ga == gb, "the link survives the round-trip");
+    assert_eq!(gc, None, "a non-grouped clip stays ungrouped");
+
+    // The group-id counter is serialized, so a group formed after load gets a
+    // fresh, non-colliding id.
+    let c = back.video_tracks()[0].clips[2].id;
+    let regrouped = apply(&back, &Command::GroupClips { clips: vec![c] }).unwrap();
+    let gc2 = regrouped.video_tracks()[0].clips[2].group;
+    assert!(
+        gc2.is_some() && gc2 != ga,
+        "a new group after load gets a fresh id"
+    );
+}

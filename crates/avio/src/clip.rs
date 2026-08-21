@@ -15,7 +15,7 @@ use ff_filter::{
 use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
 
 use crate::error::TimelineError;
-use crate::ids::ClipId;
+use crate::ids::{ClipId, GroupId};
 
 /// The origin of a clip's frames.
 ///
@@ -90,6 +90,15 @@ pub struct Clip {
     /// stamps a real id when the clip is added (via the builder or
     /// [`Command::AddClip`](crate::Command::AddClip)).
     pub id: ClipId,
+    /// The clip **group** this clip belongs to, or `None` when it is not linked.
+    ///
+    /// Clips sharing a [`GroupId`](crate::GroupId) are linked (an A/V pair, or a
+    /// multi-clip selection): a move / track-change / ripple-delete on one member
+    /// propagates to the whole group as one undo step. Assigned/cleared through the
+    /// undoable [`Command::GroupClips`](crate::Command::GroupClips) /
+    /// [`Command::UngroupClips`](crate::Command::UngroupClips) path; a fresh clip is
+    /// ungrouped. Round-trips through the `serde` feature.
+    pub group: Option<GroupId>,
     /// Where this clip's frames come from: a media file or a generated source.
     pub source: ClipSource,
     /// Start point within the source file. `None` = beginning of file.
@@ -342,6 +351,7 @@ impl Clip {
     fn from_source(source: ClipSource) -> Self {
         Self {
             id: ClipId::UNSET,
+            group: None,
             source,
             in_point: None,
             out_point: None,
