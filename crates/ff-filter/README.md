@@ -4,7 +4,7 @@ Apply video and audio transformations without writing FFmpeg filter-graph string
 
 `ff-filter` is a safe, ergonomic wrapper over FFmpeg's libavfilter: build and run video and audio filter graphs without hand-writing filter-graph strings. Errors are typed and contextual (`FilterError`), so a bad input slot or an FFmpeg build error surfaces as a readable message rather than a raw return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Installation
 
@@ -19,7 +19,7 @@ ff-filter = "0.16"
 use ff_filter::{FilterGraph, ScaleAlgorithm};
 
 let graph = FilterGraph::builder()
-    .trim(10.0, 30.0)                           // keep seconds 10–30
+    .trim(10.0, 30.0)                           // keep seconds 10-30
     .scale(1280, 720, ScaleAlgorithm::Fast)     // resize to 720p
     .fade_in(0.0, 0.5)                           // 0.5-second fade in at the start
     .fade_out(19.5, 0.5)                         // 0.5-second fade out
@@ -94,6 +94,7 @@ push clip A frames to slot 0 and clip B frames to slot 1.
 | `FilterError::Ffmpeg`            | An underlying `FFmpeg` function returned an error code     |
 | `FilterError::CompositionFailed` | A multi-track composition or mixing operation failed       |
 | `FilterError::AnalysisFailed`    | An analysis operation (e.g. loudness measurement) failed   |
+| `FilterError::GplRequired`       | A filter needing the `gpl` feature was used without it     |
 
 ## MSRV
 

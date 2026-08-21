@@ -4,7 +4,7 @@ Media-analysis primitives for Rust: scene, silence, black-frame and keyframe det
 
 `ff-analysis` reads decoded media and reports analytical data; it does not edit or transform it. It builds on [`ff-decode`](https://crates.io/crates/ff-decode) for frame access and drives its own FFmpeg filter graphs where needed. Errors are typed and carry human-readable context (`AnalysisError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Installation
 

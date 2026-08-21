@@ -4,7 +4,7 @@ GPU compositing and effects pipeline for video, built on [wgpu]. Applies per-fra
 
 `ff-render` is a GPU compositing and effects pipeline built on [wgpu](https://github.com/gfx-rs/wgpu), not FFmpeg: WGSL shaders run colour grading, blends, chroma-key, masks, transforms, scaling, and a crossfade transition on GPU textures, with a CPU software fallback. It consumes decoded frames and plugs into `ff-preview` through the `FrameSink` trait. Errors are typed and contextual (`RenderError`), so a shader-compile or device failure reads as an actionable message.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Status
 
@@ -147,7 +147,7 @@ async fn compositor_example() -> Result<(), ff_render::RenderError> {
 
 | Node | CPU | GPU | Description |
 |------|-----|-----|-------------|
-| `ColorGradeNode` | ✓ | ✓ | Brightness, saturation, contrast, hue shift, colour temperature |
+| `ColorGradeNode` | ✓ | ✓ | Brightness, contrast, saturation, temperature, tint |
 | `ScaleNode` | passthrough | ✓ | Resize to target dimensions (Bilinear / Nearest) |
 | `OverlayNode` | ✓ | ✓ | Alpha-composite a static overlay image over the base |
 | `CrossfadeNode` | ✓ | ✓ | Linear crossfade between base and a target image |
@@ -192,6 +192,7 @@ match result {
     Err(RenderError::DeviceCreation { message })     => { /* GPU device init failed */ }
     Err(RenderError::UnsupportedFormat { format })   => { /* pixel format not supported */ }
     Err(RenderError::Composite { message })          => { /* compositor error */ }
+    Err(other) => { /* shader compile, texture, GPU timeout, I/O, ... */ }
     Ok(output) => { /* process output */ }
 }
 ```

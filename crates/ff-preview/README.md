@@ -4,7 +4,7 @@ Real-time video preview and proxy workflow for Rust. Provides frame-accurate see
 
 `ff-preview` adds a real-time, A/V-synchronised playback and seek loop on top of the decode primitives, converting frames to RGBA via libswscale for display. Decoding is delegated to `ff-decode`; this crate owns the playback clock, frame-accurate seek, and a `FrameSink` trait for custom renderers. Errors are typed and chain their source (`PreviewError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Installation
 
@@ -99,6 +99,20 @@ println!("proxy at {}", proxy_path.display());
 | `tokio` | `AsyncPreviewPlayer` |
 | `proxy` | `ProxyGenerator`, `ProxyJob`, `ProxyResolution` |
 | `timeline` | `Scene`, `ScenePlayer`, `SceneRunner` |
+
+## Error Handling
+
+Common variants (not exhaustive):
+
+| Variant | When it occurs |
+|---|---|
+| `PreviewError::FileNotFound` | The media file was not found |
+| `PreviewError::NoVideoStream` | The file has no video stream |
+| `PreviewError::SeekFailed` | A seek operation failed |
+| `PreviewError::Decode` | Wrapped `DecodeError` from the decode stage |
+| `PreviewError::Io` | An I/O error during file operations |
+
+`PreviewError` implements `ff_format::MediaError`, so `err.is_recoverable()` / `err.is_fatal()` work uniformly with the other `ff-*` crates.
 
 ## MSRV
 

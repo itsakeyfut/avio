@@ -4,7 +4,7 @@ Encode video and audio with a builder chain. The encoder validates codec, resolu
 
 `ff-encode` is a safe, ergonomic wrapper over FFmpeg's encode path: libavcodec encoding and libavformat muxing, with optional hardware encoders. Settings are validated before any FFmpeg context is allocated, and errors are typed and contextual (`EncodeError`), so a bad codec/container combination or an out-of-range bitrate fails with an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Installation
 
@@ -311,6 +311,8 @@ By default, `ff-encode` only links encoders compatible with the LGPL license: ha
 Enable the `gpl` feature to add libx264 and libx265. This changes the license terms of your binary; ensure you comply with the GPL or hold an appropriate MPEG LA commercial license before distributing.
 
 ## Error Handling
+
+Common variants (not exhaustive):
 
 | Variant                              | When it occurs                                     |
 |--------------------------------------|----------------------------------------------------|
