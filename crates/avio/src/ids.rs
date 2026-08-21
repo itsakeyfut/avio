@@ -95,6 +95,33 @@ impl MarkerId {
     }
 }
 
+/// Stable identity of a clip **group** within a [`Timeline`](crate::Timeline).
+///
+/// A group links several clips (an A/V pair, or a multi-clip selection) so that a
+/// move / track-change / ripple-delete on one member applies to the whole group.
+/// Assigned by the document when clips are grouped via
+/// [`Command::GroupClips`](crate::Command::GroupClips); a clip is ungrouped
+/// (`group == None`) until then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GroupId(u64);
+
+impl GroupId {
+    /// The id of a group that has not yet been assigned by a document.
+    pub const UNSET: GroupId = GroupId(0);
+
+    /// Whether this id has been assigned by a document (i.e. is not [`UNSET`](Self::UNSET)).
+    #[must_use]
+    pub fn is_set(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Mints an id from a raw counter value. Crate-internal (see `ClipId::from_raw`).
+    pub(crate) fn from_raw(value: u64) -> Self {
+        GroupId(value)
+    }
+}
+
 /// Which track list a [`TrackId`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

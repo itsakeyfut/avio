@@ -287,6 +287,54 @@ mod tests {
     }
 
     #[test]
+    fn editor_undo_should_restore_all_grouped_members_in_one_step() {
+        use std::time::Duration;
+
+        let base = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("a.mp4"),
+                Clip::new("b.mp4").offset(Duration::from_secs(10)),
+            ])
+            .build()
+            .unwrap();
+        let a = base.video_tracks()[0].clips[0].id;
+        let b = base.video_tracks()[0].clips[1].id;
+        let mut ed = Editor::new(base);
+        ed.apply(&Command::GroupClips { clips: vec![a, b] })
+            .unwrap();
+        let moved = ed
+            .apply(&Command::MoveClip {
+                clip: a,
+                offset: Duration::from_secs(5),
+            })
+            .unwrap();
+        assert_eq!(
+            moved.video_tracks()[0].clips[0].offset,
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            moved.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(15)
+        );
+
+        // A single undo reverts the whole grouped move (both members restored).
+        let undone = ed.undo().unwrap();
+        assert_eq!(undone.video_tracks()[0].clips[0].offset, Duration::ZERO);
+        assert_eq!(
+            undone.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(10)
+        );
+
+        let redone = ed.redo().unwrap();
+        assert_eq!(
+            redone.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(15)
+        );
+    }
+
+    #[test]
     fn editor_redo_should_reapply_the_undone_version() {
         let mut ed = Editor::new(timeline(30.0));
         ed.apply(&set_fps(24.0)).unwrap();

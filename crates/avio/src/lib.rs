@@ -346,7 +346,7 @@ pub use editor::Editor;
 #[cfg(feature = "pipeline")]
 pub use error::TimelineError;
 #[cfg(feature = "pipeline")]
-pub use ids::{ClipId, MarkerId, TrackId, TrackKind};
+pub use ids::{ClipId, GroupId, MarkerId, TrackId, TrackKind};
 #[cfg(feature = "pipeline")]
 pub use marker::Marker;
 #[cfg(feature = "pipeline")]
