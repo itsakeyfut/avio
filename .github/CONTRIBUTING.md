@@ -285,17 +285,19 @@ ff-common       shared memory abstractions (no FFmpeg dep)
 ff-format       shared pure-Rust type system (no FFmpeg dep)
 ff-probe        read-only metadata extraction
 ff-decode       decode pipelines
+ff-analysis     media analysis (scene / silence / BPM / keyframe / scopes)
 ff-encode       encode pipelines
+ff-remux        stream-copy remux (trim, audio replace / extract / add)
 ff-filter       libavfilter graph construction
 ff-pipeline     high-level decode -> filter -> encode pipeline
 ff-stream       HLS / DASH adaptive streaming
 ff-preview      real-time preview and proxy workflow
 ff-render       GPU compositing (wgpu)
-avio            facade: re-exports only
+avio            engine: editing model + derivation + history; re-exports the primitives
 ```
 
 Dependency order (no cycles):
-`ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode -> ff-filter -> ff-pipeline -> ff-stream -> avio`.
+`ff-sys -> ff-common -> ff-format -> ff-probe / ff-decode / ff-encode / ff-remux -> ff-filter -> ff-pipeline -> ff-stream / ff-preview / ff-render -> avio`, plus `ff-decode -> ff-analysis`.
 Each crate depends only on lower layers.
 
 **unsafe isolation**
