@@ -4,7 +4,7 @@ Read media file metadata with one function call. `open` returns a structured `Me
 
 `ff-probe` safely wraps FFmpeg's container inspection (libavformat demuxing and stream discovery) as a read-only metadata reader, with no decoding or encoding. Errors are typed and carry path and message context (`ProbeError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to assemble whatever media application, or editing model, you need. The `ff-*` crates are purified, model-free primitives, so none imposes an editing model on you; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. Each crate is versioned independently; see crates.io for current versions.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
 
 ## Installation
 
@@ -61,9 +61,12 @@ fn main() -> Result<(), ff_probe::ProbeError> {
 
 | Variant                    | When it occurs                             |
 |----------------------------|--------------------------------------------|
-| `ProbeError::FileNotFound` | The path does not exist or is not readable |
+| `ProbeError::FileNotFound` | The path does not exist                    |
 | `ProbeError::CannotOpen`   | FFmpeg could not open the container        |
-| `ProbeError::InvalidMedia` | No valid streams found after demux         |
+| `ProbeError::InvalidMedia` | The file is not a valid media file         |
+| `ProbeError::NoStreams`    | The container has no streams               |
+| `ProbeError::Io`           | An underlying I/O error (`std::io::Error`) |
+| `ProbeError::Ffmpeg`       | An FFmpeg call failed (`code` + `message`) |
 
 ## MSRV
 

@@ -4,36 +4,49 @@
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-A safe, high-level Rust API over FFmpeg for building media applications: decode, encode, filter, compose, and stream.
+An editing engine for video and audio: build a `Timeline` of `Clip`s, edit it with full undo/redo, and render it to a file.
 
-`avio` is the **editing engine** of the `ff-*` crate family. It owns the editing model (`Timeline` / `Clip`, the model-to-frame derivation, and edit history) and re-exports the model-agnostic `ff-*` primitives behind feature flags, so you can depend on a single crate and opt into the capabilities you need. If your app needs a different editing model, depend on the `ff-*` primitives directly instead; each is usable on its own. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+`avio` is the **editing engine** at the top of the `ff-*` crate family. It owns the editing model: an immutable `Timeline` of `Clip`s across video and audio tracks, the derivation that turns that model into rendered frames, and an `Editor` with undo/redo. The `ff-*` primitives it builds on (decode, encode, filter, analysis, remux, stream, preview, GPU render) stay model-free; for standalone primitive work, depend on those crates directly. See the [main repository](https://github.com/itsakeyfut/avio) for the full architecture.
+
+> `avio` still re-exports the primitive types as a convenience today, but that facade is being phased out; new code should reach the primitives through the `ff-*` crates. See [Working with the primitives directly](#working-with-the-primitives-directly).
+
+## What is avio?
+
+avio is a **video editing engine**: you describe an edit as data and the engine renders it.
+
+- **An editing model, not a wrapper**: avio owns an immutable `Timeline` of `Clip`s across video and audio tracks, which you build, edit, and render.
+- **Non-destructive and undoable**: every edit is a pure function over the model, and `Editor` provides full undo/redo where one edit is one step.
+- **Renders the model to a file**: the engine derives frames from the timeline (compositing, transitions, effects, keyframes) and encodes the result.
+- **Built on model-free primitives**: the `ff-*` crates do the decode / encode / filter / render work and impose no editing model; avio is one engine on top of them, and you can build a different one on the same primitives.
 
 ## Installation
 
 ```toml
 [dependencies]
-# Default: probe + decode + encode + hwaccel
-avio = "0.16"
+# Editing engine: Timeline, Clip, Editor, and render (build, edit, export)
+avio = { version = "0.16", features = ["pipeline"] }
 
-# Add filtering
-avio = { version = "0.16", features = ["filter"] }
+# With GPU compositing and real-time preview
+avio = { version = "0.16", features = ["pipeline", "render-gpu"] }
 
-# Full streaming stack (implies pipeline, which implies filter)
+# With HLS / DASH streaming output (implies pipeline)
 avio = { version = "0.16", features = ["stream"] }
-
-# Async decode/encode (requires tokio runtime)
-avio = { version = "0.16", features = ["tokio"] }
 ```
 
-The crates in this family version independently (each on its own cadence, like `tokio` or `http`); see crates.io for the current version of each.
+The editing model (`Timeline` / `Clip` / `Editor` / `render`) is enabled by the **`pipeline`** feature. The default build (`avio = "0.16"` gives `probe` + `decode` + `analysis` + `encode` + `hwaccel`) exposes the primitive re-exports only; that facade is being phased out (see [Working with the primitives directly](#working-with-the-primitives-directly)).
+
+The `ff-*` crates and `avio` share a single workspace version and are released together, so all versions move in lockstep; each is still a separate crate you can depend on on its own.
 
 ## Feature Flags
+
+The **`pipeline`** feature unlocks the editing model (`Timeline` / `Clip` / `Editor` / `render`); the other flags add engine capabilities by pulling in the primitive that backs each.
 
 | Feature         | Enables                                        | Default | Implies             |
 |-----------------|------------------------------------------------|---------|---------------------|
 | `probe`         | `ff-probe`, read-only media metadata           | yes     |                     |
 | `decode`        | `ff-decode`, video and audio decoding          | yes     |                     |
-| `encode`        | `ff-encode`, video and audio encoding          | yes     |                     |
+| `analysis`      | `ff-analysis`, scene / silence / BPM / scopes  | yes     | `decode`            |
+| `encode`        | `ff-encode` + `ff-remux`, encoding and remux   | yes     |                     |
 | `hwaccel`       | hardware-accelerated encoders                  | yes     |                     |
 | `filter`        | `ff-filter`, filter graph operations           | no      |                     |
 | `pipeline`      | `ff-pipeline`, decode/filter/encode            | no      | `filter`            |
@@ -45,11 +58,83 @@ The crates in this family version independently (each on its own cadence, like `
 | `tokio`         | async wrappers for decode, encode, and preview | no      | `decode` + `encode` |
 | `gpl`           | GPL-licensed encoders                          | no      |                     |
 | `srt`           | SRT input/output                               | no      |                     |
-| `serde`         | `serde` derives for filter types               | no      |                     |
+| `serde`         | `serde` derives for the model and filter types | no      |                     |
 
 ## Quick Start
 
-### Probe
+### Build and render a timeline
+
+Place one clip on a video track, size the canvas, and render the timeline to a file.
+
+```rust
+use avio::{Clip, Timeline, EncoderConfig};
+
+let timeline = Timeline::builder()
+    .canvas(1920, 1080)
+    .frame_rate(30.0)
+    .video_track(vec![Clip::new("input.mp4")])
+    .build()?;
+
+timeline.render("output.mp4", EncoderConfig::builder().build())?;
+```
+
+### Compose multiple clips and tracks
+
+Tracks composite bottom-up. A clip carries its own timeline `offset`, source `trim`,
+opacity, and an optional transition; overlapping two clips on one track with a
+crossfade is just an offset plus `with_transition`.
+
+```rust
+use std::time::Duration;
+use avio::{Clip, Timeline, EncoderConfig, XfadeTransition};
+
+let clip_len = Duration::from_secs(2);
+let xfade = Duration::from_millis(500);
+
+let timeline = Timeline::builder()
+    .canvas(1920, 1080)
+    .frame_rate(30.0)
+    // V1: two clips crossfading into each other.
+    .video_track(vec![
+        Clip::new("a.mp4").trim(Duration::ZERO, clip_len),
+        Clip::new("b.mp4")
+            .trim(Duration::ZERO, clip_len)
+            .offset(clip_len - xfade)
+            .with_transition(XfadeTransition::Fade, xfade),
+    ])
+    // V2: a half-opacity overlay on top.
+    .video_track(vec![Clip::new("overlay.mp4").with_opacity(0.5)])
+    .build()?;
+
+timeline.render("output.mp4", EncoderConfig::builder().build())?;
+```
+
+### Edit with undo/redo
+
+`Timeline` is immutable and edits are pure: `apply(&timeline, &command)` returns a
+new timeline. `Editor` wraps that with history, where one `apply` is one undo step.
+Clips and tracks are addressed by stable ids that survive inserts, removes, and
+undo/redo.
+
+```rust
+use avio::{Editor, Command, ClipProperty, EncoderConfig};
+
+let mut editor = Editor::new(timeline);
+let clip_id = editor.current().video_tracks()[0].clips[0].id;
+
+editor.apply(&Command::SetClipProperty {
+    clip: clip_id,
+    property: ClipProperty::Opacity(0.5),
+})?;
+
+editor.undo(); // back to full opacity
+editor.redo(); // 0.5 again
+
+// `render` consumes a `Timeline`; clone the current version to keep editing.
+editor.current().clone().render("output.mp4", EncoderConfig::builder().build())?;
+```
+
+### Probe media
 
 ```rust
 use avio::open;
@@ -60,201 +145,25 @@ if let Some(video) = info.primary_video() {
 }
 ```
 
-### Decode
+## Working with the primitives directly
 
-```rust
-use avio::{VideoDecoder, AudioDecoder, PixelFormat, SampleFormat};
+`avio` is the engine; the primitives are the `ff-*` crates. For standalone
+decoding, encoding, filtering, analysis, remuxing, streaming, preview, or GPU
+rendering, depend on the crate you need directly. Each has its own README with
+worked examples:
 
-// Video: request RGB24 output (FFmpeg converts internally)
-let mut vdec = VideoDecoder::open("video.mp4")
-    .output_format(PixelFormat::Rgb24)
-    .build()?;
-while let Some(frame) = vdec.decode_one()? {
-    // frame.data() contains raw pixel bytes
-}
-
-// Audio: resample to f32 at 44.1 kHz
-let mut adec = AudioDecoder::open("audio.flac")
-    .output_format(SampleFormat::F32)
-    .output_sample_rate(44_100)
-    .build()?;
-while let Some(frame) = adec.decode_one()? {
-    // frame.to_f32_interleaved() returns interleaved f32 samples
-}
-```
-
-### Image Sequences
-
-A `%`-pattern path (e.g. `frame%04d.png`) automatically selects the `image2`
-demuxer for decode and muxer for encode:
-
-```rust
-use avio::{VideoDecoder, VideoEncoder, VideoCodec, HardwareAccel};
-
-// Decode numbered PNGs → video
-let mut decoder = VideoDecoder::open("frames/frame%04d.png")
-    .hardware_accel(HardwareAccel::None)
-    .frame_rate(25)
-    .build()?;
-
-// Encode video → numbered PNGs
-let mut encoder = VideoEncoder::create("out/frame%04d.png")
-    .video(1920, 1080, 25.0)
-    .video_codec(VideoCodec::Png)
-    .build()?;
-```
-
-### Encode
-
-```rust
-use avio::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode};
-
-let mut encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 30.0)
-    .video_codec(VideoCodec::H264)
-    .bitrate_mode(BitrateMode::Crf(23))
-    .audio(48_000, 2)
-    .audio_codec(AudioCodec::Aac)
-    .build()?;
-
-for frame in &video_frames {
-    encoder.push_video(frame)?;
-}
-encoder.finish()?;
-```
-
-### Per-Codec Options
-
-`VideoCodecOptions` and `AudioCodecOptions` provide typed, per-codec
-configuration applied before the codec is opened:
-
-```rust
-use avio::{
-    VideoEncoder, VideoCodec, VideoCodecOptions,
-    H264Options, H264Profile, H264Preset,
-    BitrateMode,
-};
-
-let opts = VideoCodecOptions::H264(H264Options {
-    profile: H264Profile::High,
-    level: Some(41),
-    bframes: 2,
-    gop_size: 250,
-    refs: 3,
-    preset: Some(H264Preset::Fast),
-    tune: None,
-});
-
-let mut encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 30.0)
-    .video_codec(VideoCodec::H264)
-    .bitrate_mode(BitrateMode::Crf(23))
-    .codec_options(opts)
-    .build()?;
-```
-
-Available option structs: `H264Options`, `H265Options`, `Av1Options`,
-`SvtAv1Options`, `Vp9Options`, `ProResOptions`, `DnxhdOptions`,
-`OpusOptions`, `AacOptions`, `Mp3Options`, `FlacOptions`.
-
-### Professional Formats
-
-```rust
-use avio::{
-    VideoEncoder, VideoCodec, VideoCodecOptions,
-    ProResOptions, ProResProfile, PixelFormat,
-};
-
-let mut encoder = VideoEncoder::create("output.mov")
-    .video(1920, 1080, 25.0)
-    .video_codec(VideoCodec::ProRes)
-    .pixel_format(PixelFormat::Yuv422p10le)
-    .codec_options(VideoCodecOptions::ProRes(ProResOptions {
-        profile: ProResProfile::Hq,
-        vendor: None,
-    }))
-    .build()?;
-```
-
-### HDR Metadata
-
-```rust
-use avio::{
-    VideoEncoder, VideoCodec, VideoCodecOptions,
-    H265Options, H265Profile, PixelFormat, BitrateMode,
-    Hdr10Metadata, MasteringDisplay, ColorTransfer,
-};
-
-// HDR10: PQ transfer + MaxCLL/MaxFALL side data
-let mut encoder = VideoEncoder::create("output.mkv")
-    .video(3840, 2160, 24.0)
-    .video_codec(VideoCodec::H265)
-    .bitrate_mode(BitrateMode::Crf(22))
-    .pixel_format(PixelFormat::Yuv420p10le)
-    .codec_options(VideoCodecOptions::H265(H265Options {
-        profile: H265Profile::Main10,
-        ..H265Options::default()
-    }))
-    .hdr10_metadata(Hdr10Metadata {
-        max_cll: 1000, max_fall: 400,
-        mastering_display: MasteringDisplay {
-            red_x: 17000, red_y: 8500,
-            green_x: 13250, green_y: 34500,
-            blue_x: 7500, blue_y: 3000,
-            white_x: 15635, white_y: 16450,
-            min_luminance: 50,
-            max_luminance: 10_000_000,
-        },
-    })
-    .build()?;
-
-// HLG: broadcast HDR without MaxCLL/MaxFALL
-use avio::{ColorSpace, ColorPrimaries};
-let mut encoder = VideoEncoder::create("output.mkv")
-    .video(1920, 1080, 50.0)
-    .video_codec(VideoCodec::H265)
-    .pixel_format(PixelFormat::Yuv420p10le)
-    .color_transfer(ColorTransfer::Hlg)
-    .color_space(ColorSpace::Bt2020Ncl)
-    .color_primaries(ColorPrimaries::Bt2020)
-    .build()?;
-```
-
-### Async (tokio feature)
-
-```rust
-use avio::{AsyncVideoDecoder, AsyncVideoEncoder, VideoEncoder, VideoCodec};
-use futures::StreamExt;
-
-let mut encoder = AsyncVideoEncoder::from_builder(
-    VideoEncoder::create("output.mp4")
-        .video(1920, 1080, 30.0)
-        .video_codec(VideoCodec::H264),
-)?;
-
-let stream = AsyncVideoDecoder::open("input.mp4").await?.into_stream();
-tokio::pin!(stream);
-while let Some(Ok(frame)) = stream.next().await {
-    encoder.push(frame).await?;
-}
-encoder.finish().await?;
-```
-
-### Pipeline (pipeline feature)
-
-```rust
-use avio::{Pipeline, EncoderConfig, VideoCodec, AudioCodec, BitrateMode};
-
-Pipeline::builder()
-    .input("input.mp4")
-    .output("output.mp4", EncoderConfig::builder()
-        .video_codec(VideoCodec::H264)
-        .audio_codec(AudioCodec::Aac)
-        .bitrate_mode(BitrateMode::Crf(23))
-        .build())
-    .build()?
-    .run()?;
-```
+| Crate         | For                                            |
+|---------------|------------------------------------------------|
+| `ff-probe`    | Read-only media metadata                       |
+| `ff-decode`   | Video / audio / image decoding                 |
+| `ff-analysis` | Scene, silence, BPM, keyframe, scopes          |
+| `ff-encode`   | Video / audio encoding, per-codec and HDR options |
+| `ff-remux`    | Stream-copy trim and audio ops (no re-encode)  |
+| `ff-filter`   | libavfilter graph construction                 |
+| `ff-pipeline` | Decode → filter → encode transcode             |
+| `ff-stream`   | HLS / DASH adaptive streaming                  |
+| `ff-preview`  | Real-time playback, seek, proxy workflow       |
+| `ff-render`   | GPU compositing (wgpu)                          |
 
 ## Crate Family
 
@@ -265,13 +174,15 @@ Pipeline::builder()
 | `ff-format`   | Pure-Rust type definitions (no FFmpeg linkage) |
 | `ff-probe`    | Read-only media metadata extraction            |
 | `ff-decode`   | Video and audio decoding                       |
+| `ff-analysis` | Media analysis (scene / silence / BPM / scopes)|
 | `ff-encode`   | Video and audio encoding                       |
+| `ff-remux`    | Stream-copy remux (trim, audio ops), no re-encode |
 | `ff-filter`   | Filter graph operations                        |
 | `ff-pipeline` | Decode, filter, encode pipeline                |
 | `ff-stream`   | HLS / DASH adaptive streaming output           |
 | `ff-preview`  | Real-time preview and proxy workflow           |
 | `ff-render`   | GPU compositing pipeline (wgpu)                |
-| `avio`        | Editing engine + facade (this crate)           |
+| `avio`        | Editing engine (this crate)                    |
 
 ## MSRV
 

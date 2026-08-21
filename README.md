@@ -1,22 +1,20 @@
 # avio
 
-A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of model-agnostic FFmpeg primitive crates.
+A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of model-free FFmpeg primitive crates.
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
 [![Codecov](https://codecov.io/gh/itsakeyfut/avio/branch/main/graph/badge.svg)](https://codecov.io/gh/itsakeyfut/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> Coverage is a **trend and gap indicator, not a single target**. It is measured on macOS (Homebrew full FFmpeg), because the Linux CI FFmpeg has no individual filters, so filter/integration tests skip there. Even on macOS some tests are probe-, hardware-, or feature-gated (e.g. `wgpu`, `gpl`) and skip depending on the runner, so genuinely-tested paths can read as uncovered. Windows is not a coverage target (its CI job only runs `cargo check`, no tests), so `#[cfg(windows)]` branches are a known measurement gap. The check is informational and never blocks a merge.
+> **Status:** avio is pre-1.0. The API is still evolving and may change between minor versions.
 
-## Overview
+## What is avio?
 
-`avio` is an **editing engine** built on a family of model-agnostic FFmpeg **primitive** crates:
-
-- **`avio` (the engine)** owns the editing model (`Timeline` / `Clip`, the model-to-frame derivation, and edit history) and re-exports the primitives behind feature flags. It answers *what* to edit.
-- **The `ff-*` primitives** handle execution (decode, encode, filter, composite one frame, stream) and know nothing about timelines, tracks, or edits. They answer *how* to execute, so each is usable on its own, without the engine.
-
-The public API is safe: every unsafe FFmpeg call is encapsulated, so application code never needs `unsafe`. It also aims to be ergonomic in practice: builder APIs, typed formats, and errors that carry human-readable context instead of raw FFmpeg return codes. The goal is to be a foundation for video delivery services and video editing applications written in Rust. It does not try to cover every FFmpeg feature.
+- **Safe by default**: every unsafe FFmpeg call is encapsulated, so application code never needs `unsafe`.
+- **Ergonomic**: builder APIs, typed formats, and errors that carry human-readable context instead of raw FFmpeg return codes.
+- **Two layers**: an opinionated editing engine on top of model-free FFmpeg primitives, so you can adopt the whole engine or depend on a single `ff-*` crate (see [Design Philosophy](#design-philosophy)).
+- **Focused**: a foundation for video delivery services and video editing applications in Rust; it does not try to cover every FFmpeg feature.
 
 ```rust
 use ff_probe::open;
@@ -46,9 +44,21 @@ let mut encoder = VideoEncoder::create("output.mp4")
 encoder.finish()?;
 ```
 
+## Design Philosophy
+
+avio is two layers: an opinionated editing **engine** on top of model-free FFmpeg **primitive** crates. Adopt the whole engine, or reach for a single primitive.
+
+### avio (the engine)
+
+`avio` commits to one editing model: tracks, a per-clip effect stack, keyframes, and compositing, with model-to-frame derivation and undo/redo history. If that model fits your app, depend on `avio`, drive `Timeline` / `Clip`, and get a preview that matches the exported result. The engine answers *what* to edit.
+
+### FFmpeg primitive crates
+
+The `ff-*` crates handle execution (decode, encode, filter, composite one frame, stream) and know nothing about timelines, tracks, or edits. They are model-free by construction (the editing model lives only in `avio`, at the top of the dependency graph), so nothing forces avio's model on you. Each is usable on its own: build a different editing model (a node-graph compositor, a magnetic timeline), or just do safe Rust media plumbing (decode, encode, transcode, stream). The primitives answer *how* to execute. See [`ff-decode`](./crates/ff-decode) for a decode-only example.
+
 ## Installation
 
-Add the `avio` engine (which re-exports the primitives), or depend on a single `ff-*` primitive on its own:
+Add the `avio` engine, or individual `ff-*` primitives:
 
 ```toml
 [dependencies]
@@ -81,106 +91,15 @@ brew install ffmpeg
 sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 ```
 
-## Usage
+## Documentation
 
-### Decode
-
-```rust
-use ff_decode::{VideoDecoder, AudioDecoder, SeekMode};
-use ff_format::{PixelFormat, SampleFormat};
-use std::time::Duration;
-
-// Video
-let mut decoder = VideoDecoder::open("video.mp4")
-    .output_format(PixelFormat::Rgba)
-    .build()?;
-
-while let Some(frame) = decoder.decode_one()? {
-    // frame.planes() contains pixel data
-}
-
-// Seek and decode a single frame
-decoder.seek(Duration::from_secs(30), SeekMode::Exact)?;
-let frame = decoder.decode_one()?;
-
-// Audio
-let mut decoder = AudioDecoder::open("audio.mp3")
-    .output_format(SampleFormat::F32)
-    .output_sample_rate(48000)
-    .build()?;
-
-while let Some(frame) = decoder.decode_one()? {
-    // frame.planes() contains audio samples
-}
-```
-
-### Encode
-
-```rust
-use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode, Preset};
-
-// Automatically selects an LGPL-compatible encoder (hardware or VP9/AV1 fallback)
-let mut encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 30.0)
-    .video_codec(VideoCodec::H264)
-    .bitrate_mode(BitrateMode::Crf(23))
-    .preset(Preset::Fast)
-    .audio(48000, 2)
-    .audio_codec(AudioCodec::Aac)
-    .build()?;
-
-for frame in video_frames {
-    encoder.push_video(&frame)?;
-}
-encoder.finish()?;
-```
-
-### Hardware acceleration
-
-```rust
-use ff_decode::{VideoDecoder, HardwareAccel};
-use ff_encode::{VideoEncoder, HardwareEncoder};
-
-// Decode with GPU
-let decoder = VideoDecoder::open("video.mp4")
-    .hardware_accel(HardwareAccel::Auto)
-    .build()?;
-
-// Encode with GPU
-let encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 60.0)
-    .hardware_encoder(HardwareEncoder::Auto)
-    .build()?;
-```
-
-See [docs.rs/avio](https://docs.rs/avio) for the full API.
-
-## Engine or primitives
-
-`avio` (the engine) is opinionated: it commits to one editing model (tracks, a per-clip effect stack, keyframes, and compositing). If that fits your app, depend on `avio` and drive `Timeline` / `Clip`.
-
-If it does not (a node-graph compositor, a magnetic timeline, or no timeline at all), depend on the `ff-*` primitives directly and build your own model. The primitives are model-free by construction (the editing model lives only in `avio`, at the top of the dependency graph), so nothing forces avio's model on you. Safe Rust media plumbing (decode, encode, transcode, stream) is also a first-class use of a single `ff-*` crate.
-
-A single primitive, used without the engine:
-
-```rust
-// Cargo.toml: ff-decode = "0.16"
-use ff_decode::VideoDecoder;
-use ff_format::PixelFormat;
-
-let mut decoder = VideoDecoder::open("video.mp4")
-    .output_format(PixelFormat::Rgba)
-    .build()?;
-
-while let Some(frame) = decoder.decode_one()? {
-    // frame.planes() contains pixel data
-}
-```
+API documentation is on [docs.rs/avio](https://docs.rs/avio); each `ff-*` primitive is documented on its own docs.rs page (linked in [Crates](#crates)).
 
 ## Crates
 
 | Crate | Description | crates.io | docs.rs |
 |-------|-------------|-----------|---------|
+| [`avio`](./crates/avio) | Editing engine: owns the editing model (Timeline/Clip, derivation, history); re-exports the primitives | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
 | [`ff-probe`](./crates/ff-probe) | Media metadata extraction | [![](https://img.shields.io/crates/v/ff-probe.svg)](https://crates.io/crates/ff-probe) | [![](https://docs.rs/ff-probe/badge.svg)](https://docs.rs/ff-probe) |
 | [`ff-decode`](./crates/ff-decode) | Video and audio decoding | [![](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode) | [![](https://docs.rs/ff-decode/badge.svg)](https://docs.rs/ff-decode) |
 | [`ff-analysis`](./crates/ff-analysis) | Media analysis (scene, silence, BPM, scopes) | [![](https://img.shields.io/crates/v/ff-analysis.svg)](https://crates.io/crates/ff-analysis) | [![](https://docs.rs/ff-analysis/badge.svg)](https://docs.rs/ff-analysis) |
@@ -194,7 +113,6 @@ while let Some(frame) = decoder.decode_one()? {
 | [`ff-format`](./crates/ff-format) | Shared type definitions | [![](https://img.shields.io/crates/v/ff-format.svg)](https://crates.io/crates/ff-format) | [![](https://docs.rs/ff-format/badge.svg)](https://docs.rs/ff-format) |
 | [`ff-common`](./crates/ff-common) | Common traits and buffer pooling | [![](https://img.shields.io/crates/v/ff-common.svg)](https://crates.io/crates/ff-common) | [![](https://docs.rs/ff-common/badge.svg)](https://docs.rs/ff-common) |
 | [`ff-sys`](./crates/ff-sys) | Low-level FFmpeg FFI bindings | [![](https://img.shields.io/crates/v/ff-sys.svg)](https://crates.io/crates/ff-sys) | [![](https://docs.rs/ff-sys/badge.svg)](https://docs.rs/ff-sys) |
-| [`avio`](./crates/avio) | Editing engine: owns the editing model (Timeline/Clip, derivation, history); re-exports the primitives | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
 
 ## Feature flags
 
@@ -220,7 +138,7 @@ The `avio` facade re-exports the member crates behind cargo features:
 
 ## Versioning
 
-As of v0.16.0 the crates version **independently**: each crate's version reflects its own change cadence, like `tokio` or `http`. A stable `ff-format` can reach 1.0 while `ff-filter` keeps iterating at 0.x, so the numbers across crates will diverge over time. Check [crates.io](https://crates.io/crates/avio) for each crate's current version rather than assuming a shared one. Versions were released in lockstep through v0.15.x.
+All crates in this repository (`avio` and the `ff-*` family) share one workspace version, defined in `[workspace.package]` in `Cargo.toml`, and are published together. Their version numbers always move in **lockstep**; the shared version is bumped only when the crates advance as a set.
 
 ## Platform support
 
@@ -250,9 +168,7 @@ A non-linear video editor and the main driver of the library's API. It exercises
 
 ## Contributing
 
-Pull requests, bug reports, and feature requests are welcome. See [CONTRIBUTING](.github/CONTRIBUTING.md), and look for issues labeled [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22).
-
-`avio-editor-demo` drives most API changes, so it is a good place to see what is needed next.
+Pull requests, bug reports, and feature requests are welcome. See [CONTRIBUTING](.github/CONTRIBUTING.md), and look for issues labeled [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22). `avio-editor-demo` drives most API changes, so it is a good place to see what is needed next.
 
 ## Minimum Supported Rust Version
 
