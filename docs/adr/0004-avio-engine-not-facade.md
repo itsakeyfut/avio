@@ -20,8 +20,8 @@ primitive usage (`avio::VideoDecoder`, `Pipeline`, …), so `avio` reads as a
 general-purpose FFmpeg wrapper rather than an editing engine, and it competes on
 the same axis as `ffmpeg-next` / `rsmpeg`. It is also a large re-export and
 feature matrix to keep in sync. This record decides to drop the facade role.
-`avio` is pre-1.0, so this is the moment to change the public surface. It is
-`proposed`; the change lands as a phased deprecation in later PRs.
+`avio` is pre-1.0 with few external users, so this is the moment to change the
+public surface. It is `proposed`; the change lands in later PRs.
 
 ## Decision Drivers
 
@@ -66,9 +66,10 @@ What goes is the public re-export of the standalone primitive types
 `ff-render` directly; lockstep versioning (the shared `[workspace.package]`
 version in `Cargo.toml`) keeps the multi-crate dependency painless.
 
-Delivered as a phased deprecation: mark the primitive-engine re-exports
-`#[deprecated]` for one release with a migration note, then remove them and
-rewrite the `avio` README / Quick Start engine-first.
+Delivered as a direct removal: `avio` is pre-1.0 with few external users, so the
+primitive-engine re-exports are removed outright rather than through a
+`#[deprecated]` window, and the `avio` README / Quick Start is rewritten
+engine-first.
 
 Pure-model-only is rejected: the model API cannot avoid surfacing `ff-format`
 value types, so a strict "nothing from `ff-*`" is not actually achievable and
@@ -86,9 +87,8 @@ a role being removed.
 * `avio-examples` and the docs build against the engine surface (`Timeline` /
   `Clip` / `Editor` plus model-facing types) and import no primitive engine from
   `avio`.
-* During the deprecation window, the re-exports carry `#[deprecated]` with a
-  migration note; a `-D deprecated` build of `avio-examples` fails until they are
-  migrated.
+* `avio-examples` builds after the re-exports are removed, importing the
+  primitives it needs from the `ff-*` crates directly.
 
 Until the PRs land, this record is the only statement of the direction; the status
 is honest, not enforced.
@@ -149,6 +149,6 @@ is honest, not enforced.
 * Architecture: the engine/primitive separation (#1326) in
   `docs/specs/engine-and-primitives.md`.
 * Related: ADR-0003 (`ff-sys` curated safe layer) shares the "curated and
-  opinionated, not general-purpose" philosophy. The `#[deprecated]` pass and the
+  opinionated, not general-purpose" philosophy. The re-export removal and the
   engine-first README rewrite are the implementation, tracked separately (engine
   maturity, v0.17.0+).
