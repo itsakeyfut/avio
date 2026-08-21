@@ -129,28 +129,21 @@ impl VideoDecoderInner {
         }
 
         // 3. Flush decoder buffers to clear any cached frames
-        // SAFETY: codec_ctx is valid: owned by VideoDecoderInner, initialized via avcodec_open2
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
 
         // 4. Drain any remaining frames from the decoder after flush
         // This ensures no stale frames are returned after the seek
-        // SAFETY:
-        // - codec_ctx is valid: owned by VideoDecoderInner, initialized via avcodec_open2
-        // - frame is valid: allocated in constructor, owned by VideoDecoderInner
+        // SAFETY: frame is valid: allocated in constructor, owned by VideoDecoderInner
         unsafe {
             loop {
-                let ret = ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame);
-                if ret == ff_sys::error_codes::EAGAIN || ret == ff_sys::error_codes::EOF {
-                    // No more frames in the decoder buffer
-                    break;
-                } else if ret == 0 {
+                match self.codec_ctx.receive_frame(self.frame) {
                     // Got a frame, unref it and continue draining
-                    ff_sys::av_frame_unref(self.frame);
-                } else {
+                    Ok(()) => ff_sys::av_frame_unref(self.frame),
+                    // No more frames in the decoder buffer
+                    Err(e) if e.is_eagain() || e.is_eof() => break,
                     // Other error, break out
-                    break;
+                    Err(_) => break,
                 }
             }
         }
@@ -245,10 +238,8 @@ impl VideoDecoderInner {
     /// This clears any cached frames and resets the decoder state.
     /// The decoder is ready to receive new packets after flushing.
     pub(crate) fn flush(&mut self) {
-        // SAFETY: codec_ctx is valid and owned by this instance
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
         self.eof = false;
     }
 
@@ -545,10 +536,8 @@ impl VideoDecoderInner {
         self.stream_index = stream_index as i32;
 
         // Flush codec buffers to discard stale decoded state from before the drop.
-        // SAFETY: self.codec_ctx is valid and has not been freed.
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
 
         self.eof = false;
         Ok(())

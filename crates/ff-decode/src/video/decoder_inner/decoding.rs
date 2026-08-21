@@ -37,112 +37,117 @@ impl VideoDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                let ret = ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame);
+                match self.codec_ctx.receive_frame(self.frame) {
+                    Ok(()) => {
+                        // Successfully received a frame — reset corrupt-stream counter.
+                        self.consecutive_invalid = 0;
 
-                if ret == 0 {
-                    // Successfully received a frame — reset corrupt-stream counter.
-                    self.consecutive_invalid = 0;
+                        // Check if this is a hardware frame and transfer to CPU memory if needed
+                        self.transfer_hardware_frame_if_needed()?;
 
-                    // Check if this is a hardware frame and transfer to CPU memory if needed
-                    self.transfer_hardware_frame_if_needed()?;
-
-                    // SAFETY: self.frame is valid and non-null after avcodec_receive_frame succeeded.
-                    let w = (*self.frame).width as u32;
-                    let h = (*self.frame).height as u32;
-                    if w > 32_768 || h > 32_768 {
-                        log::warn!(
-                            "frame rejected reason=unsupported_resolution width={w} height={h}"
-                        );
-                        return Err(DecodeError::UnsupportedResolution {
-                            width: w,
-                            height: h,
-                        });
-                    }
-
-                    let video_frame = self.convert_frame_to_video_frame()?;
-
-                    // Update position based on frame timestamp
-                    let pts = (*self.frame).pts;
-                    if pts != ff_sys::AV_NOPTS_VALUE {
-                        let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-                        let time_base = (*(*stream)).time_base;
-                        let timestamp_secs =
-                            pts as f64 * time_base.num as f64 / time_base.den as f64;
-                        self.position = Duration::from_secs_f64(timestamp_secs);
-                    }
-
-                    return Ok(Some(video_frame));
-                } else if ret == ff_sys::error_codes::EAGAIN {
-                    // Need to send more packets to the decoder
-                    // Read a packet from the file
-                    let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
-
-                    if read_ret == ff_sys::error_codes::EOF {
-                        // End of file - flush the decoder
-                        ff_sys::avcodec_send_packet(self.codec_ctx, ptr::null());
-                        self.eof = true;
-                        continue;
-                    } else if read_ret < 0 {
-                        return Err(if let Some(url) = &self.url {
-                            // Network source: map to typed variant so reconnect can detect it.
-                            crate::network::map_network_error(
-                                read_ret,
-                                crate::network::sanitize_url(url),
-                            )
-                        } else {
-                            DecodeError::Ffmpeg {
-                                code: read_ret,
-                                message: format!(
-                                    "Failed to read frame: {}",
-                                    ff_sys::av_error_string(read_ret)
-                                ),
-                            }
-                        });
-                    }
-
-                    // Check if this packet belongs to the video stream
-                    if (*self.packet).stream_index == self.stream_index {
-                        // Send the packet to the decoder
-                        let send_ret = ff_sys::avcodec_send_packet(self.codec_ctx, self.packet);
-                        // SAFETY: self.packet is valid and non-null; pts is a plain i64 field.
-                        let pkt_pts = (*self.packet).pts;
-                        ff_sys::av_packet_unref(self.packet);
-
-                        if send_ret == ff_sys::error_codes::AVERROR_INVALIDDATA {
-                            log::warn!("packet skipped reason=invalid_data pts={pkt_pts}");
-                            self.consecutive_invalid += 1;
-                            if self.consecutive_invalid >= 32 {
-                                log::warn!(
-                                    "stream corrupted consecutive_invalid_packets={}",
-                                    self.consecutive_invalid
-                                );
-                                return Err(DecodeError::StreamCorrupted {
-                                    consecutive_invalid_packets: self.consecutive_invalid,
-                                });
-                            }
-                            // Do not return error; fall through to read the next packet.
-                        } else if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
-                            return Err(DecodeError::Ffmpeg {
-                                code: send_ret,
-                                message: format!(
-                                    "Failed to send packet: {}",
-                                    ff_sys::av_error_string(send_ret)
-                                ),
+                        // SAFETY: self.frame is valid and non-null after receive_frame succeeded.
+                        let w = (*self.frame).width as u32;
+                        let h = (*self.frame).height as u32;
+                        if w > 32_768 || h > 32_768 {
+                            log::warn!(
+                                "frame rejected reason=unsupported_resolution width={w} height={h}"
+                            );
+                            return Err(DecodeError::UnsupportedResolution {
+                                width: w,
+                                height: h,
                             });
                         }
-                    } else {
-                        // Not our stream, unref and continue
-                        ff_sys::av_packet_unref(self.packet);
+
+                        let video_frame = self.convert_frame_to_video_frame()?;
+
+                        // Update position based on frame timestamp
+                        let pts = (*self.frame).pts;
+                        if pts != ff_sys::AV_NOPTS_VALUE {
+                            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+                            let time_base = (*(*stream)).time_base;
+                            let timestamp_secs =
+                                pts as f64 * time_base.num as f64 / time_base.den as f64;
+                            self.position = Duration::from_secs_f64(timestamp_secs);
+                        }
+
+                        return Ok(Some(video_frame));
                     }
-                } else if ret == ff_sys::error_codes::EOF {
-                    // Decoder has been fully flushed
-                    self.eof = true;
-                    return Ok(None);
-                } else {
-                    return Err(DecodeError::DecodingFailed {
-                        timestamp: Some(self.position),
-                        reason: ff_sys::av_error_string(ret),
-                    });
+                    Err(e) if e.is_eagain() => {
+                        // Need to send more packets to the decoder
+                        // Read a packet from the file
+                        let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
+
+                        if read_ret == ff_sys::error_codes::EOF {
+                            // End of file - flush the decoder
+                            let _ = self.codec_ctx.send_packet(ptr::null());
+                            self.eof = true;
+                            continue;
+                        } else if read_ret < 0 {
+                            return Err(if let Some(url) = &self.url {
+                                // Network source: map to typed variant so reconnect can detect it.
+                                crate::network::map_network_error(
+                                    read_ret,
+                                    crate::network::sanitize_url(url),
+                                )
+                            } else {
+                                DecodeError::Ffmpeg {
+                                    code: read_ret,
+                                    message: format!(
+                                        "Failed to read frame: {}",
+                                        ff_sys::av_error_string(read_ret)
+                                    ),
+                                }
+                            });
+                        }
+
+                        // Check if this packet belongs to the video stream
+                        if (*self.packet).stream_index == self.stream_index {
+                            // Send the packet to the decoder
+                            let send_result = self.codec_ctx.send_packet(self.packet);
+                            // SAFETY: self.packet is valid and non-null; pts is a plain i64 field.
+                            let pkt_pts = (*self.packet).pts;
+                            ff_sys::av_packet_unref(self.packet);
+
+                            if let Err(se) = send_result {
+                                if se.code() == ff_sys::error_codes::AVERROR_INVALIDDATA {
+                                    log::warn!("packet skipped reason=invalid_data pts={pkt_pts}");
+                                    self.consecutive_invalid += 1;
+                                    if self.consecutive_invalid >= 32 {
+                                        log::warn!(
+                                            "stream corrupted consecutive_invalid_packets={}",
+                                            self.consecutive_invalid
+                                        );
+                                        return Err(DecodeError::StreamCorrupted {
+                                            consecutive_invalid_packets: self.consecutive_invalid,
+                                        });
+                                    }
+                                    // Do not return error; fall through to read the next packet.
+                                } else if !se.is_eagain() {
+                                    return Err(DecodeError::Ffmpeg {
+                                        code: se.code(),
+                                        message: format!(
+                                            "Failed to send packet: {}",
+                                            ff_sys::av_error_string(se.code())
+                                        ),
+                                    });
+                                }
+                            }
+                        } else {
+                            // Not our stream, unref and continue
+                            ff_sys::av_packet_unref(self.packet);
+                        }
+                    }
+                    Err(e) if e.is_eof() => {
+                        // Decoder has been fully flushed
+                        self.eof = true;
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        return Err(DecodeError::DecodingFailed {
+                            timestamp: Some(self.position),
+                            reason: ff_sys::av_error_string(e.code()),
+                        });
+                    }
                 }
             }
         }
