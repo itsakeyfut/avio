@@ -117,7 +117,9 @@ impl AudioFrame {
             SampleFormat::F64 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|b| {
                         f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
                     })
@@ -128,7 +130,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(8).enumerate() {
+                        for (i, b) in bytes.as_chunks::<8>().0.iter().enumerate() {
                             out[i * ch_count + ch] = f64::from_le_bytes([
                                 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
                             ]) as f32;
@@ -140,7 +142,9 @@ impl AudioFrame {
             SampleFormat::I16 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / f32::from(i16::MAX))
                     .collect()
             }
@@ -149,7 +153,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(2).enumerate() {
+                        for (i, b) in bytes.as_chunks::<2>().0.iter().enumerate() {
                             out[i * ch_count + ch] =
                                 f32::from(i16::from_le_bytes([b[0], b[1]])) / f32::from(i16::MAX);
                         }
@@ -160,7 +164,9 @@ impl AudioFrame {
             SampleFormat::I32 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / i32::MAX as f32)
                     .collect()
             }
@@ -169,7 +175,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(4).enumerate() {
+                        for (i, b) in bytes.as_chunks::<4>().0.iter().enumerate() {
                             out[i * ch_count + ch] = i32::from_le_bytes([b[0], b[1], b[2], b[3]])
                                 as f32
                                 / i32::MAX as f32;
@@ -250,7 +256,9 @@ impl AudioFrame {
             SampleFormat::F32 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|b| {
                         let s = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                         (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
@@ -262,7 +270,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(4).enumerate() {
+                        for (i, b) in bytes.as_chunks::<4>().0.iter().enumerate() {
                             let s = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                             out[i * ch_count + ch] =
                                 (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
@@ -274,7 +282,9 @@ impl AudioFrame {
             SampleFormat::F64 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|b| {
                         let s =
                             f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
@@ -287,7 +297,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(8).enumerate() {
+                        for (i, b) in bytes.as_chunks::<8>().0.iter().enumerate() {
                             let s = f64::from_le_bytes([
                                 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
                             ]);
@@ -301,7 +311,9 @@ impl AudioFrame {
             SampleFormat::I32 => {
                 let bytes = self.data();
                 bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|b| (i32::from_le_bytes([b[0], b[1], b[2], b[3]]) >> 16) as i16)
                     .collect()
             }
@@ -310,7 +322,7 @@ impl AudioFrame {
                 let ch_count = self.channels as usize;
                 for ch in 0..ch_count {
                     if let Some(bytes) = self.channel(ch) {
-                        for (i, b) in bytes.chunks_exact(4).enumerate() {
+                        for (i, b) in bytes.as_chunks::<4>().0.iter().enumerate() {
                             out[i * ch_count + ch] =
                                 (i32::from_le_bytes([b[0], b[1], b[2], b[3]]) >> 16) as i16;
                         }

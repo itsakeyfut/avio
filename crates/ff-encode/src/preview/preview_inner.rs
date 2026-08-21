@@ -329,9 +329,9 @@ unsafe fn encode_frame_as_png(
     // PNG encoder only accepts: rgb24, rgba, rgb48be, rgba64be, pal8, gray, …
     // Filter outputs (tile, palettegen) typically emit yuv420p or bgra.
     // We unconditionally convert to rgb24 to avoid EINVAL from avcodec_open2.
-    let converted_frame: *mut ff_sys::AVFrame;
+
     let needs_conversion = src_pix_fmt != AVPixelFormat_AV_PIX_FMT_RGB24;
-    if needs_conversion {
+    let converted_frame: *mut ff_sys::AVFrame = if needs_conversion {
         let cf = av_frame_alloc();
         if cf.is_null() {
             return Err(PreviewImageError::Ffmpeg {
@@ -379,10 +379,10 @@ unsafe fn encode_frame_as_png(
             av_frame_free(std::ptr::addr_of_mut!(f));
             return Err(PreviewImageError::from_ffmpeg_error(e));
         }
-        converted_frame = cf;
+        cf
     } else {
-        converted_frame = frame;
-    }
+        frame
+    };
 
     let encode_result = encode_frame_as_png_inner(converted_frame, output, width, height);
 

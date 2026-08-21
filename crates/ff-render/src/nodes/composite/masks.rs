@@ -138,7 +138,12 @@ impl RenderNodeCpu for ShapeMaskNode {
         if self.mask_rgba.len() != rgba.len() {
             return;
         }
-        for (base, mask) in rgba.chunks_exact_mut(4).zip(self.mask_rgba.chunks_exact(4)) {
+        for (base, mask) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.mask_rgba.as_chunks::<4>().0.iter())
+        {
             let keep = if mask[3] > 1 { 1.0_f32 } else { 0.0_f32 };
             let a = f32::from(base[3]) / 255.0;
             base[3] = ((a * keep).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -220,7 +225,12 @@ impl RenderNodeCpu for LumaMaskNode {
         if self.mask_rgba.len() != rgba.len() {
             return;
         }
-        for (base, mask) in rgba.chunks_exact_mut(4).zip(self.mask_rgba.chunks_exact(4)) {
+        for (base, mask) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.mask_rgba.as_chunks::<4>().0.iter())
+        {
             let mr = f32::from(mask[0]) / 255.0;
             let mg = f32::from(mask[1]) / 255.0;
             let mb = f32::from(mask[2]) / 255.0;
@@ -307,8 +317,10 @@ impl RenderNodeCpu for AlphaMatteNode {
             return;
         }
         for (fg, bg) in rgba
-            .chunks_exact_mut(4)
-            .zip(self.background_rgba.chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.background_rgba.as_chunks::<4>().0.iter())
         {
             let fa = f32::from(fg[3]) / 255.0;
             let ba = f32::from(bg[3]) / 255.0;

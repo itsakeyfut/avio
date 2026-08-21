@@ -117,8 +117,10 @@ impl RenderNodeCpu for BlendModeNode {
             return;
         }
         for (base, ov) in rgba
-            .chunks_exact_mut(4)
-            .zip(self.overlay_rgba.chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.overlay_rgba.as_chunks::<4>().0.iter())
         {
             let br = f32::from(base[0]) / 255.0;
             let bg = f32::from(base[1]) / 255.0;
