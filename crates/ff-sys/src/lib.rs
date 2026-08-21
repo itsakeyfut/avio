@@ -50,10 +50,12 @@ pub mod swscale;
 
 // ── Sub-modules ───────────────────────────────────────────────────────────────
 mod constants;
+mod error;
 pub mod error_codes;
 mod utils;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 pub use constants::{AV_NOPTS_VALUE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
+pub use error::AvError;
 pub use utils::{av_error_string, ensure_initialized};
 // check_av_error! is re-exported at the crate root automatically via #[macro_export]
