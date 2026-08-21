@@ -24,7 +24,9 @@ use crate::{
 pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
     ensure_initialized();
 
-    let ctx = ffi_swr_alloc();
+    // SAFETY: swr_alloc takes no arguments and allocates a fresh context;
+    // FFmpeg has been initialized above.
+    let ctx = unsafe { ffi_swr_alloc() };
     if ctx.is_null() {
         Err(crate::error_codes::ENOMEM)
     } else {
@@ -77,17 +79,22 @@ pub unsafe fn alloc_set_opts2(
 
     let mut ctx: *mut SwrContext = std::ptr::null_mut();
 
-    let ret = ffi_swr_alloc_set_opts2(
-        &mut ctx,
-        out_ch_layout,
-        out_sample_fmt,
-        out_sample_rate,
-        in_ch_layout,
-        in_sample_fmt,
-        in_sample_rate,
-        0,                    // log_offset
-        std::ptr::null_mut(), // log_ctx
-    );
+    // SAFETY: `&mut ctx` is a valid out-pointer; `out_ch_layout` and
+    // `in_ch_layout` are non-null (checked above) and remain valid for the
+    // duration of this call; the sample rates are positive (checked above).
+    let ret = unsafe {
+        ffi_swr_alloc_set_opts2(
+            &mut ctx,
+            out_ch_layout,
+            out_sample_fmt,
+            out_sample_rate,
+            in_ch_layout,
+            in_sample_fmt,
+            in_sample_rate,
+            0,                    // log_offset
+            std::ptr::null_mut(), // log_ctx
+        )
+    };
 
     if ret < 0 {
         Err(ret)
@@ -126,7 +133,9 @@ pub unsafe fn init(ctx: *mut SwrContext) -> Result<(), c_int> {
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_swr_init(ctx);
+    // SAFETY: `ctx` is non-null (checked above) and points to a context
+    // allocated and configured by the caller.
+    let ret = unsafe { ffi_swr_init(ctx) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -149,7 +158,8 @@ pub unsafe fn is_initialized(ctx: *const SwrContext) -> bool {
         return false;
     }
 
-    ffi_swr_is_initialized(ctx.cast_mut()) != 0
+    // SAFETY: `ctx` is non-null (checked above) and points to a valid context.
+    unsafe { ffi_swr_is_initialized(ctx.cast_mut()) != 0 }
 }
 
 /// Free a resampling context.
@@ -170,8 +180,13 @@ pub unsafe fn is_initialized(ctx: *const SwrContext) -> bool {
 /// - `ctx` being null
 /// - `*ctx` being null
 pub unsafe fn free(ctx: *mut *mut SwrContext) {
-    if !ctx.is_null() && !(*ctx).is_null() {
-        ffi_swr_free(ctx);
+    // SAFETY: `ctx` is checked non-null before `*ctx` is dereferenced (via
+    // short-circuit `&&`); `*ctx` is either null or a context allocated by
+    // `alloc`/`alloc_set_opts2`, which swr_free frees and sets to null.
+    unsafe {
+        if !ctx.is_null() && !(*ctx).is_null() {
+            ffi_swr_free(ctx);
+        }
     }
 }
 

@@ -38,6 +38,8 @@ pub const DBLP: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_DBLP;
 ///
 /// Returns the number of bytes per sample, or a negative value for invalid formats.
 pub fn bytes_per_sample(sample_fmt: AVSampleFormat) -> i32 {
+    // SAFETY: av_get_bytes_per_sample reads only the enum value passed by
+    // value and dereferences no pointers.
     unsafe { ffi_av_get_bytes_per_sample(sample_fmt) }
 }
 
@@ -54,6 +56,8 @@ pub fn bytes_per_sample(sample_fmt: AVSampleFormat) -> i32 {
 ///
 /// Returns `true` if the format is planar, `false` if packed.
 pub fn is_planar(sample_fmt: AVSampleFormat) -> bool {
+    // SAFETY: av_sample_fmt_is_planar reads only the enum value passed by
+    // value and dereferences no pointers.
     unsafe { ffi_av_sample_fmt_is_planar(sample_fmt) != 0 }
 }
 

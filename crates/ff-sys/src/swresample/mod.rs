@@ -23,6 +23,11 @@ pub use convert::{convert, estimate_output_samples, get_delay};
 
 #[cfg(test)]
 mod tests {
+    // Test-only scaffolding drives a raw FFmpeg decode pipeline directly, so the
+    // helper `unsafe fn`s keep the terse pre-2024 style. The library's safe layer
+    // is held to `unsafe_op_in_unsafe_fn` at the crate root.
+    #![allow(unsafe_op_in_unsafe_fn)]
+
     use super::*;
 
     // ========================================================================
@@ -179,6 +184,9 @@ mod tests {
 
     impl Drop for AudioDecoder {
         fn drop(&mut self) {
+            // SAFETY: each pointer is null-checked before it is freed and is owned
+            //         solely by this decoder; FFmpeg frees each and writes null back,
+            //         so no double free is possible.
             unsafe {
                 if !self.packet.is_null() {
                     crate::av_packet_free(&mut self.packet);
@@ -358,7 +366,7 @@ mod tests {
                 // Stage 1: Convert to S16
                 let mid_count = estimate_output_samples(44100, in_sample_rate, nb_samples);
                 let mut mid_data: Vec<i16> = vec![0; mid_count as usize * 2];
-                let mut mid_ptr = mid_data.as_mut_ptr() as *mut u8;
+                let mid_ptr = mid_data.as_mut_ptr() as *mut u8;
                 let mut mid_ptrs: [*mut u8; 1] = [mid_ptr];
 
                 let mid_result = convert(
@@ -459,7 +467,7 @@ mod tests {
                 // Convert to mono
                 let mono_count = nb_samples + 256;
                 let mut mono_data: Vec<f32> = vec![0.0; mono_count as usize];
-                let mut mono_ptr = mono_data.as_mut_ptr() as *mut u8;
+                let mono_ptr = mono_data.as_mut_ptr() as *mut u8;
                 let mut mono_ptrs: [*mut u8; 1] = [mono_ptr];
 
                 let mono_result = convert(

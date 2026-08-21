@@ -12,7 +12,6 @@
 //! - Calling functions in the correct order (e.g., alloc before open, open before send/receive)
 
 use std::os::raw::c_int;
-use std::ptr;
 
 use crate::{
     AVCodec, AVCodecContext, AVCodecID, AVCodecParameters, AVDictionary, AVFrame, AVPacket,
@@ -53,7 +52,10 @@ use crate::{
 pub unsafe fn find_decoder(codec_id: AVCodecID) -> Option<*const AVCodec> {
     ensure_initialized();
 
-    let codec = ffi_avcodec_find_decoder(codec_id);
+    // SAFETY: `ffi_avcodec_find_decoder` is a pure table lookup that takes a codec
+    // ID by value and dereferences no caller pointer; it always returns either a
+    // valid static codec pointer or null.
+    let codec = unsafe { ffi_avcodec_find_decoder(codec_id) };
     if codec.is_null() { None } else { Some(codec) }
 }
 
@@ -79,7 +81,10 @@ pub unsafe fn find_decoder_by_name(name: *const i8) -> Option<*const AVCodec> {
         return None;
     }
 
-    let codec = ffi_avcodec_find_decoder_by_name(name);
+    // SAFETY: `name` was null-checked just above, so it is non-null here; the caller
+    // guarantees it is a valid null-terminated C string. The call reads only that
+    // string and returns a valid static codec pointer or null.
+    let codec = unsafe { ffi_avcodec_find_decoder_by_name(name) };
     if codec.is_null() { None } else { Some(codec) }
 }
 
@@ -101,7 +106,10 @@ pub unsafe fn find_decoder_by_name(name: *const i8) -> Option<*const AVCodec> {
 pub unsafe fn find_encoder(codec_id: AVCodecID) -> Option<*const AVCodec> {
     ensure_initialized();
 
-    let codec = ffi_avcodec_find_encoder(codec_id);
+    // SAFETY: `ffi_avcodec_find_encoder` is a pure table lookup that takes a codec
+    // ID by value and dereferences no caller pointer; it always returns either a
+    // valid static codec pointer or null.
+    let codec = unsafe { ffi_avcodec_find_encoder(codec_id) };
     if codec.is_null() { None } else { Some(codec) }
 }
 
@@ -127,7 +135,10 @@ pub unsafe fn find_encoder_by_name(name: *const i8) -> Option<*const AVCodec> {
         return None;
     }
 
-    let codec = ffi_avcodec_find_encoder_by_name(name);
+    // SAFETY: `name` was null-checked just above, so it is non-null here; the caller
+    // guarantees it is a valid null-terminated C string. The call reads only that
+    // string and returns a valid static codec pointer or null.
+    let codec = unsafe { ffi_avcodec_find_encoder_by_name(name) };
     if codec.is_null() { None } else { Some(codec) }
 }
 
@@ -152,7 +163,10 @@ pub unsafe fn find_encoder_by_name(name: *const i8) -> Option<*const AVCodec> {
 pub unsafe fn alloc_context3(codec: *const AVCodec) -> Result<*mut AVCodecContext, c_int> {
     ensure_initialized();
 
-    let ctx = ffi_avcodec_alloc_context3(codec);
+    // SAFETY: `codec` is either null (allowed, yields a generic context) or a valid
+    // codec pointer as guaranteed by the caller; the call only reads it and returns
+    // a freshly allocated context or null on allocation failure.
+    let ctx = unsafe { ffi_avcodec_alloc_context3(codec) };
     if ctx.is_null() {
         Err(crate::error_codes::ENOMEM)
     } else {
@@ -178,8 +192,14 @@ pub unsafe fn alloc_context3(codec: *const AVCodec) -> Result<*mut AVCodecContex
 /// - `ctx` being null
 /// - `*ctx` being null
 pub unsafe fn free_context(ctx: *mut *mut AVCodecContext) {
-    if !ctx.is_null() && !(*ctx).is_null() {
-        ffi_avcodec_free_context(ctx);
+    // SAFETY: `ctx` is checked for null before it is dereferenced (short-circuit),
+    // and `*ctx` is checked for null before being freed. The caller guarantees any
+    // non-null `*ctx` was allocated by `alloc_context3` and is not used afterwards;
+    // FFmpeg frees it and writes null back into `*ctx`.
+    unsafe {
+        if !ctx.is_null() && !(*ctx).is_null() {
+            ffi_avcodec_free_context(ctx);
+        }
     }
 }
 
@@ -210,7 +230,10 @@ pub unsafe fn parameters_from_context(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_parameters_from_context(par, ctx);
+    // SAFETY: both pointers were null-checked above, so they are non-null; the caller
+    // guarantees `par` points to a valid destination and `ctx` to a valid, opened
+    // codec context. The call only reads `ctx` and writes into `par`.
+    let ret = unsafe { ffi_avcodec_parameters_from_context(par, ctx) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -244,7 +267,10 @@ pub unsafe fn parameters_to_context(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_parameters_to_context(ctx, par);
+    // SAFETY: both pointers were null-checked above, so they are non-null; the caller
+    // guarantees `ctx` is an allocated but not-yet-opened context and `par` is valid
+    // codec parameters. The call reads `par` and writes into `ctx`.
+    let ret = unsafe { ffi_avcodec_parameters_to_context(ctx, par) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -286,7 +312,10 @@ pub unsafe fn open2(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_open2(ctx, codec, options);
+    // SAFETY: `ctx` was null-checked above, so it is non-null; the caller guarantees
+    // it is an allocated, not-yet-opened context and that `codec`/`options` are
+    // either null or valid. FFmpeg initialises the context in place.
+    let ret = unsafe { ffi_avcodec_open2(ctx, codec, options) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -324,7 +353,10 @@ pub unsafe fn send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> Res
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_send_packet(ctx, pkt);
+    // SAFETY: `ctx` was null-checked above, so it is non-null; the caller guarantees
+    // it is a valid, open decoder context and that `pkt` is either null (flush) or a
+    // valid packet. FFmpeg reads the packet and mutates the decoder's internal state.
+    let ret = unsafe { ffi_avcodec_send_packet(ctx, pkt) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -358,7 +390,10 @@ pub unsafe fn receive_frame(ctx: *mut AVCodecContext, frame: *mut AVFrame) -> Re
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_receive_frame(ctx, frame);
+    // SAFETY: both pointers were null-checked above, so they are non-null; the caller
+    // guarantees `ctx` is a valid, open decoder context and `frame` is an allocated
+    // frame. FFmpeg reads the decoder state and writes the decoded frame into `frame`.
+    let ret = unsafe { ffi_avcodec_receive_frame(ctx, frame) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -396,7 +431,10 @@ pub unsafe fn send_frame(ctx: *mut AVCodecContext, frame: *const AVFrame) -> Res
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_send_frame(ctx, frame);
+    // SAFETY: `ctx` was null-checked above, so it is non-null; the caller guarantees
+    // it is a valid, open encoder context and that `frame` is either null (flush) or a
+    // valid frame. FFmpeg reads the frame and mutates the encoder's internal state.
+    let ret = unsafe { ffi_avcodec_send_frame(ctx, frame) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -430,7 +468,10 @@ pub unsafe fn receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> Re
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avcodec_receive_packet(ctx, pkt);
+    // SAFETY: both pointers were null-checked above, so they are non-null; the caller
+    // guarantees `ctx` is a valid, open encoder context and `pkt` is an allocated
+    // packet. FFmpeg reads the encoder state and writes the encoded packet into `pkt`.
+    let ret = unsafe { ffi_avcodec_receive_packet(ctx, pkt) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -458,8 +499,12 @@ pub unsafe fn receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> Re
 /// This function does not return an error code as FFmpeg's `avcodec_flush_buffers()`
 /// returns void.
 pub unsafe fn flush_buffers(ctx: *mut AVCodecContext) {
-    if !ctx.is_null() {
-        ffi_avcodec_flush_buffers(ctx);
+    // SAFETY: `ctx` is null-checked before use; when non-null the caller guarantees it
+    // is a valid, open codec context. FFmpeg only resets the context's internal state.
+    unsafe {
+        if !ctx.is_null() {
+            ffi_avcodec_flush_buffers(ctx);
+        }
     }
 }
 
@@ -515,6 +560,7 @@ mod tests {
     use super::*;
     use crate::AVCodecID_AV_CODEC_ID_H264;
     use std::ffi::CString;
+    use std::ptr;
 
     #[test]
     fn test_find_decoder_h264() {

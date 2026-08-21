@@ -42,6 +42,13 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // Declare the custom cfgs this build script may emit. Without this, the
+    // `unexpected_cfgs` lint fires on the hand-written wrapper modules now that
+    // the crate no longer carries a blanket `#![allow(warnings)]`.
+    println!("cargo::rustc-check-cfg=cfg(docsrs)");
+    println!("cargo::rustc-check-cfg=cfg(ffmpeg8)");
+    println!("cargo::rustc-check-cfg=cfg(ffmpeg_buffersrc_flag_u32)");
+
     // docs.rs does not have FFmpeg installed.  Emit empty bindings so that the
     // crate compiles; docsrs_stubs.rs (included by lib.rs) provides stub types.
     if env::var("DOCS_RS").is_ok() {

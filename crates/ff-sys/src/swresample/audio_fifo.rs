@@ -25,7 +25,7 @@ pub unsafe fn alloc(
     nb_samples: c_int,
 ) -> Result<*mut AVAudioFifo, c_int> {
     // SAFETY: caller guarantees parameters are valid
-    let fifo = crate::av_audio_fifo_alloc(sample_fmt, channels, nb_samples);
+    let fifo = unsafe { crate::av_audio_fifo_alloc(sample_fmt, channels, nb_samples) };
     if fifo.is_null() { Err(-1) } else { Ok(fifo) }
 }
 
@@ -36,7 +36,7 @@ pub unsafe fn alloc(
 /// `fifo` must be a valid non-null pointer returned by [`alloc`].
 pub unsafe fn free(fifo: *mut AVAudioFifo) {
     // SAFETY: caller guarantees fifo is valid
-    crate::av_audio_fifo_free(fifo);
+    unsafe { crate::av_audio_fifo_free(fifo) };
 }
 
 /// Write `nb_samples` samples from `data` into the FIFO.
@@ -56,7 +56,7 @@ pub unsafe fn write(
     nb_samples: c_int,
 ) -> Result<c_int, c_int> {
     // SAFETY: caller guarantees all pointers are valid
-    let ret = crate::av_audio_fifo_write(fifo, data, nb_samples);
+    let ret = unsafe { crate::av_audio_fifo_write(fifo, data, nb_samples) };
     if ret < 0 { Err(ret) } else { Ok(ret) }
 }
 
@@ -79,7 +79,7 @@ pub unsafe fn read(
     nb_samples: c_int,
 ) -> Result<c_int, c_int> {
     // SAFETY: caller guarantees all pointers are valid
-    let ret = crate::av_audio_fifo_read(fifo, data, nb_samples);
+    let ret = unsafe { crate::av_audio_fifo_read(fifo, data, nb_samples) };
     if ret < 0 { Err(ret) } else { Ok(ret) }
 }
 
@@ -90,5 +90,5 @@ pub unsafe fn read(
 /// `fifo` must be a valid non-null pointer.
 pub unsafe fn size(fifo: *mut AVAudioFifo) -> c_int {
     // SAFETY: caller guarantees fifo is valid
-    crate::av_audio_fifo_size(fifo)
+    unsafe { crate::av_audio_fifo_size(fifo) }
 }

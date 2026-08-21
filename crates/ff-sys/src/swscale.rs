@@ -196,18 +196,24 @@ pub unsafe fn get_context(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ctx = ffi_sws_getContext(
-        src_w,
-        src_h,
-        src_fmt,
-        dst_w,
-        dst_h,
-        dst_fmt,
-        flags,
-        std::ptr::null_mut(), // srcFilter
-        std::ptr::null_mut(), // dstFilter
-        std::ptr::null(),     // param
-    );
+    // SAFETY: `ensure_initialized` has run and the dimensions are validated as
+    // positive above. The srcFilter/dstFilter/param arguments are null, which
+    // `sws_getContext` accepts. The returned pointer is checked for null before
+    // it is handed back to the caller.
+    let ctx = unsafe {
+        ffi_sws_getContext(
+            src_w,
+            src_h,
+            src_fmt,
+            dst_w,
+            dst_h,
+            dst_fmt,
+            flags,
+            std::ptr::null_mut(), // srcFilter
+            std::ptr::null_mut(), // dstFilter
+            std::ptr::null(),     // param
+        )
+    };
 
     if ctx.is_null() {
         Err(crate::error_codes::ENOMEM)
@@ -232,7 +238,11 @@ pub unsafe fn get_context(
 /// This function safely handles a null pointer.
 pub unsafe fn free_context(ctx: *mut SwsContext) {
     if !ctx.is_null() {
-        ffi_sws_freeContext(ctx);
+        // SAFETY: `ctx` is non-null here and, per this function's contract, was
+        // allocated by `get_context` and has not been freed already.
+        unsafe {
+            ffi_sws_freeContext(ctx);
+        }
     }
 }
 
@@ -305,15 +315,21 @@ pub unsafe fn scale(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_sws_scale(
-        ctx,
-        src,
-        src_stride,
-        src_slice_y,
-        src_slice_h,
-        dst,
-        dst_stride,
-    );
+    // SAFETY: `ctx`, `src`, `dst`, and the two stride arrays are all non-null
+    // (checked above). Per the safety contract the plane and stride arrays are
+    // valid and sized for the formats and dimensions the context was created
+    // for, so `sws_scale` reads and writes only within those buffers.
+    let ret = unsafe {
+        ffi_sws_scale(
+            ctx,
+            src,
+            src_stride,
+            src_slice_y,
+            src_slice_h,
+            dst,
+            dst_stride,
+        )
+    };
 
     if ret < 0 { Err(ret) } else { Ok(ret) }
 }
@@ -331,9 +347,17 @@ pub unsafe fn scale(
 /// # Returns
 ///
 /// Returns `true` if the format can be used as a source format for scaling.
+///
+/// # Safety
+///
+/// This function dereferences no caller-provided pointers; it is `unsafe` only
+/// because it calls into the FFmpeg C API. `pix_fmt` must be a valid
+/// `AVPixelFormat` value.
 pub unsafe fn is_supported_input(pix_fmt: AVPixelFormat) -> bool {
     ensure_initialized();
-    ffi_sws_isSupportedInput(pix_fmt) != 0
+    // SAFETY: the query takes a plain pixel-format enum by value and reads no
+    // memory through pointers; the library is initialized above.
+    unsafe { ffi_sws_isSupportedInput(pix_fmt) != 0 }
 }
 
 /// Check if a pixel format is supported as output.
@@ -345,9 +369,17 @@ pub unsafe fn is_supported_input(pix_fmt: AVPixelFormat) -> bool {
 /// # Returns
 ///
 /// Returns `true` if the format can be used as a destination format for scaling.
+///
+/// # Safety
+///
+/// This function dereferences no caller-provided pointers; it is `unsafe` only
+/// because it calls into the FFmpeg C API. `pix_fmt` must be a valid
+/// `AVPixelFormat` value.
 pub unsafe fn is_supported_output(pix_fmt: AVPixelFormat) -> bool {
     ensure_initialized();
-    ffi_sws_isSupportedOutput(pix_fmt) != 0
+    // SAFETY: the query takes a plain pixel-format enum by value and reads no
+    // memory through pointers; the library is initialized above.
+    unsafe { ffi_sws_isSupportedOutput(pix_fmt) != 0 }
 }
 
 /// Check if endianness conversion is supported for a pixel format.
@@ -359,9 +391,17 @@ pub unsafe fn is_supported_output(pix_fmt: AVPixelFormat) -> bool {
 /// # Returns
 ///
 /// Returns `true` if endianness conversion is supported for the format.
+///
+/// # Safety
+///
+/// This function dereferences no caller-provided pointers; it is `unsafe` only
+/// because it calls into the FFmpeg C API. `pix_fmt` must be a valid
+/// `AVPixelFormat` value.
 pub unsafe fn is_supported_endianness_conversion(pix_fmt: AVPixelFormat) -> bool {
     ensure_initialized();
-    ffi_sws_isSupportedEndiannessConversion(pix_fmt) != 0
+    // SAFETY: the query takes a plain pixel-format enum by value and reads no
+    // memory through pointers; the library is initialized above.
+    unsafe { ffi_sws_isSupportedEndiannessConversion(pix_fmt) != 0 }
 }
 
 #[cfg(test)]
