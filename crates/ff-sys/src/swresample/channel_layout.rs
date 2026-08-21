@@ -18,7 +18,9 @@ use crate::{
 /// - If `ch_layout` is null, this function is a no-op (silently ignored).
 pub unsafe fn set_default(ch_layout: *mut AVChannelLayout, nb_channels: i32) {
     if !ch_layout.is_null() {
-        av_channel_layout_default(ch_layout, nb_channels);
+        // SAFETY: `ch_layout` is non-null (checked above) and points to storage
+        // the caller guarantees is valid to initialize.
+        unsafe { av_channel_layout_default(ch_layout, nb_channels) };
     }
 }
 
@@ -34,7 +36,9 @@ pub unsafe fn set_default(ch_layout: *mut AVChannelLayout, nb_channels: i32) {
 /// - If `ch_layout` is null, this function is a no-op (silently ignored).
 pub unsafe fn uninit(ch_layout: *mut AVChannelLayout) {
     if !ch_layout.is_null() {
-        av_channel_layout_uninit(ch_layout);
+        // SAFETY: `ch_layout` is non-null (checked above) and points to a valid
+        // channel layout to uninitialize.
+        unsafe { av_channel_layout_uninit(ch_layout) };
     }
 }
 
@@ -57,7 +61,9 @@ pub unsafe fn copy(dst: *mut AVChannelLayout, src: *const AVChannelLayout) -> Re
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = av_channel_layout_copy(dst, src);
+    // SAFETY: `dst` and `src` are both non-null (checked above) and point to
+    // valid channel layouts.
+    let ret = unsafe { av_channel_layout_copy(dst, src) };
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
 
@@ -80,7 +86,9 @@ pub unsafe fn is_equal(chl: *const AVChannelLayout, chl1: *const AVChannelLayout
         return false;
     }
 
-    av_channel_layout_compare(chl, chl1) == 0
+    // SAFETY: `chl` and `chl1` are both non-null (checked above) and point to
+    // valid channel layouts.
+    unsafe { av_channel_layout_compare(chl, chl1) == 0 }
 }
 
 /// Create a mono channel layout.
@@ -90,6 +98,7 @@ pub unsafe fn is_equal(chl: *const AVChannelLayout, chl1: *const AVChannelLayout
 /// Returns a mono (1 channel) layout.
 pub fn mono() -> AVChannelLayout {
     let mut layout = AVChannelLayout::default();
+    // SAFETY: `&mut layout` points to a valid, stack-allocated channel layout.
     unsafe {
         av_channel_layout_default(&mut layout, 1);
     }
@@ -103,6 +112,7 @@ pub fn mono() -> AVChannelLayout {
 /// Returns a stereo (2 channel) layout.
 pub fn stereo() -> AVChannelLayout {
     let mut layout = AVChannelLayout::default();
+    // SAFETY: `&mut layout` points to a valid, stack-allocated channel layout.
     unsafe {
         av_channel_layout_default(&mut layout, 2);
     }
@@ -122,6 +132,7 @@ pub fn stereo() -> AVChannelLayout {
 /// Returns a channel layout with the default configuration for `nb_channels`.
 pub fn with_channels(nb_channels: i32) -> AVChannelLayout {
     let mut layout = AVChannelLayout::default();
+    // SAFETY: `&mut layout` points to a valid, stack-allocated channel layout.
     unsafe {
         av_channel_layout_default(&mut layout, nb_channels);
     }

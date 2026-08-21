@@ -148,7 +148,10 @@ pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
     let mut ctx: *mut AVFormatContext = ptr::null_mut();
 
     // Open input file
-    let ret = ffi_avformat_open_input(&mut ctx, c_path.as_ptr(), ptr::null(), ptr::null_mut());
+    // SAFETY: `c_path` is a valid NUL-terminated C string whose binding outlives
+    //         this call; `ctx` is a valid out-pointer initialised to null.
+    let ret =
+        unsafe { ffi_avformat_open_input(&mut ctx, c_path.as_ptr(), ptr::null(), ptr::null_mut()) };
 
     if ret < 0 {
         return Err(ret);
@@ -292,26 +295,38 @@ pub unsafe fn open_input_image_sequence(
     // passing null falls back to FFmpeg's auto-detection from file extension.
     // SAFETY: string literal has no null bytes
     let image2_name = CString::new("image2").unwrap();
-    let input_fmt = crate::av_find_input_format(image2_name.as_ptr());
+    // SAFETY: `image2_name` is a valid C string whose binding outlives the call.
+    let input_fmt = unsafe { crate::av_find_input_format(image2_name.as_ptr()) };
 
     // Build options dictionary: framerate=<n>
     let mut opts: *mut crate::AVDictionary = ptr::null_mut();
     // SAFETY: string literals have no null bytes
     let framerate_key = CString::new("framerate").unwrap();
     let framerate_str = CString::new(framerate.to_string()).unwrap();
-    crate::av_dict_set(
-        ptr::addr_of_mut!(opts),
-        framerate_key.as_ptr(),
-        framerate_str.as_ptr(),
-        0,
-    );
+    // SAFETY: `opts` is a valid dictionary out-pointer initialised to null; the
+    //         key/value C string bindings outlive the call and are not retained
+    //         by FFmpeg after it returns.
+    unsafe {
+        crate::av_dict_set(
+            ptr::addr_of_mut!(opts),
+            framerate_key.as_ptr(),
+            framerate_str.as_ptr(),
+            0,
+        );
+    }
 
     let mut ctx: *mut AVFormatContext = ptr::null_mut();
-    let ret = ffi_avformat_open_input(&mut ctx, c_path.as_ptr(), input_fmt, &mut opts);
+    // SAFETY: `c_path` is a valid C string whose binding outlives the call;
+    //         `input_fmt` is null or a valid demuxer; `opts` and `ctx` are valid
+    //         out-pointers.
+    let ret = unsafe { ffi_avformat_open_input(&mut ctx, c_path.as_ptr(), input_fmt, &mut opts) };
 
     // Free any options that FFmpeg did not consume.
     if !opts.is_null() {
-        crate::av_dict_free(ptr::addr_of_mut!(opts));
+        // SAFETY: `opts` is non-null (checked) and was allocated by `av_dict_set`.
+        unsafe {
+            crate::av_dict_free(ptr::addr_of_mut!(opts));
+        }
     }
 
     if ret < 0 {
@@ -341,8 +356,14 @@ pub unsafe fn open_input_image_sequence(
 /// - `ctx` being null
 /// - `*ctx` being null
 pub unsafe fn close_input(ctx: *mut *mut AVFormatContext) {
-    if !ctx.is_null() && !(*ctx).is_null() {
-        ffi_avformat_close_input(ctx);
+    // SAFETY: The caller guarantees `ctx` is either null or a valid pointer to a
+    //         context pointer allocated by `open_input`. Dereferencing `ctx` is
+    //         guarded by the null check, and `avformat_close_input` tolerates a
+    //         null `*ctx`.
+    unsafe {
+        if !ctx.is_null() && !(*ctx).is_null() {
+            ffi_avformat_close_input(ctx);
+        }
     }
 }
 
@@ -371,7 +392,8 @@ pub unsafe fn find_stream_info(ctx: *mut AVFormatContext) -> Result<(), c_int> {
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avformat_find_stream_info(ctx, ptr::null_mut());
+    // SAFETY: `ctx` is non-null (checked) and a valid context from `open_input`.
+    let ret = unsafe { ffi_avformat_find_stream_info(ctx, ptr::null_mut()) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -406,7 +428,8 @@ pub unsafe fn seek_frame(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_av_seek_frame(ctx, stream_index, timestamp, flags);
+    // SAFETY: `ctx` is non-null (checked) and a valid context from `open_input`.
+    let ret = unsafe { ffi_av_seek_frame(ctx, stream_index, timestamp, flags) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -448,7 +471,8 @@ pub unsafe fn seek_file(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_avformat_seek_file(ctx, stream_index, min_ts, ts, max_ts, flags);
+    // SAFETY: `ctx` is non-null (checked) and a valid context from `open_input`.
+    let ret = unsafe { ffi_avformat_seek_file(ctx, stream_index, min_ts, ts, max_ts, flags) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -483,7 +507,9 @@ pub unsafe fn read_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Resul
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_av_read_frame(ctx, pkt);
+    // SAFETY: `ctx` and `pkt` are non-null (checked); `ctx` is a valid context
+    //         from `open_input` and `pkt` is an allocated, initialised packet.
+    let ret = unsafe { ffi_av_read_frame(ctx, pkt) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -516,7 +542,9 @@ pub unsafe fn write_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Resu
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_av_write_frame(ctx, pkt);
+    // SAFETY: `ctx` and `pkt` are non-null (checked); `ctx` is a valid output
+    //         format context and `pkt` holds valid encoded data.
+    let ret = unsafe { ffi_av_write_frame(ctx, pkt) };
 
     if ret < 0 { Err(ret) } else { Ok(()) }
 }
@@ -579,7 +607,9 @@ pub unsafe fn open_output(path: &Path, flags: c_int) -> Result<*mut AVIOContext,
     let mut pb: *mut AVIOContext = ptr::null_mut();
 
     // Open output file
-    let ret = avio_open(&mut pb, c_path.as_ptr(), flags);
+    // SAFETY: `c_path` is a valid C string whose binding outlives the call; `pb`
+    //         is a valid out-pointer initialised to null.
+    let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
 
     if ret < 0 {
         return Err(ret);
@@ -622,8 +652,13 @@ pub unsafe fn open_output(path: &Path, flags: c_int) -> Result<*mut AVIOContext,
 /// }
 /// ```
 pub unsafe fn close_output(pb: *mut *mut AVIOContext) {
-    if !pb.is_null() && !(*pb).is_null() {
-        avio_closep(pb);
+    // SAFETY: The caller guarantees `pb` is either null or a valid pointer to an
+    //         AVIOContext pointer from `open_output`. Dereferencing `pb` is
+    //         guarded by the null check, and `avio_closep` tolerates a null `*pb`.
+    unsafe {
+        if !pb.is_null() && !(*pb).is_null() {
+            avio_closep(pb);
+        }
     }
 }
 

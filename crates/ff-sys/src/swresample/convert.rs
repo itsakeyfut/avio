@@ -58,7 +58,10 @@ pub unsafe fn convert(
         return Err(crate::error_codes::EINVAL);
     }
 
-    let ret = ffi_swr_convert(ctx, out, out_count, in_, in_count);
+    // SAFETY: `ctx` is non-null (checked above) and initialized per the caller
+    // contract; `out`/`in_` and their counts describe buffers valid for the
+    // context's configured formats (or null with a zero count when flushing).
+    let ret = unsafe { ffi_swr_convert(ctx, out, out_count, in_, in_count) };
 
     if ret < 0 { Err(ret) } else { Ok(ret) }
 }
@@ -85,7 +88,8 @@ pub unsafe fn get_delay(ctx: *mut SwrContext, base: i64) -> i64 {
         return 0;
     }
 
-    ffi_swr_get_delay(ctx, base)
+    // SAFETY: `ctx` is non-null (checked above) and points to a valid context.
+    unsafe { ffi_swr_get_delay(ctx, base) }
 }
 
 /// Calculate the required output buffer size for a given input size.
@@ -119,6 +123,11 @@ pub fn estimate_output_samples(out_sample_rate: i32, in_sample_rate: i32, in_sam
 
 #[cfg(test)]
 mod tests {
+    // Test-only scaffolding calls the raw wrapper fns directly; keep the terse
+    // pre-2024 style here. The library's safe layer is held to
+    // `unsafe_op_in_unsafe_fn` at the crate root.
+    #![allow(unsafe_op_in_unsafe_fn)]
+
     use super::*;
     use crate::swresample::{alloc_set_opts2, channel_layout, free, init, sample_format};
 
@@ -211,8 +220,8 @@ mod tests {
             let in_ptr = in_data.as_ptr() as *const u8;
             let in_ptrs: [*const u8; 1] = [in_ptr];
 
-            let mut out_ptr_left = out_left.as_mut_ptr() as *mut u8;
-            let mut out_ptr_right = out_right.as_mut_ptr() as *mut u8;
+            let out_ptr_left = out_left.as_mut_ptr() as *mut u8;
+            let out_ptr_right = out_right.as_mut_ptr() as *mut u8;
             let mut out_ptrs: [*mut u8; 2] = [out_ptr_left, out_ptr_right];
 
             let result = convert(
@@ -282,7 +291,7 @@ mod tests {
             let in_ptr = in_data.as_ptr() as *const u8;
             let in_ptrs: [*const u8; 1] = [in_ptr];
 
-            let mut out_ptr = out_data.as_mut_ptr() as *mut u8;
+            let out_ptr = out_data.as_mut_ptr() as *mut u8;
             let mut out_ptrs: [*mut u8; 1] = [out_ptr];
 
             let result = convert(
@@ -422,7 +431,7 @@ mod tests {
                 let in_ptr = in_data.as_ptr() as *const u8;
                 let in_ptrs: [*const u8; 1] = [in_ptr];
 
-                let mut out_ptr = out_data.as_mut_ptr() as *mut u8;
+                let out_ptr = out_data.as_mut_ptr() as *mut u8;
                 let mut out_ptrs: [*mut u8; 1] = [out_ptr];
 
                 let result = convert(
@@ -471,7 +480,7 @@ mod tests {
             let in_ptr = in_data.as_ptr() as *const u8;
             let in_ptrs: [*const u8; 1] = [in_ptr];
 
-            let mut out_ptr = out_data.as_mut_ptr() as *mut u8;
+            let out_ptr = out_data.as_mut_ptr() as *mut u8;
             let mut out_ptrs: [*mut u8; 1] = [out_ptr];
 
             convert(

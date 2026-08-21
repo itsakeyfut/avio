@@ -15,26 +15,28 @@
 //! - `ff-encode` - Encoding and export
 //! - `ff-filter` - Filters and effects
 
-// Suppress warnings from auto-generated bindgen code
-#![allow(warnings)]
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(clippy::all)]
-#![allow(clippy::pedantic)]
-#![allow(clippy::useless_transmute)]
-#![allow(clippy::unnecessary_cast)]
-#![allow(clippy::transmute_int_to_bool)]
+// The hand-written wrapper modules below are held to the normal lint set plus
+// `unsafe_op_in_unsafe_fn`; only the auto-generated bindings opt out of it, inside
+// `mod raw`.
+#![deny(unsafe_op_in_unsafe_fn)]
 
-// On docs.rs (DOCS_RS=1) the build script emits an empty bindings.rs and sets
-// cfg(docsrs).  We include the hand-written stubs instead so that all dependent
-// crates compile without any changes of their own.
-#[cfg(not(docsrs))]
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+// Auto-generated bindgen output is isolated behind this module so its blanket
+// lint allow does not silence the hand-written wrapper modules. On docs.rs
+// (DOCS_RS=1) the build script emits an empty bindings.rs and sets cfg(docsrs);
+// we include the hand-written stubs instead so dependent crates compile unchanged.
+// `pub use raw::*` keeps every bindgen symbol available at the crate root, so
+// downstream `ff_sys::<name>` references are unaffected.
+mod raw {
+    #![allow(warnings)]
+    #![allow(unsafe_op_in_unsafe_fn)]
 
-#[cfg(docsrs)]
-include!("docsrs_stubs.rs");
+    #[cfg(not(docsrs))]
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+    #[cfg(docsrs)]
+    include!("docsrs_stubs.rs");
+}
+pub use raw::*;
 
 // ── Wrapper modules (real bindings only) ─────────────────────────────────────
 #[cfg(not(docsrs))]
