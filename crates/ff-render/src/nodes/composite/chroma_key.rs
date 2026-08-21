@@ -70,7 +70,7 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 impl RenderNodeCpu for ChromaKeyNode {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             let r = f32::from(pixel[0]) / 255.0;
             let g = f32::from(pixel[1]) / 255.0;
             let b = f32::from(pixel[2]) / 255.0;

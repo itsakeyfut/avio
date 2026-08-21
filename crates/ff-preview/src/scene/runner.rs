@@ -902,7 +902,7 @@ impl SceneRunner {
                             AnimatedValue::Static(_) => self.clips[active].opacity,
                         };
                         if (v1_op - 1.0).abs() > 1e-6 {
-                            for chunk in self.rgba_a.chunks_exact_mut(4) {
+                            for chunk in self.rgba_a.as_chunks_mut::<4>().0 {
                                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                                 {
                                     chunk[0] = (f32::from(chunk[0]) * v1_op).round() as u8;

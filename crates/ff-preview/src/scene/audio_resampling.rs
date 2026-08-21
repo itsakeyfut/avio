@@ -122,14 +122,14 @@ pub(super) fn spawn_audio_track_thread(
                         // For speed > 1.0: fewer output samples (fast motion, pitch up).
                         // For speed < 1.0: more output samples (slow motion, pitch down).
                         // This is a simple preview-quality resample; no pitch correction.
-                        let samples: &[f32];
+
                         let resampled: Vec<f32>;
-                        if apply_speed {
+                        let samples: &[f32] = if apply_speed {
                             resampled = resample_linear(raw, speed, &mut speed_phase);
-                            samples = &resampled;
+                            &resampled
                         } else {
-                            samples = raw;
-                        }
+                            raw
+                        };
 
                         if apply_fades {
                             let mut buf: Vec<f32> = samples.to_vec();

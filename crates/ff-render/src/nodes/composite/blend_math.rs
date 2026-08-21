@@ -6,7 +6,7 @@ use super::blend_mode::BlendMode;
 fn rgb_to_hsl(r: f32, g: f32, b: f32) -> [f32; 3] {
     let max_c = r.max(g).max(b);
     let min_c = r.min(g).min(b);
-    let l = (max_c + min_c) * 0.5;
+    let l = max_c.midpoint(min_c);
     if (max_c - min_c).abs() < 1e-6 {
         return [0.0, 0.0, l];
     }

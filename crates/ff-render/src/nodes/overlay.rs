@@ -59,8 +59,10 @@ impl RenderNodeCpu for OverlayNode {
             return;
         }
         for (base, ov) in rgba
-            .chunks_exact_mut(4)
-            .zip(self.overlay_rgba.chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.overlay_rgba.as_chunks::<4>().0.iter())
         {
             let ov_a = f32::from(ov[3]) / 255.0;
             let base_a = f32::from(base[3]) / 255.0;
