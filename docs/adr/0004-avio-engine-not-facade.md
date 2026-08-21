@@ -49,7 +49,7 @@ feature matrix to keep in sync. This record decides to drop the facade role.
 ## Decision Outcome
 
 Chosen option: **engine plus model-facing types only**. The litmus for what stays
-re-exported mirrors the model/primitive litmus in CLAUDE.md:
+re-exported mirrors the model/primitive litmus in `docs/rules/design.md`:
 
 > Does `avio`'s own public engine API (`Timeline` / `Clip` / `Editor` / `render` /
 > `derive`) name the type? Yes then re-export it (it is part of the engine
@@ -63,8 +63,8 @@ What goes is the public re-export of the standalone primitive types
 (`VideoDecoder`, `VideoEncoder`, `Pipeline`, `HlsOutput`, `PreviewPlayer`,
 `RenderGraph`, and their siblings). A caller who wants those depends on
 `ff-decode` / `ff-encode` / `ff-pipeline` / `ff-stream` / `ff-preview` /
-`ff-render` directly; lockstep versioning (ADR-0003's sibling fact, CLAUDE.md
-"all crates share one version") keeps the multi-crate dependency painless.
+`ff-render` directly; lockstep versioning (the shared `[workspace.package]`
+version in `Cargo.toml`) keeps the multi-crate dependency painless.
 
 Delivered as a phased deprecation: mark the primitive-engine re-exports
 `#[deprecated]` for one release with a migration note, then remove them and
@@ -146,7 +146,7 @@ is honest, not enforced.
   twelve primitives; the engine model exports `Clip` / `Timeline` / `Editor` /
   `derive`; the `ff-format` re-exports the model API needs). `avio-examples`
   exercises the facade today.
-* Architecture: CLAUDE.md engine/primitive separation and #1326;
+* Architecture: the engine/primitive separation (#1326) in
   `docs/specs/engine-and-primitives.md`.
 * Related: ADR-0003 (`ff-sys` curated safe layer) shares the "curated and
   opinionated, not general-purpose" philosophy. The `#[deprecated]` pass and the

@@ -37,8 +37,8 @@ it yet, and it will be implemented in a separate PR.
 * `unsafe` should sit where the actual unsafety is (dereference, lifetime), not
   blanket every wrapper: calling `avcodec_find_decoder` is safe; using its result
   is not.
-* Additions stay demand-driven (the CLAUDE.md litmus: do not gold-plate the
-  primitives).
+* Additions stay demand-driven (the primitive-scope litmus in
+  `docs/rules/design.md`: do not gold-plate the primitives).
 
 ## Considered Options
 
@@ -145,7 +145,7 @@ is honest, not enforced.
 * Rules this rests on: `docs/rules/unsafe.md` (`*_inner.rs` isolation, `// SAFETY:`),
   `docs/rules/design.md` (primitive scope / litmus).
 * Call order this would let types enforce later: the per-crate
-  `docs/crates/*/design.md` FFmpeg call-order sections; CLAUDE.md ("deviating from
-  the call order is a bug").
+  `docs/crates/*/design.md` FFmpeg call-order sections, where deviating from the
+  specified order is a bug.
 * Related: the `ff-*` hardening track (v0.17.0). Follow-on, out of scope here:
   call-order typestate.
