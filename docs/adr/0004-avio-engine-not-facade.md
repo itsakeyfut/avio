@@ -1,0 +1,154 @@
+---
+status: proposed
+date: 2026-08-21
+decision-makers: itsakeyfut
+---
+
+# avio is the editing engine, not a facade over the primitives
+
+## Context and Problem Statement
+
+`avio` currently plays two roles. It is the **editing engine** (it owns the
+`Timeline` / `Clip` model, the model-to-frame derivation, and edit history), and
+it is also a **facade**: `crates/avio/src/lib.rs` re-exports all twelve `ff-*`
+primitives behind feature flags (`pub use ff_decode::…`, `ff_encode`, `ff_stream`,
+`ff_preview`, `ff_render`, …), so a caller can add one crate and reach the raw
+decoders, encoders, pipeline, HLS output, player, and render graph directly.
+
+The facade role blurs what `avio` is: the crate's Quick Start is almost entirely
+primitive usage (`avio::VideoDecoder`, `Pipeline`, …), so `avio` reads as a
+general-purpose FFmpeg wrapper rather than an editing engine, and it competes on
+the same axis as `ffmpeg-next` / `rsmpeg`. It is also a large re-export and
+feature matrix to keep in sync. This record decides to drop the facade role.
+`avio` is pre-1.0, so this is the moment to change the public surface. It is
+`proposed`; the change lands as a phased deprecation in later PRs.
+
+## Decision Drivers
+
+* A single, clear identity (an editing engine), consistent with the
+  engine/primitive separation (#1326): the boundary should be visible in `avio`'s
+  public API, not only in the dependency direction.
+* Avoid competing with general-purpose FFmpeg wrappers on the primitive-wrapper
+  axis; the differentiation is the editing model (the same reasoning as ADR-0003
+  for `ff-sys`).
+* Shrink the re-export / feature-flag maintenance surface.
+* The engine's own API unavoidably surfaces some `ff-format` value types
+  (`PixelFormat`, `Color`, `VideoCodec`, `TextSpec`, `Hdr10Metadata`, subtitle
+  types), because `Timeline` / `Clip` take and return them; those must stay.
+
+## Considered Options
+
+* **Engine plus model-facing types only**: drop the standalone primitive-engine
+  re-exports; keep the `ff-format` value types the model API surfaces; keep the
+  feature flags as engine capabilities.
+* **Keep the full facade** (status quo).
+* **Pure model only**: expose only `Timeline` / `Clip` / `Editor` and nothing from
+  `ff-*`.
+* **Split into `avio-engine` + `avio-facade` crates**.
+
+## Decision Outcome
+
+Chosen option: **engine plus model-facing types only**. The litmus for what stays
+re-exported mirrors the model/primitive litmus in CLAUDE.md:
+
+> Does `avio`'s own public engine API (`Timeline` / `Clip` / `Editor` / `render` /
+> `derive`) name the type? Yes then re-export it (it is part of the engine
+> surface); no (it is a standalone primitive tool) then drop it, and the consumer
+> depends on the `ff-*` crate directly.
+
+So the `ff-format` value types the model takes and returns stay re-exported, and
+the feature flags (`preview` / `stream` / `render` / …) stay as engine
+capabilities (the engine can preview, export HLS, and GPU-composite a `Timeline`).
+What goes is the public re-export of the standalone primitive types
+(`VideoDecoder`, `VideoEncoder`, `Pipeline`, `HlsOutput`, `PreviewPlayer`,
+`RenderGraph`, and their siblings). A caller who wants those depends on
+`ff-decode` / `ff-encode` / `ff-pipeline` / `ff-stream` / `ff-preview` /
+`ff-render` directly; lockstep versioning (ADR-0003's sibling fact, CLAUDE.md
+"all crates share one version") keeps the multi-crate dependency painless.
+
+Delivered as a phased deprecation: mark the primitive-engine re-exports
+`#[deprecated]` for one release with a migration note, then remove them and
+rewrite the `avio` README / Quick Start engine-first.
+
+Pure-model-only is rejected: the model API cannot avoid surfacing `ff-format`
+value types, so a strict "nothing from `ff-*`" is not actually achievable and
+would force duplicate types. A crate split is rejected as extra crate surface for
+a role being removed.
+
+### Confirmation
+
+`proposed`, so nothing enforces it yet. Once implemented, these guard it:
+
+* A public-API guard (a doc/`cargo public-api` snapshot, or a compile-time check)
+  that `avio`'s root exports name no standalone primitive-engine type
+  (`VideoDecoder` / `VideoEncoder` / `Pipeline` / `HlsOutput` / `PreviewPlayer` /
+  `RenderGraph` / …).
+* `avio-examples` and the docs build against the engine surface (`Timeline` /
+  `Clip` / `Editor` plus model-facing types) and import no primitive engine from
+  `avio`.
+* During the deprecation window, the re-exports carry `#[deprecated]` with a
+  migration note; a `-D deprecated` build of `avio-examples` fails until they are
+  migrated.
+
+Until the PRs land, this record is the only statement of the direction; the status
+is honest, not enforced.
+
+### Consequences
+
+* Good, because `avio` gains a crisp identity, a smaller public surface, and less
+  re-export/feature maintenance, and the engine/primitive boundary becomes visible
+  in the API.
+* Good, because the differentiation (the editing model) is what the crate leads
+  with, instead of a wrapper surface that invites the wrong comparison.
+* Bad, because it is a breaking change: every consumer of `avio::VideoDecoder` and
+  friends migrates to the `ff-*` crate.
+* Bad, because it drops the one-dependency "just transcode" convenience (mitigated:
+  lockstep versioning makes multi-crate deps easy, and that user is served by the
+  `ff-*` crates directly or by a general-purpose wrapper).
+* Bad, because the `avio` README / Quick Start must be rewritten engine-first; the
+  current facade examples go.
+* What would reverse this: demand for a batteries-included single crate strong
+  enough to reintroduce a facade, which would be a new crate (for example
+  `avio-full`), not a change to `avio` (a new record superseding this one).
+
+## Pros and Cons of the Options
+
+### Engine plus model-facing types only (chosen)
+
+* Good, because it gives one identity and the smallest surface that still lets the
+  model API speak in its own types.
+* Good, because the litmus makes "what stays" mechanical and matches the existing
+  model/primitive rule.
+* Bad, because it is a breaking change and a README rewrite.
+
+### Keep the full facade (status quo)
+
+* Good, because it is the least work and gives one-dependency convenience.
+* Bad, because it blurs the crate's identity, invites the wrong comparison, and is
+  a large re-export/feature surface to maintain. This is the defect this record
+  addresses.
+
+### Pure model only
+
+* Good, because it would be the most minimal surface.
+* Bad, because the model API cannot avoid surfacing `ff-format` value types, so it
+  is not actually achievable and would force duplicate types.
+
+### Split into `avio-engine` + `avio-facade`
+
+* Good, because each crate would have a single role.
+* Bad, because it adds crate surface for a role being removed, and re-creates the
+  facade under a new name rather than dropping it.
+
+## More Information
+
+* Code: `crates/avio/src/lib.rs` (the `pub use ff_*` re-export block across all
+  twelve primitives; the engine model exports `Clip` / `Timeline` / `Editor` /
+  `derive`; the `ff-format` re-exports the model API needs). `avio-examples`
+  exercises the facade today.
+* Architecture: CLAUDE.md engine/primitive separation and #1326;
+  `docs/specs/engine-and-primitives.md`.
+* Related: ADR-0003 (`ff-sys` curated safe layer) shares the "curated and
+  opinionated, not general-purpose" philosophy. The `#[deprecated]` pass and the
+  engine-first README rewrite are the implementation, tracked separately (engine
+  maturity, v0.17.0+).
