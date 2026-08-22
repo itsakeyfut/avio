@@ -1126,6 +1126,15 @@ pub mod swscale {
 // Under DOCS_RS the real `codec_context` module is cfg'd out (it depends on the
 // docsrs-gated `avcodec` wrapper); this shape-compatible stub keeps
 // `ff_sys::CodecContext` available so ff-decode compiles for docs.rs.
+
+/// Stub mirror of `crate::codec_context::ReceiveOutcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiveOutcome {
+    Frame,
+    NeedInput,
+    Drained,
+}
+
 #[derive(Debug)]
 pub struct CodecContext {
     _ptr: std::ptr::NonNull<AVCodecContext>,
@@ -1175,7 +1184,16 @@ impl CodecContext {
 
     /// # Safety
     /// Stub; never executed on docs.rs.
-    pub unsafe fn receive_frame(&mut self, _frame: *mut AVFrame) -> Result<(), crate::AvError> {
+    pub unsafe fn send_eof(&mut self) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn receive_frame(
+        &mut self,
+        _frame: *mut AVFrame,
+    ) -> Result<ReceiveOutcome, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 

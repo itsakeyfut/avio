@@ -7,12 +7,41 @@
 //! pointer-taking methods are `unsafe`: the caller upholds the usual FFmpeg
 //! preconditions.
 
+use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
     AVCodec, AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError,
     avcodec_free_context as ffi_avcodec_free_context,
 };
+
+/// The outcome of a [`CodecContext::receive_frame`] call.
+///
+/// Encodes FFmpeg's `EAGAIN` / `EOF` drain states as named variants so callers
+/// never branch on raw return codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiveOutcome {
+    /// A frame was written into the output frame.
+    Frame,
+    /// The decoder needs more input (`EAGAIN`): send another packet, or
+    /// [`send_eof`](CodecContext::send_eof) to begin draining.
+    NeedInput,
+    /// The decoder is fully drained (`EOF`): no more frames will be produced.
+    Drained,
+}
+
+/// Maps a raw `avcodec::receive_frame` result to a [`ReceiveOutcome`].
+///
+/// `EAGAIN` and `EOF` are expected drain states, not errors; any other negative
+/// code is a real error.
+fn classify_receive(result: Result<(), c_int>) -> Result<ReceiveOutcome, AvError> {
+    match result {
+        Ok(()) => Ok(ReceiveOutcome::Frame),
+        Err(code) if code == crate::error_codes::EAGAIN => Ok(ReceiveOutcome::NeedInput),
+        Err(code) if code == crate::error_codes::EOF => Ok(ReceiveOutcome::Drained),
+        Err(code) => Err(AvError::new(code)),
+    }
+}
 
 /// An owned `AVCodecContext`.
 ///
@@ -93,14 +122,35 @@ impl CodecContext {
         unsafe { crate::avcodec::send_packet(self.ptr.as_ptr(), pkt) }.map_err(AvError::new)
     }
 
-    /// Receives a decoded frame from the decoder.
+    /// Signals end-of-stream by sending a null packet, so the decoder enters
+    /// draining and all buffered frames can be pulled.
+    ///
+    /// After this, loop [`receive_frame`](Self::receive_frame) until it returns
+    /// [`ReceiveOutcome::Drained`]. This is the one supported way to drain, so a
+    /// caller cannot forget the flush.
+    ///
+    /// # Safety
+    ///
+    /// The context must have been opened via [`open`](Self::open) first.
+    pub unsafe fn send_eof(&mut self) -> Result<(), AvError> {
+        // SAFETY: the caller guarantees the context is opened; a null packet is
+        //         the documented end-of-stream signal for `avcodec_send_packet`.
+        unsafe { self.send_packet(std::ptr::null()) }
+    }
+
+    /// Receives a decoded frame, returning a typed [`ReceiveOutcome`].
+    ///
+    /// `EAGAIN` (need input) and `EOF` (drained) are returned as
+    /// [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`] rather than
+    /// errors; only other negative codes are `Err`.
     ///
     /// # Safety
     ///
     /// `frame` must be a valid `*mut AVFrame`.
-    pub unsafe fn receive_frame(&mut self, frame: *mut AVFrame) -> Result<(), AvError> {
+    pub unsafe fn receive_frame(&mut self, frame: *mut AVFrame) -> Result<ReceiveOutcome, AvError> {
         // SAFETY: `self.ptr` is a valid open context; the caller upholds `frame`.
-        unsafe { crate::avcodec::receive_frame(self.ptr.as_ptr(), frame) }.map_err(AvError::new)
+        let result = unsafe { crate::avcodec::receive_frame(self.ptr.as_ptr(), frame) };
+        classify_receive(result)
     }
 
     /// Resets the codec's internal buffers (for example after a seek).
@@ -148,5 +198,31 @@ mod tests {
         let ctx = unsafe { CodecContext::new(std::ptr::null()) }.expect("alloc should succeed");
         assert!(!ctx.as_ptr().is_null());
         // Dropping `ctx` here frees the context exactly once (no panic / double free).
+    }
+
+    #[test]
+    fn receive_outcome_should_classify_ok_as_frame() {
+        assert_eq!(classify_receive(Ok(())), Ok(ReceiveOutcome::Frame));
+    }
+
+    #[test]
+    fn receive_outcome_should_classify_eagain_as_need_input() {
+        assert_eq!(
+            classify_receive(Err(crate::error_codes::EAGAIN)),
+            Ok(ReceiveOutcome::NeedInput)
+        );
+    }
+
+    #[test]
+    fn receive_outcome_should_classify_eof_as_drained() {
+        assert_eq!(
+            classify_receive(Err(crate::error_codes::EOF)),
+            Ok(ReceiveOutcome::Drained)
+        );
+    }
+
+    #[test]
+    fn receive_outcome_should_classify_other_code_as_error() {
+        assert_eq!(classify_receive(Err(-22)), Err(AvError::new(-22)));
     }
 }

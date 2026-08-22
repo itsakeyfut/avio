@@ -225,14 +225,38 @@ impl ImageDecoderInner {
 
         // 3. avcodec_receive_frame
         // SAFETY: codec_ctx is owned; frame is valid.
-        if let Err(e) = unsafe { self.codec_ctx.receive_frame(self.frame) } {
-            return Err(DecodeError::Ffmpeg {
-                code: e.code(),
-                message: format!(
-                    "Failed to receive decoded frame: {}",
-                    ff_sys::av_error_string(e.code())
-                ),
-            });
+        match unsafe {
+            self.codec_ctx
+                .receive_frame(self.frame)
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Failed to receive decoded frame: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?
+        } {
+            ff_sys::ReceiveOutcome::Frame => {}
+            // Preserve the pre-migration behaviour: a bare EAGAIN/EOF from this
+            // single receive was surfaced as a `Ffmpeg` error with that raw code.
+            ff_sys::ReceiveOutcome::NeedInput => {
+                return Err(DecodeError::Ffmpeg {
+                    code: ff_sys::error_codes::EAGAIN,
+                    message: format!(
+                        "Failed to receive decoded frame: {}",
+                        ff_sys::av_error_string(ff_sys::error_codes::EAGAIN)
+                    ),
+                });
+            }
+            ff_sys::ReceiveOutcome::Drained => {
+                return Err(DecodeError::Ffmpeg {
+                    code: ff_sys::error_codes::EOF,
+                    message: format!(
+                        "Failed to receive decoded frame: {}",
+                        ff_sys::av_error_string(ff_sys::error_codes::EOF)
+                    ),
+                });
+            }
         }
 
         // 4. Convert to VideoFrame.

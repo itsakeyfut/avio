@@ -475,8 +475,13 @@ impl AudioDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                match self.codec_ctx.receive_frame(self.frame) {
-                    Ok(()) => {
+                match self.codec_ctx.receive_frame(self.frame).map_err(|e| {
+                    DecodeError::DecodingFailed {
+                        timestamp: Some(self.position),
+                        reason: ff_sys::av_error_string(e.code()),
+                    }
+                })? {
+                    ff_sys::ReceiveOutcome::Frame => {
                         // Successfully received a frame
                         let audio_frame = resample_inner::convert_frame_to_audio_frame(
                             self.frame,
@@ -501,14 +506,14 @@ impl AudioDecoderInner {
 
                         return Ok(Some(audio_frame));
                     }
-                    Err(e) if e.is_eagain() => {
+                    ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
                         let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
 
                         if read_ret == ff_sys::error_codes::EOF {
                             // End of file - flush the decoder
-                            let _ = self.codec_ctx.send_packet(ptr::null());
+                            let _ = self.codec_ctx.send_eof();
                             self.eof = true;
                             continue;
                         } else if read_ret < 0 {
@@ -551,16 +556,10 @@ impl AudioDecoderInner {
                             ff_sys::av_packet_unref(self.packet);
                         }
                     }
-                    Err(e) if e.is_eof() => {
+                    ff_sys::ReceiveOutcome::Drained => {
                         // Decoder has been fully flushed
                         self.eof = true;
                         return Ok(None);
-                    }
-                    Err(e) => {
-                        return Err(DecodeError::DecodingFailed {
-                            timestamp: Some(self.position),
-                            reason: ff_sys::av_error_string(e.code()),
-                        });
                     }
                 }
             }
@@ -645,12 +644,11 @@ impl AudioDecoderInner {
         // 4. Drain any remaining frames from the decoder after flush
         // SAFETY: codec_ctx and frame are valid
         unsafe {
-            loop {
-                match self.codec_ctx.receive_frame(self.frame) {
-                    Ok(()) => ff_sys::av_frame_unref(self.frame),
-                    Err(e) if e.is_eagain() || e.is_eof() => break,
-                    Err(_) => break,
-                }
+            // Drain while frames are produced. NeedInput / Drained / real errors all
+            // end draining (preserves the pre-migration `Err(_) => break` behaviour that
+            // swallowed errors here).
+            while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(self.frame) {
+                ff_sys::av_frame_unref(self.frame);
             }
         }
 
