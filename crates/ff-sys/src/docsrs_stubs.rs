@@ -1208,3 +1208,93 @@ impl Drop for CodecContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for CodecContext {}
+
+// ── RAII owner stub (mirrors crate::format_context::InputFormatContext) ───────
+// Under DOCS_RS the real `format_context` module is cfg'd out (it depends on the
+// docsrs-gated `avformat` wrapper); this shape-compatible stub keeps
+// `ff_sys::InputFormatContext` available so ff-decode compiles for docs.rs.
+
+#[derive(Debug)]
+pub struct InputFormatContext {
+    _ptr: std::ptr::NonNull<AVFormatContext>,
+}
+
+impl InputFormatContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open(_path: &std::path::Path) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open_url(
+        _url: &str,
+        _connect_timeout: std::time::Duration,
+        _read_timeout: std::time::Duration,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open_image_sequence(
+        _path: &std::path::Path,
+        _framerate: u32,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVFormatContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
+        self._ptr.as_ptr()
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn find_stream_info(&mut self) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn seek_frame(
+        &mut self,
+        _stream_index: c_int,
+        _timestamp: i64,
+        _flags: c_int,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn seek_file(
+        &mut self,
+        _stream_index: c_int,
+        _min_ts: i64,
+        _ts: i64,
+        _max_ts: i64,
+        _flags: c_int,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn read_frame(&mut self, _pkt: *mut AVPacket) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for InputFormatContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for InputFormatContext {}

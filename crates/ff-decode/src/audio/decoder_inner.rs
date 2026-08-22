@@ -33,12 +33,13 @@ use ff_format::container::ContainerInfo;
 use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
 use ff_sys::{
     AVCodecContext, AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
+    InputFormatContext,
 };
 
 use super::resample_inner;
 
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{AvFormatContextGuard, AvFrameGuard, AvPacketGuard};
+use crate::shared::guards_inner::{AvFrameGuard, AvPacketGuard, open_input_ctx, open_url_ctx};
 
 /// Internal decoder state holding FFmpeg contexts.
 ///
@@ -46,7 +47,7 @@ use crate::shared::guards_inner::{AvFormatContextGuard, AvFrameGuard, AvPacketGu
 /// for proper cleanup when dropped.
 pub(crate) struct AudioDecoderInner {
     /// Format context for reading the media file
-    format_ctx: *mut AVFormatContext,
+    format_ctx: InputFormatContext,
     /// Codec context for decoding audio frames
     codec_ctx: ff_sys::CodecContext,
     /// Audio stream index in the format context
@@ -122,48 +123,42 @@ impl AudioDecoderInner {
             crate::network::check_srt_url(path_str)?;
         }
 
-        // Open the input source (with RAII guard)
-        // SAFETY: Path is valid, AvFormatContextGuard ensures cleanup
-        let format_ctx_guard = unsafe {
-            if is_network_url {
-                let network = network_opts.unwrap_or_default();
-                log::info!(
-                    "opening network audio source url={} connect_timeout_ms={} read_timeout_ms={}",
-                    crate::network::sanitize_url(path_str),
-                    network.connect_timeout.as_millis(),
-                    network.read_timeout.as_millis()
-                );
-                AvFormatContextGuard::new_url(path_str, &network)?
-            } else {
-                AvFormatContextGuard::new(path)?
-            }
+        // Open the input source (owned demux context).
+        let mut ctx = if is_network_url {
+            let network = network_opts.unwrap_or_default();
+            log::info!(
+                "opening network audio source url={} connect_timeout_ms={} read_timeout_ms={}",
+                crate::network::sanitize_url(path_str),
+                network.connect_timeout.as_millis(),
+                network.read_timeout.as_millis()
+            );
+            open_url_ctx(path_str, &network)?
+        } else {
+            open_input_ctx(path)?
         };
-        let format_ctx = format_ctx_guard.as_ptr();
 
         // Read stream information
-        // SAFETY: format_ctx is valid and owned by guard
-        unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
-            })?;
-        }
+        ctx.find_stream_info().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to find stream info: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // Detect live/streaming source via the AVFMT_TS_DISCONT flag on AVInputFormat.
         // SAFETY: format_ctx is valid and non-null; iformat is set by avformat_open_input
         //         and is non-null for all successfully opened formats.
         let is_live = unsafe {
-            let iformat = (*format_ctx).iformat;
+            let iformat = (*ctx.as_ptr()).iformat;
             !iformat.is_null() && ((*iformat).flags & ff_sys::AVFMT_TS_DISCONT) != 0
         };
 
         // Find the audio stream
         // SAFETY: format_ctx is valid
-        let (stream_index, codec_id) =
-            unsafe { Self::find_audio_stream(format_ctx) }.ok_or_else(|| {
-                DecodeError::NoAudioStream {
-                    path: path.to_path_buf(),
-                }
+        let (stream_index, codec_id) = unsafe { Self::find_audio_stream(ctx.as_mut_ptr()) }
+            .ok_or_else(|| DecodeError::NoAudioStream {
+                path: path.to_path_buf(),
             })?;
 
         // Find the decoder for this codec
@@ -191,7 +186,7 @@ impl AudioDecoderInner {
         // Copy codec parameters from stream to context
         // SAFETY: format_ctx is valid, stream_index is valid; codec_ctx is owned
         unsafe {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
+            let stream = (*ctx.as_ptr()).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
             codec_ctx
                 .parameters_to_context(codecpar)
@@ -221,12 +216,16 @@ impl AudioDecoderInner {
         // Extract stream information
         // SAFETY: All pointers are valid
         let stream_info = unsafe {
-            Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx.as_mut_ptr())?
+            Self::extract_stream_info(
+                ctx.as_mut_ptr(),
+                stream_index as i32,
+                codec_ctx.as_mut_ptr(),
+            )?
         };
 
         // Extract container information
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
-        let container_info = unsafe { Self::extract_container_info(format_ctx) };
+        let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
 
         // Allocate packet and frame (with RAII guards)
         // SAFETY: FFmpeg is initialized, guards ensure cleanup
@@ -236,7 +235,7 @@ impl AudioDecoderInner {
         // All initialization successful - transfer ownership to AudioDecoderInner
         Ok((
             Self {
-                format_ctx: format_ctx_guard.into_raw(),
+                format_ctx: ctx,
                 codec_ctx,
                 stream_index: stream_index as i32,
                 output_format,
@@ -485,7 +484,7 @@ impl AudioDecoderInner {
                         // Successfully received a frame
                         let audio_frame = resample_inner::convert_frame_to_audio_frame(
                             self.frame,
-                            self.format_ctx,
+                            self.format_ctx.as_mut_ptr(),
                             self.stream_index,
                             self.output_format,
                             self.output_sample_rate,
@@ -497,7 +496,9 @@ impl AudioDecoderInner {
                         // Update position based on frame timestamp
                         let pts = (*self.frame).pts;
                         if pts != ff_sys::AV_NOPTS_VALUE {
-                            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+                            let stream = (*self.format_ctx.as_ptr())
+                                .streams
+                                .add(self.stream_index as usize);
                             let time_base = (*(*stream)).time_base;
                             let timestamp_secs =
                                 pts as f64 * time_base.num as f64 / time_base.den as f64;
@@ -509,29 +510,32 @@ impl AudioDecoderInner {
                     ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
-                        let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
-
-                        if read_ret == ff_sys::error_codes::EOF {
-                            // End of file - flush the decoder
-                            let _ = self.codec_ctx.send_eof();
-                            self.eof = true;
-                            continue;
-                        } else if read_ret < 0 {
-                            return Err(if let Some(url) = &self.url {
-                                // Network source: map to typed variant so reconnect can detect it.
-                                crate::network::map_network_error(
-                                    read_ret,
-                                    crate::network::sanitize_url(url),
-                                )
-                            } else {
-                                DecodeError::Ffmpeg {
-                                    code: read_ret,
-                                    message: format!(
-                                        "Failed to read frame: {}",
-                                        ff_sys::av_error_string(read_ret)
-                                    ),
-                                }
-                            });
+                        match self.format_ctx.read_frame(self.packet) {
+                            Ok(()) => {}
+                            Err(e) if e.is_eof() => {
+                                // End of file - flush the decoder
+                                let _ = self.codec_ctx.send_eof();
+                                self.eof = true;
+                                continue;
+                            }
+                            Err(e) => {
+                                let read_ret = e.code();
+                                return Err(if let Some(url) = &self.url {
+                                    // Network source: map to typed variant so reconnect can detect it.
+                                    crate::network::map_network_error(
+                                        read_ret,
+                                        crate::network::sanitize_url(url),
+                                    )
+                                } else {
+                                    DecodeError::Ffmpeg {
+                                        code: read_ret,
+                                        message: format!(
+                                            "Failed to read frame: {}",
+                                            ff_sys::av_error_string(read_ret)
+                                        ),
+                                    }
+                                });
+                            }
                         }
 
                         // Check if this packet belongs to the audio stream
@@ -588,7 +592,9 @@ impl AudioDecoderInner {
     fn duration_to_pts(&self, duration: Duration) -> i64 {
         // SAFETY: format_ctx and stream_index are valid (owned by AudioDecoderInner)
         let time_base = unsafe {
-            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+            let stream = (*self.format_ctx.as_ptr())
+                .streams
+                .add(self.stream_index as usize);
             (*(*stream)).time_base
         };
 
@@ -625,14 +631,12 @@ impl AudioDecoderInner {
         }
 
         // 2. Seek in the format context
-        // SAFETY: format_ctx and stream_index are valid
-        unsafe {
-            ff_sys::avformat::seek_frame(self.format_ctx, self.stream_index, timestamp, flags)
-                .map_err(|e| DecodeError::SeekFailed {
-                    target: position,
-                    reason: ff_sys::av_error_string(e),
-                })?;
-        }
+        self.format_ctx
+            .seek_frame(self.stream_index, timestamp, flags)
+            .map_err(|e| DecodeError::SeekFailed {
+                target: position,
+                reason: ff_sys::av_error_string(e.code()),
+            })?;
 
         // 3. Flush decoder buffers and reset the cached SwrContext so the
         //    resampler does not carry stale delay samples across the seek point.
@@ -736,41 +740,24 @@ impl AudioDecoderInner {
     /// Closes the current `AVFormatContext`, re-opens the URL, re-reads stream info,
     /// re-finds the audio stream, and flushes the codec.
     fn reopen(&mut self, url: &str) -> Result<(), DecodeError> {
-        // Close the current format context. `avformat_close_input` sets the pointer
-        // to null — this matches the null check in Drop so no double-free occurs.
-        // SAFETY: self.format_ctx is valid and owned exclusively by self.
-        unsafe {
-            ff_sys::avformat::close_input(std::ptr::addr_of_mut!(self.format_ctx));
-        }
-
-        // Re-open the URL with the stored network timeouts.
-        // SAFETY: url is a valid UTF-8 network URL string.
-        self.format_ctx = unsafe {
-            ff_sys::avformat::open_input_url(
-                url,
-                self.network_opts.connect_timeout,
-                self.network_opts.read_timeout,
-            )
-            .map_err(|e| crate::network::map_network_error(e, crate::network::sanitize_url(url)))?
-        };
+        // Re-open the URL with the stored network timeouts. Assigning the fresh
+        // context drops the previous one, which closes and frees it.
+        self.format_ctx = open_url_ctx(url, &self.network_opts)?;
 
         // Re-read stream information.
-        // SAFETY: self.format_ctx is valid and freshly opened.
-        unsafe {
-            ff_sys::avformat::find_stream_info(self.format_ctx).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
-                    message: format!(
-                        "reconnect find_stream_info failed: {}",
-                        ff_sys::av_error_string(e)
-                    ),
-                }
+        self.format_ctx
+            .find_stream_info()
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "reconnect find_stream_info failed: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
             })?;
-        }
 
         // Re-find the audio stream (index may differ in theory after reconnect).
         // SAFETY: self.format_ctx is valid.
-        let (stream_index, _) = unsafe { Self::find_audio_stream(self.format_ctx) }
+        let (stream_index, _) = unsafe { Self::find_audio_stream(self.format_ctx.as_mut_ptr()) }
             .ok_or_else(|| DecodeError::NoAudioStream { path: url.into() })?;
         self.stream_index = stream_index as i32;
 
@@ -800,13 +787,8 @@ impl Drop for AudioDecoderInner {
             }
         }
 
-        // Close format context
-        if !self.format_ctx.is_null() {
-            // SAFETY: self.format_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::avformat::close_input(&mut (self.format_ctx as *mut _));
-            }
-        }
+        // The `format_ctx` (InputFormatContext) drops automatically after this
+        // Drop body, closing the demux context last.
     }
 }
 

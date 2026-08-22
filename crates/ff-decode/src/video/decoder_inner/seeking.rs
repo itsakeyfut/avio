@@ -1,6 +1,6 @@
 use super::{
     AvFrameGuard, DecodeError, Duration, KEYFRAME_SEEK_TOLERANCE_SECS, VideoDecoderInner,
-    VideoFrame,
+    VideoFrame, open_url_ctx,
 };
 
 impl VideoDecoderInner {
@@ -42,7 +42,9 @@ impl VideoDecoderInner {
         // - stream_index is valid: validated during decoder creation (find_stream_info + codec opening)
         // - streams array access is valid: guaranteed by FFmpeg after successful avformat_open_input
         let time_base = unsafe {
-            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+            let stream = (*self.format_ctx.as_ptr())
+                .streams
+                .add(self.stream_index as usize);
             (*(*stream)).time_base
         };
 
@@ -111,22 +113,12 @@ impl VideoDecoderInner {
 
         // 2. Seek in the format context (file is NOT reopened)
         // Use av_seek_frame with the stream index and timestamp in stream time_base units
-        // SAFETY:
-        // - format_ctx is valid: owned by VideoDecoderInner, initialized via avformat_open_input
-        // - stream_index is valid: validated during decoder creation
-        // - timestamp is valid: converted from Duration using stream's time_base
-        unsafe {
-            ff_sys::avformat::seek_frame(
-                self.format_ctx,
-                self.stream_index as i32,
-                timestamp,
-                flags,
-            )
+        self.format_ctx
+            .seek_frame(self.stream_index as i32, timestamp, flags)
             .map_err(|e| DecodeError::SeekFailed {
                 target: position,
-                reason: ff_sys::av_error_string(e),
+                reason: ff_sys::av_error_string(e.code()),
             })?;
-        }
 
         // 3. Flush decoder buffers to clear any cached frames
         // SAFETY: the codec context was opened during construction.
@@ -492,41 +484,24 @@ impl VideoDecoderInner {
     /// Closes the current `AVFormatContext`, re-opens the URL, re-reads stream info,
     /// re-finds the video stream, and flushes the codec.
     fn reopen(&mut self, url: &str) -> Result<(), DecodeError> {
-        // Close the current format context. `avformat_close_input` sets the pointer
-        // to null — this matches the null check in Drop so no double-free occurs.
-        // SAFETY: self.format_ctx is valid and owned exclusively by self.
-        unsafe {
-            ff_sys::avformat::close_input(std::ptr::addr_of_mut!(self.format_ctx));
-        }
-
-        // Re-open the URL with the stored network timeouts.
-        // SAFETY: url is a valid UTF-8 network URL string.
-        self.format_ctx = unsafe {
-            ff_sys::avformat::open_input_url(
-                url,
-                self.network_opts.connect_timeout,
-                self.network_opts.read_timeout,
-            )
-            .map_err(|e| crate::network::map_network_error(e, crate::network::sanitize_url(url)))?
-        };
+        // Re-open the URL with the stored network timeouts. Assigning the fresh
+        // context drops the previous one, which closes and frees it.
+        self.format_ctx = open_url_ctx(url, &self.network_opts)?;
 
         // Re-read stream information.
-        // SAFETY: self.format_ctx is valid and freshly opened.
-        unsafe {
-            ff_sys::avformat::find_stream_info(self.format_ctx).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
-                    message: format!(
-                        "reconnect find_stream_info failed: {}",
-                        ff_sys::av_error_string(e)
-                    ),
-                }
+        self.format_ctx
+            .find_stream_info()
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "reconnect find_stream_info failed: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
             })?;
-        }
 
         // Re-find the video stream (index may differ in theory after reconnect).
         // SAFETY: self.format_ctx is valid.
-        let (stream_index, _) = unsafe { Self::find_video_stream(self.format_ctx) }
+        let (stream_index, _) = unsafe { Self::find_video_stream(self.format_ctx.as_mut_ptr()) }
             .ok_or_else(|| DecodeError::NoVideoStream { path: url.into() })?;
         self.stream_index = stream_index as i32;
 

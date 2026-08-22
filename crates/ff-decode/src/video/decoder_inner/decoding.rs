@@ -68,7 +68,9 @@ impl VideoDecoderInner {
                         // Update position based on frame timestamp
                         let pts = (*self.frame).pts;
                         if pts != ff_sys::AV_NOPTS_VALUE {
-                            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+                            let stream = (*self.format_ctx.as_ptr())
+                                .streams
+                                .add(self.stream_index as usize);
                             let time_base = (*(*stream)).time_base;
                             let timestamp_secs =
                                 pts as f64 * time_base.num as f64 / time_base.den as f64;
@@ -80,29 +82,32 @@ impl VideoDecoderInner {
                     ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
-                        let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
-
-                        if read_ret == ff_sys::error_codes::EOF {
-                            // End of file - flush the decoder
-                            let _ = self.codec_ctx.send_eof();
-                            self.eof = true;
-                            continue;
-                        } else if read_ret < 0 {
-                            return Err(if let Some(url) = &self.url {
-                                // Network source: map to typed variant so reconnect can detect it.
-                                crate::network::map_network_error(
-                                    read_ret,
-                                    crate::network::sanitize_url(url),
-                                )
-                            } else {
-                                DecodeError::Ffmpeg {
-                                    code: read_ret,
-                                    message: format!(
-                                        "Failed to read frame: {}",
-                                        ff_sys::av_error_string(read_ret)
-                                    ),
-                                }
-                            });
+                        match self.format_ctx.read_frame(self.packet) {
+                            Ok(()) => {}
+                            Err(e) if e.is_eof() => {
+                                // End of file - flush the decoder
+                                let _ = self.codec_ctx.send_eof();
+                                self.eof = true;
+                                continue;
+                            }
+                            Err(e) => {
+                                let read_ret = e.code();
+                                return Err(if let Some(url) = &self.url {
+                                    // Network source: map to typed variant so reconnect can detect it.
+                                    crate::network::map_network_error(
+                                        read_ret,
+                                        crate::network::sanitize_url(url),
+                                    )
+                                } else {
+                                    DecodeError::Ffmpeg {
+                                        code: read_ret,
+                                        message: format!(
+                                            "Failed to read frame: {}",
+                                            ff_sys::av_error_string(read_ret)
+                                        ),
+                                    }
+                                });
+                            }
                         }
 
                         // Check if this packet belongs to the video stream
@@ -227,7 +232,9 @@ impl VideoDecoderInner {
             // Extract timestamp
             let pts = (*frame).pts;
             let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
-                let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+                let stream = (*self.format_ctx.as_ptr())
+                    .streams
+                    .add(self.stream_index as usize);
                 let time_base = (*(*stream)).time_base;
                 Timestamp::new(
                     pts as i64,
