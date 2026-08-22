@@ -50,12 +50,18 @@ pub mod swscale;
 
 // ── Sub-modules ───────────────────────────────────────────────────────────────
 #[cfg(not(docsrs))]
+mod codec;
+#[cfg(not(docsrs))]
 mod codec_context;
 mod constants;
 mod error;
 pub mod error_codes;
 #[cfg(not(docsrs))]
 mod format_context;
+#[cfg(not(docsrs))]
+mod frame;
+#[cfg(not(docsrs))]
+mod packet;
 #[cfg(not(docsrs))]
 mod resample_context;
 #[cfg(not(docsrs))]
@@ -64,11 +70,17 @@ mod utils;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 #[cfg(not(docsrs))]
+pub use codec::Codec;
+#[cfg(not(docsrs))]
 pub use codec_context::{CodecContext, ReceiveOutcome};
 pub use constants::{AV_NOPTS_VALUE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
 pub use error::AvError;
 #[cfg(not(docsrs))]
 pub use format_context::InputFormatContext;
+#[cfg(not(docsrs))]
+pub use frame::Frame;
+#[cfg(not(docsrs))]
+pub use packet::Packet;
 #[cfg(not(docsrs))]
 pub use resample_context::ResampleContext;
 #[cfg(not(docsrs))]

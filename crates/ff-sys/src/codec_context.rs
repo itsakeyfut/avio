@@ -2,16 +2,16 @@
 //!
 //! [`CodecContext`] allocates a codec context and frees it exactly once on drop,
 //! replacing the manual `avcodec::alloc_context3` + `avcodec::free_context` pair.
-//! Its fallible methods return [`AvError`]. Packet / frame arguments stay raw
-//! pointers for now (owned Frame / Packet are a later step), so the
-//! pointer-taking methods are `unsafe`: the caller upholds the usual FFmpeg
-//! preconditions.
+//! Its fallible methods return [`AvError`]. Packet / frame arguments are the owned
+//! [`Packet`] / [`Frame`] types, so `send_packet` / `receive_frame` are safe;
+//! `open` (raw options dictionary), `parameters_to_context` (raw parameters), and
+//! `send_eof` / `flush_buffers` (opened-context precondition) remain `unsafe`.
 
 use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
-    AVCodec, AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError,
+    AVCodecContext, AVCodecParameters, AVDictionary, AvError, Codec, Frame, Packet,
     avcodec_free_context as ffi_avcodec_free_context,
 };
 
@@ -54,16 +54,17 @@ pub struct CodecContext {
 }
 
 impl CodecContext {
-    /// Allocates a codec context for `codec`.
+    /// Allocates a codec context for `codec`, or a generic context when `None`.
     ///
-    /// # Safety
+    /// # Errors
     ///
-    /// `codec` must be null (yielding a generic context) or a valid
-    /// `*const AVCodec` (for example from `avcodec::find_decoder`).
-    pub unsafe fn new(codec: *const AVCodec) -> Result<Self, AvError> {
-        // SAFETY: the caller upholds the `codec` precondition; `alloc_context3`
-        //         returns a non-null context or a negative error code.
-        let ptr = unsafe { crate::avcodec::alloc_context3(codec) }.map_err(AvError::new)?;
+    /// Returns an [`AvError`] if allocation fails.
+    pub fn new(codec: Option<Codec>) -> Result<Self, AvError> {
+        let codec_ptr = codec.map_or(std::ptr::null(), |c| c.as_ptr());
+        // SAFETY: `codec_ptr` is null (yielding a generic context) or a valid static
+        //         codec pointer from `Codec`; `alloc_context3` returns a non-null
+        //         context or a negative error code.
+        let ptr = unsafe { crate::avcodec::alloc_context3(codec_ptr) }.map_err(AvError::new)?;
         // `alloc_context3` returns `Ok` only with a non-null pointer.
         NonNull::new(ptr)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
@@ -100,26 +101,27 @@ impl CodecContext {
     ///
     /// # Safety
     ///
-    /// `codec` must be a valid `*const AVCodec`, and `options` must be null or a
-    /// valid `*mut *mut AVDictionary`.
+    /// `options` must be null or a valid `*mut *mut AVDictionary`.
     pub unsafe fn open(
         &mut self,
-        codec: *const AVCodec,
+        codec: Codec,
         options: *mut *mut AVDictionary,
     ) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid owned context; the caller upholds
-        //         `codec` / `options`.
-        unsafe { crate::avcodec::open2(self.ptr.as_ptr(), codec, options) }.map_err(AvError::new)
+        // SAFETY: `self.ptr` is a valid owned context and `codec` is a valid static
+        //         codec; the caller upholds `options`.
+        unsafe { crate::avcodec::open2(self.ptr.as_ptr(), codec.as_ptr(), options) }
+            .map_err(AvError::new)
     }
 
-    /// Sends a packet to the decoder (a null packet flushes it).
+    /// Sends a packet to the decoder.
     ///
-    /// # Safety
+    /// # Errors
     ///
-    /// `pkt` must be null or a valid `*const AVPacket`.
-    pub unsafe fn send_packet(&mut self, pkt: *const AVPacket) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid open context; the caller upholds `pkt`.
-        unsafe { crate::avcodec::send_packet(self.ptr.as_ptr(), pkt) }.map_err(AvError::new)
+    /// Returns an [`AvError`] if the decoder cannot accept the packet.
+    pub fn send_packet(&mut self, pkt: &Packet) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid open context; `pkt` is a valid owned packet.
+        unsafe { crate::avcodec::send_packet(self.ptr.as_ptr(), pkt.as_ptr()) }
+            .map_err(AvError::new)
     }
 
     /// Signals end-of-stream by sending a null packet, so the decoder enters
@@ -135,7 +137,8 @@ impl CodecContext {
     pub unsafe fn send_eof(&mut self) -> Result<(), AvError> {
         // SAFETY: the caller guarantees the context is opened; a null packet is
         //         the documented end-of-stream signal for `avcodec_send_packet`.
-        unsafe { self.send_packet(std::ptr::null()) }
+        unsafe { crate::avcodec::send_packet(self.ptr.as_ptr(), std::ptr::null()) }
+            .map_err(AvError::new)
     }
 
     /// Receives a decoded frame, returning a typed [`ReceiveOutcome`].
@@ -144,12 +147,14 @@ impl CodecContext {
     /// [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`] rather than
     /// errors; only other negative codes are `Err`.
     ///
-    /// # Safety
+    /// # Errors
     ///
-    /// `frame` must be a valid `*mut AVFrame`.
-    pub unsafe fn receive_frame(&mut self, frame: *mut AVFrame) -> Result<ReceiveOutcome, AvError> {
-        // SAFETY: `self.ptr` is a valid open context; the caller upholds `frame`.
-        let result = unsafe { crate::avcodec::receive_frame(self.ptr.as_ptr(), frame) };
+    /// Returns an [`AvError`] on a real decode error (`EAGAIN` / `EOF` are typed
+    /// outcomes, not errors).
+    pub fn receive_frame(&mut self, frame: &mut Frame) -> Result<ReceiveOutcome, AvError> {
+        // SAFETY: `self.ptr` is a valid open context; `frame` is a valid owned frame.
+        let result =
+            unsafe { crate::avcodec::receive_frame(self.ptr.as_ptr(), frame.as_mut_ptr()) };
         classify_receive(result)
     }
 
@@ -192,10 +197,9 @@ mod tests {
 
     #[test]
     fn codec_context_new_should_allocate_and_drop_cleanly() {
-        // A null codec yields a generic context, so this does not depend on any
+        // A `None` codec yields a generic context, so this does not depend on any
         // specific decoder being present in the linked FFmpeg build.
-        // SAFETY: a null codec pointer is valid for `alloc_context3`.
-        let ctx = unsafe { CodecContext::new(std::ptr::null()) }.expect("alloc should succeed");
+        let ctx = CodecContext::new(None).expect("alloc should succeed");
         assert!(!ctx.as_ptr().is_null());
         // Dropping `ctx` here frees the context exactly once (no panic / double free).
     }

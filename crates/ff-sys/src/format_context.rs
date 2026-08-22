@@ -15,7 +15,7 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::time::Duration;
 
-use crate::{AVFormatContext, AVPacket, AvError, avformat_close_input as ffi_avformat_close_input};
+use crate::{AVFormatContext, AvError, Packet, avformat_close_input as ffi_avformat_close_input};
 
 /// An owned input (demux) `AVFormatContext`.
 ///
@@ -147,13 +147,10 @@ impl InputFormatContext {
     /// # Errors
     ///
     /// Returns an [`AvError`] on read failure or at end-of-stream (`EOF`).
-    ///
-    /// # Safety
-    ///
-    /// `pkt` must be a valid, allocated `*mut AVPacket`.
-    pub unsafe fn read_frame(&mut self, pkt: *mut AVPacket) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid owned demux context; the caller upholds `pkt`.
-        unsafe { crate::avformat::read_frame(self.ptr.as_ptr(), pkt) }.map_err(AvError::new)
+    pub fn read_frame(&mut self, pkt: &mut Packet) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned demux context; `pkt` is a valid owned packet.
+        unsafe { crate::avformat::read_frame(self.ptr.as_ptr(), pkt.as_mut_ptr()) }
+            .map_err(AvError::new)
     }
 }
 

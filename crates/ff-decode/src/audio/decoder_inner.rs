@@ -32,14 +32,14 @@ use ff_format::codec::AudioCodec;
 use ff_format::container::ContainerInfo;
 use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
 use ff_sys::{
-    AVCodecContext, AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
-    InputFormatContext,
+    AVCodecContext, AVCodecID, AVFormatContext, AVMediaType_AVMEDIA_TYPE_AUDIO, Frame,
+    InputFormatContext, Packet,
 };
 
 use super::resample_inner;
 
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{AvFrameGuard, AvPacketGuard, open_input_ctx, open_url_ctx};
+use crate::shared::guards_inner::{open_input_ctx, open_url_ctx};
 
 /// Internal decoder state holding FFmpeg contexts.
 ///
@@ -69,9 +69,9 @@ pub(crate) struct AudioDecoderInner {
     /// Current playback position
     position: Duration,
     /// Reusable packet for reading from file
-    packet: *mut AVPacket,
+    packet: Packet,
     /// Reusable frame for decoding
-    frame: *mut AVFrame,
+    frame: Frame,
     /// URL used to open this source — `None` for file-path sources.
     url: Option<String>,
     /// Network options used for the initial open (timeouts, reconnect config).
@@ -164,18 +164,14 @@ impl AudioDecoderInner {
         // Find the decoder for this codec
         // SAFETY: codec_id is valid from FFmpeg
         let codec_name = unsafe { Self::extract_codec_name(codec_id) };
-        let codec = unsafe {
-            ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
-                DecodeError::UnsupportedCodec {
-                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
-                }
-            })?
-        };
+        let codec =
+            ff_sys::Codec::find_decoder(codec_id).ok_or_else(|| DecodeError::UnsupportedCodec {
+                codec: format!("{codec_name} (codec_id={codec_id:?})"),
+            })?;
 
         // Allocate codec context (freed on drop by CodecContext).
-        // SAFETY: codec pointer is valid.
         let mut codec_ctx =
-            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+            ff_sys::CodecContext::new(Some(codec)).map_err(|e| DecodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
                     "Failed to allocate codec context: {}",
@@ -227,10 +223,22 @@ impl AudioDecoderInner {
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
         let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
 
-        // Allocate packet and frame (with RAII guards)
-        // SAFETY: FFmpeg is initialized, guards ensure cleanup
-        let packet_guard = unsafe { AvPacketGuard::new()? };
-        let frame_guard = unsafe { AvFrameGuard::new()? };
+        // Allocate packet and frame (owned; free on drop, including on an early
+        // return from a later `?` in this constructor).
+        let packet = Packet::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate packet: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
+        let frame = Frame::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate frame: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // All initialization successful - transfer ownership to AudioDecoderInner
         Ok((
@@ -246,8 +254,8 @@ impl AudioDecoderInner {
                 is_live,
                 eof: false,
                 position: Duration::ZERO,
-                packet: packet_guard.into_raw(),
-                frame: frame_guard.into_raw(),
+                packet,
+                frame,
                 url,
                 network_opts: stored_network_opts,
                 reconnect_count: 0,
@@ -474,7 +482,7 @@ impl AudioDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                match self.codec_ctx.receive_frame(self.frame).map_err(|e| {
+                match self.codec_ctx.receive_frame(&mut self.frame).map_err(|e| {
                     DecodeError::DecodingFailed {
                         timestamp: Some(self.position),
                         reason: ff_sys::av_error_string(e.code()),
@@ -483,7 +491,7 @@ impl AudioDecoderInner {
                     ff_sys::ReceiveOutcome::Frame => {
                         // Successfully received a frame
                         let audio_frame = resample_inner::convert_frame_to_audio_frame(
-                            self.frame,
+                            self.frame.as_mut_ptr(),
                             self.format_ctx.as_mut_ptr(),
                             self.stream_index,
                             self.output_format,
@@ -494,7 +502,7 @@ impl AudioDecoderInner {
                         )?;
 
                         // Update position based on frame timestamp
-                        let pts = (*self.frame).pts;
+                        let pts = (*self.frame.as_ptr()).pts;
                         if pts != ff_sys::AV_NOPTS_VALUE {
                             let stream = (*self.format_ctx.as_ptr())
                                 .streams
@@ -510,7 +518,7 @@ impl AudioDecoderInner {
                     ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
-                        match self.format_ctx.read_frame(self.packet) {
+                        match self.format_ctx.read_frame(&mut self.packet) {
                             Ok(()) => {}
                             Err(e) if e.is_eof() => {
                                 // End of file - flush the decoder
@@ -539,10 +547,10 @@ impl AudioDecoderInner {
                         }
 
                         // Check if this packet belongs to the audio stream
-                        if (*self.packet).stream_index == self.stream_index {
+                        if (*self.packet.as_ptr()).stream_index == self.stream_index {
                             // Send the packet to the decoder
-                            let send_result = self.codec_ctx.send_packet(self.packet);
-                            ff_sys::av_packet_unref(self.packet);
+                            let send_result = self.codec_ctx.send_packet(&self.packet);
+                            self.packet.unref();
 
                             if let Err(se) = send_result
                                 && !se.is_eagain()
@@ -557,7 +565,7 @@ impl AudioDecoderInner {
                             }
                         } else {
                             // Not our stream, unref and continue
-                            ff_sys::av_packet_unref(self.packet);
+                            self.packet.unref();
                         }
                     }
                     ff_sys::ReceiveOutcome::Drained => {
@@ -624,11 +632,8 @@ impl AudioDecoderInner {
         let flags = ff_sys::avformat::seek_flags::BACKWARD;
 
         // 1. Clear any pending packet and frame
-        // SAFETY: packet and frame are valid (owned by AudioDecoderInner)
-        unsafe {
-            ff_sys::av_packet_unref(self.packet);
-            ff_sys::av_frame_unref(self.frame);
-        }
+        self.packet.unref();
+        self.frame.unref();
 
         // 2. Seek in the format context
         self.format_ctx
@@ -646,14 +651,12 @@ impl AudioDecoderInner {
         self.swr_key = None;
 
         // 4. Drain any remaining frames from the decoder after flush
-        // SAFETY: codec_ctx and frame are valid
-        unsafe {
-            // Drain while frames are produced. NeedInput / Drained / real errors all
-            // end draining (preserves the pre-migration `Err(_) => break` behaviour that
-            // swallowed errors here).
-            while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(self.frame) {
-                ff_sys::av_frame_unref(self.frame);
-            }
+        // Drain while frames are produced. NeedInput / Drained / real errors all
+        // end draining (preserves the pre-migration `Err(_) => break` behaviour that
+        // swallowed errors here).
+        while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(&mut self.frame)
+        {
+            self.frame.unref();
         }
 
         // 5. Reset internal state
@@ -770,27 +773,9 @@ impl AudioDecoderInner {
     }
 }
 
-impl Drop for AudioDecoderInner {
-    fn drop(&mut self) {
-        // Free frame and packet
-        if !self.frame.is_null() {
-            // SAFETY: self.frame is valid and owned by this instance
-            unsafe {
-                ff_sys::av_frame_free(&mut (self.frame as *mut _));
-            }
-        }
-
-        if !self.packet.is_null() {
-            // SAFETY: self.packet is valid and owned by this instance
-            unsafe {
-                ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-        }
-
-        // The `format_ctx` (InputFormatContext) drops automatically after this
-        // Drop body, closing the demux context last.
-    }
-}
+// All fields own their FFmpeg resources (`Frame`, `Packet`, `CodecContext`,
+// `InputFormatContext`, `ResampleContext`) and free themselves on drop, so no
+// manual `Drop` impl is required.
 
 // SAFETY: AudioDecoderInner manages FFmpeg contexts which are thread-safe when not shared.
 // We don't expose mutable access across threads, so Send is safe.

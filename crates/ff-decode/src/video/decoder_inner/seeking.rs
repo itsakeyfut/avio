@@ -1,6 +1,6 @@
 use super::{
-    AvFrameGuard, DecodeError, Duration, KEYFRAME_SEEK_TOLERANCE_SECS, VideoDecoderInner,
-    VideoFrame, open_url_ctx,
+    DecodeError, Duration, KEYFRAME_SEEK_TOLERANCE_SECS, VideoDecoderInner, VideoFrame,
+    open_url_ctx,
 };
 
 impl VideoDecoderInner {
@@ -106,10 +106,8 @@ impl VideoDecoderInner {
         // SAFETY:
         // - packet is valid: allocated in constructor, owned by VideoDecoderInner
         // - frame is valid: allocated in constructor, owned by VideoDecoderInner
-        unsafe {
-            ff_sys::av_packet_unref(self.packet);
-            ff_sys::av_frame_unref(self.frame);
-        }
+        self.packet.unref();
+        self.frame.unref();
 
         // 2. Seek in the format context (file is NOT reopened)
         // Use av_seek_frame with the stream index and timestamp in stream time_base units
@@ -127,12 +125,11 @@ impl VideoDecoderInner {
         // 4. Drain any remaining frames from the decoder after flush
         // This ensures no stale frames are returned after the seek
         // SAFETY: frame is valid: allocated in constructor, owned by VideoDecoderInner
-        unsafe {
-            // Drain while frames are produced. NeedInput / Drained / any error all stop
-            // draining (preserves the pre-migration `Err(_) => break` behaviour).
-            while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(self.frame) {
-                ff_sys::av_frame_unref(self.frame);
-            }
+        // Drain while frames are produced. NeedInput / Drained / any error all stop
+        // draining (preserves the pre-migration `Err(_) => break` behaviour).
+        while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(&mut self.frame)
+        {
+            self.frame.unref();
         }
 
         // 5. Reset internal state
@@ -343,13 +340,18 @@ impl VideoDecoderInner {
                 });
             };
 
-            // Set up source frame with VideoFrame data
-            let src_frame_guard = AvFrameGuard::new()?;
-            let src_frame = src_frame_guard.as_ptr();
+            // Set up source frame with VideoFrame data (owned; freed on scope exit).
+            let mut src_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate frame: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
-            (*src_frame).width = src_width as i32;
-            (*src_frame).height = src_height as i32;
-            (*src_frame).format = av_format;
+            (*src_frame.as_mut_ptr()).width = src_width as i32;
+            (*src_frame.as_mut_ptr()).height = src_height as i32;
+            (*src_frame.as_mut_ptr()).format = av_format;
 
             // Set up source frame data pointers directly from VideoFrame (no copy)
             let planes = frame.planes();
@@ -359,41 +361,45 @@ impl VideoDecoderInner {
                 if i >= ff_sys::AV_NUM_DATA_POINTERS as usize {
                     break;
                 }
-                (*src_frame).data[i] = plane_data.as_ref().as_ptr().cast_mut();
-                (*src_frame).linesize[i] = strides[i] as i32;
+                (*src_frame.as_mut_ptr()).data[i] = plane_data.as_ref().as_ptr().cast_mut();
+                (*src_frame.as_mut_ptr()).linesize[i] = strides[i] as i32;
             }
 
-            // Allocate destination frame
-            let dst_frame_guard = AvFrameGuard::new()?;
-            let dst_frame = dst_frame_guard.as_ptr();
+            // Allocate destination frame (owned; freed on scope exit).
+            let mut dst_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate frame: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
-            (*dst_frame).width = scaled_width as i32;
-            (*dst_frame).height = scaled_height as i32;
-            (*dst_frame).format = av_format;
+            (*dst_frame.as_mut_ptr()).width = scaled_width as i32;
+            (*dst_frame.as_mut_ptr()).height = scaled_height as i32;
+            (*dst_frame.as_mut_ptr()).format = av_format;
 
             // Allocate buffer for destination frame
-            let buffer_ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
-            if buffer_ret < 0 {
+            if let Err(e) = dst_frame.get_buffer(0) {
                 // On a rebuild the freshly built context stays in the cache slot
                 // but keyless (thumbnail_cache_key was cleared above), so it is
                 // dropped/replaced on the next call rather than reused.
                 return Err(DecodeError::Ffmpeg {
-                    code: buffer_ret,
+                    code: e.code(),
                     message: format!(
                         "Failed to allocate destination frame buffer: {}",
-                        ff_sys::av_error_string(buffer_ret)
+                        ff_sys::av_error_string(e.code())
                     ),
                 });
             }
 
             // Perform scaling
             let scale_result = sws_ctx.scale(
-                (*src_frame).data.as_ptr() as *const *const u8,
-                (*src_frame).linesize.as_ptr(),
+                (*src_frame.as_ptr()).data.as_ptr() as *const *const u8,
+                (*src_frame.as_ptr()).linesize.as_ptr(),
                 0,
                 src_height as i32,
-                (*dst_frame).data.as_ptr() as *const *mut u8,
-                (*dst_frame).linesize.as_ptr(),
+                (*dst_frame.as_ptr()).data.as_ptr() as *const *mut u8,
+                (*dst_frame.as_ptr()).linesize.as_ptr(),
             );
 
             if let Err(e) = scale_result {
@@ -412,10 +418,10 @@ impl VideoDecoderInner {
             }
 
             // Copy timestamp
-            (*dst_frame).pts = frame.timestamp().pts();
+            (*dst_frame.as_mut_ptr()).pts = frame.timestamp().pts();
 
             // Convert destination frame to VideoFrame
-            let video_frame = self.av_frame_to_video_frame(dst_frame)?;
+            let video_frame = self.av_frame_to_video_frame(dst_frame.as_ptr())?;
 
             Ok(video_frame)
         }

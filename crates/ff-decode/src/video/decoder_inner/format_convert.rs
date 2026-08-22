@@ -1,7 +1,6 @@
 use super::{
-    AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace, AVPixelFormat, AvFrameGuard,
-    ColorPrimaries, ColorRange, ColorSpace, DecodeError, PixelFormat, VideoCodec,
-    VideoDecoderInner, VideoFrame,
+    AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace, AVPixelFormat, ColorPrimaries,
+    ColorRange, ColorSpace, DecodeError, PixelFormat, VideoCodec, VideoDecoderInner, VideoFrame,
 };
 
 impl VideoDecoderInner {
@@ -211,35 +210,37 @@ impl VideoDecoderInner {
                 });
             };
 
-            // Allocate destination frame (with RAII guard)
-            let dst_frame_guard = AvFrameGuard::new()?;
-            let dst_frame = dst_frame_guard.as_ptr();
+            // Allocate destination frame (owned; freed on scope exit by Drop).
+            let mut dst_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate frame: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
-            (*dst_frame).width = dst_width as i32;
-            (*dst_frame).height = dst_height as i32;
-            (*dst_frame).format = dst_format;
+            (*dst_frame.as_mut_ptr()).width = dst_width as i32;
+            (*dst_frame.as_mut_ptr()).height = dst_height as i32;
+            (*dst_frame.as_mut_ptr()).format = dst_format;
 
             // Allocate buffer for destination frame
-            let buffer_ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
-            if buffer_ret < 0 {
-                return Err(DecodeError::Ffmpeg {
-                    code: buffer_ret,
-                    message: format!(
-                        "Failed to allocate frame buffer: {}",
-                        ff_sys::av_error_string(buffer_ret)
-                    ),
-                });
-            }
+            dst_frame.get_buffer(0).map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate frame buffer: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
             // Perform conversion/scaling (src_height is the number of input rows to process)
             sws_ctx
                 .scale(
-                    (*self.frame).data.as_ptr() as *const *const u8,
-                    (*self.frame).linesize.as_ptr(),
+                    (*self.frame.as_ptr()).data.as_ptr() as *const *const u8,
+                    (*self.frame.as_ptr()).linesize.as_ptr(),
                     0,
                     src_height as i32,
-                    (*dst_frame).data.as_ptr() as *const *mut u8,
-                    (*dst_frame).linesize.as_ptr(),
+                    (*dst_frame.as_ptr()).data.as_ptr() as *const *mut u8,
+                    (*dst_frame.as_ptr()).linesize.as_ptr(),
                 )
                 .map_err(|e| DecodeError::Ffmpeg {
                     code: 0,
@@ -247,12 +248,12 @@ impl VideoDecoderInner {
                 })?;
 
             // Copy timestamp
-            (*dst_frame).pts = (*self.frame).pts;
+            (*dst_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
 
             // Convert to VideoFrame
-            let video_frame = self.av_frame_to_video_frame(dst_frame)?;
+            let video_frame = self.av_frame_to_video_frame(dst_frame.as_ptr())?;
 
-            // dst_frame is automatically freed when guard drops
+            // dst_frame is automatically freed when it drops at scope end
 
             Ok(video_frame)
         }
