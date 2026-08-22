@@ -136,15 +136,10 @@ impl VideoDecoderInner {
         // This ensures no stale frames are returned after the seek
         // SAFETY: frame is valid: allocated in constructor, owned by VideoDecoderInner
         unsafe {
-            loop {
-                match self.codec_ctx.receive_frame(self.frame) {
-                    // Got a frame, unref it and continue draining
-                    Ok(()) => ff_sys::av_frame_unref(self.frame),
-                    // No more frames in the decoder buffer
-                    Err(e) if e.is_eagain() || e.is_eof() => break,
-                    // Other error, break out
-                    Err(_) => break,
-                }
+            // Drain while frames are produced. NeedInput / Drained / any error all stop
+            // draining (preserves the pre-migration `Err(_) => break` behaviour).
+            while let Ok(ff_sys::ReceiveOutcome::Frame) = self.codec_ctx.receive_frame(self.frame) {
+                ff_sys::av_frame_unref(self.frame);
             }
         }
 

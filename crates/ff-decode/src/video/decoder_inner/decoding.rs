@@ -1,6 +1,6 @@
 use super::{
     AVFrame, Arc, DecodeError, Duration, OutputScale, PixelFormat, PooledBuffer, Rational,
-    Timestamp, VideoDecoderInner, VideoFrame, ptr,
+    Timestamp, VideoDecoderInner, VideoFrame,
 };
 use crate::shared::plane_inner::plane_row_ptr;
 
@@ -37,8 +37,13 @@ impl VideoDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                match self.codec_ctx.receive_frame(self.frame) {
-                    Ok(()) => {
+                match self.codec_ctx.receive_frame(self.frame).map_err(|e| {
+                    DecodeError::DecodingFailed {
+                        timestamp: Some(self.position),
+                        reason: ff_sys::av_error_string(e.code()),
+                    }
+                })? {
+                    ff_sys::ReceiveOutcome::Frame => {
                         // Successfully received a frame — reset corrupt-stream counter.
                         self.consecutive_invalid = 0;
 
@@ -72,14 +77,14 @@ impl VideoDecoderInner {
 
                         return Ok(Some(video_frame));
                     }
-                    Err(e) if e.is_eagain() => {
+                    ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
                         let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
 
                         if read_ret == ff_sys::error_codes::EOF {
                             // End of file - flush the decoder
-                            let _ = self.codec_ctx.send_packet(ptr::null());
+                            let _ = self.codec_ctx.send_eof();
                             self.eof = true;
                             continue;
                         } else if read_ret < 0 {
@@ -137,16 +142,10 @@ impl VideoDecoderInner {
                             ff_sys::av_packet_unref(self.packet);
                         }
                     }
-                    Err(e) if e.is_eof() => {
+                    ff_sys::ReceiveOutcome::Drained => {
                         // Decoder has been fully flushed
                         self.eof = true;
                         return Ok(None);
-                    }
-                    Err(e) => {
-                        return Err(DecodeError::DecodingFailed {
-                            timestamp: Some(self.position),
-                            reason: ff_sys::av_error_string(e.code()),
-                        });
                     }
                 }
             }
