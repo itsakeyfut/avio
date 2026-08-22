@@ -306,21 +306,21 @@ impl VideoDecoderInner {
 
         // SAFETY: We're creating temporary FFmpeg objects for scaling
         unsafe {
-            // Check if we can reuse the cached SwScale context
-            let (sws_ctx, is_cached) = if let (Some(cached_ctx), Some(cached_key)) =
-                (self.thumbnail_sws_ctx, self.thumbnail_cache_key)
-            {
-                if cached_key == cache_key {
-                    // Cache hit - reuse existing context
-                    (cached_ctx, true)
-                } else {
-                    // Cache miss - free old context and create new one
-                    ff_sys::swscale::free_context(cached_ctx);
-                    // Clear cache immediately to prevent dangling pointer
-                    self.thumbnail_sws_ctx = None;
-                    self.thumbnail_cache_key = None;
+            // Reuse the cached SwScale context when the key matches; otherwise
+            // build a fresh owned context into the cache slot. The cache key is
+            // only set after scaling succeeds, so an error after a rebuild leaves
+            // the freshly built context keyless — it is dropped/replaced on the
+            // next call rather than being reused with a stale key.
+            let is_cached =
+                self.thumbnail_cache_key == Some(cache_key) && self.thumbnail_sws_ctx.is_some();
 
-                    let new_ctx = ff_sys::swscale::get_context(
+            if !is_cached {
+                // Drop any stale cached context, then build the replacement.
+                self.thumbnail_sws_ctx = None;
+                self.thumbnail_cache_key = None;
+
+                self.thumbnail_sws_ctx = Some(
+                    ff_sys::ScaleContext::new(
                         src_width as i32,
                         src_height as i32,
                         av_format,
@@ -332,29 +332,15 @@ impl VideoDecoderInner {
                     .map_err(|e| DecodeError::Ffmpeg {
                         code: 0,
                         message: format!("Failed to create scaling context: {e}"),
-                    })?;
+                    })?,
+                );
+            }
 
-                    // Don't cache yet - will cache after successful scaling
-                    (new_ctx, false)
-                }
-            } else {
-                // No cache - create new context
-                let new_ctx = ff_sys::swscale::get_context(
-                    src_width as i32,
-                    src_height as i32,
-                    av_format,
-                    scaled_width as i32,
-                    scaled_height as i32,
-                    av_format,
-                    ff_sys::swscale::scale_flags::BILINEAR,
-                )
-                .map_err(|e| DecodeError::Ffmpeg {
+            let Some(sws_ctx) = self.thumbnail_sws_ctx.as_mut() else {
+                return Err(DecodeError::Ffmpeg {
                     code: 0,
-                    message: format!("Failed to create scaling context: {e}"),
-                })?;
-
-                // Don't cache yet - will cache after successful scaling
-                (new_ctx, false)
+                    message: "SwsContext not initialized".to_string(),
+                });
             };
 
             // Set up source frame with VideoFrame data
@@ -388,10 +374,9 @@ impl VideoDecoderInner {
             // Allocate buffer for destination frame
             let buffer_ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
             if buffer_ret < 0 {
-                // Clean up context if not cached
-                if !is_cached {
-                    ff_sys::swscale::free_context(sws_ctx);
-                }
+                // On a rebuild the freshly built context stays in the cache slot
+                // but keyless (thumbnail_cache_key was cleared above), so it is
+                // dropped/replaced on the next call rather than reused.
                 return Err(DecodeError::Ffmpeg {
                     code: buffer_ret,
                     message: format!(
@@ -402,8 +387,7 @@ impl VideoDecoderInner {
             }
 
             // Perform scaling
-            let scale_result = ff_sys::swscale::scale(
-                sws_ctx,
+            let scale_result = sws_ctx.scale(
                 (*src_frame).data.as_ptr() as *const *const u8,
                 (*src_frame).linesize.as_ptr(),
                 0,
@@ -413,19 +397,17 @@ impl VideoDecoderInner {
             );
 
             if let Err(e) = scale_result {
-                // Clean up context if not cached
-                if !is_cached {
-                    ff_sys::swscale::free_context(sws_ctx);
-                }
+                // On a rebuild the freshly built context stays in the cache slot
+                // but keyless (thumbnail_cache_key was cleared above), so it is
+                // dropped/replaced on the next call rather than reused.
                 return Err(DecodeError::Ffmpeg {
                     code: 0,
                     message: format!("Failed to scale frame: {e}"),
                 });
             }
 
-            // Scaling successful - cache the context if it's new
+            // Scaling successful - record the cache key for the (re)built context.
             if !is_cached {
-                self.thumbnail_sws_ctx = Some(sws_ctx);
                 self.thumbnail_cache_key = Some(cache_key);
             }
 
