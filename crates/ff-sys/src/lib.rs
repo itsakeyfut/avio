@@ -56,6 +56,10 @@ mod error;
 pub mod error_codes;
 #[cfg(not(docsrs))]
 mod format_context;
+#[cfg(not(docsrs))]
+mod resample_context;
+#[cfg(not(docsrs))]
+mod scale_context;
 mod utils;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
@@ -65,5 +69,9 @@ pub use constants::{AV_NOPTS_VALUE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
 pub use error::AvError;
 #[cfg(not(docsrs))]
 pub use format_context::InputFormatContext;
+#[cfg(not(docsrs))]
+pub use resample_context::ResampleContext;
+#[cfg(not(docsrs))]
+pub use scale_context::ScaleContext;
 pub use utils::{av_error_string, ensure_initialized};
 // check_av_error! is re-exported at the crate root automatically via #[macro_export]

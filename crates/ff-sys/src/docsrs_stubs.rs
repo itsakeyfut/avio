@@ -1298,3 +1298,123 @@ impl Drop for InputFormatContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for InputFormatContext {}
+
+// ── RAII owner stub (mirrors crate::scale_context::ScaleContext) ──────────────
+// Under DOCS_RS the real `scale_context` module is cfg'd out; this
+// shape-compatible stub keeps `ff_sys::ScaleContext` available for docs.rs.
+
+#[derive(Debug)]
+pub struct ScaleContext {
+    _ptr: std::ptr::NonNull<SwsContext>,
+}
+
+impl ScaleContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new(
+        _src_w: c_int,
+        _src_h: c_int,
+        _src_fmt: AVPixelFormat,
+        _dst_w: c_int,
+        _dst_h: c_int,
+        _dst_fmt: AVPixelFormat,
+        _flags: c_int,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const SwsContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut SwsContext {
+        self._ptr.as_ptr()
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn scale(
+        &mut self,
+        _src: *const *const u8,
+        _src_stride: *const c_int,
+        _src_slice_y: c_int,
+        _src_slice_h: c_int,
+        _dst: *const *mut u8,
+        _dst_stride: *const c_int,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for ScaleContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for ScaleContext {}
+
+// ── RAII owner stub (mirrors crate::resample_context::ResampleContext) ────────
+// Under DOCS_RS the real `resample_context` module is cfg'd out; this
+// shape-compatible stub keeps `ff_sys::ResampleContext` available for docs.rs.
+
+#[derive(Debug)]
+pub struct ResampleContext {
+    _ptr: std::ptr::NonNull<SwrContext>,
+}
+
+impl ResampleContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn new(
+        _out_ch_layout: *const AVChannelLayout,
+        _out_sample_fmt: AVSampleFormat,
+        _out_sample_rate: c_int,
+        _in_ch_layout: *const AVChannelLayout,
+        _in_sample_fmt: AVSampleFormat,
+        _in_sample_rate: c_int,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const SwrContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut SwrContext {
+        self._ptr.as_ptr()
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn convert(
+        &mut self,
+        _out: *mut *mut u8,
+        _out_count: c_int,
+        _in_: *const *const u8,
+        _in_count: c_int,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub fn get_out_samples(&mut self, _in_samples: c_int) -> c_int {
+        0
+    }
+}
+
+impl Drop for ResampleContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for ResampleContext {}

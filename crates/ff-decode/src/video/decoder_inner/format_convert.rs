@@ -185,30 +185,26 @@ impl VideoDecoderInner {
                 src_width, src_height, src_format, dst_width, dst_height, dst_format,
             );
             if self.sws_cache_key != Some(cache_key) {
-                // Free the old context if it exists.
-                if let Some(old_ctx) = self.sws_ctx.take() {
-                    ff_sys::swscale::free_context(old_ctx);
-                }
-
-                let ctx = ff_sys::swscale::get_context(
-                    src_width as i32,
-                    src_height as i32,
-                    src_format,
-                    dst_width as i32,
-                    dst_height as i32,
-                    dst_format,
-                    ff_sys::swscale::scale_flags::BILINEAR,
-                )
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: 0,
-                    message: format!("Failed to create sws context: {e}"),
-                })?;
-
-                self.sws_ctx = Some(ctx);
+                // The old context (if any) drops on reassignment.
+                self.sws_ctx = Some(
+                    ff_sys::ScaleContext::new(
+                        src_width as i32,
+                        src_height as i32,
+                        src_format,
+                        dst_width as i32,
+                        dst_height as i32,
+                        dst_format,
+                        ff_sys::swscale::scale_flags::BILINEAR,
+                    )
+                    .map_err(|e| DecodeError::Ffmpeg {
+                        code: 0,
+                        message: format!("Failed to create sws context: {e}"),
+                    })?,
+                );
                 self.sws_cache_key = Some(cache_key);
             }
 
-            let Some(sws_ctx) = self.sws_ctx else {
+            let Some(sws_ctx) = self.sws_ctx.as_mut() else {
                 return Err(DecodeError::Ffmpeg {
                     code: 0,
                     message: "SwsContext not initialized".to_string(),
@@ -236,19 +232,19 @@ impl VideoDecoderInner {
             }
 
             // Perform conversion/scaling (src_height is the number of input rows to process)
-            ff_sys::swscale::scale(
-                sws_ctx,
-                (*self.frame).data.as_ptr() as *const *const u8,
-                (*self.frame).linesize.as_ptr(),
-                0,
-                src_height as i32,
-                (*dst_frame).data.as_ptr() as *const *mut u8,
-                (*dst_frame).linesize.as_ptr(),
-            )
-            .map_err(|e| DecodeError::Ffmpeg {
-                code: 0,
-                message: format!("Failed to scale frame: {e}"),
-            })?;
+            sws_ctx
+                .scale(
+                    (*self.frame).data.as_ptr() as *const *const u8,
+                    (*self.frame).linesize.as_ptr(),
+                    0,
+                    src_height as i32,
+                    (*dst_frame).data.as_ptr() as *const *mut u8,
+                    (*dst_frame).linesize.as_ptr(),
+                )
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to scale frame: {e}"),
+                })?;
 
             // Copy timestamp
             (*dst_frame).pts = (*self.frame).pts;

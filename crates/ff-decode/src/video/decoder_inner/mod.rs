@@ -39,7 +39,7 @@ use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
     AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket,
-    AVPixelFormat, InputFormatContext, SwsContext,
+    AVPixelFormat, InputFormatContext,
 };
 
 use crate::HardwareAccel;
@@ -75,7 +75,7 @@ pub(crate) struct VideoDecoderInner {
     /// Video stream index in the format context
     pub(super) stream_index: i32,
     /// SwScale context for pixel format conversion and/or scaling (optional)
-    pub(super) sws_ctx: Option<*mut SwsContext>,
+    pub(super) sws_ctx: Option<ff_sys::ScaleContext>,
     /// Cache key for the main sws_ctx: (src_w, src_h, src_fmt, dst_w, dst_h, dst_fmt)
     pub(super) sws_cache_key: Option<(u32, u32, i32, u32, u32, i32)>,
     /// Target output pixel format (if conversion is needed)
@@ -93,7 +93,7 @@ pub(crate) struct VideoDecoderInner {
     /// Reusable frame for decoding
     pub(super) frame: *mut AVFrame,
     /// Cached SwScale context for thumbnail generation
-    pub(super) thumbnail_sws_ctx: Option<*mut SwsContext>,
+    pub(super) thumbnail_sws_ctx: Option<ff_sys::ScaleContext>,
     /// Last thumbnail dimensions (for cache invalidation)
     pub(super) thumbnail_cache_key: Option<(u32, u32, u32, u32, AVPixelFormat)>,
     /// Hardware device context (if hardware acceleration is active)
@@ -333,21 +333,8 @@ impl VideoDecoderInner {
 
 impl Drop for VideoDecoderInner {
     fn drop(&mut self) {
-        // Free SwScale context if allocated
-        if let Some(sws_ctx) = self.sws_ctx {
-            // SAFETY: sws_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::swscale::free_context(sws_ctx);
-            }
-        }
-
-        // Free cached thumbnail SwScale context if allocated
-        if let Some(thumbnail_ctx) = self.thumbnail_sws_ctx {
-            // SAFETY: thumbnail_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::swscale::free_context(thumbnail_ctx);
-            }
-        }
+        // The `sws_ctx` and `thumbnail_sws_ctx` (owned `ScaleContext`) free
+        // themselves when this struct drops.
 
         // Free hardware device context if allocated
         if let Some(hw_ctx) = self.hw_device_ctx {

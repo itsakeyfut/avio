@@ -59,7 +59,7 @@ pub(crate) struct AudioDecoderInner {
     /// Target output channel count (if remixing is needed)
     output_channels: Option<u32>,
     /// Cached `SwrContext` — reused across frames to preserve FIR filter state.
-    swr_ctx: Option<resample_inner::SwrContextGuard>,
+    swr_ctx: Option<ff_sys::ResampleContext>,
     /// Key for the cached context; rebuilt when source or target parameters change.
     swr_key: Option<resample_inner::SwrKey>,
     /// Whether the source is a live/streaming input (seeking is not supported)
