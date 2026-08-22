@@ -1121,3 +1121,72 @@ pub mod swscale {
         pub const SPLINE: i32 = 1024;
     }
 }
+
+// ── RAII owner stub (mirrors crate::codec_context::CodecContext) ──────────────
+// Under DOCS_RS the real `codec_context` module is cfg'd out (it depends on the
+// docsrs-gated `avcodec` wrapper); this shape-compatible stub keeps
+// `ff_sys::CodecContext` available so ff-decode compiles for docs.rs.
+#[derive(Debug)]
+pub struct CodecContext {
+    _ptr: std::ptr::NonNull<AVCodecContext>,
+}
+
+impl CodecContext {
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn new(_codec: *const AVCodec) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVCodecContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVCodecContext {
+        self._ptr.as_ptr()
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn parameters_to_context(
+        &mut self,
+        _par: *const AVCodecParameters,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn open(
+        &mut self,
+        _codec: *const AVCodec,
+        _options: *mut *mut AVDictionary,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn send_packet(&mut self, _pkt: *const AVPacket) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn receive_frame(&mut self, _frame: *mut AVFrame) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn flush_buffers(&mut self) {}
+}
+
+impl Drop for CodecContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for CodecContext {}

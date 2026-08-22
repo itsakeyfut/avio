@@ -44,9 +44,7 @@ use ff_sys::{
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{
-    AvCodecContextGuard, AvFormatContextGuard, AvFrameGuard, AvPacketGuard,
-};
+use crate::shared::guards_inner::{AvFormatContextGuard, AvFrameGuard, AvPacketGuard};
 use crate::video::builder::OutputScale;
 use ff_common::FramePool;
 
@@ -71,7 +69,7 @@ pub(crate) struct VideoDecoderInner {
     /// Format context for reading the media file
     pub(super) format_ctx: *mut AVFormatContext,
     /// Codec context for decoding video frames
-    pub(super) codec_ctx: *mut AVCodecContext,
+    pub(super) codec_ctx: ff_sys::CodecContext,
     /// Video stream index in the format context
     pub(super) stream_index: i32,
     /// SwScale context for pixel format conversion and/or scaling (optional)
@@ -229,59 +227,69 @@ impl VideoDecoderInner {
             })?
         };
 
-        // Allocate codec context (with RAII guard)
-        // SAFETY: codec pointer is valid, AvCodecContextGuard ensures cleanup
-        let codec_ctx_guard = unsafe { AvCodecContextGuard::new(codec)? };
-        let codec_ctx = codec_ctx_guard.as_ptr();
+        // Allocate codec context (freed on drop by CodecContext).
+        // SAFETY: codec pointer is valid.
+        let mut codec_ctx =
+            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate codec context: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // Copy codec parameters from stream to context
-        // SAFETY: format_ctx and codec_ctx are valid, stream_index is valid
+        // SAFETY: format_ctx is valid, stream_index is valid; codec_ctx is owned
         unsafe {
             let stream = (*format_ctx).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
-            ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
+            codec_ctx
+                .parameters_to_context(codecpar)
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
                     message: format!(
                         "Failed to copy codec parameters: {}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     ),
-                }
-            })?;
+                })?;
 
             // Set thread count
             if thread_count > 0 {
-                (*codec_ctx).thread_count = thread_count as i32;
+                (*codec_ctx.as_mut_ptr()).thread_count = thread_count as i32;
             }
         }
 
         // Initialize hardware acceleration if requested
         // SAFETY: codec_ctx is valid and not yet opened
         let (hw_device_ctx, active_hw_accel) =
-            unsafe { Self::init_hardware_accel(codec_ctx, hardware_accel)? };
+            unsafe { Self::init_hardware_accel(codec_ctx.as_mut_ptr(), hardware_accel)? };
 
         // Open the codec
-        // SAFETY: codec_ctx and codec are valid, hardware device context is set if requested
+        // SAFETY: codec is valid, hardware device context is set if requested; codec_ctx is owned
         unsafe {
-            ff_sys::avcodec::open2(codec_ctx, codec, ptr::null_mut()).map_err(|e| {
+            codec_ctx.open(codec, ptr::null_mut()).map_err(|e| {
                 // If codec opening failed, we still own our reference to hw_device_ctx
                 // but it will be cleaned up when codec_ctx is freed (which happens
-                // when codec_ctx_guard is dropped)
+                // when codec_ctx is dropped)
                 // Our reference in hw_device_ctx will be cleaned up here
                 if let Some(hw_ctx) = hw_device_ctx {
                     ff_sys::av_buffer_unref(&mut (hw_ctx as *mut _));
                 }
                 DecodeError::Ffmpeg {
-                    code: e,
-                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
+                    code: e.code(),
+                    message: format!(
+                        "Failed to open codec: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
                 }
             })?;
         }
 
         // Extract stream information
         // SAFETY: All pointers are valid
-        let stream_info =
-            unsafe { Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx)? };
+        let stream_info = unsafe {
+            Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx.as_mut_ptr())?
+        };
 
         // Extract container information
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
@@ -296,7 +304,7 @@ impl VideoDecoderInner {
         Ok((
             Self {
                 format_ctx: format_ctx_guard.into_raw(),
-                codec_ctx: codec_ctx_guard.into_raw(),
+                codec_ctx,
                 stream_index: stream_index as i32,
                 sws_ctx: None,
                 sws_cache_key: None,
@@ -361,14 +369,6 @@ impl Drop for VideoDecoderInner {
             // SAFETY: self.packet is valid and owned by this instance
             unsafe {
                 ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-        }
-
-        // Free codec context
-        if !self.codec_ctx.is_null() {
-            // SAFETY: self.codec_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::avcodec::free_context(&mut (self.codec_ctx as *mut _));
             }
         }
 

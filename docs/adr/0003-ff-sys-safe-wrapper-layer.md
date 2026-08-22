@@ -43,9 +43,9 @@ it yet, and it will be implemented in a separate PR.
 ## Considered Options
 
 * **Curated two-layer design**: a `raw` boundary (bindgen, `allow`-all, `unsafe`)
-  and a `safe` module of RAII owned newtypes over `NonNull`, returning a typed
-  error, with `unsafe` localized and the module fully linted. Scoped to what the
-  family uses.
+  and a fully-linted `safe` layer of RAII owned newtypes over `NonNull` (flat
+  hand-written modules distinct from `mod raw`, not a single `mod safe`),
+  returning a typed error, with `unsafe` localized. Scoped to what the family uses.
 * **Status quo**: keep the thin `unsafe fn` free-function wrappers that return raw
   pointers and require manual free.
 * **Adopt an existing safe wrapper** (`rsmpeg`) and delete the hand-written layer.
@@ -55,16 +55,19 @@ it yet, and it will be implemented in a separate PR.
 ## Decision Outcome
 
 Chosen option: the **curated two-layer design**. The bindgen output moves behind a
-`raw` boundary that keeps `#![allow(warnings)]`; the hand-written layer becomes a
-`safe` module of owned newtypes (`CodecContext`, `SwrContext`, and the frame /
-packet owners) each wrapping `NonNull<T>` and freeing its resource in `Drop`, so
-manual `free_*` disappears from the API and a leak or double-free cannot survive an
-early return. Public signatures carry owned values and references, never raw
-pointers; fallible calls return a typed error (a newtype over `c_int` whose
-`Display` uses the existing `av_error_string`, with the `EAGAIN` / `EOF` drain
-states named). `unsafe` is placed at the real unsafety, and the `safe` module
-compiles under `#![deny(unsafe_op_in_unsafe_fn)]` with each block carrying a
-`// SAFETY:` note and full clippy, unlike the raw layer.
+`raw` boundary that keeps `#![allow(warnings)]`; the hand-written layer gains
+owned newtypes (`CodecContext`, `SwrContext`, and the frame / packet owners) each
+wrapping `NonNull<T>` and freeing its resource in `Drop`, so manual `free_*`
+disappears from the API and a leak or double-free cannot survive an early return.
+These live as flat, fully-linted modules (`codec_context`, `error`, the
+`avcodec` / `avformat` / ... wrappers) re-exported at the crate root
+(e.g. `ff_sys::CodecContext`), not a single `mod safe`; the "safe layer" is the
+whole hand-written surface distinct from `mod raw`. Public signatures carry owned
+values and references, never raw pointers; fallible calls return a typed error (a
+newtype over `c_int` whose `Display` uses the existing `av_error_string`, with the
+`EAGAIN` / `EOF` drain states named). `unsafe` is placed at the real unsafety, and
+the safe layer compiles under `#![deny(unsafe_op_in_unsafe_fn)]` with each block
+carrying a `// SAFETY:` note and full clippy, unlike the raw layer.
 
 The scope stays what the family needs (decode / encode / format / resample), not
 general coverage. This is the foundation on which call-order typestate
@@ -78,10 +81,10 @@ scope here and would be its own record.
 * Each owned newtype has a `Drop` test (a drop counter, or a Miri run over
   alloc → drop) proving the resource is freed exactly once; a manual-free API no
   longer exists to misuse.
-* The `safe` module compiles under `#![deny(unsafe_op_in_unsafe_fn)]` and the
+* The safe layer compiles under `#![deny(unsafe_op_in_unsafe_fn)]` and the
   workspace clippy gate; a raw `*mut` / `*const` or an un-annotated `unsafe` in its
   public surface fails review.
-* A grep / CI guard that `pub` signatures in the `safe` module name no raw pointer
+* A grep / CI guard that `pub` signatures in the safe layer name no raw pointer
   type.
 
 Until the PR lands, this record is the only statement of the direction; the status

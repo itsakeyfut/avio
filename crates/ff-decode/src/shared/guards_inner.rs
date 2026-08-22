@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use ff_format::NetworkOptions;
-use ff_sys::{AVCodecContext, AVFormatContext, AVFrame, AVPacket};
+use ff_sys::{AVFormatContext, AVFrame, AVPacket};
 
 use crate::error::DecodeError;
 use crate::network::{map_network_error, sanitize_url};
@@ -95,50 +95,6 @@ impl Drop for AvFormatContextGuard {
             // SAFETY: self.0 is valid and owned by this guard
             unsafe {
                 ff_sys::avformat::close_input(&mut (self.0 as *mut _));
-            }
-        }
-    }
-}
-
-/// RAII guard for `AVCodecContext` to ensure proper cleanup.
-pub(crate) struct AvCodecContextGuard(*mut AVCodecContext);
-
-impl AvCodecContextGuard {
-    /// Creates a new guard by allocating a codec context.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure codec pointer is valid.
-    pub(crate) unsafe fn new(codec: *const ff_sys::AVCodec) -> Result<Self, DecodeError> {
-        // SAFETY: Caller ensures codec pointer is valid
-        let codec_ctx = unsafe {
-            ff_sys::avcodec::alloc_context3(codec).map_err(|e| DecodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to allocate codec context: {e}"),
-            })?
-        };
-        Ok(Self(codec_ctx))
-    }
-
-    /// Returns the raw pointer.
-    pub(crate) const fn as_ptr(&self) -> *mut AVCodecContext {
-        self.0
-    }
-
-    /// Consumes the guard and returns the raw pointer without dropping.
-    pub(crate) fn into_raw(self) -> *mut AVCodecContext {
-        let ptr = self.0;
-        std::mem::forget(self);
-        ptr
-    }
-}
-
-impl Drop for AvCodecContextGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: self.0 is valid and owned by this guard
-            unsafe {
-                ff_sys::avcodec::free_context(&mut (self.0 as *mut _));
             }
         }
     }

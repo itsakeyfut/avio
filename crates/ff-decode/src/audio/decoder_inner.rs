@@ -38,9 +38,7 @@ use ff_sys::{
 use super::resample_inner;
 
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{
-    AvCodecContextGuard, AvFormatContextGuard, AvFrameGuard, AvPacketGuard,
-};
+use crate::shared::guards_inner::{AvFormatContextGuard, AvFrameGuard, AvPacketGuard};
 
 /// Internal decoder state holding FFmpeg contexts.
 ///
@@ -50,7 +48,7 @@ pub(crate) struct AudioDecoderInner {
     /// Format context for reading the media file
     format_ctx: *mut AVFormatContext,
     /// Codec context for decoding audio frames
-    codec_ctx: *mut AVCodecContext,
+    codec_ctx: ff_sys::CodecContext,
     /// Audio stream index in the format context
     stream_index: i32,
     /// Target output sample format (if conversion is needed)
@@ -179,42 +177,52 @@ impl AudioDecoderInner {
             })?
         };
 
-        // Allocate codec context (with RAII guard)
-        // SAFETY: codec pointer is valid, AvCodecContextGuard ensures cleanup
-        let codec_ctx_guard = unsafe { AvCodecContextGuard::new(codec)? };
-        let codec_ctx = codec_ctx_guard.as_ptr();
+        // Allocate codec context (freed on drop by CodecContext).
+        // SAFETY: codec pointer is valid.
+        let mut codec_ctx =
+            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate codec context: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // Copy codec parameters from stream to context
-        // SAFETY: format_ctx and codec_ctx are valid, stream_index is valid
+        // SAFETY: format_ctx is valid, stream_index is valid; codec_ctx is owned
         unsafe {
             let stream = (*format_ctx).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
-            ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
+            codec_ctx
+                .parameters_to_context(codecpar)
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
                     message: format!(
                         "Failed to copy codec parameters: {}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     ),
-                }
-            })?;
+                })?;
         }
 
         // Open the codec
-        // SAFETY: codec_ctx and codec are valid
+        // SAFETY: codec is valid; codec_ctx is owned
         unsafe {
-            ff_sys::avcodec::open2(codec_ctx, codec, ptr::null_mut()).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
-                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
-                }
-            })?;
+            codec_ctx
+                .open(codec, ptr::null_mut())
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Failed to open codec: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?;
         }
 
         // Extract stream information
         // SAFETY: All pointers are valid
-        let stream_info =
-            unsafe { Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx)? };
+        let stream_info = unsafe {
+            Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx.as_mut_ptr())?
+        };
 
         // Extract container information
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
@@ -229,7 +237,7 @@ impl AudioDecoderInner {
         Ok((
             Self {
                 format_ctx: format_ctx_guard.into_raw(),
-                codec_ctx: codec_ctx_guard.into_raw(),
+                codec_ctx,
                 stream_index: stream_index as i32,
                 output_format,
                 output_sample_rate,
@@ -467,88 +475,93 @@ impl AudioDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                let ret = ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame);
+                match self.codec_ctx.receive_frame(self.frame) {
+                    Ok(()) => {
+                        // Successfully received a frame
+                        let audio_frame = resample_inner::convert_frame_to_audio_frame(
+                            self.frame,
+                            self.format_ctx,
+                            self.stream_index,
+                            self.output_format,
+                            self.output_sample_rate,
+                            self.output_channels,
+                            &mut self.swr_ctx,
+                            &mut self.swr_key,
+                        )?;
 
-                if ret == 0 {
-                    // Successfully received a frame
-                    let audio_frame = resample_inner::convert_frame_to_audio_frame(
-                        self.frame,
-                        self.format_ctx,
-                        self.stream_index,
-                        self.output_format,
-                        self.output_sample_rate,
-                        self.output_channels,
-                        &mut self.swr_ctx,
-                        &mut self.swr_key,
-                    )?;
+                        // Update position based on frame timestamp
+                        let pts = (*self.frame).pts;
+                        if pts != ff_sys::AV_NOPTS_VALUE {
+                            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
+                            let time_base = (*(*stream)).time_base;
+                            let timestamp_secs =
+                                pts as f64 * time_base.num as f64 / time_base.den as f64;
+                            self.position = Duration::from_secs_f64(timestamp_secs);
+                        }
 
-                    // Update position based on frame timestamp
-                    let pts = (*self.frame).pts;
-                    if pts != ff_sys::AV_NOPTS_VALUE {
-                        let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-                        let time_base = (*(*stream)).time_base;
-                        let timestamp_secs =
-                            pts as f64 * time_base.num as f64 / time_base.den as f64;
-                        self.position = Duration::from_secs_f64(timestamp_secs);
+                        return Ok(Some(audio_frame));
                     }
+                    Err(e) if e.is_eagain() => {
+                        // Need to send more packets to the decoder
+                        // Read a packet from the file
+                        let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
 
-                    return Ok(Some(audio_frame));
-                } else if ret == ff_sys::error_codes::EAGAIN {
-                    // Need to send more packets to the decoder
-                    // Read a packet from the file
-                    let read_ret = ff_sys::av_read_frame(self.format_ctx, self.packet);
-
-                    if read_ret == ff_sys::error_codes::EOF {
-                        // End of file - flush the decoder
-                        ff_sys::avcodec_send_packet(self.codec_ctx, ptr::null());
-                        self.eof = true;
-                        continue;
-                    } else if read_ret < 0 {
-                        return Err(if let Some(url) = &self.url {
-                            // Network source: map to typed variant so reconnect can detect it.
-                            crate::network::map_network_error(
-                                read_ret,
-                                crate::network::sanitize_url(url),
-                            )
-                        } else {
-                            DecodeError::Ffmpeg {
-                                code: read_ret,
-                                message: format!(
-                                    "Failed to read frame: {}",
-                                    ff_sys::av_error_string(read_ret)
-                                ),
-                            }
-                        });
-                    }
-
-                    // Check if this packet belongs to the audio stream
-                    if (*self.packet).stream_index == self.stream_index {
-                        // Send the packet to the decoder
-                        let send_ret = ff_sys::avcodec_send_packet(self.codec_ctx, self.packet);
-                        ff_sys::av_packet_unref(self.packet);
-
-                        if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
-                            return Err(DecodeError::Ffmpeg {
-                                code: send_ret,
-                                message: format!(
-                                    "Failed to send packet: {}",
-                                    ff_sys::av_error_string(send_ret)
-                                ),
+                        if read_ret == ff_sys::error_codes::EOF {
+                            // End of file - flush the decoder
+                            let _ = self.codec_ctx.send_packet(ptr::null());
+                            self.eof = true;
+                            continue;
+                        } else if read_ret < 0 {
+                            return Err(if let Some(url) = &self.url {
+                                // Network source: map to typed variant so reconnect can detect it.
+                                crate::network::map_network_error(
+                                    read_ret,
+                                    crate::network::sanitize_url(url),
+                                )
+                            } else {
+                                DecodeError::Ffmpeg {
+                                    code: read_ret,
+                                    message: format!(
+                                        "Failed to read frame: {}",
+                                        ff_sys::av_error_string(read_ret)
+                                    ),
+                                }
                             });
                         }
-                    } else {
-                        // Not our stream, unref and continue
-                        ff_sys::av_packet_unref(self.packet);
+
+                        // Check if this packet belongs to the audio stream
+                        if (*self.packet).stream_index == self.stream_index {
+                            // Send the packet to the decoder
+                            let send_result = self.codec_ctx.send_packet(self.packet);
+                            ff_sys::av_packet_unref(self.packet);
+
+                            if let Err(se) = send_result
+                                && !se.is_eagain()
+                            {
+                                return Err(DecodeError::Ffmpeg {
+                                    code: se.code(),
+                                    message: format!(
+                                        "Failed to send packet: {}",
+                                        ff_sys::av_error_string(se.code())
+                                    ),
+                                });
+                            }
+                        } else {
+                            // Not our stream, unref and continue
+                            ff_sys::av_packet_unref(self.packet);
+                        }
                     }
-                } else if ret == ff_sys::error_codes::EOF {
-                    // Decoder has been fully flushed
-                    self.eof = true;
-                    return Ok(None);
-                } else {
-                    return Err(DecodeError::DecodingFailed {
-                        timestamp: Some(self.position),
-                        reason: ff_sys::av_error_string(ret),
-                    });
+                    Err(e) if e.is_eof() => {
+                        // Decoder has been fully flushed
+                        self.eof = true;
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        return Err(DecodeError::DecodingFailed {
+                            timestamp: Some(self.position),
+                            reason: ff_sys::av_error_string(e.code()),
+                        });
+                    }
                 }
             }
         }
@@ -624,10 +637,8 @@ impl AudioDecoderInner {
 
         // 3. Flush decoder buffers and reset the cached SwrContext so the
         //    resampler does not carry stale delay samples across the seek point.
-        // SAFETY: codec_ctx is valid (owned by AudioDecoderInner)
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
         self.swr_ctx = None;
         self.swr_key = None;
 
@@ -635,13 +646,10 @@ impl AudioDecoderInner {
         // SAFETY: codec_ctx and frame are valid
         unsafe {
             loop {
-                let ret = ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame);
-                if ret == ff_sys::error_codes::EAGAIN || ret == ff_sys::error_codes::EOF {
-                    break;
-                } else if ret == 0 {
-                    ff_sys::av_frame_unref(self.frame);
-                } else {
-                    break;
+                match self.codec_ctx.receive_frame(self.frame) {
+                    Ok(()) => ff_sys::av_frame_unref(self.frame),
+                    Err(e) if e.is_eagain() || e.is_eof() => break,
+                    Err(_) => break,
                 }
             }
         }
@@ -680,10 +688,8 @@ impl AudioDecoderInner {
 
     /// Flushes the decoder's internal buffers.
     pub(crate) fn flush(&mut self) {
-        // SAFETY: codec_ctx is valid and owned by this instance
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
         self.eof = false;
     }
 
@@ -771,10 +777,8 @@ impl AudioDecoderInner {
         self.stream_index = stream_index as i32;
 
         // Flush codec buffers to discard stale decoded state from before the drop.
-        // SAFETY: self.codec_ctx is valid and has not been freed.
-        unsafe {
-            ff_sys::avcodec::flush_buffers(self.codec_ctx);
-        }
+        // SAFETY: the codec context was opened during construction.
+        unsafe { self.codec_ctx.flush_buffers() };
 
         self.eof = false;
         Ok(())
@@ -795,14 +799,6 @@ impl Drop for AudioDecoderInner {
             // SAFETY: self.packet is valid and owned by this instance
             unsafe {
                 ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-        }
-
-        // Free codec context
-        if !self.codec_ctx.is_null() {
-            // SAFETY: self.codec_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::avcodec::free_context(&mut (self.codec_ctx as *mut _));
             }
         }
 

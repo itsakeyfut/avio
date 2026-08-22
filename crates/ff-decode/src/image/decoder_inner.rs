@@ -25,12 +25,11 @@ use std::ptr;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, PooledBuffer, VideoFrame};
 use ff_sys::{
-    AVCodecContext, AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket,
-    AVPixelFormat,
+    AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat,
 };
 
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{AvCodecContextGuard, AvFormatContextGuard};
+use crate::shared::guards_inner::AvFormatContextGuard;
 use crate::shared::plane_inner::plane_row_ptr;
 
 // ── ImageDecoderInner ─────────────────────────────────────────────────────────
@@ -42,7 +41,7 @@ pub(crate) struct ImageDecoderInner {
     /// Format context for reading the image file.
     format_ctx: *mut AVFormatContext,
     /// Codec context for decoding the image.
-    codec_ctx: *mut AVCodecContext,
+    codec_ctx: ff_sys::CodecContext,
     /// Video stream index in the format context.
     stream_index: usize,
     /// Reusable packet for reading from file.
@@ -112,36 +111,45 @@ impl ImageDecoderInner {
             })?
         };
 
-        // 5. avcodec_alloc_context3
-        // SAFETY: codec pointer is valid; AvCodecContextGuard ensures cleanup.
-        let codec_ctx_guard = unsafe { AvCodecContextGuard::new(codec)? };
-        let codec_ctx = codec_ctx_guard.as_ptr();
+        // 5. avcodec_alloc_context3 (freed on drop by CodecContext).
+        // SAFETY: codec pointer is valid.
+        let mut codec_ctx =
+            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate codec context: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // 6. avcodec_parameters_to_context
         // SAFETY: All pointers are valid; stream_index was validated above.
         unsafe {
             let stream = (*format_ctx).streams.add(stream_index);
             let codecpar = (*(*stream)).codecpar;
-            ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
+            codec_ctx
+                .parameters_to_context(codecpar)
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
                     message: format!(
                         "Failed to copy codec parameters: {}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     ),
-                }
-            })?;
+                })?;
         }
 
         // 7. avcodec_open2
-        // SAFETY: codec_ctx and codec are valid; no hardware acceleration for images.
+        // SAFETY: codec is valid; no hardware acceleration for images; codec_ctx is owned.
         unsafe {
-            ff_sys::avcodec::open2(codec_ctx, codec, ptr::null_mut()).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: e,
-                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
-                }
-            })?;
+            codec_ctx
+                .open(codec, ptr::null_mut())
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Failed to open codec: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?;
         }
 
         // Allocate packet and frame.
@@ -164,7 +172,7 @@ impl ImageDecoderInner {
 
         Ok(Self {
             format_ctx: format_ctx_guard.into_raw(),
-            codec_ctx: codec_ctx_guard.into_raw(),
+            codec_ctx,
             stream_index,
             packet,
             frame,
@@ -174,13 +182,13 @@ impl ImageDecoderInner {
     /// Returns the image width in pixels.
     pub(crate) fn width(&self) -> u32 {
         // SAFETY: codec_ctx is valid for the lifetime of `self`.
-        unsafe { (*self.codec_ctx).width as u32 }
+        unsafe { (*self.codec_ctx.as_ptr()).width as u32 }
     }
 
     /// Returns the image height in pixels.
     pub(crate) fn height(&self) -> u32 {
         // SAFETY: codec_ctx is valid for the lifetime of `self`.
-        unsafe { (*self.codec_ctx).height as u32 }
+        unsafe { (*self.codec_ctx.as_ptr()).height as u32 }
     }
 
     /// Decodes the image, consuming `self` and returning a [`VideoFrame`].
@@ -190,7 +198,7 @@ impl ImageDecoderInner {
     /// 2. `avcodec_send_packet`
     /// 3. `avcodec_receive_frame`
     /// 4. Convert to [`VideoFrame`]
-    pub(crate) fn decode(self) -> Result<VideoFrame, DecodeError> {
+    pub(crate) fn decode(mut self) -> Result<VideoFrame, DecodeError> {
         // 1. av_read_frame
         // SAFETY: format_ctx and packet are valid.
         let ret = unsafe { ff_sys::av_read_frame(self.format_ctx, self.packet) };
@@ -202,28 +210,27 @@ impl ImageDecoderInner {
         }
 
         // 2. avcodec_send_packet
-        // SAFETY: codec_ctx and packet are valid; packet contains image data.
-        let ret = unsafe { ff_sys::avcodec_send_packet(self.codec_ctx, self.packet) };
+        // SAFETY: codec_ctx is owned; packet is valid and contains image data.
+        let send_result = unsafe { self.codec_ctx.send_packet(self.packet) };
         unsafe { ff_sys::av_packet_unref(self.packet) };
-        if ret < 0 {
+        if let Err(e) = send_result {
             return Err(DecodeError::Ffmpeg {
-                code: ret,
+                code: e.code(),
                 message: format!(
                     "Failed to send packet to decoder: {}",
-                    ff_sys::av_error_string(ret)
+                    ff_sys::av_error_string(e.code())
                 ),
             });
         }
 
         // 3. avcodec_receive_frame
-        // SAFETY: codec_ctx and frame are valid.
-        let ret = unsafe { ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame) };
-        if ret < 0 {
+        // SAFETY: codec_ctx is owned; frame is valid.
+        if let Err(e) = unsafe { self.codec_ctx.receive_frame(self.frame) } {
             return Err(DecodeError::Ffmpeg {
-                code: ret,
+                code: e.code(),
                 message: format!(
                     "Failed to receive decoded frame: {}",
-                    ff_sys::av_error_string(ret)
+                    ff_sys::av_error_string(e.code())
                 ),
             });
         }
@@ -540,9 +547,6 @@ impl Drop for ImageDecoderInner {
             }
             if !self.packet.is_null() {
                 ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-            if !self.codec_ctx.is_null() {
-                ff_sys::avcodec::free_context(&mut (self.codec_ctx as *mut _));
             }
             if !self.format_ctx.is_null() {
                 ff_sys::avformat::close_input(&mut (self.format_ctx as *mut _));
