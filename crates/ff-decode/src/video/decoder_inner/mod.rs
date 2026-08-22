@@ -38,15 +38,13 @@ use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
     AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket,
-    AVPixelFormat, InputFormatContext,
+    AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame,
+    InputFormatContext, Packet,
 };
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{
-    AvFrameGuard, AvPacketGuard, open_image_sequence_ctx, open_input_ctx, open_url_ctx,
-};
+use crate::shared::guards_inner::{open_image_sequence_ctx, open_input_ctx, open_url_ctx};
 use crate::video::builder::OutputScale;
 use ff_common::FramePool;
 
@@ -89,9 +87,9 @@ pub(crate) struct VideoDecoderInner {
     /// Current playback position
     pub(super) position: Duration,
     /// Reusable packet for reading from file
-    pub(super) packet: *mut AVPacket,
+    pub(super) packet: Packet,
     /// Reusable frame for decoding
-    pub(super) frame: *mut AVFrame,
+    pub(super) frame: Frame,
     /// Cached SwScale context for thumbnail generation
     pub(super) thumbnail_sws_ctx: Option<ff_sys::ScaleContext>,
     /// Last thumbnail dimensions (for cache invalidation)
@@ -204,29 +202,26 @@ impl VideoDecoderInner {
         // Find the decoder for this codec
         // SAFETY: codec_id is valid from FFmpeg
         let codec_name = unsafe { Self::extract_codec_name(codec_id) };
-        let codec = unsafe {
-            ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
-                // Distinguish between a totally unknown codec ID and a known codec
-                // whose decoder was not compiled into this FFmpeg build.
-                if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_EXR {
-                    DecodeError::DecoderUnavailable {
-                        codec: "exr".to_string(),
-                        hint: "Requires FFmpeg built with EXR support \
-                               (--enable-decoder=exr)"
-                            .to_string(),
-                    }
-                } else {
-                    DecodeError::UnsupportedCodec {
-                        codec: format!("{codec_name} (codec_id={codec_id:?})"),
-                    }
+        let codec = ff_sys::Codec::find_decoder(codec_id).ok_or_else(|| {
+            // Distinguish between a totally unknown codec ID and a known codec
+            // whose decoder was not compiled into this FFmpeg build.
+            if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_EXR {
+                DecodeError::DecoderUnavailable {
+                    codec: "exr".to_string(),
+                    hint: "Requires FFmpeg built with EXR support \
+                           (--enable-decoder=exr)"
+                        .to_string(),
                 }
-            })?
-        };
+            } else {
+                DecodeError::UnsupportedCodec {
+                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
+                }
+            }
+        })?;
 
         // Allocate codec context (freed on drop by CodecContext).
-        // SAFETY: codec pointer is valid.
         let mut codec_ctx =
-            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+            ff_sys::CodecContext::new(Some(codec)).map_err(|e| DecodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
                     "Failed to allocate codec context: {}",
@@ -295,10 +290,22 @@ impl VideoDecoderInner {
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
         let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
 
-        // Allocate packet and frame (with RAII guards)
-        // SAFETY: FFmpeg is initialized, guards ensure cleanup
-        let packet_guard = unsafe { AvPacketGuard::new()? };
-        let frame_guard = unsafe { AvFrameGuard::new()? };
+        // Allocate packet and frame (owned; free on drop, including on an early
+        // return from a later `?` in this constructor).
+        let packet = Packet::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate packet: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
+        let frame = Frame::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate frame: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // All initialization successful - transfer ownership to VideoDecoderInner
         Ok((
@@ -313,8 +320,8 @@ impl VideoDecoderInner {
                 is_live,
                 eof: false,
                 position: Duration::ZERO,
-                packet: packet_guard.into_raw(),
-                frame: frame_guard.into_raw(),
+                packet,
+                frame,
                 thumbnail_sws_ctx: None,
                 thumbnail_cache_key: None,
                 hw_device_ctx,
@@ -344,23 +351,9 @@ impl Drop for VideoDecoderInner {
             }
         }
 
-        // Free frame and packet
-        if !self.frame.is_null() {
-            // SAFETY: self.frame is valid and owned by this instance
-            unsafe {
-                ff_sys::av_frame_free(&mut (self.frame as *mut _));
-            }
-        }
-
-        if !self.packet.is_null() {
-            // SAFETY: self.packet is valid and owned by this instance
-            unsafe {
-                ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-        }
-
-        // The `format_ctx` (InputFormatContext) drops automatically after this
-        // Drop body, closing the demux context last.
+        // The owned `frame` (Frame) and `packet` (Packet) free themselves when
+        // this struct drops. The `format_ctx` (InputFormatContext) drops
+        // automatically after this Drop body, closing the demux context last.
     }
 }
 

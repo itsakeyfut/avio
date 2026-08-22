@@ -37,7 +37,7 @@ impl VideoDecoderInner {
         unsafe {
             loop {
                 // Try to receive a frame from the decoder
-                match self.codec_ctx.receive_frame(self.frame).map_err(|e| {
+                match self.codec_ctx.receive_frame(&mut self.frame).map_err(|e| {
                     DecodeError::DecodingFailed {
                         timestamp: Some(self.position),
                         reason: ff_sys::av_error_string(e.code()),
@@ -51,8 +51,8 @@ impl VideoDecoderInner {
                         self.transfer_hardware_frame_if_needed()?;
 
                         // SAFETY: self.frame is valid and non-null after receive_frame succeeded.
-                        let w = (*self.frame).width as u32;
-                        let h = (*self.frame).height as u32;
+                        let w = (*self.frame.as_ptr()).width as u32;
+                        let h = (*self.frame.as_ptr()).height as u32;
                         if w > 32_768 || h > 32_768 {
                             log::warn!(
                                 "frame rejected reason=unsupported_resolution width={w} height={h}"
@@ -66,7 +66,7 @@ impl VideoDecoderInner {
                         let video_frame = self.convert_frame_to_video_frame()?;
 
                         // Update position based on frame timestamp
-                        let pts = (*self.frame).pts;
+                        let pts = (*self.frame.as_ptr()).pts;
                         if pts != ff_sys::AV_NOPTS_VALUE {
                             let stream = (*self.format_ctx.as_ptr())
                                 .streams
@@ -82,7 +82,7 @@ impl VideoDecoderInner {
                     ff_sys::ReceiveOutcome::NeedInput => {
                         // Need to send more packets to the decoder
                         // Read a packet from the file
-                        match self.format_ctx.read_frame(self.packet) {
+                        match self.format_ctx.read_frame(&mut self.packet) {
                             Ok(()) => {}
                             Err(e) if e.is_eof() => {
                                 // End of file - flush the decoder
@@ -111,12 +111,12 @@ impl VideoDecoderInner {
                         }
 
                         // Check if this packet belongs to the video stream
-                        if (*self.packet).stream_index == self.stream_index {
+                        if (*self.packet.as_ptr()).stream_index == self.stream_index {
                             // Send the packet to the decoder
-                            let send_result = self.codec_ctx.send_packet(self.packet);
+                            let send_result = self.codec_ctx.send_packet(&self.packet);
                             // SAFETY: self.packet is valid and non-null; pts is a plain i64 field.
-                            let pkt_pts = (*self.packet).pts;
-                            ff_sys::av_packet_unref(self.packet);
+                            let pkt_pts = (*self.packet.as_ptr()).pts;
+                            self.packet.unref();
 
                             if let Err(se) = send_result {
                                 if se.code() == ff_sys::error_codes::AVERROR_INVALIDDATA {
@@ -144,7 +144,7 @@ impl VideoDecoderInner {
                             }
                         } else {
                             // Not our stream, unref and continue
-                            ff_sys::av_packet_unref(self.packet);
+                            self.packet.unref();
                         }
                     }
                     ff_sys::ReceiveOutcome::Drained => {
@@ -161,9 +161,9 @@ impl VideoDecoderInner {
     unsafe fn convert_frame_to_video_frame(&mut self) -> Result<VideoFrame, DecodeError> {
         // SAFETY: Caller ensures self.frame is valid
         unsafe {
-            let src_width = (*self.frame).width as u32;
-            let src_height = (*self.frame).height as u32;
-            let src_format = (*self.frame).format;
+            let src_width = (*self.frame.as_ptr()).width as u32;
+            let src_height = (*self.frame.as_ptr()).height as u32;
+            let src_format = (*self.frame.as_ptr()).format;
 
             // Determine output format
             let dst_format = if let Some(fmt) = self.output_format {
@@ -184,7 +184,7 @@ impl VideoDecoderInner {
                     src_width, src_height, src_format, dst_width, dst_height, dst_format,
                 )
             } else {
-                self.av_frame_to_video_frame(self.frame)
+                self.av_frame_to_video_frame(self.frame.as_ptr())
             }
         }
     }

@@ -25,8 +25,8 @@ use std::ptr;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, PooledBuffer, VideoFrame};
 use ff_sys::{
-    AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat,
-    InputFormatContext,
+    AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame,
+    InputFormatContext, Packet,
 };
 
 use crate::error::DecodeError;
@@ -46,9 +46,9 @@ pub(crate) struct ImageDecoderInner {
     /// Video stream index in the format context.
     stream_index: usize,
     /// Reusable packet for reading from file.
-    packet: *mut AVPacket,
+    packet: Packet,
     /// Reusable frame for decoding.
-    frame: *mut AVFrame,
+    frame: Frame,
 }
 
 // SAFETY: `ImageDecoderInner` owns all FFmpeg contexts exclusively.
@@ -100,18 +100,14 @@ impl ImageDecoderInner {
                 CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
             }
         };
-        let codec = unsafe {
-            ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
-                DecodeError::UnsupportedCodec {
-                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
-                }
-            })?
-        };
+        let codec =
+            ff_sys::Codec::find_decoder(codec_id).ok_or_else(|| DecodeError::UnsupportedCodec {
+                codec: format!("{codec_name} (codec_id={codec_id:?})"),
+            })?;
 
         // 5. avcodec_alloc_context3 (freed on drop by CodecContext).
-        // SAFETY: codec pointer is valid.
         let mut codec_ctx =
-            unsafe { ff_sys::CodecContext::new(codec) }.map_err(|e| DecodeError::Ffmpeg {
+            ff_sys::CodecContext::new(Some(codec)).map_err(|e| DecodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
                     "Failed to allocate codec context: {}",
@@ -149,23 +145,22 @@ impl ImageDecoderInner {
                 })?;
         }
 
-        // Allocate packet and frame.
-        // SAFETY: FFmpeg is initialized.
-        let packet = unsafe { ff_sys::av_packet_alloc() };
-        if packet.is_null() {
-            return Err(DecodeError::Ffmpeg {
-                code: 0,
-                message: "Failed to allocate packet".to_string(),
-            });
-        }
-        let frame = unsafe { ff_sys::av_frame_alloc() };
-        if frame.is_null() {
-            unsafe { ff_sys::av_packet_free(&mut (packet as *mut _)) };
-            return Err(DecodeError::Ffmpeg {
-                code: 0,
-                message: "Failed to allocate frame".to_string(),
-            });
-        }
+        // Allocate packet and frame (owned; free on drop, including on an early
+        // return from a later `?` — the packet frees itself if the frame alloc fails).
+        let packet = Packet::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate packet: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
+        let frame = Frame::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate frame: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         Ok(Self {
             format_ctx: ctx,
@@ -197,8 +192,7 @@ impl ImageDecoderInner {
     /// 4. Convert to [`VideoFrame`]
     pub(crate) fn decode(mut self) -> Result<VideoFrame, DecodeError> {
         // 1. av_read_frame
-        // SAFETY: format_ctx and packet are valid.
-        if let Err(e) = unsafe { self.format_ctx.read_frame(self.packet) } {
+        if let Err(e) = self.format_ctx.read_frame(&mut self.packet) {
             let ret = e.code();
             return Err(DecodeError::Ffmpeg {
                 code: ret,
@@ -207,9 +201,8 @@ impl ImageDecoderInner {
         }
 
         // 2. avcodec_send_packet
-        // SAFETY: codec_ctx is owned; packet is valid and contains image data.
-        let send_result = unsafe { self.codec_ctx.send_packet(self.packet) };
-        unsafe { ff_sys::av_packet_unref(self.packet) };
+        let send_result = self.codec_ctx.send_packet(&self.packet);
+        self.packet.unref();
         if let Err(e) = send_result {
             return Err(DecodeError::Ffmpeg {
                 code: e.code(),
@@ -221,18 +214,16 @@ impl ImageDecoderInner {
         }
 
         // 3. avcodec_receive_frame
-        // SAFETY: codec_ctx is owned; frame is valid.
-        match unsafe {
-            self.codec_ctx
-                .receive_frame(self.frame)
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to receive decoded frame: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                })?
-        } {
+        match self
+            .codec_ctx
+            .receive_frame(&mut self.frame)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to receive decoded frame: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })? {
             ff_sys::ReceiveOutcome::Frame => {}
             // Preserve the pre-migration behaviour: a bare EAGAIN/EOF from this
             // single receive was surfaced as a `Ffmpeg` error with that raw code.
@@ -258,7 +249,7 @@ impl ImageDecoderInner {
 
         // 4. Convert to VideoFrame.
         // SAFETY: frame is valid and contains decoded image data.
-        let video_frame = unsafe { self.av_frame_to_video_frame(self.frame)? };
+        let video_frame = unsafe { self.av_frame_to_video_frame(self.frame.as_ptr())? };
         Ok(video_frame)
     }
 
@@ -558,22 +549,9 @@ impl ImageDecoderInner {
     }
 }
 
-impl Drop for ImageDecoderInner {
-    fn drop(&mut self) {
-        // SAFETY: All pointers are exclusively owned by this struct and were
-        // allocated by the corresponding FFmpeg alloc functions.
-        unsafe {
-            if !self.frame.is_null() {
-                ff_sys::av_frame_free(&mut (self.frame as *mut _));
-            }
-            if !self.packet.is_null() {
-                ff_sys::av_packet_free(&mut (self.packet as *mut _));
-            }
-        }
-        // The `format_ctx` (InputFormatContext) drops automatically after this
-        // Drop body, closing the demux context last.
-    }
-}
+// All fields own their FFmpeg resources (`Frame`, `Packet`, `CodecContext`,
+// `InputFormatContext`) and free themselves on drop, so no manual `Drop` impl is
+// required.
 
 #[cfg(test)]
 mod tests {

@@ -1141,9 +1141,9 @@ pub struct CodecContext {
 }
 
 impl CodecContext {
-    /// # Safety
+    /// # Errors
     /// Stub; never executed on docs.rs.
-    pub unsafe fn new(_codec: *const AVCodec) -> Result<Self, crate::AvError> {
+    pub fn new(_codec: Option<Codec>) -> Result<Self, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
@@ -1170,15 +1170,15 @@ impl CodecContext {
     /// Stub; never executed on docs.rs.
     pub unsafe fn open(
         &mut self,
-        _codec: *const AVCodec,
+        _codec: Codec,
         _options: *mut *mut AVDictionary,
     ) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
-    /// # Safety
+    /// # Errors
     /// Stub; never executed on docs.rs.
-    pub unsafe fn send_packet(&mut self, _pkt: *const AVPacket) -> Result<(), crate::AvError> {
+    pub fn send_packet(&mut self, _pkt: &Packet) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
@@ -1188,12 +1188,9 @@ impl CodecContext {
         Err(crate::AvError::new(-1))
     }
 
-    /// # Safety
+    /// # Errors
     /// Stub; never executed on docs.rs.
-    pub unsafe fn receive_frame(
-        &mut self,
-        _frame: *mut AVFrame,
-    ) -> Result<ReceiveOutcome, crate::AvError> {
+    pub fn receive_frame(&mut self, _frame: &mut Frame) -> Result<ReceiveOutcome, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
@@ -1285,9 +1282,9 @@ impl InputFormatContext {
         Err(crate::AvError::new(-1))
     }
 
-    /// # Safety
+    /// # Errors
     /// Stub; never executed on docs.rs.
-    pub unsafe fn read_frame(&mut self, _pkt: *mut AVPacket) -> Result<(), crate::AvError> {
+    pub fn read_frame(&mut self, _pkt: &mut Packet) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 }
@@ -1298,6 +1295,111 @@ impl Drop for InputFormatContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for InputFormatContext {}
+
+// ── Owned Frame / Packet / Codec stubs (mirror crate::{frame,packet,codec}) ───
+// Under DOCS_RS the real modules are cfg'd out; these shape-compatible stubs keep
+// `ff_sys::{Frame, Packet, Codec}` available for docs.rs.
+
+#[derive(Debug)]
+pub struct Frame {
+    _ptr: std::ptr::NonNull<AVFrame>,
+}
+
+impl Frame {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new() -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVFrame {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVFrame {
+        self._ptr.as_ptr()
+    }
+
+    pub fn unref(&mut self) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn get_buffer(&mut self, _align: c_int) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    pub fn move_ref(&mut self, _src: &mut Frame) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn try_clone(&self) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for Frame {}
+
+#[derive(Debug)]
+pub struct Packet {
+    _ptr: std::ptr::NonNull<AVPacket>,
+}
+
+impl Packet {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new() -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVPacket {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
+        self._ptr.as_ptr()
+    }
+
+    pub fn unref(&mut self) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn try_clone(&self) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for Packet {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for Packet {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Codec {
+    _ptr: std::ptr::NonNull<AVCodec>,
+}
+
+impl Codec {
+    #[must_use]
+    pub fn find_decoder(_codec_id: AVCodecID) -> Option<Self> {
+        None
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVCodec {
+        self._ptr.as_ptr()
+    }
+}
 
 // ── RAII owner stub (mirrors crate::scale_context::ScaleContext) ──────────────
 // Under DOCS_RS the real `scale_context` module is cfg'd out; this

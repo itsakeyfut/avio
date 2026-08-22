@@ -170,36 +170,34 @@ impl VideoDecoderInner {
     /// Caller must ensure `self.frame` contains a valid decoded frame.
     pub(super) unsafe fn transfer_hardware_frame_if_needed(&mut self) -> Result<(), DecodeError> {
         // SAFETY: self.frame is valid and owned by this instance
-        let frame_format = unsafe { (*self.frame).format };
+        let frame_format = unsafe { (*self.frame.as_ptr()).format };
 
         if !Self::is_hardware_format(frame_format) {
             // Not a hardware frame, no transfer needed
             return Ok(());
         }
 
-        // Create a temporary software frame for transfer
-        // SAFETY: FFmpeg is initialized
-        let sw_frame = unsafe { ff_sys::av_frame_alloc() };
-        if sw_frame.is_null() {
-            return Err(DecodeError::Ffmpeg {
-                code: 0,
-                message: "Failed to allocate software frame for hardware transfer".to_string(),
-            });
-        }
+        // Create a temporary software frame for transfer (owned; freed on scope exit).
+        let mut sw_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate software frame for hardware transfer: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // Transfer data from hardware frame to software frame
         // SAFETY: self.frame and sw_frame are valid
         let ret = unsafe {
             ff_sys::av_hwframe_transfer_data(
-                sw_frame, self.frame, 0, // flags: currently unused
+                sw_frame.as_mut_ptr(),
+                self.frame.as_ptr(),
+                0, // flags: currently unused
             )
         };
 
         if ret < 0 {
-            // Transfer failed, clean up
-            unsafe {
-                ff_sys::av_frame_free(&mut (sw_frame as *mut _));
-            }
+            // Transfer failed; sw_frame frees itself on return.
             return Err(DecodeError::Ffmpeg {
                 code: ret,
                 message: format!(
@@ -212,19 +210,17 @@ impl VideoDecoderInner {
         // Copy metadata (pts, duration, etc.) from hardware frame to software frame
         // SAFETY: Both frames are valid
         unsafe {
-            (*sw_frame).pts = (*self.frame).pts;
-            (*sw_frame).pkt_dts = (*self.frame).pkt_dts;
-            (*sw_frame).duration = (*self.frame).duration;
-            (*sw_frame).time_base = (*self.frame).time_base;
+            (*sw_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
+            (*sw_frame.as_mut_ptr()).pkt_dts = (*self.frame.as_ptr()).pkt_dts;
+            (*sw_frame.as_mut_ptr()).duration = (*self.frame.as_ptr()).duration;
+            (*sw_frame.as_mut_ptr()).time_base = (*self.frame.as_ptr()).time_base;
         }
 
-        // Replace self.frame with the software frame
-        // SAFETY: self.frame is valid and owned by this instance
-        unsafe {
-            ff_sys::av_frame_unref(self.frame);
-            ff_sys::av_frame_move_ref(self.frame, sw_frame);
-            ff_sys::av_frame_free(&mut (sw_frame as *mut _));
-        }
+        // Replace self.frame with the software frame. `move_ref` transfers
+        // sw_frame's buffers into self.frame, leaving sw_frame blank (freed on
+        // scope exit).
+        self.frame.unref();
+        self.frame.move_ref(&mut sw_frame);
 
         Ok(())
     }
