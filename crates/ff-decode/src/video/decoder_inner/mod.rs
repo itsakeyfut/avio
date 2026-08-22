@@ -39,12 +39,14 @@ use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
     AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket,
-    AVPixelFormat, SwsContext,
+    AVPixelFormat, InputFormatContext, SwsContext,
 };
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{AvFormatContextGuard, AvFrameGuard, AvPacketGuard};
+use crate::shared::guards_inner::{
+    AvFrameGuard, AvPacketGuard, open_image_sequence_ctx, open_input_ctx, open_url_ctx,
+};
 use crate::video::builder::OutputScale;
 use ff_common::FramePool;
 
@@ -67,7 +69,7 @@ mod seeking;
 /// for proper cleanup when dropped.
 pub(crate) struct VideoDecoderInner {
     /// Format context for reading the media file
-    pub(super) format_ctx: *mut AVFormatContext,
+    pub(super) format_ctx: InputFormatContext,
     /// Codec context for decoding video frames
     pub(super) codec_ctx: ff_sys::CodecContext,
     /// Video stream index in the format context
@@ -158,51 +160,45 @@ impl VideoDecoderInner {
             crate::network::check_srt_url(path_str)?;
         }
 
-        // Open the input (with RAII guard for cleanup on error).
-        // SAFETY: Path/URL is valid; AvFormatContextGuard ensures cleanup.
-        let format_ctx_guard = unsafe {
-            if is_network_url {
-                let network = network_opts.unwrap_or_default();
-                log::info!(
-                    "opening network source url={} connect_timeout_ms={} read_timeout_ms={}",
-                    crate::network::sanitize_url(path_str),
-                    network.connect_timeout.as_millis(),
-                    network.read_timeout.as_millis(),
-                );
-                AvFormatContextGuard::new_url(path_str, &network)?
-            } else if is_image_sequence {
-                let fps = frame_rate.unwrap_or(25);
-                AvFormatContextGuard::new_image_sequence(path, fps)?
-            } else {
-                AvFormatContextGuard::new(path)?
-            }
+        // Open the input (owned demux context).
+        let mut ctx = if is_network_url {
+            let network = network_opts.unwrap_or_default();
+            log::info!(
+                "opening network source url={} connect_timeout_ms={} read_timeout_ms={}",
+                crate::network::sanitize_url(path_str),
+                network.connect_timeout.as_millis(),
+                network.read_timeout.as_millis(),
+            );
+            open_url_ctx(path_str, &network)?
+        } else if is_image_sequence {
+            let fps = frame_rate.unwrap_or(25);
+            open_image_sequence_ctx(path, fps)?
+        } else {
+            open_input_ctx(path)?
         };
-        let format_ctx = format_ctx_guard.as_ptr();
 
         // Read stream information
-        // SAFETY: format_ctx is valid and owned by guard
-        unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
-            })?;
-        }
+        ctx.find_stream_info().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to find stream info: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // Detect live/streaming source via the AVFMT_TS_DISCONT flag on AVInputFormat.
         // SAFETY: format_ctx is valid and non-null; iformat is set by avformat_open_input
         //         and is non-null for all successfully opened formats.
         let is_live = unsafe {
-            let iformat = (*format_ctx).iformat;
+            let iformat = (*ctx.as_ptr()).iformat;
             !iformat.is_null() && ((*iformat).flags & ff_sys::AVFMT_TS_DISCONT) != 0
         };
 
         // Find the video stream
         // SAFETY: format_ctx is valid
-        let (stream_index, codec_id) =
-            unsafe { Self::find_video_stream(format_ctx) }.ok_or_else(|| {
-                DecodeError::NoVideoStream {
-                    path: path.to_path_buf(),
-                }
+        let (stream_index, codec_id) = unsafe { Self::find_video_stream(ctx.as_mut_ptr()) }
+            .ok_or_else(|| DecodeError::NoVideoStream {
+                path: path.to_path_buf(),
             })?;
 
         // Find the decoder for this codec
@@ -241,7 +237,7 @@ impl VideoDecoderInner {
         // Copy codec parameters from stream to context
         // SAFETY: format_ctx is valid, stream_index is valid; codec_ctx is owned
         unsafe {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
+            let stream = (*ctx.as_ptr()).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
             codec_ctx
                 .parameters_to_context(codecpar)
@@ -288,12 +284,16 @@ impl VideoDecoderInner {
         // Extract stream information
         // SAFETY: All pointers are valid
         let stream_info = unsafe {
-            Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx.as_mut_ptr())?
+            Self::extract_stream_info(
+                ctx.as_mut_ptr(),
+                stream_index as i32,
+                codec_ctx.as_mut_ptr(),
+            )?
         };
 
         // Extract container information
         // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
-        let container_info = unsafe { Self::extract_container_info(format_ctx) };
+        let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
 
         // Allocate packet and frame (with RAII guards)
         // SAFETY: FFmpeg is initialized, guards ensure cleanup
@@ -303,7 +303,7 @@ impl VideoDecoderInner {
         // All initialization successful - transfer ownership to VideoDecoderInner
         Ok((
             Self {
-                format_ctx: format_ctx_guard.into_raw(),
+                format_ctx: ctx,
                 codec_ctx,
                 stream_index: stream_index as i32,
                 sws_ctx: None,
@@ -372,13 +372,8 @@ impl Drop for VideoDecoderInner {
             }
         }
 
-        // Close format context
-        if !self.format_ctx.is_null() {
-            // SAFETY: self.format_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::avformat::close_input(&mut (self.format_ctx as *mut _));
-            }
-        }
+        // The `format_ctx` (InputFormatContext) drops automatically after this
+        // Drop body, closing the demux context last.
     }
 }
 

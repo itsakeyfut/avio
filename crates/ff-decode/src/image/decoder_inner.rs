@@ -26,10 +26,11 @@ use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, PooledBuffer, VideoFrame};
 use ff_sys::{
     AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat,
+    InputFormatContext,
 };
 
 use crate::error::DecodeError;
-use crate::shared::guards_inner::AvFormatContextGuard;
+use crate::shared::guards_inner::open_input_ctx;
 use crate::shared::plane_inner::plane_row_ptr;
 
 // ── ImageDecoderInner ─────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ use crate::shared::plane_inner::plane_row_ptr;
 /// Holds raw FFmpeg pointers and is responsible for proper cleanup in `Drop`.
 pub(crate) struct ImageDecoderInner {
     /// Format context for reading the image file.
-    format_ctx: *mut AVFormatContext,
+    format_ctx: InputFormatContext,
     /// Codec context for decoding the image.
     codec_ctx: ff_sys::CodecContext,
     /// Video stream index in the format context.
@@ -70,26 +71,22 @@ impl ImageDecoderInner {
         ff_sys::ensure_initialized();
 
         // 1. avformat_open_input
-        // SAFETY: Path is valid; AvFormatContextGuard ensures cleanup on error.
-        let format_ctx_guard = unsafe { AvFormatContextGuard::new(path)? };
-        let format_ctx = format_ctx_guard.as_ptr();
+        let mut ctx = open_input_ctx(path)?;
 
         // 2. avformat_find_stream_info
-        // SAFETY: format_ctx is valid and owned by the guard.
-        unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
-            })?;
-        }
+        ctx.find_stream_info().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to find stream info: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // 3. Find the video stream.
         // SAFETY: format_ctx is valid.
-        let (stream_index, codec_id) =
-            unsafe { Self::find_video_stream(format_ctx) }.ok_or_else(|| {
-                DecodeError::NoVideoStream {
-                    path: path.to_path_buf(),
-                }
+        let (stream_index, codec_id) = unsafe { Self::find_video_stream(ctx.as_mut_ptr()) }
+            .ok_or_else(|| DecodeError::NoVideoStream {
+                path: path.to_path_buf(),
             })?;
 
         // 4. avcodec_find_decoder
@@ -125,7 +122,7 @@ impl ImageDecoderInner {
         // 6. avcodec_parameters_to_context
         // SAFETY: All pointers are valid; stream_index was validated above.
         unsafe {
-            let stream = (*format_ctx).streams.add(stream_index);
+            let stream = (*ctx.as_ptr()).streams.add(stream_index);
             let codecpar = (*(*stream)).codecpar;
             codec_ctx
                 .parameters_to_context(codecpar)
@@ -171,7 +168,7 @@ impl ImageDecoderInner {
         }
 
         Ok(Self {
-            format_ctx: format_ctx_guard.into_raw(),
+            format_ctx: ctx,
             codec_ctx,
             stream_index,
             packet,
@@ -201,8 +198,8 @@ impl ImageDecoderInner {
     pub(crate) fn decode(mut self) -> Result<VideoFrame, DecodeError> {
         // 1. av_read_frame
         // SAFETY: format_ctx and packet are valid.
-        let ret = unsafe { ff_sys::av_read_frame(self.format_ctx, self.packet) };
-        if ret < 0 {
+        if let Err(e) = unsafe { self.format_ctx.read_frame(self.packet) } {
+            let ret = e.code();
             return Err(DecodeError::Ffmpeg {
                 code: ret,
                 message: format!("Failed to read frame: {}", ff_sys::av_error_string(ret)),
@@ -342,7 +339,7 @@ impl ImageDecoderInner {
             let timestamp = if pts == ff_sys::AV_NOPTS_VALUE {
                 Timestamp::default()
             } else {
-                let stream = (*self.format_ctx).streams.add(self.stream_index);
+                let stream = (*self.format_ctx.as_ptr()).streams.add(self.stream_index);
                 let time_base = (*(*stream)).time_base;
                 Timestamp::new(
                     pts as i64,
@@ -572,10 +569,9 @@ impl Drop for ImageDecoderInner {
             if !self.packet.is_null() {
                 ff_sys::av_packet_free(&mut (self.packet as *mut _));
             }
-            if !self.format_ctx.is_null() {
-                ff_sys::avformat::close_input(&mut (self.format_ctx as *mut _));
-            }
         }
+        // The `format_ctx` (InputFormatContext) drops automatically after this
+        // Drop body, closing the demux context last.
     }
 }
 
