@@ -146,56 +146,57 @@ impl RtmpInner {
             )
         })?;
 
-        let mut vid_enc_ctx = ff_sys::avcodec::alloc_context3(vid_enc_codec).map_err(|e| {
+        let mut vid_enc_ctx = ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| {
             avformat_free_context(out_ctx);
-            ffmpeg_err(e)
+            ffmpeg_err(e.code())
         })?;
+        let venc = vid_enc_ctx.as_mut_ptr();
 
-        (*vid_enc_ctx).width = enc_width;
-        (*vid_enc_ctx).height = enc_height;
-        (*vid_enc_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-        (*vid_enc_ctx).time_base.num = 1;
-        (*vid_enc_ctx).time_base.den = fps_int;
-        (*vid_enc_ctx).framerate.num = fps_int;
-        (*vid_enc_ctx).framerate.den = 1;
+        (*venc).width = enc_width;
+        (*venc).height = enc_height;
+        (*venc).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*venc).time_base.num = 1;
+        (*venc).time_base.den = fps_int;
+        (*venc).framerate.num = fps_int;
+        (*venc).framerate.den = 1;
         // GOP size of 2 s gives a reasonable keyframe interval for RTMP.
-        (*vid_enc_ctx).gop_size = fps_int * 2;
-        (*vid_enc_ctx).bit_rate = video_bitrate as i64;
+        (*venc).gop_size = fps_int * 2;
+        (*venc).bit_rate = video_bitrate as i64;
 
-        ff_sys::avcodec::open2(vid_enc_ctx, vid_enc_codec, ptr::null_mut()).map_err(|e| {
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
-            avformat_free_context(out_ctx);
-            ffmpeg_err(e)
-        })?;
+        // On open failure `vid_enc_ctx` drops (frees the codec context); only the
+        // raw format context needs an explicit free.
+        vid_enc_ctx
+            .open(vid_enc_codec, ptr::null_mut())
+            .map_err(|e| {
+                avformat_free_context(out_ctx);
+                ffmpeg_err(e.code())
+            })?;
 
         // ── 3. Add video output stream ─────────────────────────────────────
-        let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec);
+        let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec.as_ptr());
         if vid_out_stream.is_null() {
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err_msg("cannot create video output stream"));
         }
-        (*vid_out_stream).time_base = (*vid_enc_ctx).time_base;
+        (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
         let vid_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
 
         // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-        ff_sys::avcodec::parameters_from_context((*vid_out_stream).codecpar, vid_enc_ctx).map_err(
-            |e| {
-                ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
+        vid_enc_ctx
+            .parameters_from_context((*vid_out_stream).codecpar)
+            .map_err(|e| {
                 avformat_free_context(out_ctx);
-                ffmpeg_err(e)
-            },
-        )?;
+                ffmpeg_err(e.code())
+            })?;
 
         // ── 4. Open AAC audio encoder ──────────────────────────────────────
-        let mut aud_enc_ctx = open_aac_encoder(aud_sample_rate, aud_channels, aud_bitrate, "rtmp")
+        let aud_enc_ctx = open_aac_encoder(aud_sample_rate, aud_channels, aud_bitrate, "rtmp")
             .inspect_err(|_| {
-                ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
                 avformat_free_context(out_ctx);
             })?;
 
-        let aud_frame_size = if (*aud_enc_ctx).frame_size > 0 {
-            (*aud_enc_ctx).frame_size
+        let aud_frame_size = if (*aud_enc_ctx.as_ptr()).frame_size > 0 {
+            (*aud_enc_ctx.as_ptr()).frame_size
         } else {
             1024
         };
@@ -203,8 +204,6 @@ impl RtmpInner {
         // ── 5. Add audio output stream ─────────────────────────────────────
         let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
         if aud_out_stream.is_null() {
-            ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err_msg("cannot create audio output stream"));
         }
@@ -213,7 +212,8 @@ impl RtmpInner {
         let aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
 
         // SAFETY: aud_out_stream and aud_enc_ctx are valid.
-        if ff_sys::avcodec::parameters_from_context((*aud_out_stream).codecpar, aud_enc_ctx)
+        if aud_enc_ctx
+            .parameters_from_context((*aud_out_stream).codecpar)
             .is_err()
         {
             log::warn!("rtmp audio stream codecpar copy failed");
@@ -225,8 +225,6 @@ impl RtmpInner {
         // SAFETY: url is a valid null-terminated C string (validated above).
         let pb = ff_sys::avformat::open_output(Path::new(url), ff_sys::avformat::avio_flags::WRITE)
             .map_err(|e| {
-                ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-                ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
                 avformat_free_context(out_ctx);
                 ffmpeg_err(e)
             })?;
@@ -235,8 +233,6 @@ impl RtmpInner {
         let ret = avformat_write_header(out_ctx, ptr::null_mut());
         if ret < 0 {
             ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-            ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err(ret));
         }
@@ -253,7 +249,7 @@ impl RtmpInner {
         let core = MuxerCore::new(
             out_ctx,
             vid_enc_ctx,
-            aud_enc_ctx,
+            Some(aud_enc_ctx),
             vid_out_stream_idx,
             aud_out_stream_idx,
             fps_int,
@@ -265,8 +261,8 @@ impl RtmpInner {
             true, // close_pb_after_trailer: pb stays open for streaming
         )
         .inspect_err(|_| {
-            ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
+            // `vid_enc_ctx` / `aud_enc_ctx` were moved in and drop inside `new` on
+            // error; only the raw format context needs an explicit free.
             avformat_free_context(out_ctx);
         })?;
 

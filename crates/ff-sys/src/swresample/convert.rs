@@ -129,7 +129,7 @@ mod tests {
     #![allow(unsafe_op_in_unsafe_fn)]
 
     use super::*;
-    use crate::swresample::{alloc_set_opts2, channel_layout, free, init, sample_format};
+    use crate::swresample::{alloc_set_opts2, channel_layout, init, sample_format};
 
     // ========================================================================
     // Conversion tests
@@ -179,7 +179,7 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), crate::error_codes::EINVAL);
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 
@@ -251,7 +251,7 @@ mod tests {
                 "Output should contain data"
             );
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 
@@ -318,7 +318,7 @@ mod tests {
                 expected_max
             );
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 
@@ -356,7 +356,7 @@ mod tests {
             let delay = get_delay(ctx, 48000);
             assert_eq!(delay, 0, "Initial delay should be 0");
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 
@@ -445,7 +445,7 @@ mod tests {
                 assert!(result.is_ok(), "Conversion should succeed on each pass");
             }
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 
@@ -498,7 +498,7 @@ mod tests {
             // Flush should succeed (return >= 0)
             assert!(result.is_ok(), "Flush should succeed");
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 }

@@ -1,7 +1,7 @@
 //! RAII owner for an `SwsContext` (libswscale scaling / pixel-format conversion).
 //!
 //! [`ScaleContext`] allocates a scaling context and frees it exactly once on
-//! drop, replacing the manual `swscale::get_context` + `swscale::free_context`
+//! drop, replacing the manual `swscale::get_context` + `sws_freeContext`
 //! pair. Its constructor is safe (it takes only dimensions, pixel formats, and
 //! flags); [`scale`](ScaleContext::scale) stays `unsafe` because it takes raw
 //! plane pointers (owned Frame handling is a later step).

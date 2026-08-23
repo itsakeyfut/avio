@@ -2,7 +2,7 @@
 //!
 //! [`ResampleContext`] allocates, configures, and initializes a resampling
 //! context, and frees it exactly once on drop, replacing the manual
-//! `swresample::alloc_set_opts2` + `swresample::init` + `swresample::free`
+//! `swresample::alloc_set_opts2` + `swresample::init` + `swr_free`
 //! sequence. The value is always initialized once constructed (there is no
 //! un-initialized state), so the query methods are safe;
 //! [`convert`](ResampleContext::convert) stays `unsafe` because it takes raw

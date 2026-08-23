@@ -14,8 +14,7 @@
 use std::os::raw::c_int;
 
 use crate::{
-    AVPixelFormat, SwsContext, ensure_initialized, sws_freeContext as ffi_sws_freeContext,
-    sws_getContext as ffi_sws_getContext,
+    AVPixelFormat, SwsContext, ensure_initialized, sws_getContext as ffi_sws_getContext,
     sws_isSupportedEndiannessConversion as ffi_sws_isSupportedEndiannessConversion,
     sws_isSupportedInput as ffi_sws_isSupportedInput,
     sws_isSupportedOutput as ffi_sws_isSupportedOutput, sws_scale as ffi_sws_scale,
@@ -153,7 +152,8 @@ pub mod scale_flags {
 ///
 /// # Safety
 ///
-/// - The returned context must be freed using `free_context()` when no longer needed.
+/// - The returned context must be freed with `crate::sws_freeContext` (or wrapped in
+///   [`ScaleContext`](crate::ScaleContext)) when no longer needed.
 /// - The context is not thread-safe; use separate contexts for different threads.
 ///
 /// # Errors
@@ -177,7 +177,7 @@ pub mod scale_flags {
 ///         scale_flags::LANCZOS,
 ///     )?;
 ///     // Use context...
-///     free_context(ctx);
+///     crate::sws_freeContext(ctx);
 /// }
 /// ```
 pub unsafe fn get_context(
@@ -219,30 +219,6 @@ pub unsafe fn get_context(
         Err(crate::error_codes::ENOMEM)
     } else {
         Ok(ctx)
-    }
-}
-
-/// Free a scaling context.
-///
-/// # Arguments
-///
-/// * `ctx` - The scaling context to free
-///
-/// # Safety
-///
-/// - The context must have been allocated by `get_context()`.
-/// - The context pointer must not be used after this call.
-///
-/// # Null Safety
-///
-/// This function safely handles a null pointer.
-pub unsafe fn free_context(ctx: *mut SwsContext) {
-    if !ctx.is_null() {
-        // SAFETY: `ctx` is non-null here and, per this function's contract, was
-        // allocated by `get_context` and has not been freed already.
-        unsafe {
-            ffi_sws_freeContext(ctx);
-        }
     }
 }
 
@@ -446,7 +422,7 @@ mod tests {
             assert!(!ctx.is_null());
 
             // Free the context
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -467,7 +443,7 @@ mod tests {
             assert!(ctx_result.is_ok(), "YUV to RGB context should succeed");
 
             let ctx = ctx_result.unwrap();
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -488,7 +464,7 @@ mod tests {
             assert!(ctx_result.is_ok(), "Lanczos context should succeed");
 
             let ctx = ctx_result.unwrap();
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -533,14 +509,6 @@ mod tests {
             );
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), crate::error_codes::EINVAL);
-        }
-    }
-
-    #[test]
-    fn test_free_context_null() {
-        // Freeing a null pointer should not crash
-        unsafe {
-            free_context(std::ptr::null_mut());
         }
     }
 
@@ -599,7 +567,7 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), crate::error_codes::EINVAL);
 
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -634,7 +602,7 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), crate::error_codes::EINVAL);
 
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -706,7 +674,7 @@ mod tests {
                     "Algorithm {algo} should create valid context"
                 );
 
-                free_context(ctx_result.unwrap());
+                crate::sws_freeContext(ctx_result.unwrap());
             }
         }
     }
@@ -793,7 +761,7 @@ mod tests {
                 "Output image should contain significant data"
             );
 
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -852,7 +820,7 @@ mod tests {
                 "Should process all output rows"
             );
 
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -924,7 +892,7 @@ mod tests {
             assert_eq!(src_g, dst_g, "Green channel should match");
             assert_eq!(src_b, dst_b, "Blue channel should match");
 
-            free_context(ctx);
+            crate::sws_freeContext(ctx);
         }
     }
 
@@ -994,7 +962,7 @@ mod tests {
                     name
                 );
 
-                free_context(ctx);
+                crate::sws_freeContext(ctx);
             }
         }
     }

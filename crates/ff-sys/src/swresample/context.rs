@@ -4,8 +4,8 @@ use std::os::raw::c_int;
 
 use crate::{
     AVChannelLayout, AVSampleFormat, SwrContext, ensure_initialized, swr_alloc as ffi_swr_alloc,
-    swr_alloc_set_opts2 as ffi_swr_alloc_set_opts2, swr_free as ffi_swr_free,
-    swr_init as ffi_swr_init, swr_is_initialized as ffi_swr_is_initialized,
+    swr_alloc_set_opts2 as ffi_swr_alloc_set_opts2, swr_init as ffi_swr_init,
+    swr_is_initialized as ffi_swr_is_initialized,
 };
 
 /// Allocate an empty SwrContext.
@@ -20,7 +20,8 @@ use crate::{
 ///
 /// # Safety
 ///
-/// The returned context must be freed using `free()` when no longer needed.
+/// The returned context must be freed with `crate::swr_free` (or wrapped in
+/// [`ResampleContext`](crate::ResampleContext)) when no longer needed.
 pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
     ensure_initialized();
 
@@ -56,7 +57,8 @@ pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
 /// # Safety
 ///
 /// - The returned context must be initialized with `init()` before use.
-/// - The returned context must be freed using `free()` when no longer needed.
+/// - The returned context must be freed with `crate::swr_free` (or wrapped in
+///   [`ResampleContext`](crate::ResampleContext)) when no longer needed.
 /// - Channel layout pointers must be valid for the duration of this call.
 pub unsafe fn alloc_set_opts2(
     out_ch_layout: *const AVChannelLayout,
@@ -162,64 +164,10 @@ pub unsafe fn is_initialized(ctx: *const SwrContext) -> bool {
     unsafe { ffi_swr_is_initialized(ctx.cast_mut()) != 0 }
 }
 
-/// Free a resampling context.
-///
-/// # Arguments
-///
-/// * `ctx` - Pointer to a pointer to the context to free
-///
-/// # Safety
-///
-/// - The context must have been allocated by `alloc()` or `alloc_set_opts2()`.
-/// - After this call, `*ctx` will be set to null.
-/// - The context pointer must not be used after this call.
-///
-/// # Null Safety
-///
-/// This function safely handles:
-/// - `ctx` being null
-/// - `*ctx` being null
-pub unsafe fn free(ctx: *mut *mut SwrContext) {
-    // SAFETY: `ctx` is checked non-null before `*ctx` is dereferenced (via
-    // short-circuit `&&`); `*ctx` is either null or a context allocated by
-    // `alloc`/`alloc_set_opts2`, which swr_free frees and sets to null.
-    unsafe {
-        if !ctx.is_null() && !(*ctx).is_null() {
-            ffi_swr_free(ctx);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::swresample::{channel_layout, sample_format};
-
-    #[test]
-    fn test_alloc_and_free() {
-        unsafe {
-            let ctx_result = alloc();
-            assert!(ctx_result.is_ok(), "Context allocation should succeed");
-
-            let mut ctx = ctx_result.unwrap();
-            assert!(!ctx.is_null());
-
-            free(&mut ctx);
-            assert!(ctx.is_null(), "Context should be null after free");
-        }
-    }
-
-    #[test]
-    fn test_free_null_safety() {
-        unsafe {
-            // Passing a null pointer should not crash
-            free(std::ptr::null_mut());
-
-            // Passing a pointer to null should not crash
-            let mut null_ctx: *mut SwrContext = std::ptr::null_mut();
-            free(&mut null_ctx);
-        }
-    }
 
     #[test]
     fn test_alloc_set_opts2_and_init() {
@@ -251,7 +199,20 @@ mod tests {
             // Now it should be initialized
             assert!(is_initialized(ctx));
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
+        }
+    }
+
+    #[test]
+    fn alloc_should_allocate_an_uninitialized_context() {
+        // `alloc` is the bare `swr_alloc` wrapper (no options set); it yields an
+        // allocated-but-uninitialized context, freed via the raw binding.
+        unsafe {
+            let mut ctx = alloc().expect("swr_alloc should succeed");
+            assert!(!ctx.is_null());
+            assert!(!is_initialized(ctx), "bare alloc must be uninitialized");
+            crate::swr_free(&mut ctx);
+            assert!(ctx.is_null(), "context should be null after free");
         }
     }
 
@@ -279,7 +240,7 @@ mod tests {
             let init_result = init(ctx);
             assert!(init_result.is_ok());
 
-            free(&mut ctx);
+            crate::swr_free(&mut ctx);
         }
     }
 

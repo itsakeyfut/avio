@@ -20,8 +20,7 @@ use crate::{
     avcodec_find_decoder_by_name as ffi_avcodec_find_decoder_by_name,
     avcodec_find_encoder as ffi_avcodec_find_encoder,
     avcodec_find_encoder_by_name as ffi_avcodec_find_encoder_by_name,
-    avcodec_flush_buffers as ffi_avcodec_flush_buffers,
-    avcodec_free_context as ffi_avcodec_free_context, avcodec_open2 as ffi_avcodec_open2,
+    avcodec_flush_buffers as ffi_avcodec_flush_buffers, avcodec_open2 as ffi_avcodec_open2,
     avcodec_parameters_from_context as ffi_avcodec_parameters_from_context,
     avcodec_parameters_to_context as ffi_avcodec_parameters_to_context,
     avcodec_receive_frame as ffi_avcodec_receive_frame,
@@ -159,7 +158,8 @@ pub unsafe fn find_encoder_by_name(name: *const i8) -> Option<*const AVCodec> {
 ///
 /// # Safety
 ///
-/// The returned context must be freed using `free_context()` when no longer needed.
+/// The returned context must be freed with `crate::avcodec_free_context` (or
+/// wrapped in [`CodecContext`](crate::CodecContext)) when no longer needed.
 pub unsafe fn alloc_context3(codec: *const AVCodec) -> Result<*mut AVCodecContext, c_int> {
     ensure_initialized();
 
@@ -171,35 +171,6 @@ pub unsafe fn alloc_context3(codec: *const AVCodec) -> Result<*mut AVCodecContex
         Err(crate::error_codes::ENOMEM)
     } else {
         Ok(ctx)
-    }
-}
-
-/// Free a codec context and set the pointer to null.
-///
-/// # Arguments
-///
-/// * `ctx` - Pointer to a pointer to the context to free
-///
-/// # Safety
-///
-/// - The context must have been allocated by `alloc_context3()`.
-/// - After this call, `*ctx` will be set to null.
-/// - The context pointer must not be used after this call.
-///
-/// # Null Safety
-///
-/// This function safely handles:
-/// - `ctx` being null
-/// - `*ctx` being null
-pub unsafe fn free_context(ctx: *mut *mut AVCodecContext) {
-    // SAFETY: `ctx` is checked for null before it is dereferenced (short-circuit),
-    // and `*ctx` is checked for null before being freed. The caller guarantees any
-    // non-null `*ctx` was allocated by `alloc_context3` and is not used afterwards;
-    // FFmpeg frees it and writes null back into `*ctx`.
-    unsafe {
-        if !ctx.is_null() && !(*ctx).is_null() {
-            ffi_avcodec_free_context(ctx);
-        }
     }
 }
 
@@ -613,34 +584,6 @@ mod tests {
         unsafe {
             let codec = find_encoder_by_name(ptr::null());
             assert!(codec.is_none());
-        }
-    }
-
-    #[test]
-    fn test_alloc_and_free_context() {
-        unsafe {
-            // Allocate a generic context (no specific codec)
-            let ctx_result = alloc_context3(ptr::null());
-            assert!(ctx_result.is_ok(), "Context allocation should succeed");
-
-            let mut ctx = ctx_result.unwrap();
-            assert!(!ctx.is_null());
-
-            // Free the context
-            free_context(&mut ctx);
-            assert!(ctx.is_null(), "Context should be null after free");
-        }
-    }
-
-    #[test]
-    fn test_free_context_null_safety() {
-        unsafe {
-            // Passing a null pointer should not crash
-            free_context(ptr::null_mut());
-
-            // Passing a pointer to null should not crash
-            let mut null_ctx: *mut AVCodecContext = ptr::null_mut();
-            free_context(&mut null_ctx);
         }
     }
 

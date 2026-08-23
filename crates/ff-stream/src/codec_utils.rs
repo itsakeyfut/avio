@@ -17,8 +17,8 @@
 #![allow(clippy::ref_as_ptr)]
 
 use ff_sys::{
-    AVCodec, AVCodecContext, AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE,
-    AVRational, AVSampleFormat, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
+    AVCodecContext, AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE, AVRational,
+    AVSampleFormat, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
     av_packet_rescale_ts, av_packet_unref, av_rescale_q,
 };
 
@@ -58,7 +58,7 @@ pub(crate) fn ffmpeg_err_msg(msg: &str) -> StreamError {
 /// # Safety
 ///
 /// Must be called after `ff_sys::ensure_initialized()`.
-pub(crate) unsafe fn select_h264_encoder(log_prefix: &str) -> Option<*const AVCodec> {
+pub(crate) unsafe fn select_h264_encoder(log_prefix: &str) -> Option<ff_sys::Codec> {
     let candidates = [
         "h264_nvenc",
         "h264_qsv",
@@ -68,9 +68,7 @@ pub(crate) unsafe fn select_h264_encoder(log_prefix: &str) -> Option<*const AVCo
         "mpeg4",
     ];
     for name in candidates {
-        if let Ok(c_name) = std::ffi::CString::new(name)
-            && let Some(codec) = ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr())
-        {
+        if let Some(codec) = ff_sys::Codec::find_encoder_by_name(name) {
             log::info!("{log_prefix} selected video encoder encoder={name}");
             return Some(codec);
         }
@@ -90,12 +88,13 @@ pub(crate) unsafe fn open_aac_encoder(
     nb_channels: i32,
     bit_rate: i64,
     log_prefix: &str,
-) -> Result<*mut AVCodecContext, StreamError> {
-    let codec = ff_sys::avcodec::find_encoder_by_name(c"aac".as_ptr())
-        .or_else(|| ff_sys::avcodec::find_encoder_by_name(c"libfdk_aac".as_ptr()))
+) -> Result<ff_sys::CodecContext, StreamError> {
+    let codec = ff_sys::Codec::find_encoder_by_name("aac")
+        .or_else(|| ff_sys::Codec::find_encoder_by_name("libfdk_aac"))
         .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available (tried aac, libfdk_aac)"))?;
 
-    let mut ctx = ff_sys::avcodec::alloc_context3(codec).map_err(ffmpeg_err)?;
+    let mut enc = ff_sys::CodecContext::new(Some(codec)).map_err(|e| ffmpeg_err(e.code()))?;
+    let ctx = enc.as_mut_ptr();
 
     (*ctx).sample_rate = sample_rate;
     (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
@@ -104,16 +103,15 @@ pub(crate) unsafe fn open_aac_encoder(
     (*ctx).time_base.den = sample_rate;
     ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
 
-    ff_sys::avcodec::open2(ctx, codec, std::ptr::null_mut()).map_err(|e| {
-        ff_sys::avcodec::free_context(&mut ctx as *mut *mut _);
-        ffmpeg_err(e)
-    })?;
+    // On open failure `enc` drops (Drop = avcodec_free_context), so no manual free.
+    enc.open(codec, std::ptr::null_mut())
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     log::info!(
         "{log_prefix} aac encoder opened \
          sample_rate={sample_rate} channels={nb_channels} bit_rate={bit_rate}"
     );
-    Ok(ctx)
+    Ok(enc)
 }
 
 // ============================================================================

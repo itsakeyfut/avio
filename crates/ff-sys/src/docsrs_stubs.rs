@@ -839,8 +839,6 @@ pub mod avcodec {
         Err(-1)
     }
 
-    pub unsafe fn free_context(_ctx: *mut *mut AVCodecContext) {}
-
     pub unsafe fn parameters_to_context(
         _codec_ctx: *mut AVCodecContext,
         _par: *const AVCodecParameters,
@@ -930,8 +928,6 @@ pub mod swresample {
     pub unsafe fn is_initialized(_ctx: *const SwrContext) -> bool {
         false
     }
-
-    pub unsafe fn free(_ctx: *mut *mut SwrContext) {}
 
     pub unsafe fn convert(
         _s: *mut SwrContext,
@@ -1080,8 +1076,6 @@ pub mod swscale {
     ) -> Result<*mut SwsContext, c_int> {
         Err(-1)
     }
-
-    pub unsafe fn free_context(_ctx: *mut SwsContext) {}
 
     pub unsafe fn scale(
         _ctx: *mut SwsContext,

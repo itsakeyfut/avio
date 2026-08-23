@@ -23,7 +23,7 @@ use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AVCodecContext, AVPixelFormat_AV_PIX_FMT_YUV420P, av_opt_set, avformat_alloc_output_context2,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, av_opt_set, avformat_alloc_output_context2,
     avformat_free_context, avformat_new_stream, avformat_write_header,
 };
 
@@ -233,48 +233,50 @@ impl LiveHlsInner {
                 )
             })?;
 
-        let mut vid_enc_ctx = ff_sys::avcodec::alloc_context3(vid_enc_codec).map_err(|e| {
+        let mut vid_enc_ctx = ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| {
             avformat_free_context(out_ctx);
-            ffmpeg_err(e)
+            ffmpeg_err(e.code())
         })?;
+        let venc = vid_enc_ctx.as_mut_ptr();
 
-        (*vid_enc_ctx).width = enc_width;
-        (*vid_enc_ctx).height = enc_height;
-        (*vid_enc_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-        (*vid_enc_ctx).time_base.num = 1;
-        (*vid_enc_ctx).time_base.den = fps_int;
-        (*vid_enc_ctx).framerate.num = fps_int;
-        (*vid_enc_ctx).framerate.den = 1;
-        (*vid_enc_ctx).gop_size = fps_int * segment_secs as i32;
-        (*vid_enc_ctx).bit_rate = video_bitrate as i64;
+        (*venc).width = enc_width;
+        (*venc).height = enc_height;
+        (*venc).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*venc).time_base.num = 1;
+        (*venc).time_base.den = fps_int;
+        (*venc).framerate.num = fps_int;
+        (*venc).framerate.den = 1;
+        (*venc).gop_size = fps_int * segment_secs as i32;
+        (*venc).bit_rate = video_bitrate as i64;
 
-        ff_sys::avcodec::open2(vid_enc_ctx, vid_enc_codec, ptr::null_mut()).map_err(|e| {
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
-            avformat_free_context(out_ctx);
-            ffmpeg_err(e)
-        })?;
+        // On open failure `vid_enc_ctx` drops (frees the codec context); only the
+        // raw format context needs an explicit free.
+        vid_enc_ctx
+            .open(vid_enc_codec, ptr::null_mut())
+            .map_err(|e| {
+                avformat_free_context(out_ctx);
+                ffmpeg_err(e.code())
+            })?;
 
         // ── 4. Add video output stream ────────────────────────────────────────
-        let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec);
+        let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec.as_ptr());
         if vid_out_stream.is_null() {
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err_msg("cannot create video output stream"));
         }
-        (*vid_out_stream).time_base = (*vid_enc_ctx).time_base;
+        (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
         let vid_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
 
         // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-        ff_sys::avcodec::parameters_from_context((*vid_out_stream).codecpar, vid_enc_ctx).map_err(
-            |e| {
-                ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
+        vid_enc_ctx
+            .parameters_from_context((*vid_out_stream).codecpar)
+            .map_err(|e| {
                 avformat_free_context(out_ctx);
-                ffmpeg_err(e)
-            },
-        )?;
+                ffmpeg_err(e.code())
+            })?;
 
         // ── 5. Open AAC audio encoder and add audio stream (optional) ─────────
-        let mut aud_enc_ctx: *mut AVCodecContext = ptr::null_mut();
+        let mut aud_enc_ctx: Option<ff_sys::CodecContext> = None;
         let mut aud_out_stream_idx: i32 = -1;
         let mut aud_sample_rate = 44100i32;
         let mut aud_frame_size = 1024i32;
@@ -284,31 +286,29 @@ impl LiveHlsInner {
 
             match crate::codec_utils::open_aac_encoder(sr, nc, abr, "live_hls") {
                 Ok(ctx) => {
-                    aud_enc_ctx = ctx;
-                    aud_frame_size = if (*aud_enc_ctx).frame_size > 0 {
-                        (*aud_enc_ctx).frame_size
+                    aud_frame_size = if (*ctx.as_ptr()).frame_size > 0 {
+                        (*ctx.as_ptr()).frame_size
                     } else {
                         1024
                     };
 
                     let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
                     if aud_out_stream.is_null() {
-                        ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
+                        // `ctx` drops here (frees the codec context).
                         log::warn!("live_hls cannot create audio output stream, skipping audio");
                     } else {
                         (*aud_out_stream).time_base.num = 1;
                         (*aud_out_stream).time_base.den = sr;
                         aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
 
-                        // SAFETY: aud_out_stream and aud_enc_ctx are valid.
-                        if ff_sys::avcodec::parameters_from_context(
-                            (*aud_out_stream).codecpar,
-                            aud_enc_ctx,
-                        )
-                        .is_err()
+                        // SAFETY: aud_out_stream and ctx are valid.
+                        if ctx
+                            .parameters_from_context((*aud_out_stream).codecpar)
+                            .is_err()
                         {
                             log::warn!("live_hls audio stream codecpar copy failed");
                         }
+                        aud_enc_ctx = Some(ctx);
                     }
                 }
                 Err(e) => {
@@ -323,10 +323,6 @@ impl LiveHlsInner {
             ff_sys::avformat::avio_flags::WRITE,
         )
         .map_err(|e| {
-            if !aud_enc_ctx.is_null() {
-                ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            }
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             ffmpeg_err(e)
         })?;
@@ -335,10 +331,6 @@ impl LiveHlsInner {
         let ret = avformat_write_header(out_ctx, ptr::null_mut());
         if ret < 0 {
             ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-            if !aud_enc_ctx.is_null() {
-                ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            }
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err(ret));
         }
@@ -371,10 +363,8 @@ impl LiveHlsInner {
             false, // close_pb_after_trailer: pb already closed after header write
         )
         .inspect_err(|_| {
-            if !aud_enc_ctx.is_null() {
-                ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-            }
-            ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
+            // `vid_enc_ctx` / `aud_enc_ctx` were moved in and drop inside `new` on
+            // error; only the raw format context needs an explicit free.
             avformat_free_context(out_ctx);
         })?;
 

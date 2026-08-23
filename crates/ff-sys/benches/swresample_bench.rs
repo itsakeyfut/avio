@@ -7,7 +7,7 @@ use std::os::raw::c_int;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ff_sys::swresample::{
-    alloc_set_opts2, channel_layout, convert, estimate_output_samples, free, init, sample_format,
+    alloc_set_opts2, channel_layout, convert, estimate_output_samples, init, sample_format,
 };
 
 /// Benchmark context creation for different configurations.
@@ -38,7 +38,7 @@ fn bench_context_creation(c: &mut Criterion) {
                 .expect("Context creation should succeed");
 
                 init(ctx).expect("Init should succeed");
-                free(&mut (ctx as *mut _));
+                ff_sys::swr_free(&mut (ctx as *mut _));
             });
         });
     }
@@ -101,7 +101,7 @@ fn bench_resampling_rates(c: &mut Criterion) {
                     black_box(num_samples as c_int),
                 );
 
-                free(&mut ctx);
+                ff_sys::swr_free(&mut ctx);
             });
         });
     }
@@ -185,7 +185,7 @@ fn bench_format_conversion(c: &mut Criterion) {
                     );
                 }
 
-                free(&mut ctx);
+                ff_sys::swr_free(&mut ctx);
             });
         });
     }
@@ -258,7 +258,7 @@ fn bench_channel_conversion(c: &mut Criterion) {
                     black_box(num_samples as c_int),
                 );
 
-                free(&mut ctx);
+                ff_sys::swr_free(&mut ctx);
             });
         });
     }
@@ -329,7 +329,7 @@ fn bench_chunk_sizes(c: &mut Criterion) {
                     offset += samples_to_process;
                 }
 
-                free(&mut ctx);
+                ff_sys::swr_free(&mut ctx);
             });
         });
     }
@@ -385,7 +385,7 @@ fn bench_real_audio_processing(c: &mut Criterion) {
                 black_box(num_samples as c_int),
             );
 
-            free(&mut ctx);
+            ff_sys::swr_free(&mut ctx);
         });
     });
 
@@ -423,7 +423,7 @@ fn bench_real_audio_processing(c: &mut Criterion) {
                 black_box(num_samples as c_int),
             );
 
-            free(&mut ctx);
+            ff_sys::swr_free(&mut ctx);
         });
     });
 
@@ -461,7 +461,7 @@ fn bench_real_audio_processing(c: &mut Criterion) {
                 black_box(num_samples as c_int),
             );
 
-            free(&mut ctx);
+            ff_sys::swr_free(&mut ctx);
         });
     });
 

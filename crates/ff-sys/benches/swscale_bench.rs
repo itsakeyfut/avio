@@ -6,7 +6,7 @@ use std::hint::black_box;
 use std::os::raw::c_int;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use ff_sys::swscale::{free_context, get_context, scale, scale_flags};
+use ff_sys::swscale::{get_context, scale, scale_flags};
 use ff_sys::{AVPixelFormat_AV_PIX_FMT_RGB24, AVPixelFormat_AV_PIX_FMT_RGBA};
 
 /// Load test image from assets directory.
@@ -44,7 +44,7 @@ fn bench_context_creation(c: &mut Criterion) {
                     scale_flags::BILINEAR,
                 )
                 .expect("Context creation should succeed");
-                free_context(ctx);
+                ff_sys::sws_freeContext(ctx);
             });
         });
     }
@@ -116,7 +116,7 @@ fn bench_scaling_algorithms(c: &mut Criterion) {
                 .expect("Scaling should succeed");
             });
 
-            free_context(ctx);
+            ff_sys::sws_freeContext(ctx);
         });
     }
 
@@ -181,7 +181,7 @@ fn bench_scaling_resolutions(c: &mut Criterion) {
                 .expect("Scaling should succeed");
             });
 
-            free_context(ctx);
+            ff_sys::sws_freeContext(ctx);
         });
     }
 
@@ -240,7 +240,7 @@ fn bench_format_conversion(c: &mut Criterion) {
                 .expect("Conversion should succeed");
             });
 
-            free_context(ctx);
+            ff_sys::sws_freeContext(ctx);
         }
     });
 
