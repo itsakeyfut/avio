@@ -6,10 +6,14 @@
 //! ## Resource management
 //!
 //! [`ImageEncoderInner`] owns every FFmpeg pointer allocated during a single
-//! still-image encode. Its [`Drop`] implementation frees them in the order
-//! mandated by FFmpeg: frame → packet → sws_ctx → codec_ctx → format_ctx.
-//! Because `Drop` runs on every exit path — including panics and early `?`
-//! returns — no manual cleanup is needed at individual error sites.
+//! still-image encode. Its [`Drop`] implementation frees the raw handles
+//! (frame → packet → sws_ctx → format_ctx); `codec_ctx` is an owned
+//! [`ff_sys::CodecContext`] that frees itself when the struct drops, after the
+//! manual cleanup body has run. The encoder's `AVCodecContext` and the output
+//! `AVFormatContext` are independent allocations with no cross-reference, so
+//! this order is sound. Because `Drop` runs on every exit path — including
+//! panics and early `?` returns — no manual cleanup is needed at individual
+//! error sites.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_code)]
@@ -35,7 +39,7 @@ use ff_sys::{
     AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
     AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_frame_alloc, av_frame_free,
     av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer,
-    avcodec, avformat, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
     avformat_write_header, swscale,
 };
 
@@ -67,17 +71,23 @@ pub(super) struct ImageEncodeOptions {
 ///
 /// # Drop contract
 ///
-/// Resources are released in the following order to satisfy FFmpeg's lifetime
-/// requirements:
+/// The manual `Drop` body releases the raw handles in this order:
 ///
 /// 1. `dst_frame` — `av_frame_free`
 /// 2. `packet`    — `av_packet_free`
 /// 3. `sws_ctx`   — `sws_freeContext`
-/// 4. `codec_ctx` — `avcodec_free_context`
-/// 5. `format_ctx`— IO close (`avio_closep`) then `avformat_free_context`
+/// 4. `format_ctx`— IO close (`avio_closep`) then `avformat_free_context`
+///
+/// `codec_ctx` is an owned [`ff_sys::CodecContext`]; it frees itself via field
+/// drop *after* the manual body, so the `AVCodecContext` is released last. That
+/// is sound because the encoder's `AVCodecContext` and the output
+/// `AVFormatContext` are independent allocations that do not reference each
+/// other. (The audio/video encoders hold their codec contexts as `Option` and
+/// take them to `None` before freeing `format_ctx`; here `codec_ctx` is a
+/// by-value field that is always present, so it is simply dropped last.)
 struct ImageEncoderInner {
     format_ctx: *mut AVFormatContext,
-    codec_ctx: *mut ff_sys::AVCodecContext,
+    codec_ctx: ff_sys::CodecContext,
     dst_frame: *mut ff_sys::AVFrame,
     packet: *mut ff_sys::AVPacket,
     sws_ctx: Option<*mut ff_sys::SwsContext>,
@@ -108,10 +118,19 @@ impl ImageEncoderInner {
             .pixel_format
             .map_or_else(|| preferred_pix_fmt(codec_id), pixel_format_to_av);
 
-        // Start with everything null so Drop is safe from the very first field.
+        // Find the encoder and allocate the owned codec context up front so the
+        // struct can hold it by value; the remaining raw pointers start null and
+        // are filled in as they are allocated.
+        let codec = ff_sys::Codec::find_encoder(codec_id).ok_or(EncodeError::UnsupportedCodec {
+            codec: format!("codec_id={codec_id}"),
+        })?;
+        let codec_ctx = ff_sys::CodecContext::new(Some(codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
+
+        // Start with the raw pointers null so Drop is safe from the very first field.
         let mut inner = Self {
             format_ctx: ptr::null_mut(),
-            codec_ctx: ptr::null_mut(),
+            codec_ctx,
             dst_frame: ptr::null_mut(),
             packet: ptr::null_mut(),
             sws_ctx: None,
@@ -188,19 +207,11 @@ impl ImageEncoderInner {
             });
         }
 
-        // ── Step 3: Find encoder ──────────────────────────────────────────────
-        let codec = avcodec::find_encoder(codec_id).ok_or(EncodeError::UnsupportedCodec {
-            codec: format!("codec_id={codec_id}"),
-        })?;
-
-        // ── Step 4: Allocate codec context ────────────────────────────────────
-        inner.codec_ctx = avcodec::alloc_context3(codec).map_err(EncodeError::from_ffmpeg_error)?;
-
-        // ── Step 5: Configure codec context ──────────────────────────────────
-        (*inner.codec_ctx).width = dst_width as i32;
-        (*inner.codec_ctx).height = dst_height as i32;
-        (*inner.codec_ctx).time_base = AVRational { num: 1, den: 1 };
-        (*inner.codec_ctx).pix_fmt = pix_fmt;
+        // ── Step 3: Configure codec context ──────────────────────────────────
+        (*inner.codec_ctx.as_mut_ptr()).width = dst_width as i32;
+        (*inner.codec_ctx.as_mut_ptr()).height = dst_height as i32;
+        (*inner.codec_ctx.as_mut_ptr()).time_base = AVRational { num: 1, den: 1 };
+        (*inner.codec_ctx.as_mut_ptr()).pix_fmt = pix_fmt;
 
         // For MJPEG, declare full-range (JPEG) color so FFmpeg does not emit
         // "deprecated pixel format used" warnings that appear when using the
@@ -208,25 +219,27 @@ impl ImageEncoderInner {
         // recommended replacement since FFmpeg 5.x.
         if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
             // SAFETY: codec_ctx is non-null; color_range is a plain integer field.
-            (*inner.codec_ctx).color_range = AVColorRange_AVCOL_RANGE_JPEG;
+            (*inner.codec_ctx.as_mut_ptr()).color_range = AVColorRange_AVCOL_RANGE_JPEG;
         }
 
         if let Some(q) = opts.quality {
             // SAFETY: codec_ctx is non-null and freshly allocated.
-            apply_quality(inner.codec_ctx, codec_id, q);
+            apply_quality(inner.codec_ctx.as_mut_ptr(), codec_id, q);
         }
 
-        // ── Step 6: Open codec ────────────────────────────────────────────────
-        avcodec::open2(inner.codec_ctx, codec, ptr::null_mut())
-            .map_err(EncodeError::from_ffmpeg_error)?;
+        // ── Step 4: Open codec ────────────────────────────────────────────────
+        inner
+            .codec_ctx
+            .open(codec, ptr::null_mut())
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 7: Copy parameters to stream ─────────────────────────────────
+        // ── Step 5: Copy parameters to stream ─────────────────────────────────
         // SAFETY: stream is non-null (checked above); codec_ctx is open.
         let par = (*stream).codecpar;
         (*par).codec_id = codec_id;
         (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-        (*par).width = (*inner.codec_ctx).width;
-        (*par).height = (*inner.codec_ctx).height;
+        (*par).width = (*inner.codec_ctx.as_mut_ptr()).width;
+        (*par).height = (*inner.codec_ctx.as_mut_ptr()).height;
         (*par).format = pix_fmt;
 
         // ── Step 8: Open output file ──────────────────────────────────────────
@@ -357,14 +370,17 @@ impl ImageEncoderInner {
         (*self.dst_frame).pts = 0;
 
         // ── Send frame → encoder ──────────────────────────────────────────────
-        avcodec::send_frame(self.codec_ctx, self.dst_frame)
-            .map_err(EncodeError::from_ffmpeg_error)?;
+        self.codec_ctx
+            .send_frame(self.dst_frame)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Receive packets ───────────────────────────────────────────────────
         self.drain_packets(false)?;
 
         // ── Flush encoder ─────────────────────────────────────────────────────
-        avcodec::send_frame(self.codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
+        self.codec_ctx
+            .send_frame(ptr::null())
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Drain remaining packets ───────────────────────────────────────────
         self.drain_packets(true)?;
@@ -387,8 +403,12 @@ impl ImageEncoderInner {
     /// `self.codec_ctx`, `self.packet`, and `self.format_ctx` must all be valid.
     unsafe fn drain_packets(&mut self, until_eof: bool) -> Result<(), EncodeError> {
         loop {
-            match avcodec::receive_packet(self.codec_ctx, self.packet) {
-                Ok(()) => {
+            match self
+                .codec_ctx
+                .receive_packet(self.packet)
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?
+            {
+                ff_sys::ReceiveOutcome::Frame => {
                     (*self.packet).stream_index = 0;
                     let ret = av_interleaved_write_frame(self.format_ctx, self.packet);
                     av_packet_unref(self.packet);
@@ -396,9 +416,12 @@ impl ImageEncoderInner {
                         return Err(EncodeError::from_ffmpeg_error(ret));
                     }
                 }
-                Err(e) if e == ff_sys::error_codes::EOF => break,
-                Err(e) if !until_eof && e == ff_sys::error_codes::EAGAIN => break,
-                Err(e) => return Err(EncodeError::from_ffmpeg_error(e)),
+                ff_sys::ReceiveOutcome::Drained => break,
+                ff_sys::ReceiveOutcome::NeedInput => {
+                    if !until_eof {
+                        break;
+                    }
+                }
             }
         }
         Ok(())
@@ -411,12 +434,13 @@ impl Drop for ImageEncoderInner {
         // null (never allocated, or already freed) or a valid owned allocation.
         // We check for null before each free to make Drop idempotent.
         //
-        // Release order per the issue #154 Drop contract:
+        // Release order for the raw handles (see the struct's Drop contract):
         //   1. dst_frame  — av_frame_free  (sets pointer to null)
         //   2. packet     — av_packet_free (sets pointer to null)
         //   3. sws_ctx    — sws_freeContext
-        //   4. codec_ctx  — avcodec_free_context (sets pointer to null)
-        //   5. format_ctx — avio_closep (if pb still open) + avformat_free_context
+        //   4. format_ctx — avio_closep (if pb still open) + avformat_free_context
+        // `codec_ctx` (owned CodecContext) frees itself last via field drop,
+        // after this body; sound as the two contexts are independent.
         unsafe {
             if !self.dst_frame.is_null() {
                 // SAFETY: dst_frame is non-null and owned by this struct.
@@ -430,11 +454,8 @@ impl Drop for ImageEncoderInner {
                 // SAFETY: sws is a valid SwsContext that hasn't been freed yet.
                 swscale::free_context(sws);
             }
-            if !self.codec_ctx.is_null() {
-                // SAFETY: codec_ctx is non-null and owned by this struct.
-                // avcodec_free_context sets the pointer to null after freeing.
-                avcodec::free_context(&raw mut self.codec_ctx);
-            }
+            // codec_ctx is an owned ff_sys::CodecContext; it frees itself when the
+            // struct is dropped (after this manual cleanup runs).
             if !self.format_ctx.is_null() {
                 // SAFETY: format_ctx is non-null and owned by this struct.
                 // Close the IO context if it hasn't been closed yet (it is set
@@ -619,8 +640,8 @@ unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCode
 /// Encode a single `VideoFrame` and write it to `path`.
 ///
 /// Resources are managed via [`ImageEncoderInner`]'s [`Drop`] implementation,
-/// which frees frame → packet → sws_ctx → codec_ctx → format_ctx regardless
-/// of whether encoding succeeds or fails.
+/// which frees frame → packet → sws_ctx → format_ctx (the owned `codec_ctx`
+/// drops itself last) regardless of whether encoding succeeds or fails.
 ///
 pub(super) fn encode_image(
     path: &Path,
@@ -764,16 +785,17 @@ mod tests {
         );
     }
 
-    // Verify Drop does not panic on a zero-initialised (all-null) inner struct.
-    // This guards the partial-allocation cleanup path exercised when `open`
-    // returns early with an error before every field is set.
+    // Verify Drop does not panic on a partially-initialised inner struct whose
+    // raw pointers are all null. This guards the partial-allocation cleanup path
+    // exercised when `open` returns early with an error before every field is set.
     #[test]
     fn drop_on_uninitialised_inner_should_not_panic() {
-        // We deliberately construct an all-null inner and drop it.
-        // SAFETY: all pointers are null; Drop checks for null before freeing.
+        // A `None` codec yields a generic owned context that frees itself on drop;
+        // the raw pointers are null, so the manual Drop checks skip them.
+        // SAFETY: all raw pointers are null; Drop checks for null before freeing.
         let inner = ImageEncoderInner {
             format_ctx: ptr::null_mut(),
-            codec_ctx: ptr::null_mut(),
+            codec_ctx: ff_sys::CodecContext::new(None).expect("generic context alloc"),
             dst_frame: ptr::null_mut(),
             packet: ptr::null_mut(),
             sws_ctx: None,

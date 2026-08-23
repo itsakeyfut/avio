@@ -1197,6 +1197,30 @@ impl CodecContext {
     /// # Safety
     /// Stub; never executed on docs.rs.
     pub unsafe fn flush_buffers(&mut self) {}
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn send_frame(&mut self, _frame: *const AVFrame) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn receive_packet(
+        &mut self,
+        _pkt: *mut AVPacket,
+    ) -> Result<ReceiveOutcome, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn parameters_from_context(
+        &self,
+        _par: *mut AVCodecParameters,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
 }
 
 impl Drop for CodecContext {
@@ -1392,6 +1416,16 @@ pub struct Codec {
 impl Codec {
     #[must_use]
     pub fn find_decoder(_codec_id: AVCodecID) -> Option<Self> {
+        None
+    }
+
+    #[must_use]
+    pub fn find_encoder(_codec_id: AVCodecID) -> Option<Self> {
+        None
+    }
+
+    #[must_use]
+    pub fn find_encoder_by_name(_name: &str) -> Option<Self> {
         None
     }
 

@@ -55,10 +55,10 @@ pub(super) struct VideoEncoderInner {
     pub(super) format_ctx: *mut AVFormatContext,
 
     /// Video codec context
-    pub(super) video_codec_ctx: Option<*mut AVCodecContext>,
+    pub(super) video_codec_ctx: Option<ff_sys::CodecContext>,
 
     /// Audio codec context (for future use)
-    pub(super) audio_codec_ctx: Option<*mut AVCodecContext>,
+    pub(super) audio_codec_ctx: Option<ff_sys::CodecContext>,
 
     /// Video stream index
     pub(super) video_stream_index: i32,
@@ -104,7 +104,7 @@ pub(super) struct VideoEncoderInner {
     pub(super) two_pass: bool,
 
     /// Pass-1 codec context (two-pass mode only; None in single-pass and after pass 1 completes).
-    pub(super) pass1_codec_ctx: Option<*mut AVCodecContext>,
+    pub(super) pass1_codec_ctx: Option<ff_sys::CodecContext>,
 
     /// Buffered YUV420P frame data for pass-2 re-encoding (two-pass mode only).
     pub(super) buffered_frames: Vec<TwoPassFrame>,
@@ -326,9 +326,11 @@ impl VideoEncoderInner {
             if self.two_pass {
                 let pass1_ctx = self
                     .pass1_codec_ctx
+                    .as_mut()
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Pass-1 codec context not initialized".to_string(),
-                    })?;
+                    })?
+                    .as_mut_ptr();
 
                 // Convert the incoming frame to YUV420P (the pass-1 codec's format).
                 let mut av_frame = av_frame_alloc();
@@ -378,19 +380,30 @@ impl VideoEncoderInner {
                 // Send to pass-1 encoder and discard the encoded output.
                 // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
                 (*av_frame).pts = self.frame_count as i64 * 1000;
-                let send_result = avcodec::send_frame(pass1_ctx, av_frame);
+                let send_result = self
+                    .pass1_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Pass-1 codec context not initialized".to_string(),
+                    })?
+                    .send_frame(av_frame);
                 if let Err(e) = send_result {
                     av_frame_free(&raw mut av_frame);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Failed to send frame to pass-1 encoder: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
 
-                let drain_result = self.drain_pass1_packets(pass1_ctx);
+                let drain_result =
+                    Self::drain_pass1_packets(self.pass1_codec_ctx.as_mut().ok_or_else(|| {
+                        EncodeError::InvalidConfig {
+                            reason: "Pass-1 codec context not initialized".to_string(),
+                        }
+                    })?);
                 av_frame_free(&raw mut av_frame);
                 drain_result?;
 
@@ -401,9 +414,11 @@ impl VideoEncoderInner {
             // ── Single-pass path ─────────────────────────────────────────────────
             let codec_ctx = self
                 .video_codec_ctx
+                .as_mut()
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
-                })?;
+                })?
+                .as_mut_ptr();
 
             // Allocate AVFrame
             let mut av_frame = av_frame_alloc();
@@ -426,12 +441,21 @@ impl VideoEncoderInner {
             (*av_frame).pts = self.frame_count as i64 * 1000;
 
             // Send frame to encoder
-            let send_result = avcodec::send_frame(codec_ctx, av_frame);
+            let send_result = self
+                .video_codec_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Video codec not initialized".to_string(),
+                })?
+                .send_frame(av_frame);
             if let Err(e) = send_result {
                 av_frame_free(&raw mut av_frame);
                 return Err(EncodeError::Ffmpeg {
-                    code: e,
-                    message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
+                    code: e.code(),
+                    message: format!(
+                        "Failed to send frame: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
                 });
             }
 
@@ -462,9 +486,11 @@ impl VideoEncoderInner {
         unsafe {
             let codec_ctx = self
                 .audio_codec_ctx
+                .as_mut()
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Audio codec not initialized".to_string(),
-                })?;
+                })?
+                .as_mut_ptr();
 
             let frame_size = (*codec_ctx).frame_size;
 
@@ -484,14 +510,20 @@ impl VideoEncoderInner {
             // ── Variable frame-size path (PCM, Vorbis …) ────────────────────
             if frame_size <= 0 || self.audio_fifo.is_none() {
                 (*av_frame).pts = self.audio_sample_count as i64;
-                let send_result = avcodec::send_frame(codec_ctx, av_frame);
+                let send_result = self
+                    .audio_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .send_frame(av_frame);
                 av_frame_free(&raw mut av_frame);
                 if let Err(e) = send_result {
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Failed to send audio frame: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
@@ -555,14 +587,20 @@ impl VideoEncoderInner {
                 }
 
                 (*out_frame).pts = self.audio_sample_count as i64;
-                let send_result = avcodec::send_frame(codec_ctx, out_frame);
+                let send_result = self
+                    .audio_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .send_frame(out_frame);
                 av_frame_free(&raw mut out_frame);
                 if let Err(e) = send_result {
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Failed to send audio frame: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
@@ -584,17 +622,31 @@ impl VideoEncoderInner {
             }
 
             // Single-pass: flush video encoder
-            if let Some(codec_ctx) = self.video_codec_ctx {
+            if self.video_codec_ctx.is_some() {
                 // Send NULL frame to flush
-                avcodec::send_frame(codec_ctx, ptr::null())
-                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.video_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Video codec not initialized".to_string(),
+                    })?
+                    .send_frame(ptr::null())
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_packets()?;
             }
 
             // Flush remaining FIFO samples (fixed-frame-size codecs only).
             // The last chunk may be smaller than frame_size; send it as-is so the
             // encoder can write a short final frame before the NULL-frame flush.
-            if let (Some(fifo), Some(codec_ctx)) = (self.audio_fifo, self.audio_codec_ctx) {
+            if let Some(fifo) = self.audio_fifo
+                && self.audio_codec_ctx.is_some()
+            {
+                let codec_ctx = self
+                    .audio_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .as_mut_ptr();
                 let remaining = ff_sys::swresample::audio_fifo::size(fifo);
                 if remaining > 0 {
                     let mut out_frame = av_frame_alloc();
@@ -613,7 +665,13 @@ impl VideoEncoderInner {
                                 remaining,
                             );
                             (*out_frame).pts = self.audio_sample_count as i64;
-                            let _ = avcodec::send_frame(codec_ctx, out_frame);
+                            let _ = self
+                                .audio_codec_ctx
+                                .as_mut()
+                                .ok_or_else(|| EncodeError::InvalidConfig {
+                                    reason: "Audio codec not initialized".to_string(),
+                                })?
+                                .send_frame(out_frame);
                             let _ = self.receive_audio_packets();
                             self.audio_sample_count += remaining as u64;
                         }
@@ -623,10 +681,15 @@ impl VideoEncoderInner {
             }
 
             // Flush audio encoder
-            if let Some(codec_ctx) = self.audio_codec_ctx {
+            if self.audio_codec_ctx.is_some() {
                 // Send NULL frame to flush
-                avcodec::send_frame(codec_ctx, ptr::null())
-                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.audio_codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .send_frame(ptr::null())
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_audio_packets()?;
             }
 

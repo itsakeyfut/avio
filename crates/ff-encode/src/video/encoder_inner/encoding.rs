@@ -14,7 +14,7 @@ use super::color::{pixel_format_to_av, sample_format_to_av};
 use super::{
     AVChannelLayout, AVCodecContext, AVFrame, AVPixelFormat, AudioFrame, EncodeError,
     VideoEncoderInner, VideoFrame, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_unref, avcodec, ptr, swresample, swscale,
+    av_packet_unref, ptr, swresample, swscale,
 };
 
 /// Maximum number of planes in AVFrame data/linesize arrays.
@@ -35,8 +35,7 @@ impl VideoEncoderInner {
     ///
     /// `codec_ctx` must be a valid, open `AVCodecContext`.
     pub(super) unsafe fn drain_pass1_packets(
-        &self,
-        codec_ctx: *mut AVCodecContext,
+        codec_ctx: &mut ff_sys::CodecContext,
     ) -> Result<(), EncodeError> {
         let mut packet = av_packet_alloc();
         if packet.is_null() {
@@ -47,21 +46,21 @@ impl VideoEncoderInner {
         }
 
         loop {
-            match avcodec::receive_packet(codec_ctx, packet) {
-                Ok(()) => {
+            match codec_ctx.receive_packet(packet) {
+                Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Discard — do not write to the format context.
                     av_packet_unref(packet);
                 }
-                Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                Ok(ff_sys::ReceiveOutcome::NeedInput | ff_sys::ReceiveOutcome::Drained) => {
                     break;
                 }
                 Err(e) => {
                     av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Error receiving packet from pass-1 encoder: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
@@ -326,11 +325,11 @@ impl VideoEncoderInner {
 
     /// Receive encoded packets from the encoder.
     pub(super) unsafe fn receive_packets(&mut self) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .video_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
+        if self.video_codec_ctx.is_none() {
+            return Err(EncodeError::InvalidConfig {
                 reason: "Video codec not initialized".to_string(),
-            })?;
+            });
+        }
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
@@ -341,19 +340,29 @@ impl VideoEncoderInner {
         }
 
         loop {
-            match avcodec::receive_packet(codec_ctx, packet) {
-                Ok(()) => {
+            let recv = self
+                .video_codec_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Video codec not initialized".to_string(),
+                })?
+                .receive_packet(packet);
+            match recv {
+                Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
                 }
-                Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                Ok(ff_sys::ReceiveOutcome::NeedInput | ff_sys::ReceiveOutcome::Drained) => {
                     // No more packets available
                     break;
                 }
                 Err(e) => {
                     av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
-                        message: format!("Error receiving packet: {}", ff_sys::av_error_string(e)),
+                        code: e.code(),
+                        message: format!(
+                            "Error receiving packet: {}",
+                            ff_sys::av_error_string(e.code())
+                        ),
                     });
                 }
             }
@@ -396,9 +405,11 @@ impl VideoEncoderInner {
     ) -> Result<(), EncodeError> {
         let codec_ctx = self
             .audio_codec_ctx
+            .as_ref()
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Audio codec not initialized".to_string(),
-            })?;
+            })?
+            .as_ptr();
 
         let target_sample_rate = (*codec_ctx).sample_rate;
         let target_format = (*codec_ctx).sample_fmt;
@@ -532,11 +543,11 @@ impl VideoEncoderInner {
 
     /// Receive encoded audio packets from the encoder.
     pub(super) unsafe fn receive_audio_packets(&mut self) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .audio_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
+        if self.audio_codec_ctx.is_none() {
+            return Err(EncodeError::InvalidConfig {
                 reason: "Audio codec not initialized".to_string(),
-            })?;
+            });
+        }
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
@@ -547,21 +558,28 @@ impl VideoEncoderInner {
         }
 
         loop {
-            match avcodec::receive_packet(codec_ctx, packet) {
-                Ok(()) => {
+            let recv = self
+                .audio_codec_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?
+                .receive_packet(packet);
+            match recv {
+                Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
                 }
-                Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                Ok(ff_sys::ReceiveOutcome::NeedInput | ff_sys::ReceiveOutcome::Drained) => {
                     // No more packets available
                     break;
                 }
                 Err(e) => {
                     av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Error receiving audio packet: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
