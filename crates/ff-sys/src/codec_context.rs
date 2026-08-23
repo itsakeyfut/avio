@@ -11,8 +11,8 @@ use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
-    AVCodecContext, AVCodecParameters, AVDictionary, AvError, Codec, Frame, Packet,
-    avcodec_free_context as ffi_avcodec_free_context,
+    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError, Codec, Frame,
+    Packet, avcodec_free_context as ffi_avcodec_free_context,
 };
 
 /// The outcome of a [`CodecContext::receive_frame`] call.
@@ -21,7 +21,9 @@ use crate::{
 /// never branch on raw return codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveOutcome {
-    /// A frame was written into the output frame.
+    /// An output unit is available: a decoded frame from
+    /// [`receive_frame`](CodecContext::receive_frame), or an encoded packet from
+    /// [`receive_packet`](CodecContext::receive_packet).
     Frame,
     /// The decoder needs more input (`EAGAIN`): send another packet, or
     /// [`send_eof`](CodecContext::send_eof) to begin draining.
@@ -169,6 +171,48 @@ impl CodecContext {
         // SAFETY: the caller guarantees the context is opened; `flush_buffers`
         //         reads no caller-supplied pointer.
         unsafe { crate::avcodec::flush_buffers(self.ptr.as_ptr()) };
+    }
+
+    /// Sends a frame to the encoder (a null frame flushes it, entering draining).
+    ///
+    /// After sending a null frame, loop [`receive_packet`](Self::receive_packet)
+    /// until it returns [`ReceiveOutcome::Drained`] to collect the buffered packets.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be null or a valid `*const AVFrame`.
+    pub unsafe fn send_frame(&mut self, frame: *const AVFrame) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid open encoder context; the caller upholds `frame`.
+        unsafe { crate::avcodec::send_frame(self.ptr.as_ptr(), frame) }.map_err(AvError::new)
+    }
+
+    /// Receives an encoded packet, returning a typed [`ReceiveOutcome`].
+    ///
+    /// `EAGAIN` (need input) and `EOF` (drained) are returned as
+    /// [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`] rather than
+    /// errors; only other negative codes are `Err`.
+    ///
+    /// # Safety
+    ///
+    /// `pkt` must be a valid `*mut AVPacket`.
+    pub unsafe fn receive_packet(&mut self, pkt: *mut AVPacket) -> Result<ReceiveOutcome, AvError> {
+        // SAFETY: `self.ptr` is a valid open encoder context; the caller upholds `pkt`.
+        let result = unsafe { crate::avcodec::receive_packet(self.ptr.as_ptr(), pkt) };
+        classify_receive(result)
+    }
+
+    /// Copies this context's parameters into `par` (encoder → stream codecpar).
+    ///
+    /// # Safety
+    ///
+    /// `par` must be a valid `*mut AVCodecParameters`.
+    pub unsafe fn parameters_from_context(
+        &self,
+        par: *mut AVCodecParameters,
+    ) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid context; the caller upholds `par`.
+        unsafe { crate::avcodec::parameters_from_context(par, self.ptr.as_ptr()) }
+            .map_err(AvError::new)
     }
 }
 

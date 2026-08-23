@@ -16,7 +16,7 @@ use super::color::{
 use super::options::codec_to_id;
 use super::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, CString, EncodeError, VideoEncoderConfig, VideoEncoderInner,
-    av_frame_alloc, av_frame_free, av_write_trailer, avcodec, avformat_write_header, ptr,
+    av_frame_alloc, av_frame_free, av_write_trailer, avformat_write_header, ptr,
 };
 
 /// FFmpeg pass-1 encoding flag: collect two-pass statistics, discard encoded output.
@@ -59,28 +59,48 @@ impl VideoEncoderInner {
     /// All FFmpeg resources must be valid at the point of the call.
     pub(super) unsafe fn run_pass2(&mut self) -> Result<(), EncodeError> {
         // ── Step 1: Flush pass-1 encoder ────────────────────────────────────
-        let mut pass1_ctx = self
-            .pass1_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
+        if self.pass1_codec_ctx.is_none() {
+            return Err(EncodeError::InvalidConfig {
                 reason: "Pass-1 codec context not available".to_string(),
-            })?;
-
-        // SAFETY: pass1_ctx is a valid open codec context.
-        if let Err(e) = avcodec::send_frame(pass1_ctx, ptr::null())
-            && e != ff_sys::error_codes::EOF
-        {
-            return Err(EncodeError::Ffmpeg {
-                code: e,
-                message: format!("pass1 flush send_frame: {}", ff_sys::av_error_string(e)),
             });
         }
-        self.drain_pass1_packets(pass1_ctx)?;
 
-        // ── Step 2: Collect stats_out ────────────────────────────────────────
+        // SAFETY: the pass-1 context is valid and open. The flush send tolerates EOF.
+        if let Err(e) = self
+            .pass1_codec_ctx
+            .as_mut()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Pass-1 codec context not initialized".to_string(),
+            })?
+            .send_frame(ptr::null())
+            && e.code() != ff_sys::error_codes::EOF
+        {
+            return Err(EncodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "pass1 flush send_frame: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            });
+        }
+        Self::drain_pass1_packets(self.pass1_codec_ctx.as_mut().ok_or_else(|| {
+            EncodeError::InvalidConfig {
+                reason: "Pass-1 codec context not initialized".to_string(),
+            }
+        })?)?;
+
+        // ── Step 2: Collect stats_out (before freeing pass 1) ────────────────
         // SAFETY: stats_out is either null or a valid C string owned by the
-        // codec context; it remains valid until avcodec_free_context is called.
-        let stats_str = if !(*pass1_ctx).stats_out.is_null() {
-            std::ffi::CStr::from_ptr((*pass1_ctx).stats_out)
+        // codec context; it remains valid until the owned context is dropped below.
+        let pass1_ptr = self
+            .pass1_codec_ctx
+            .as_ref()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Pass-1 codec context not initialized".to_string(),
+            })?
+            .as_ptr();
+        let stats_str = if !(*pass1_ptr).stats_out.is_null() {
+            std::ffi::CStr::from_ptr((*pass1_ptr).stats_out)
                 .to_string_lossy()
                 .into_owned()
         } else {
@@ -93,9 +113,7 @@ impl VideoEncoderInner {
         };
         log::info!("two-pass pass-1 complete stats_len={}", stats_str.len());
 
-        // ── Step 3: Free pass-1 codec context ───────────────────────────────
-        // SAFETY: pass1_ctx is no longer needed; we own it exclusively.
-        avcodec::free_context(&raw mut pass1_ctx);
+        // ── Step 3: Free pass-1 codec context (owned context drops → frees) ──
         self.pass1_codec_ctx = None;
 
         // ── Step 4: Set up pass-2 codec context ─────────────────────────────
@@ -139,14 +157,23 @@ impl VideoEncoderInner {
         }
 
         // ── Step 7: Flush pass-2 encoder and write trailer ───────────────────
-        if let Some(codec_ctx) = self.video_codec_ctx {
-            // SAFETY: codec_ctx is a valid open pass-2 codec context.
-            if let Err(e) = avcodec::send_frame(codec_ctx, ptr::null())
-                && e != ff_sys::error_codes::EOF
+        if self.video_codec_ctx.is_some() {
+            // SAFETY: the pass-2 codec context is valid and open. Flush tolerates EOF.
+            if let Err(e) = self
+                .video_codec_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Video codec not initialized".to_string(),
+                })?
+                .send_frame(ptr::null())
+                && e.code() != ff_sys::error_codes::EOF
             {
                 return Err(EncodeError::Ffmpeg {
-                    code: e,
-                    message: format!("pass2 flush send_frame: {}", ff_sys::av_error_string(e)),
+                    code: e.code(),
+                    message: format!(
+                        "pass2 flush send_frame: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
                 });
             }
             self.receive_packets()?;
@@ -187,41 +214,35 @@ impl VideoEncoderInner {
         let fps = config.video_fps.unwrap_or(30.0);
         let encoder_name = self.actual_video_codec.clone();
 
-        let c_encoder_name =
-            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Invalid encoder name for pass 2".to_string(),
-            })?;
-
-        let codec_ptr =
-            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+        let selected_codec =
+            ff_sys::Codec::find_encoder_by_name(&encoder_name).ok_or_else(|| {
                 EncodeError::NoSuitableEncoder {
                     codec: encoder_name.clone(),
                     tried: vec![encoder_name.clone()],
                 }
             })?;
 
-        let codec_ctx =
-            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+        let mut codec_ctx = ff_sys::CodecContext::new(Some(selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Mirror the same codec configuration as pass 1.
-        (*codec_ctx).codec_id = codec_to_id(config.video_codec);
-        (*codec_ctx).width = width as i32;
-        (*codec_ctx).height = height as i32;
-        (*codec_ctx).time_base.num = 1;
-        (*codec_ctx).time_base.den = (fps * 1000.0) as i32;
-        (*codec_ctx).framerate.num = fps as i32;
-        (*codec_ctx).framerate.den = 1;
-        (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*codec_ctx.as_mut_ptr()).codec_id = codec_to_id(config.video_codec);
+        (*codec_ctx.as_mut_ptr()).width = width as i32;
+        (*codec_ctx.as_mut_ptr()).height = height as i32;
+        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
+        (*codec_ctx.as_mut_ptr()).time_base.den = (fps * 1000.0) as i32;
+        (*codec_ctx.as_mut_ptr()).framerate.num = fps as i32;
+        (*codec_ctx.as_mut_ptr()).framerate.den = 1;
+        (*codec_ctx.as_mut_ptr()).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
 
         match config.video_bitrate_mode.as_ref() {
             Some(BitrateMode::Cbr(bps)) => {
-                (*codec_ctx).bit_rate = *bps as i64;
+                (*codec_ctx.as_mut_ptr()).bit_rate = *bps as i64;
             }
             Some(BitrateMode::Vbr { target, max }) => {
-                (*codec_ctx).bit_rate = *target as i64;
-                (*codec_ctx).rc_max_rate = *max as i64;
-                (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
+                (*codec_ctx.as_mut_ptr()).bit_rate = *target as i64;
+                (*codec_ctx.as_mut_ptr()).rc_max_rate = *max as i64;
+                (*codec_ctx.as_mut_ptr()).rc_buffer_size = (*max * 2) as i32;
             }
             Some(BitrateMode::Crf(q)) => {
                 let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
@@ -230,7 +251,7 @@ impl VideoEncoderInner {
                 })?;
                 // SAFETY: priv_data, option name, and value are all valid pointers.
                 let ret = ff_sys::av_opt_set(
-                    (*codec_ctx).priv_data,
+                    (*codec_ctx.as_mut_ptr()).priv_data,
                     b"crf\0".as_ptr() as *const i8,
                     crf_str.as_ptr(),
                     0,
@@ -240,11 +261,11 @@ impl VideoEncoderInner {
                         "crf option not supported by pass-2 encoder, falling back to default \
                          encoder={encoder_name} crf={q}"
                     );
-                    (*codec_ctx).bit_rate = 2_000_000;
+                    (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
                 }
             }
             None => {
-                (*codec_ctx).bit_rate = 2_000_000;
+                (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
             }
         }
 
@@ -256,7 +277,7 @@ impl VideoEncoderInner {
                 })?;
             // SAFETY: priv_data, option name, and value are all valid pointers.
             let ret = ff_sys::av_opt_set(
-                (*codec_ctx).priv_data,
+                (*codec_ctx.as_mut_ptr()).priv_data,
                 b"preset\0".as_ptr() as *const i8,
                 preset_cstr.as_ptr(),
                 0,
@@ -275,40 +296,41 @@ impl VideoEncoderInner {
             // SAFETY: codec_ctx is valid and allocated; priv_data is set by
             // avcodec_alloc_context3. Options are applied before avcodec_open2
             // so they take effect during codec initialisation.
-            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
+            Self::apply_codec_options(codec_ctx.as_mut_ptr(), opts, &encoder_name);
         }
 
         // Apply explicit pixel format override for pass 2 (mirrors pass 1).
         if let Some(fmt) = config.pixel_format.as_ref() {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+            (*codec_ctx.as_mut_ptr()).pix_fmt = pixel_format_to_av(*fmt);
         }
 
         // Apply HDR10 color context for pass 2 (mirrors pass 1).
         if config.hdr10_metadata.is_some() {
             // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
-            (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
-            (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
-            (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
+            (*codec_ctx.as_mut_ptr()).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
+            (*codec_ctx.as_mut_ptr()).color_trc =
+                ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
+            (*codec_ctx.as_mut_ptr()).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
         }
 
         // Apply explicit color overrides for pass 2 (mirrors pass 1; take priority over HDR10).
         if let Some(cs) = config.color_space {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).colorspace = color_space_to_av(cs);
+            (*codec_ctx.as_mut_ptr()).colorspace = color_space_to_av(cs);
         }
         if let Some(trc) = config.color_transfer {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).color_trc = color_transfer_to_av(trc);
+            (*codec_ctx.as_mut_ptr()).color_trc = color_transfer_to_av(trc);
         }
         if let Some(cp) = config.color_primaries {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).color_primaries = color_primaries_to_av(cp);
+            (*codec_ctx.as_mut_ptr()).color_primaries = color_primaries_to_av(cp);
         }
 
         // Set the pass-2 flag and provide stats_in.
         // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
-        (*codec_ctx).flags |= AV_CODEC_FLAG_PASS2;
+        (*codec_ctx.as_mut_ptr()).flags |= AV_CODEC_FLAG_PASS2;
 
         // Point stats_in to our owned CString (kept alive in self.stats_in_cstr
         // until cleanup() nulls the pointer and drops it).
@@ -320,7 +342,7 @@ impl VideoEncoderInner {
             // SAFETY: stats_cstr.as_ptr() is valid for the lifetime of stats_cstr,
             // which is stored in self.stats_in_cstr and dropped only after the codec
             // context is freed in cleanup().
-            (*codec_ctx).stats_in = stats_cstr.as_ptr().cast_mut();
+            (*codec_ctx.as_mut_ptr()).stats_in = stats_cstr.as_ptr().cast_mut();
             self.stats_in_cstr = Some(stats_cstr);
         }
 
@@ -328,23 +350,25 @@ impl VideoEncoderInner {
         // native mpeg4 encoder without meaningful stats) do not support PASS2 and
         // return AVERROR(EPERM). In that case, fall back to opening without the
         // flag so the caller still gets a valid encoder and usable output.
-        if avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut()).is_err() {
+        if codec_ctx.open(selected_codec, ptr::null_mut()).is_err() {
             log::warn!(
                 "two-pass pass-2 codec rejected AV_CODEC_FLAG_PASS2, \
                  falling back to single-pass mode codec={encoder_name}"
             );
-            (*codec_ctx).flags &= !AV_CODEC_FLAG_PASS2;
-            (*codec_ctx).stats_in = ptr::null_mut();
+            // Null stats_in and drop the owned CString BEFORE re-opening so the
+            // discarded pass-2 attempt never references the Rust-owned pointer.
+            (*codec_ctx.as_mut_ptr()).flags &= !AV_CODEC_FLAG_PASS2;
+            (*codec_ctx.as_mut_ptr()).stats_in = ptr::null_mut();
             self.stats_in_cstr = None;
-            avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut()).map_err(|e| {
-                EncodeError::Ffmpeg {
-                    code: e,
+            codec_ctx
+                .open(selected_codec, ptr::null_mut())
+                .map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
                     message: format!(
                         "pass2 avcodec_open2 fallback: {}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     ),
-                }
-            })?;
+                })?;
         }
         log::info!(
             "two-pass pass-2 codec opened codec={encoder_name} width={width} height={height}"
@@ -364,11 +388,11 @@ impl VideoEncoderInner {
     /// Must only be called from `run_pass2`. `self.video_codec_ctx` and
     /// `self.format_ctx` must be valid and the output file must be open.
     unsafe fn push_two_pass_frame(&mut self, tf: &TwoPassFrame) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .video_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
+        if self.video_codec_ctx.is_none() {
+            return Err(EncodeError::InvalidConfig {
                 reason: "Pass-2 codec context not initialized".to_string(),
-            })?;
+            });
+        }
 
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
@@ -431,14 +455,20 @@ impl VideoEncoderInner {
         (*av_frame).pts = tf.pts;
 
         // Send to pass-2 encoder.
-        let send_result = avcodec::send_frame(codec_ctx, av_frame);
+        let send_result = self
+            .video_codec_ctx
+            .as_mut()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Video codec not initialized".to_string(),
+            })?
+            .send_frame(av_frame);
         if let Err(e) = send_result {
             av_frame_free(&raw mut av_frame);
             return Err(EncodeError::Ffmpeg {
-                code: e,
+                code: e.code(),
                 message: format!(
                     "Failed to send frame to pass-2 encoder: {}",
-                    ff_sys::av_error_string(e)
+                    ff_sys::av_error_string(e.code())
                 ),
             });
         }

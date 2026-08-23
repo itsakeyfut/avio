@@ -26,7 +26,7 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame,
     SwrContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc,
-    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avformat_alloc_output_context2,
+    av_packet_free, av_packet_unref, av_write_trailer, avformat_alloc_output_context2,
     avformat_free_context, avformat_new_stream, avformat_write_header, swresample,
 };
 use std::ffi::{CString, c_void};
@@ -38,7 +38,7 @@ pub(super) struct AudioEncoderInner {
     pub(super) format_ctx: *mut AVFormatContext,
 
     /// Audio codec context
-    pub(super) codec_ctx: Option<*mut AVCodecContext>,
+    pub(super) codec_ctx: Option<ff_sys::CodecContext>,
 
     /// Audio stream index
     pub(super) stream_index: i32,
@@ -159,31 +159,25 @@ impl AudioEncoderInner {
         let encoder_name = self.select_audio_encoder(config.codec)?;
         self.actual_codec.clone_from(&encoder_name);
 
-        let c_encoder_name =
-            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Invalid encoder name".to_string(),
-            })?;
-
-        let codec_ptr =
-            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
-                EncodeError::NoSuitableEncoder {
-                    codec: format!("{:?}", config.codec),
-                    tried: vec![encoder_name.clone()],
-                }
-            })?;
+        let codec = ff_sys::Codec::find_encoder_by_name(&encoder_name).ok_or_else(|| {
+            EncodeError::NoSuitableEncoder {
+                codec: format!("{:?}", config.codec),
+                tried: vec![encoder_name.clone()],
+            }
+        })?;
+        let codec_ptr = codec.as_ptr();
 
         // Allocate codec context
-        let mut codec_ctx =
-            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+        let mut codec_ctx = ff_sys::CodecContext::new(Some(codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Configure codec context
-        (*codec_ctx).codec_id = codec_to_id(config.codec);
-        (*codec_ctx).sample_rate = config.sample_rate as i32;
+        (*codec_ctx.as_mut_ptr()).codec_id = codec_to_id(config.codec);
+        (*codec_ctx.as_mut_ptr()).sample_rate = config.sample_rate as i32;
 
         // Set channel layout using FFmpeg 7.x API
         swresample::channel_layout::set_default(
-            &raw mut (*codec_ctx).ch_layout,
+            &raw mut (*codec_ctx.as_mut_ptr()).ch_layout,
             config.channels as i32,
         );
 
@@ -199,14 +193,14 @@ impl AudioEncoderInner {
                 ff_sys::swresample::sample_format::FLTP
             }
         };
-        (*codec_ctx).sample_fmt = target_fmt;
+        (*codec_ctx.as_mut_ptr()).sample_fmt = target_fmt;
 
         // Set bitrate
         if let Some(br) = config.bitrate {
-            (*codec_ctx).bit_rate = br as i64;
+            (*codec_ctx.as_mut_ptr()).bit_rate = br as i64;
         } else {
             // Default bitrate based on codec
-            (*codec_ctx).bit_rate = match config.codec {
+            (*codec_ctx.as_mut_ptr()).bit_rate = match config.codec {
                 AudioCodec::Aac => 192_000,
                 AudioCodec::Opus => 128_000,
                 AudioCodec::Mp3 => 192_000,
@@ -224,26 +218,27 @@ impl AudioEncoderInner {
         }
 
         // Set time base
-        (*codec_ctx).time_base.num = 1;
-        (*codec_ctx).time_base.den = config.sample_rate as i32;
+        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
+        (*codec_ctx.as_mut_ptr()).time_base.den = config.sample_rate as i32;
 
         // Apply per-codec options before opening the codec context.
         if let Some(opts) = &config.codec_options {
             // SAFETY: codec_ctx is valid and allocated; priv_data is set by
             // avcodec_alloc_context3. Options are applied before avcodec_open2
             // so they take effect during codec initialisation.
-            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
+            Self::apply_codec_options(codec_ctx.as_mut_ptr(), opts, &encoder_name);
         }
 
         // Open codec
-        avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
-            .map_err(EncodeError::from_ffmpeg_error)?;
+        codec_ctx
+            .open(codec, ptr::null_mut())
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // After open2, frame_size is populated.  Allocate an AVAudioFifo when
         // the encoder requires a fixed number of samples and does not advertise
         // VARIABLE_FRAME_SIZE.  AVAudioFifo handles both planar and packed
         // layouts internally and is backed by a ring-buffer (O(1) read/write).
-        let required = (*codec_ctx).frame_size as usize;
+        let required = (*codec_ctx.as_mut_ptr()).frame_size as usize;
         let caps = (*codec_ptr).capabilities as u32;
         if required > 0 && caps & ff_sys::avcodec::codec_caps::VARIABLE_FRAME_SIZE == 0 {
             self.fifo =
@@ -261,22 +256,23 @@ impl AudioEncoderInner {
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&raw mut codec_ctx);
+            // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
             });
         }
 
-        (*stream).time_base = (*codec_ctx).time_base;
+        (*stream).time_base = (*codec_ctx.as_mut_ptr()).time_base;
 
         // Copy ALL codec parameters (including extradata) from the open codec
         // context to the stream.  avcodec_parameters_from_context must be
         // called after avcodec_open2 because some codecs (e.g. FLAC, AAC)
         // populate extradata only after the codec is opened.  Manual field
         // copies would miss extradata, causing avformat_write_header to fail.
-        avcodec::parameters_from_context((*stream).codecpar, codec_ctx)
-            .map_err(EncodeError::from_ffmpeg_error)?;
+        codec_ctx
+            .parameters_from_context((*stream).codecpar)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         self.stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
         self.codec_ctx = Some(codec_ctx);
@@ -442,14 +438,8 @@ impl AudioEncoderInner {
 
         // Try each candidate
         for &name in &candidates {
-            unsafe {
-                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Invalid encoder name".to_string(),
-                })?;
-                if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
-                    return Ok(name.to_string());
-                }
+            if ff_sys::Codec::find_encoder_by_name(name).is_some() {
+                return Ok(name.to_string());
             }
         }
 
@@ -463,9 +453,11 @@ impl AudioEncoderInner {
     pub(super) fn push_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
         // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
         unsafe {
-            let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Audio codec not initialized".to_string(),
-            })?;
+            if self.codec_ctx.is_none() {
+                return Err(EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                });
+            }
 
             if !self.fifo.is_null() {
                 // Fixed-frame-size path: convert → write into AVAudioFifo → drain
@@ -507,7 +499,7 @@ impl AudioEncoderInner {
                 // Drain all complete frames from the FIFO
                 let frame_size = self.frame_size as i32;
                 while swresample::audio_fifo::size(self.fifo) >= frame_size {
-                    self.drain_fifo_frame(codec_ctx, frame_size, false)?;
+                    self.drain_fifo_frame(frame_size, false)?;
                 }
             } else {
                 // Direct path: send frame straight to the encoder.
@@ -527,14 +519,20 @@ impl AudioEncoderInner {
 
                 (*av_frame).pts = self.sample_count as i64;
 
-                let send_result = avcodec::send_frame(codec_ctx, av_frame);
+                let send_result = self
+                    .codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .send_frame(av_frame);
                 if let Err(e) = send_result {
                     av_frame_free(&raw mut av_frame);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Failed to send audio frame: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
@@ -559,10 +557,17 @@ impl AudioEncoderInner {
     /// only in the EOF flush called from [`Self::finish`].
     unsafe fn drain_fifo_frame(
         &mut self,
-        codec_ctx: *mut AVCodecContext,
         frame_size: i32,
         zero_pad: bool,
     ) -> Result<(), EncodeError> {
+        let codec_ctx = self
+            .codec_ctx
+            .as_mut()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
+            })?
+            .as_mut_ptr();
+
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
             return Err(EncodeError::Ffmpeg {
@@ -629,12 +634,21 @@ impl AudioEncoderInner {
         }
         // nb_samples stays as frame_size: the encoder always receives a full frame.
 
-        let send_result = avcodec::send_frame(codec_ctx, av_frame);
+        let send_result = self
+            .codec_ctx
+            .as_mut()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
+            })?
+            .send_frame(av_frame);
         av_frame_free(&raw mut av_frame);
 
         send_result.map_err(|e| EncodeError::Ffmpeg {
-            code: e,
-            message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+            code: e.code(),
+            message: format!(
+                "Failed to send audio frame: {}",
+                ff_sys::av_error_string(e.code())
+            ),
         })?;
 
         self.receive_packets()?;
@@ -649,9 +663,13 @@ impl AudioEncoderInner {
         src: &AudioFrame,
         dst: *mut AVFrame,
     ) -> Result<(), EncodeError> {
-        let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-            reason: "Audio codec not initialized".to_string(),
-        })?;
+        let codec_ctx = self
+            .codec_ctx
+            .as_ref()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
+            })?
+            .as_ptr();
 
         let target_sample_rate = (*codec_ctx).sample_rate;
         let target_format = (*codec_ctx).sample_fmt;
@@ -785,9 +803,11 @@ impl AudioEncoderInner {
 
     /// Receive encoded packets from the encoder.
     unsafe fn receive_packets(&mut self) -> Result<(), EncodeError> {
-        let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-            reason: "Audio codec not initialized".to_string(),
-        })?;
+        if self.codec_ctx.is_none() {
+            return Err(EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
+            });
+        }
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
@@ -798,21 +818,28 @@ impl AudioEncoderInner {
         }
 
         loop {
-            match avcodec::receive_packet(codec_ctx, packet) {
-                Ok(()) => {
+            let recv = self
+                .codec_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?
+                .receive_packet(packet);
+            match recv {
+                Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
                 }
-                Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                Ok(ff_sys::ReceiveOutcome::NeedInput | ff_sys::ReceiveOutcome::Drained) => {
                     // No more packets available
                     break;
                 }
                 Err(e) => {
                     av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Error receiving audio packet: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     });
                 }
@@ -847,17 +874,19 @@ impl AudioEncoderInner {
             // Flush any remaining samples from the AVAudioFifo (silence-padded to a
             // full frame so the encoder always receives its required frame_size).
             if !self.fifo.is_null() && swresample::audio_fifo::size(self.fifo) > 0 {
-                let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-                    reason: "Audio codec not initialized".to_string(),
-                })?;
-                self.drain_fifo_frame(codec_ctx, self.frame_size as i32, true)?;
+                self.drain_fifo_frame(self.frame_size as i32, true)?;
             }
 
             // Flush audio encoder
-            if let Some(codec_ctx) = self.codec_ctx {
+            if self.codec_ctx.is_some() {
                 // Send NULL frame to flush
-                avcodec::send_frame(codec_ctx, ptr::null())
-                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.codec_ctx
+                    .as_mut()
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Audio codec not initialized".to_string(),
+                    })?
+                    .send_frame(ptr::null())
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_packets()?;
             }
 
@@ -882,10 +911,8 @@ impl AudioEncoderInner {
             self.fifo = ptr::null_mut();
         }
 
-        // Free audio codec context
-        if let Some(mut ctx) = self.codec_ctx.take() {
-            avcodec::free_context(&raw mut ctx);
-        }
+        // Free audio codec context (owned CodecContext frees itself when dropped).
+        self.codec_ctx = None;
 
         // Free resampling context
         if let Some(mut ctx) = self.swr_ctx.take() {

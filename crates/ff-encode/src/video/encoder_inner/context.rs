@@ -19,7 +19,7 @@ use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
     AudioCodec, CString, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame,
-    av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref, avcodec, avformat_free_context,
+    av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref, avformat_free_context,
     avformat_new_stream, ptr, swresample, swscale,
 };
 
@@ -198,47 +198,42 @@ impl VideoEncoderInner {
         let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
         self.actual_video_codec.clone_from(&encoder_name);
 
-        let c_encoder_name =
-            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Invalid encoder name".to_string(),
-            })?;
-
-        let codec_ptr =
-            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+        let selected_codec =
+            ff_sys::Codec::find_encoder_by_name(&encoder_name).ok_or_else(|| {
                 EncodeError::NoSuitableEncoder {
                     codec: format!("{:?}", codec),
                     tried: vec![encoder_name.clone()],
                 }
             })?;
+        let codec_ptr = selected_codec.as_ptr();
 
         // Allocate codec context
-        let mut codec_ctx =
-            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+        let mut codec_ctx = ff_sys::CodecContext::new(Some(selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Configure codec context.
         // Use the encoder's own codec_id rather than codec_to_id(codec): when a
         // fallback encoder is selected (e.g. libvpx-vp9 instead of libx264 for
         // H.264), the codec_id must match the actual encoder, not the requested
         // codec family, otherwise avcodec_open2 rejects it with EINVAL.
-        (*codec_ctx).codec_id = (*codec_ptr).id;
-        (*codec_ctx).width = width as i32;
-        (*codec_ctx).height = height as i32;
-        (*codec_ctx).time_base.num = 1;
-        (*codec_ctx).time_base.den = (fps * 1000.0) as i32; // Use millisecond precision
-        (*codec_ctx).framerate.num = fps as i32;
-        (*codec_ctx).framerate.den = 1;
-        (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*codec_ctx.as_mut_ptr()).codec_id = (*codec_ptr).id;
+        (*codec_ctx.as_mut_ptr()).width = width as i32;
+        (*codec_ctx.as_mut_ptr()).height = height as i32;
+        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
+        (*codec_ctx.as_mut_ptr()).time_base.den = (fps * 1000.0) as i32; // Use millisecond precision
+        (*codec_ctx.as_mut_ptr()).framerate.num = fps as i32;
+        (*codec_ctx.as_mut_ptr()).framerate.den = 1;
+        (*codec_ctx.as_mut_ptr()).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
 
         // Set bitrate control mode
         match bitrate_mode {
             Some(BitrateMode::Cbr(bps)) => {
-                (*codec_ctx).bit_rate = *bps as i64;
+                (*codec_ctx.as_mut_ptr()).bit_rate = *bps as i64;
             }
             Some(BitrateMode::Vbr { target, max }) => {
-                (*codec_ctx).bit_rate = *target as i64;
-                (*codec_ctx).rc_max_rate = *max as i64;
-                (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
+                (*codec_ctx.as_mut_ptr()).bit_rate = *target as i64;
+                (*codec_ctx.as_mut_ptr()).rc_max_rate = *max as i64;
+                (*codec_ctx.as_mut_ptr()).rc_buffer_size = (*max * 2) as i32;
             }
             Some(BitrateMode::Crf(q)) => {
                 let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
@@ -247,7 +242,7 @@ impl VideoEncoderInner {
                 })?;
                 // SAFETY: priv_data, option name, and value are all valid pointers
                 let ret = ff_sys::av_opt_set(
-                    (*codec_ctx).priv_data,
+                    (*codec_ctx.as_mut_ptr()).priv_data,
                     b"crf\0".as_ptr() as *const i8,
                     crf_str.as_ptr(),
                     0,
@@ -257,12 +252,12 @@ impl VideoEncoderInner {
                         "crf option not supported by encoder, falling back to default bitrate \
                          encoder={encoder_name} crf={q}"
                     );
-                    (*codec_ctx).bit_rate = 2_000_000;
+                    (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
                 }
             }
             None => {
                 // Default 2 Mbps
-                (*codec_ctx).bit_rate = 2_000_000;
+                (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
             }
         }
 
@@ -274,7 +269,7 @@ impl VideoEncoderInner {
             })?;
             // SAFETY: priv_data, option name, and value are all valid pointers
             let ret = ff_sys::av_opt_set(
-                (*codec_ctx).priv_data,
+                (*codec_ctx.as_mut_ptr()).priv_data,
                 b"preset\0".as_ptr() as *const i8,
                 preset_cstr.as_ptr(),
                 0,
@@ -292,47 +287,49 @@ impl VideoEncoderInner {
             // SAFETY: codec_ctx is valid and allocated; priv_data is set by
             // avcodec_alloc_context3. Options are applied before avcodec_open2
             // so they take effect during codec initialisation.
-            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
+            Self::apply_codec_options(codec_ctx.as_mut_ptr(), opts, &encoder_name);
         }
 
         // Apply explicit pixel format override (takes priority over codec-option auto-select).
         if let Some(fmt) = pixel_format {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+            (*codec_ctx.as_mut_ptr()).pix_fmt = pixel_format_to_av(*fmt);
         }
 
         // Apply HDR10 color context: BT.2020 primaries, PQ transfer, BT.2020 NCL colorspace.
         if self.hdr10_metadata.is_some() {
             // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
-            (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
-            (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
-            (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
+            (*codec_ctx.as_mut_ptr()).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
+            (*codec_ctx.as_mut_ptr()).color_trc =
+                ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
+            (*codec_ctx.as_mut_ptr()).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
         }
 
         // Apply explicit color overrides (take priority over HDR10 automatic defaults).
         if let Some(cs) = color_space {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).colorspace = color_space_to_av(cs);
+            (*codec_ctx.as_mut_ptr()).colorspace = color_space_to_av(cs);
         }
         if let Some(trc) = color_transfer {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).color_trc = color_transfer_to_av(trc);
+            (*codec_ctx.as_mut_ptr()).color_trc = color_transfer_to_av(trc);
         }
         if let Some(cp) = color_primaries {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx).color_primaries = color_primaries_to_av(cp);
+            (*codec_ctx.as_mut_ptr()).color_primaries = color_primaries_to_av(cp);
         }
 
         // For two-pass, set the pass-1 flag before opening the codec.
         if two_pass {
             // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
-            (*codec_ctx).flags |= AV_CODEC_FLAG_PASS1;
+            (*codec_ctx.as_mut_ptr()).flags |= AV_CODEC_FLAG_PASS1;
         }
 
         // Open codec
-        avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
-            .map_err(EncodeError::from_ffmpeg_error)?;
-        let actual_pix_fmt = from_av_pixel_format((*codec_ctx).pix_fmt);
+        codec_ctx
+            .open(selected_codec, ptr::null_mut())
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
+        let actual_pix_fmt = from_av_pixel_format((*codec_ctx.as_mut_ptr()).pix_fmt);
         log::info!(
             "codec opened codec={encoder_name} width={width} height={height} fps={fps} \
              pix_fmt={actual_pix_fmt}"
@@ -341,22 +338,22 @@ impl VideoEncoderInner {
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&raw mut codec_ctx);
+            // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
             });
         }
 
-        (*stream).time_base = (*codec_ctx).time_base;
+        (*stream).time_base = (*codec_ctx.as_mut_ptr()).time_base;
 
         // Copy codec parameters to stream
         if !(*stream).codecpar.is_null() {
-            (*(*stream).codecpar).codec_id = (*codec_ctx).codec_id;
+            (*(*stream).codecpar).codec_id = (*codec_ctx.as_mut_ptr()).codec_id;
             (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-            (*(*stream).codecpar).width = (*codec_ctx).width;
-            (*(*stream).codecpar).height = (*codec_ctx).height;
-            (*(*stream).codecpar).format = (*codec_ctx).pix_fmt;
+            (*(*stream).codecpar).width = (*codec_ctx.as_mut_ptr()).width;
+            (*(*stream).codecpar).height = (*codec_ctx.as_mut_ptr()).height;
+            (*(*stream).codecpar).format = (*codec_ctx.as_mut_ptr()).pix_fmt;
         }
 
         self.video_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
@@ -387,30 +384,28 @@ impl VideoEncoderInner {
         let encoder_name = self.select_audio_encoder(codec)?;
         self.actual_audio_codec.clone_from(&encoder_name);
 
-        let c_encoder_name =
-            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Invalid encoder name".to_string(),
-            })?;
-
-        let codec_ptr =
-            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+        let selected_codec =
+            ff_sys::Codec::find_encoder_by_name(&encoder_name).ok_or_else(|| {
                 EncodeError::NoSuitableEncoder {
                     codec: format!("{:?}", codec),
                     tried: vec![encoder_name.clone()],
                 }
             })?;
+        let codec_ptr = selected_codec.as_ptr();
 
         // Allocate codec context
-        let mut codec_ctx =
-            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+        let mut codec_ctx = ff_sys::CodecContext::new(Some(selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Configure codec context
-        (*codec_ctx).codec_id = audio_codec_to_id(codec);
-        (*codec_ctx).sample_rate = sample_rate as i32;
+        (*codec_ctx.as_mut_ptr()).codec_id = audio_codec_to_id(codec);
+        (*codec_ctx.as_mut_ptr()).sample_rate = sample_rate as i32;
 
         // Set channel layout using FFmpeg 7.x API
-        swresample::channel_layout::set_default(&raw mut (*codec_ctx).ch_layout, channels as i32);
+        swresample::channel_layout::set_default(
+            &raw mut (*codec_ctx.as_mut_ptr()).ch_layout,
+            channels as i32,
+        );
 
         // Use the first sample format the codec actually declares; fall back to
         // FLTP only when the codec exposes no preference.  FLTP is NOT valid for
@@ -423,14 +418,14 @@ impl VideoEncoderInner {
                 ff_sys::swresample::sample_format::FLTP
             }
         };
-        (*codec_ctx).sample_fmt = target_fmt;
+        (*codec_ctx.as_mut_ptr()).sample_fmt = target_fmt;
 
         // Set bitrate
         if let Some(br) = bitrate {
-            (*codec_ctx).bit_rate = br as i64;
+            (*codec_ctx.as_mut_ptr()).bit_rate = br as i64;
         } else {
             // Default bitrate based on codec
-            (*codec_ctx).bit_rate = match codec {
+            (*codec_ctx.as_mut_ptr()).bit_rate = match codec {
                 AudioCodec::Aac => 192_000,
                 AudioCodec::Opus => 128_000,
                 AudioCodec::Mp3 => 192_000,
@@ -448,24 +443,25 @@ impl VideoEncoderInner {
         }
 
         // Set time base
-        (*codec_ctx).time_base.num = 1;
-        (*codec_ctx).time_base.den = sample_rate as i32;
+        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
+        (*codec_ctx.as_mut_ptr()).time_base.den = sample_rate as i32;
 
         // Open codec
-        avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
-            .map_err(EncodeError::from_ffmpeg_error)?;
+        codec_ctx
+            .open(selected_codec, ptr::null_mut())
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
-            avcodec::free_context(&raw mut codec_ctx);
+            // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "Cannot create stream".to_string(),
             });
         }
 
-        (*stream).time_base = (*codec_ctx).time_base;
+        (*stream).time_base = (*codec_ctx.as_mut_ptr()).time_base;
 
         // Copy all codec parameters to the stream — including extradata (e.g. AAC
         // AudioSpecificConfig) that is only available after avcodec_open2.
@@ -474,20 +470,25 @@ impl VideoEncoderInner {
         // propagated correctly so container muxers and hardware decoders can
         // identify and decode the stream.
         if !(*stream).codecpar.is_null() {
-            avcodec::parameters_from_context((*stream).codecpar, codec_ctx)
-                .map_err(EncodeError::from_ffmpeg_error)?;
+            codec_ctx
+                .parameters_from_context((*stream).codecpar)
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         }
+
+        // Read the FIFO parameters before moving the owned context into `self`.
+        let frame_size = (*codec_ctx.as_mut_ptr()).frame_size;
+        let fifo_sample_fmt = (*codec_ctx.as_mut_ptr()).sample_fmt;
+        let fifo_nb_channels = (*codec_ctx.as_mut_ptr()).ch_layout.nb_channels;
 
         self.audio_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
         self.audio_codec_ctx = Some(codec_ctx);
 
         // Allocate sample FIFO for codecs that require a fixed frame_size (AAC, FLAC, ALAC …).
         // Leave audio_fifo as None for variable-frame-size codecs (frame_size == 0).
-        let frame_size = (*codec_ctx).frame_size;
         if frame_size > 0 {
             let fifo = ff_sys::swresample::audio_fifo::alloc(
-                (*codec_ctx).sample_fmt,
-                (*codec_ctx).ch_layout.nb_channels,
+                fifo_sample_fmt,
+                fifo_nb_channels,
                 frame_size * 2,
             )
             .map_err(EncodeError::from_ffmpeg_error)?;
@@ -517,14 +518,8 @@ impl VideoEncoderInner {
 
         // Try each candidate
         for &name in &candidates {
-            unsafe {
-                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Invalid encoder name".to_string(),
-                })?;
-                if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
-                    return Ok(name.to_string());
-                }
+            if ff_sys::Codec::find_encoder_by_name(name).is_some() {
+                return Ok(name.to_string());
             }
         }
 
@@ -826,23 +821,20 @@ impl VideoEncoderInner {
     pub(super) unsafe fn cleanup(&mut self) {
         // Free video codec context.
         // For two-pass encoding, stats_in points into self.stats_in_cstr (Rust-owned).
-        // Null it out BEFORE avcodec_free_context so FFmpeg does not call av_free on it.
+        // Null it out BEFORE the owned context is dropped (its Drop frees the codec
+        // context) so FFmpeg does not call av_free on the Rust-owned pointer.
         if let Some(mut ctx) = self.video_codec_ctx.take() {
-            (*ctx).stats_in = ptr::null_mut();
-            avcodec::free_context(&raw mut ctx);
+            (*ctx.as_mut_ptr()).stats_in = ptr::null_mut();
+            // `ctx` drops here, freeing the codec context.
         }
         // Drop the owned CString now that the codec context no longer references it.
         self.stats_in_cstr = None;
 
-        // Free pass-1 codec context (only set in two-pass mode).
-        if let Some(mut ctx) = self.pass1_codec_ctx.take() {
-            avcodec::free_context(&raw mut ctx);
-        }
+        // Free pass-1 codec context (only set in two-pass mode); drops on assignment.
+        self.pass1_codec_ctx = None;
 
-        // Free audio codec context
-        if let Some(mut ctx) = self.audio_codec_ctx.take() {
-            avcodec::free_context(&raw mut ctx);
-        }
+        // Free audio codec context; drops on assignment.
+        self.audio_codec_ctx = None;
 
         // Free scaling context
         if let Some(ctx) = self.sws_ctx.take() {
