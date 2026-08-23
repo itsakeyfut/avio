@@ -25,8 +25,8 @@ use std::ptr;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, PooledBuffer, VideoFrame};
 use ff_sys::{
-    AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame,
-    InputFormatContext, Packet,
+    AVCodecID, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext,
+    Packet,
 };
 
 use crate::error::DecodeError;
@@ -83,9 +83,8 @@ impl ImageDecoderInner {
         })?;
 
         // 3. Find the video stream.
-        // SAFETY: format_ctx is valid.
-        let (stream_index, codec_id) = unsafe { Self::find_video_stream(ctx.as_mut_ptr()) }
-            .ok_or_else(|| DecodeError::NoVideoStream {
+        let (stream_index, codec_id) =
+            Self::find_video_stream(&ctx).ok_or_else(|| DecodeError::NoVideoStream {
                 path: path.to_path_buf(),
             })?;
 
@@ -116,34 +115,32 @@ impl ImageDecoderInner {
             })?;
 
         // 6. avcodec_parameters_to_context
-        // SAFETY: All pointers are valid; stream_index was validated above.
-        unsafe {
-            let stream = (*ctx.as_ptr()).streams.add(stream_index);
-            let codecpar = (*(*stream)).codecpar;
-            codec_ctx
-                .parameters_to_context(codecpar)
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to copy codec parameters: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                })?;
-        }
+        let codecpar = ctx
+            .stream(stream_index)
+            .ok_or_else(|| DecodeError::NoVideoStream {
+                path: path.to_path_buf(),
+            })?
+            .codecpar();
+        codec_ctx
+            .apply_parameters(&codecpar)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to copy codec parameters: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // 7. avcodec_open2
-        // SAFETY: codec is valid; no hardware acceleration for images; codec_ctx is owned.
-        unsafe {
-            codec_ctx
-                .open(codec, ptr::null_mut())
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to open codec: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                })?;
-        }
+        codec_ctx
+            .open_codec(codec)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to open codec: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // Allocate packet and frame (owned; free on drop, including on an early
         // return from a later `?` — the packet frees itself if the frame alloc fails).
@@ -172,12 +169,18 @@ impl ImageDecoderInner {
     }
 
     /// Returns the image width in pixels.
+    ///
+    /// Reads `AVCodecContext::width` via the raw pointer: there is no safe
+    /// codec-context dimension accessor yet (retained for the ff-sys RAII follow-up).
     pub(crate) fn width(&self) -> u32 {
         // SAFETY: codec_ctx is valid for the lifetime of `self`.
         unsafe { (*self.codec_ctx.as_ptr()).width as u32 }
     }
 
     /// Returns the image height in pixels.
+    ///
+    /// Reads `AVCodecContext::height` via the raw pointer: there is no safe
+    /// codec-context dimension accessor yet (retained for the ff-sys RAII follow-up).
     pub(crate) fn height(&self) -> u32 {
         // SAFETY: codec_ctx is valid for the lifetime of `self`.
         unsafe { (*self.codec_ctx.as_ptr()).height as u32 }
@@ -249,25 +252,16 @@ impl ImageDecoderInner {
 
         // 4. Convert to VideoFrame.
         // SAFETY: frame is valid and contains decoded image data.
-        let video_frame = unsafe { self.av_frame_to_video_frame(self.frame.as_ptr())? };
+        let video_frame = unsafe { self.av_frame_to_video_frame(&self.frame)? };
         Ok(video_frame)
     }
 
     /// Finds the first video stream in the format context.
-    ///
-    /// # Safety
-    ///
-    /// `format_ctx` must be a valid, fully initialized `AVFormatContext`.
-    unsafe fn find_video_stream(format_ctx: *mut AVFormatContext) -> Option<(usize, AVCodecID)> {
-        // SAFETY: Caller ensures format_ctx is valid.
-        unsafe {
-            let nb_streams = (*format_ctx).nb_streams as usize;
-            for i in 0..nb_streams {
-                let stream = (*format_ctx).streams.add(i);
-                let codecpar = (*(*stream)).codecpar;
-                if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                    return Some((i, (*codecpar).codec_id));
-                }
+    fn find_video_stream(format_ctx: &InputFormatContext) -> Option<(usize, AVCodecID)> {
+        for stream in format_ctx.streams() {
+            let codecpar = stream.codecpar();
+            if codecpar.codec_type() == AVMediaType_AVMEDIA_TYPE_VIDEO {
+                return Some((stream.index() as usize, codecpar.codec_id()));
             }
         }
         None
@@ -310,44 +304,48 @@ impl ImageDecoderInner {
         }
     }
 
-    /// Converts a decoded `AVFrame` to a [`VideoFrame`].
+    /// Converts a decoded owned [`Frame`] to a [`VideoFrame`].
+    ///
+    /// Scalar fields are read through accessors; only the plane data copy in
+    /// [`extract_planes_and_strides`](Self::extract_planes_and_strides) touches the
+    /// raw `AVFrame` pointer (no safe plane accessor by design).
     ///
     /// # Safety
     ///
-    /// `frame` must be a valid, fully decoded `AVFrame` owned by `self`.
-    unsafe fn av_frame_to_video_frame(
-        &self,
-        frame: *const AVFrame,
-    ) -> Result<VideoFrame, DecodeError> {
-        // SAFETY: Caller ensures frame is valid.
-        unsafe {
-            let width = (*frame).width as u32;
-            let height = (*frame).height as u32;
-            let format = Self::convert_pixel_format((*frame).format);
+    /// `frame` must hold a fully decoded image whose pixel format the copy expects.
+    unsafe fn av_frame_to_video_frame(&self, frame: &Frame) -> Result<VideoFrame, DecodeError> {
+        let width = frame.width() as u32;
+        let height = frame.height() as u32;
+        let format = Self::convert_pixel_format(frame.format());
 
-            // Extract timestamp (images often have no meaningful PTS).
-            let pts = (*frame).pts;
-            let timestamp = if pts == ff_sys::AV_NOPTS_VALUE {
-                Timestamp::default()
-            } else {
-                let stream = (*self.format_ctx.as_ptr()).streams.add(self.stream_index);
-                let time_base = (*(*stream)).time_base;
-                Timestamp::new(
-                    pts as i64,
-                    Rational::new(time_base.num as i32, time_base.den as i32),
-                )
-            };
-
-            let (planes, strides) = Self::extract_planes_and_strides(frame, width, height, format)?;
-
-            // Images are always key frames.
-            VideoFrame::new(planes, strides, width, height, format, timestamp, true).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: 0,
-                    message: format!("Failed to create VideoFrame: {e}"),
+        // Extract timestamp (images often have no meaningful PTS).
+        let pts = frame.pts();
+        let timestamp = if pts == ff_sys::AV_NOPTS_VALUE {
+            Timestamp::default()
+        } else {
+            match self.format_ctx.stream(self.stream_index) {
+                Some(stream) => {
+                    let time_base = stream.time_base();
+                    Timestamp::new(
+                        pts,
+                        Rational::new(time_base.num as i32, time_base.den as i32),
+                    )
                 }
-            })
-        }
+                None => Timestamp::default(),
+            }
+        };
+
+        // SAFETY: `format` is derived from `frame.format()`, so it matches the frame.
+        let (planes, strides) =
+            unsafe { Self::extract_planes_and_strides(frame.as_ptr(), width, height, format)? };
+
+        // Images are always key frames.
+        VideoFrame::new(planes, strides, width, height, format, timestamp, true).map_err(|e| {
+            DecodeError::Ffmpeg {
+                code: 0,
+                message: format!("Failed to create VideoFrame: {e}"),
+            }
+        })
     }
 
     /// Extracts pixel data from an `AVFrame` into [`PooledBuffer`] planes.

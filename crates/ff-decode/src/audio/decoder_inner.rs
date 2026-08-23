@@ -24,7 +24,6 @@
 
 use std::ffi::CStr;
 use std::path::Path;
-use std::ptr;
 use std::time::Duration;
 
 use ff_format::channel::ChannelLayout;
@@ -147,17 +146,11 @@ impl AudioDecoderInner {
         })?;
 
         // Detect live/streaming source via the AVFMT_TS_DISCONT flag on AVInputFormat.
-        // SAFETY: format_ctx is valid and non-null; iformat is set by avformat_open_input
-        //         and is non-null for all successfully opened formats.
-        let is_live = unsafe {
-            let iformat = (*ctx.as_ptr()).iformat;
-            !iformat.is_null() && ((*iformat).flags & ff_sys::AVFMT_TS_DISCONT) != 0
-        };
+        let is_live = (ctx.iformat_flags() & ff_sys::AVFMT_TS_DISCONT) != 0;
 
         // Find the audio stream
-        // SAFETY: format_ctx is valid
-        let (stream_index, codec_id) = unsafe { Self::find_audio_stream(ctx.as_mut_ptr()) }
-            .ok_or_else(|| DecodeError::NoAudioStream {
+        let (stream_index, codec_id) =
+            Self::find_audio_stream(&ctx).ok_or_else(|| DecodeError::NoAudioStream {
                 path: path.to_path_buf(),
             })?;
 
@@ -180,36 +173,37 @@ impl AudioDecoderInner {
             })?;
 
         // Copy codec parameters from stream to context
-        // SAFETY: format_ctx is valid, stream_index is valid; codec_ctx is owned
-        unsafe {
-            let stream = (*ctx.as_ptr()).streams.add(stream_index as usize);
-            let codecpar = (*(*stream)).codecpar;
-            codec_ctx
-                .parameters_to_context(codecpar)
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to copy codec parameters: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                })?;
-        }
+        let codecpar = ctx
+            .stream(stream_index)
+            .ok_or_else(|| DecodeError::NoAudioStream {
+                path: path.to_path_buf(),
+            })?
+            .codecpar();
+        codec_ctx
+            .apply_parameters(&codecpar)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to copy codec parameters: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         // Open the codec
-        // SAFETY: codec is valid; codec_ctx is owned
-        unsafe {
-            codec_ctx
-                .open(codec, ptr::null_mut())
-                .map_err(|e| DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to open codec: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                })?;
-        }
+        codec_ctx
+            .open_codec(codec)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to open codec: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
-        // Extract stream information
+        // Extract stream information. `extract_stream_info` / `extract_container_info`
+        // still read fields with no safe accessor yet (codec-context sample_fmt,
+        // container bit_rate / iformat name), so they keep the raw pointer path;
+        // safe-ifying them is left to the ff-sys RAII follow-up.
         // SAFETY: All pointers are valid
         let stream_info = unsafe {
             Self::extract_stream_info(
@@ -267,29 +261,15 @@ impl AudioDecoderInner {
 
     /// Finds the first audio stream in the format context.
     ///
-    /// # Returns
-    ///
     /// Returns `Some((index, codec_id))` if an audio stream is found, `None` otherwise.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `format_ctx` is valid and initialized.
-    unsafe fn find_audio_stream(format_ctx: *mut AVFormatContext) -> Option<(usize, AVCodecID)> {
-        // SAFETY: Caller ensures format_ctx is valid
-        unsafe {
-            let nb_streams = (*format_ctx).nb_streams as usize;
-
-            for i in 0..nb_streams {
-                let stream = (*format_ctx).streams.add(i);
-                let codecpar = (*(*stream)).codecpar;
-
-                if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
-                    return Some((i, (*codecpar).codec_id));
-                }
+    fn find_audio_stream(format_ctx: &InputFormatContext) -> Option<(usize, AVCodecID)> {
+        for stream in format_ctx.streams() {
+            let codecpar = stream.codecpar();
+            if codecpar.codec_type() == AVMediaType_AVMEDIA_TYPE_AUDIO {
+                return Some((stream.index() as usize, codecpar.codec_id()));
             }
-
-            None
         }
+        None
     }
 
     /// Returns the human-readable codec name for a given `AVCodecID`.
@@ -489,10 +469,12 @@ impl AudioDecoderInner {
                     }
                 })? {
                     ff_sys::ReceiveOutcome::Frame => {
-                        // Successfully received a frame
+                        // Successfully received a frame.
+                        // SAFETY (within the enclosing unsafe block): `stream_index`
+                        // is valid for this decoder's context.
                         let audio_frame = resample_inner::convert_frame_to_audio_frame(
-                            self.frame.as_mut_ptr(),
-                            self.format_ctx.as_mut_ptr(),
+                            &self.frame,
+                            &self.format_ctx,
                             self.stream_index,
                             self.output_format,
                             self.output_sample_rate,
@@ -502,12 +484,11 @@ impl AudioDecoderInner {
                         )?;
 
                         // Update position based on frame timestamp
-                        let pts = (*self.frame.as_ptr()).pts;
-                        if pts != ff_sys::AV_NOPTS_VALUE {
-                            let stream = (*self.format_ctx.as_ptr())
-                                .streams
-                                .add(self.stream_index as usize);
-                            let time_base = (*(*stream)).time_base;
+                        let pts = self.frame.pts();
+                        if pts != ff_sys::AV_NOPTS_VALUE
+                            && let Some(stream) = self.format_ctx.stream(self.stream_index as usize)
+                        {
+                            let time_base = stream.time_base();
                             let timestamp_secs =
                                 pts as f64 * time_base.num as f64 / time_base.den as f64;
                             self.position = Duration::from_secs_f64(timestamp_secs);
@@ -547,7 +528,7 @@ impl AudioDecoderInner {
                         }
 
                         // Check if this packet belongs to the audio stream
-                        if (*self.packet.as_ptr()).stream_index == self.stream_index {
+                        if self.packet.stream_index() == self.stream_index {
                             // Send the packet to the decoder
                             let send_result = self.codec_ctx.send_packet(&self.packet);
                             self.packet.unref();
@@ -598,13 +579,12 @@ impl AudioDecoderInner {
 
     /// Converts a `Duration` to a presentation timestamp (PTS) in stream time_base units.
     fn duration_to_pts(&self, duration: Duration) -> i64 {
-        // SAFETY: format_ctx and stream_index are valid (owned by AudioDecoderInner)
-        let time_base = unsafe {
-            let stream = (*self.format_ctx.as_ptr())
-                .streams
-                .add(self.stream_index as usize);
-            (*(*stream)).time_base
-        };
+        // The stream index is valid for this decoder's context; fall back to a
+        // 1/1 time base if it is somehow absent (unreachable in practice).
+        let time_base = self
+            .format_ctx
+            .stream(self.stream_index as usize)
+            .map_or(ff_sys::AVRational { num: 1, den: 1 }, |s| s.time_base());
 
         // Convert: duration (seconds) * (time_base.den / time_base.num) = PTS
         let time_base_f64 = time_base.den as f64 / time_base.num as f64;
@@ -759,8 +739,7 @@ impl AudioDecoderInner {
             })?;
 
         // Re-find the audio stream (index may differ in theory after reconnect).
-        // SAFETY: self.format_ctx is valid.
-        let (stream_index, _) = unsafe { Self::find_audio_stream(self.format_ctx.as_mut_ptr()) }
+        let (stream_index, _) = Self::find_audio_stream(&self.format_ctx)
             .ok_or_else(|| DecodeError::NoAudioStream { path: url.into() })?;
         self.stream_index = stream_index as i32;
 

@@ -169,8 +169,7 @@ impl VideoDecoderInner {
     ///
     /// Caller must ensure `self.frame` contains a valid decoded frame.
     pub(super) unsafe fn transfer_hardware_frame_if_needed(&mut self) -> Result<(), DecodeError> {
-        // SAFETY: self.frame is valid and owned by this instance
-        let frame_format = unsafe { (*self.frame.as_ptr()).format };
+        let frame_format = self.frame.format();
 
         if !Self::is_hardware_format(frame_format) {
             // Not a hardware frame, no transfer needed
@@ -186,8 +185,10 @@ impl VideoDecoderInner {
             ),
         })?;
 
-        // Transfer data from hardware frame to software frame
-        // SAFETY: self.frame and sw_frame are valid
+        // Transfer data from the hardware frame to the software frame. This FFI
+        // call takes raw `AVFrame` pointers; a safe hw-frame-transfer wrapper is
+        // retained for the ff-sys RAII follow-up (the hw-accel API surface).
+        // SAFETY: self.frame and sw_frame are valid owned frames.
         let ret = unsafe {
             ff_sys::av_hwframe_transfer_data(
                 sw_frame.as_mut_ptr(),
@@ -208,13 +209,10 @@ impl VideoDecoderInner {
         }
 
         // Copy metadata (pts, duration, etc.) from hardware frame to software frame
-        // SAFETY: Both frames are valid
-        unsafe {
-            (*sw_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
-            (*sw_frame.as_mut_ptr()).pkt_dts = (*self.frame.as_ptr()).pkt_dts;
-            (*sw_frame.as_mut_ptr()).duration = (*self.frame.as_ptr()).duration;
-            (*sw_frame.as_mut_ptr()).time_base = (*self.frame.as_ptr()).time_base;
-        }
+        sw_frame.set_pts(self.frame.pts());
+        sw_frame.set_pkt_dts(self.frame.pkt_dts());
+        sw_frame.set_duration(self.frame.duration());
+        sw_frame.set_time_base(self.frame.time_base());
 
         // Replace self.frame with the software frame. `move_ref` transfers
         // sw_frame's buffers into self.frame, leaving sw_frame blank (freed on

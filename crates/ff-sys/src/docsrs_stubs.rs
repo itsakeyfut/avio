@@ -111,6 +111,7 @@ pub struct AVCodecParameters {
 }
 
 pub struct AVStream {
+    pub index: c_int,
     pub codecpar: *mut AVCodecParameters,
     pub nb_frames: i64,
     pub duration: i64,
@@ -1151,6 +1152,23 @@ impl CodecContext {
         self._ptr.as_ptr()
     }
 
+    pub fn set_thread_count(&mut self, _thread_count: c_int) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn apply_parameters(
+        &mut self,
+        _params: &CodecParameters<'_>,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open_codec(&mut self, _codec: Codec) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
     /// # Safety
     /// Stub; never executed on docs.rs.
     pub unsafe fn parameters_to_context(
@@ -1270,6 +1288,30 @@ impl InputFormatContext {
         self._ptr.as_ptr()
     }
 
+    #[must_use]
+    pub fn nb_streams(&self) -> u32 {
+        0
+    }
+
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn iformat_flags(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn stream(&self, _index: usize) -> Option<StreamRef<'_>> {
+        None
+    }
+
+    pub fn streams(&self) -> impl Iterator<Item = StreamRef<'_>> + '_ {
+        std::iter::empty()
+    }
+
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn find_stream_info(&mut self) -> Result<(), crate::AvError> {
@@ -1314,6 +1356,55 @@ impl Drop for InputFormatContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for InputFormatContext {}
 
+// ── Borrowed stream / params stubs (mirror crate::format_context) ─────────────
+
+#[derive(Clone, Copy, Debug)]
+pub struct StreamRef<'a> {
+    _ptr: std::ptr::NonNull<AVStream>,
+    _marker: std::marker::PhantomData<&'a InputFormatContext>,
+}
+
+impl<'a> StreamRef<'a> {
+    #[must_use]
+    pub fn index(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
+    pub fn codecpar(&self) -> CodecParameters<'a> {
+        // SAFETY: stub; never executed on docs.rs.
+        unsafe {
+            CodecParameters {
+                _ptr: std::ptr::NonNull::new_unchecked(ptr::null_mut()),
+                _marker: std::marker::PhantomData,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CodecParameters<'a> {
+    _ptr: std::ptr::NonNull<AVCodecParameters>,
+    _marker: std::marker::PhantomData<&'a InputFormatContext>,
+}
+
+impl CodecParameters<'_> {
+    #[must_use]
+    pub fn codec_type(&self) -> AVMediaType {
+        0
+    }
+
+    #[must_use]
+    pub fn codec_id(&self) -> AVCodecID {
+        0
+    }
+}
+
 // ── Owned Frame / Packet / Codec stubs (mirror crate::{frame,packet,codec}) ───
 // Under DOCS_RS the real modules are cfg'd out; these shape-compatible stubs keep
 // `ff_sys::{Frame, Packet, Codec}` available for docs.rs.
@@ -1338,6 +1429,54 @@ impl Frame {
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut AVFrame {
         self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn width(&self) -> c_int {
+        0
+    }
+    pub fn set_width(&mut self, _width: c_int) {}
+    #[must_use]
+    pub fn height(&self) -> c_int {
+        0
+    }
+    pub fn set_height(&mut self, _height: c_int) {}
+    #[must_use]
+    pub fn format(&self) -> c_int {
+        0
+    }
+    pub fn set_format(&mut self, _format: c_int) {}
+    #[must_use]
+    pub fn pts(&self) -> i64 {
+        0
+    }
+    pub fn set_pts(&mut self, _pts: i64) {}
+    #[must_use]
+    pub fn pkt_dts(&self) -> i64 {
+        0
+    }
+    pub fn set_pkt_dts(&mut self, _pkt_dts: i64) {}
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        0
+    }
+    pub fn set_duration(&mut self, _duration: i64) {}
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+    pub fn set_time_base(&mut self, _time_base: AVRational) {}
+    #[must_use]
+    pub fn nb_samples(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn sample_rate(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn channels(&self) -> c_int {
+        0
     }
 
     pub fn unref(&mut self) {}
@@ -1384,6 +1523,16 @@ impl Packet {
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
         self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn stream_index(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn pts(&self) -> i64 {
+        0
     }
 
     pub fn unref(&mut self) {}
@@ -1453,14 +1602,30 @@ impl ScaleContext {
         Err(crate::AvError::new(-1))
     }
 
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const SwsContext {
-        self._ptr.as_ptr()
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn scale_frames(
+        &mut self,
+        _src: &Frame,
+        _dst: &mut Frame,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
     }
 
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut SwsContext {
-        self._ptr.as_ptr()
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn scale_planes(
+        &mut self,
+        _src: &[&[u8]],
+        _src_strides: &[c_int],
+        _src_h: c_int,
+        _dst: &mut Frame,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
     }
 
     /// # Errors
@@ -1512,14 +1677,17 @@ impl ResampleContext {
         Err(crate::AvError::new(-1))
     }
 
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const SwrContext {
-        self._ptr.as_ptr()
-    }
-
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut SwrContext {
-        self._ptr.as_ptr()
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn convert_into_planes(
+        &mut self,
+        _dst: &mut [&mut [u8]],
+        _dst_count: c_int,
+        _src: &Frame,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
     }
 
     /// # Errors

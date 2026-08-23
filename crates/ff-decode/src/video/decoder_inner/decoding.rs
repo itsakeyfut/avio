@@ -1,5 +1,5 @@
 use super::{
-    AVFrame, Arc, DecodeError, Duration, OutputScale, PixelFormat, PooledBuffer, Rational,
+    AVFrame, Arc, DecodeError, Duration, Frame, OutputScale, PixelFormat, PooledBuffer, Rational,
     Timestamp, VideoDecoderInner, VideoFrame,
 };
 use crate::shared::plane_inner::plane_row_ptr;
@@ -50,9 +50,8 @@ impl VideoDecoderInner {
                         // Check if this is a hardware frame and transfer to CPU memory if needed
                         self.transfer_hardware_frame_if_needed()?;
 
-                        // SAFETY: self.frame is valid and non-null after receive_frame succeeded.
-                        let w = (*self.frame.as_ptr()).width as u32;
-                        let h = (*self.frame.as_ptr()).height as u32;
+                        let w = self.frame.width() as u32;
+                        let h = self.frame.height() as u32;
                         if w > 32_768 || h > 32_768 {
                             log::warn!(
                                 "frame rejected reason=unsupported_resolution width={w} height={h}"
@@ -66,12 +65,11 @@ impl VideoDecoderInner {
                         let video_frame = self.convert_frame_to_video_frame()?;
 
                         // Update position based on frame timestamp
-                        let pts = (*self.frame.as_ptr()).pts;
-                        if pts != ff_sys::AV_NOPTS_VALUE {
-                            let stream = (*self.format_ctx.as_ptr())
-                                .streams
-                                .add(self.stream_index as usize);
-                            let time_base = (*(*stream)).time_base;
+                        let pts = self.frame.pts();
+                        if pts != ff_sys::AV_NOPTS_VALUE
+                            && let Some(stream) = self.format_ctx.stream(self.stream_index as usize)
+                        {
+                            let time_base = stream.time_base();
                             let timestamp_secs =
                                 pts as f64 * time_base.num as f64 / time_base.den as f64;
                             self.position = Duration::from_secs_f64(timestamp_secs);
@@ -111,11 +109,10 @@ impl VideoDecoderInner {
                         }
 
                         // Check if this packet belongs to the video stream
-                        if (*self.packet.as_ptr()).stream_index == self.stream_index {
+                        if self.packet.stream_index() == self.stream_index {
                             // Send the packet to the decoder
                             let send_result = self.codec_ctx.send_packet(&self.packet);
-                            // SAFETY: self.packet is valid and non-null; pts is a plain i64 field.
-                            let pkt_pts = (*self.packet.as_ptr()).pts;
+                            let pkt_pts = self.packet.pts();
                             self.packet.unref();
 
                             if let Err(se) = send_result {
@@ -157,34 +154,35 @@ impl VideoDecoderInner {
         }
     }
 
-    /// Converts an AVFrame to a VideoFrame, applying pixel format conversion if needed.
+    /// Converts the decoder's current frame to a VideoFrame, applying pixel format
+    /// conversion if needed.
     unsafe fn convert_frame_to_video_frame(&mut self) -> Result<VideoFrame, DecodeError> {
-        // SAFETY: Caller ensures self.frame is valid
+        let src_width = self.frame.width() as u32;
+        let src_height = self.frame.height() as u32;
+        let src_format = self.frame.format();
+
+        // Determine output format
+        let dst_format = if let Some(fmt) = self.output_format {
+            Self::pixel_format_to_av(fmt)
+        } else {
+            src_format
+        };
+
+        // Determine output dimensions
+        let (dst_width, dst_height) = self.resolve_output_dims(src_width, src_height);
+
+        // Check if conversion or scaling is needed
+        let needs_conversion =
+            src_format != dst_format || dst_width != src_width || dst_height != src_height;
+
+        // SAFETY: `self.frame` holds a valid decoded frame in `src_format`.
         unsafe {
-            let src_width = (*self.frame.as_ptr()).width as u32;
-            let src_height = (*self.frame.as_ptr()).height as u32;
-            let src_format = (*self.frame.as_ptr()).format;
-
-            // Determine output format
-            let dst_format = if let Some(fmt) = self.output_format {
-                Self::pixel_format_to_av(fmt)
-            } else {
-                src_format
-            };
-
-            // Determine output dimensions
-            let (dst_width, dst_height) = self.resolve_output_dims(src_width, src_height);
-
-            // Check if conversion or scaling is needed
-            let needs_conversion =
-                src_format != dst_format || dst_width != src_width || dst_height != src_height;
-
             if needs_conversion {
                 self.convert_with_sws(
                     src_width, src_height, src_format, dst_width, dst_height, dst_format,
                 )
             } else {
-                self.av_frame_to_video_frame(self.frame.as_ptr())
+                self.av_frame_to_video_frame(&self.frame)
             }
         }
     }
@@ -218,43 +216,53 @@ impl VideoDecoderInner {
         }
     }
 
-    /// Converts an AVFrame to a VideoFrame.
+    /// Converts an owned [`Frame`] to a [`VideoFrame`].
+    ///
+    /// Scalar fields are read through the frame's accessors; only the plane data
+    /// copy in [`extract_planes_and_strides`](Self::extract_planes_and_strides)
+    /// still touches the raw `AVFrame` pointer (no safe plane accessor by design).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `frame`'s pixel format is one the decoder produced,
+    /// so the plane copy reads the correct plane sizes.
     pub(super) unsafe fn av_frame_to_video_frame(
         &self,
-        frame: *const AVFrame,
+        frame: &Frame,
     ) -> Result<VideoFrame, DecodeError> {
-        // SAFETY: Caller ensures frame and format_ctx are valid
-        unsafe {
-            let width = (*frame).width as u32;
-            let height = (*frame).height as u32;
-            let format = Self::convert_pixel_format((*frame).format);
+        let width = frame.width() as u32;
+        let height = frame.height() as u32;
+        let format = Self::convert_pixel_format(frame.format());
 
-            // Extract timestamp
-            let pts = (*frame).pts;
-            let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
-                let stream = (*self.format_ctx.as_ptr())
-                    .streams
-                    .add(self.stream_index as usize);
-                let time_base = (*(*stream)).time_base;
-                Timestamp::new(
-                    pts as i64,
-                    Rational::new(time_base.num as i32, time_base.den as i32),
-                )
-            } else {
-                Timestamp::default()
-            };
-
-            // Convert frame to planes and strides
-            let (planes, strides) =
-                self.extract_planes_and_strides(frame, width, height, format)?;
-
-            VideoFrame::new(planes, strides, width, height, format, timestamp, false).map_err(|e| {
-                DecodeError::Ffmpeg {
-                    code: 0,
-                    message: format!("Failed to create VideoFrame: {e}"),
+        // Extract timestamp
+        let pts = frame.pts();
+        let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
+            match self.format_ctx.stream(self.stream_index as usize) {
+                Some(stream) => {
+                    let time_base = stream.time_base();
+                    Timestamp::new(
+                        pts,
+                        Rational::new(time_base.num as i32, time_base.den as i32),
+                    )
                 }
-            })
-        }
+                None => Timestamp::default(),
+            }
+        } else {
+            Timestamp::default()
+        };
+
+        // Convert frame to planes and strides. The plane data is read via the raw
+        // AVFrame pointer inside `extract_planes_and_strides`.
+        // SAFETY: `format` is derived from `frame.format()`, so it matches the frame.
+        let (planes, strides) =
+            unsafe { self.extract_planes_and_strides(frame.as_ptr(), width, height, format)? };
+
+        VideoFrame::new(planes, strides, width, height, format, timestamp, false).map_err(|e| {
+            DecodeError::Ffmpeg {
+                code: 0,
+                message: format!("Failed to create VideoFrame: {e}"),
+            }
+        })
     }
 
     /// Allocates a buffer, optionally using the frame pool.

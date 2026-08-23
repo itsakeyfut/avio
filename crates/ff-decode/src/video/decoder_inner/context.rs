@@ -1,36 +1,21 @@
 use super::{
     AVCodecContext, AVCodecID, AVFormatContext, AVMediaType_AVMEDIA_TYPE_VIDEO, CStr,
-    ContainerInfo, DecodeError, Duration, Rational, VideoDecoderInner, VideoStreamInfo,
+    ContainerInfo, DecodeError, Duration, InputFormatContext, Rational, VideoDecoderInner,
+    VideoStreamInfo,
 };
 
 impl VideoDecoderInner {
     /// Finds the first video stream in the format context.
     ///
-    /// # Returns
-    ///
     /// Returns `Some((index, codec_id))` if a video stream is found, `None` otherwise.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `format_ctx` is valid and initialized.
-    pub(super) unsafe fn find_video_stream(
-        format_ctx: *mut AVFormatContext,
-    ) -> Option<(usize, AVCodecID)> {
-        // SAFETY: Caller ensures format_ctx is valid
-        unsafe {
-            let nb_streams = (*format_ctx).nb_streams as usize;
-
-            for i in 0..nb_streams {
-                let stream = (*format_ctx).streams.add(i);
-                let codecpar = (*(*stream)).codecpar;
-
-                if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                    return Some((i, (*codecpar).codec_id));
-                }
+    pub(super) fn find_video_stream(format_ctx: &InputFormatContext) -> Option<(usize, AVCodecID)> {
+        for stream in format_ctx.streams() {
+            let codecpar = stream.codecpar();
+            if codecpar.codec_type() == AVMediaType_AVMEDIA_TYPE_VIDEO {
+                return Some((stream.index() as usize, codecpar.codec_id()));
             }
-
-            None
         }
+        None
     }
 
     /// Returns the human-readable codec name for a given `AVCodecID`.
