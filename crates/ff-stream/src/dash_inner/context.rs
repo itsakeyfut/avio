@@ -2,7 +2,7 @@
 
 use std::ptr;
 
-use ff_sys::{AVCodecContext, AVFormatContext, AVFrame, AVPixelFormat, SwrContext, SwsContext};
+use ff_sys::{AVFormatContext, AVFrame, AVPixelFormat};
 use ff_sys::{av_frame_free, avformat_free_context};
 
 // ============================================================================
@@ -10,12 +10,15 @@ use ff_sys::{av_frame_free, avformat_free_context};
 // ============================================================================
 
 /// Per-rendition encoder state for the ABR DASH mux loop.
+///
+/// The owned `vid_enc_ctx` / `sws_ctx` are freed on drop, so a `Vec<RenditionState>`
+/// releases every rendition's contexts automatically when it goes out of scope.
 pub(super) struct RenditionState {
-    pub(super) vid_enc_ctx: *mut AVCodecContext,
+    pub(super) vid_enc_ctx: ff_sys::CodecContext,
     pub(super) vid_out_stream_idx: i32,
     pub(super) enc_width: i32,
     pub(super) enc_height: i32,
-    pub(super) sws_ctx: *mut SwsContext,
+    pub(super) sws_ctx: Option<ff_sys::ScaleContext>,
     pub(super) last_src_fmt: Option<AVPixelFormat>,
     pub(super) last_src_w: Option<i32>,
     pub(super) last_src_h: Option<i32>,
@@ -24,36 +27,6 @@ pub(super) struct RenditionState {
 // ============================================================================
 // Cleanup helpers (safe to call with null pointers)
 // ============================================================================
-
-pub(super) unsafe fn cleanup_decoders(
-    mut vid_dec_ctx: *mut AVCodecContext,
-    mut aud_dec_ctx: *mut AVCodecContext,
-    input_ctx: *mut *mut AVFormatContext,
-) {
-    if !vid_dec_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut vid_dec_ctx as *mut *mut _);
-    }
-    if !aud_dec_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut aud_dec_ctx as *mut *mut _);
-    }
-    ff_sys::avformat::close_input(input_ctx);
-}
-
-pub(super) unsafe fn cleanup_encoders(
-    mut vid_enc_ctx: *mut AVCodecContext,
-    mut aud_enc_ctx: *mut AVCodecContext,
-    mut swr_ctx: *mut SwrContext,
-) {
-    if !vid_enc_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
-    }
-    if !aud_enc_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-    }
-    if !swr_ctx.is_null() {
-        ff_sys::swresample::free(&mut swr_ctx);
-    }
-}
 
 pub(super) unsafe fn cleanup_output_ctx(mut out_ctx: *mut AVFormatContext) {
     if !out_ctx.is_null() {
@@ -81,20 +54,4 @@ pub(super) unsafe fn free_frames(
     if !aud_enc.is_null() {
         av_frame_free(&mut aud_enc as *mut *mut _);
     }
-}
-
-/// Free all encoder contexts and `SwsContext`s in `states`.
-///
-/// Safe to call at any point after the Vec starts being populated.
-pub(super) unsafe fn cleanup_renditions(states: &mut Vec<RenditionState>) {
-    for state in states.iter_mut() {
-        if !state.vid_enc_ctx.is_null() {
-            ff_sys::avcodec::free_context(&mut state.vid_enc_ctx as *mut *mut _);
-        }
-        if !state.sws_ctx.is_null() {
-            ff_sys::swscale::free_context(state.sws_ctx);
-            state.sws_ctx = ptr::null_mut();
-        }
-    }
-    states.clear();
 }

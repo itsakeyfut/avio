@@ -18,7 +18,7 @@ pub mod audio_fifo;
 pub mod channel_layout;
 pub mod sample_format;
 
-pub use context::{alloc, alloc_set_opts2, free, init, is_initialized};
+pub use context::{alloc, alloc_set_opts2, init, is_initialized};
 pub use convert::{convert, estimate_output_samples, get_delay};
 
 #[cfg(test)]
@@ -297,7 +297,7 @@ mod tests {
                 total_output_samples += flushed as usize;
             }
 
-            free(&mut swr_ctx);
+            crate::swr_free(&mut swr_ctx);
 
             // Verify we processed some audio
             assert!(frames_processed > 0, "Should process at least one frame");
@@ -403,8 +403,8 @@ mod tests {
                 }
             }
 
-            free(&mut swr_to_s16);
-            free(&mut swr_to_fltp);
+            crate::swr_free(&mut swr_to_s16);
+            crate::swr_free(&mut swr_to_fltp);
 
             assert!(frames_processed > 0, "Should process frames through chain");
             println!(
@@ -520,8 +520,8 @@ mod tests {
                 }
             }
 
-            free(&mut swr_to_mono);
-            free(&mut swr_to_stereo);
+            crate::swr_free(&mut swr_to_mono);
+            crate::swr_free(&mut swr_to_stereo);
 
             assert!(frames_processed > 0, "Should process frames");
             println!(
