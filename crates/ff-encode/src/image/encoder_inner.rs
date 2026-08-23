@@ -90,7 +90,7 @@ struct ImageEncoderInner {
     codec_ctx: ff_sys::CodecContext,
     dst_frame: *mut ff_sys::AVFrame,
     packet: *mut ff_sys::AVPacket,
-    sws_ctx: Option<*mut ff_sys::SwsContext>,
+    sws_ctx: Option<ff_sys::ScaleContext>,
     dst_width: u32,
     dst_height: u32,
     pix_fmt: AVPixelFormat,
@@ -298,19 +298,19 @@ impl ImageEncoderInner {
             || src.height() != self.dst_height;
 
         if needs_conversion {
-            let sws_ctx = swscale::get_context(
-                src.width() as i32,
-                src.height() as i32,
-                src_fmt,
-                self.dst_width as i32,
-                self.dst_height as i32,
-                self.pix_fmt,
-                swscale::scale_flags::BILINEAR,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
-
-            // Store so Drop frees it if scale panics.
-            self.sws_ctx = Some(sws_ctx);
+            // Store so Drop frees it if scale panics (RAII: frees on drop).
+            self.sws_ctx = Some(
+                ff_sys::ScaleContext::new(
+                    src.width() as i32,
+                    src.height() as i32,
+                    src_fmt,
+                    self.dst_width as i32,
+                    self.dst_height as i32,
+                    self.pix_fmt,
+                    swscale::scale_flags::BILINEAR,
+                )
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?,
+            );
 
             let mut src_data: [*const u8; MAX_PLANES] = [ptr::null(); MAX_PLANES];
             let mut src_linesize: [i32; MAX_PLANES] = [0; MAX_PLANES];
@@ -321,22 +321,28 @@ impl ImageEncoderInner {
                 }
             }
 
-            let scale_result = swscale::scale(
-                sws_ctx,
-                src_data.as_ptr(),
-                src_linesize.as_ptr(),
-                0,
-                src.height() as i32,
-                (*self.dst_frame).data.as_mut_ptr().cast_const(),
-                (*self.dst_frame).linesize.as_mut_ptr(),
-            );
+            let dst_data = (*self.dst_frame).data.as_mut_ptr().cast_const();
+            let dst_linesize = (*self.dst_frame).linesize.as_mut_ptr();
+            let scale_result = self
+                .sws_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Scaling context not initialized".to_string(),
+                })?
+                .scale(
+                    src_data.as_ptr(),
+                    src_linesize.as_ptr(),
+                    0,
+                    src.height() as i32,
+                    dst_data,
+                    dst_linesize,
+                );
 
-            // Free immediately — single use; Drop handles null case.
-            if let Some(sws) = self.sws_ctx.take() {
-                swscale::free_context(sws);
-            }
+            // Drop the context now — single use; the owned field frees it.
+            self.sws_ctx = None;
 
-            scale_result.map_err(EncodeError::from_ffmpeg_error)?;
+            scale_result.map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         } else {
             // Direct plane copy — same format and dimensions.
             for (i, plane) in src.planes().iter().enumerate() {
@@ -450,10 +456,8 @@ impl Drop for ImageEncoderInner {
                 // SAFETY: packet is non-null and owned by this struct.
                 av_packet_free(&raw mut self.packet);
             }
-            if let Some(sws) = self.sws_ctx.take() {
-                // SAFETY: sws is a valid SwsContext that hasn't been freed yet.
-                swscale::free_context(sws);
-            }
+            // sws_ctx is an owned Option<ff_sys::ScaleContext>; it frees itself
+            // via field drop (after this manual body), so no manual free here.
             // codec_ctx is an owned ff_sys::CodecContext; it frees itself when the
             // struct is dropped (after this manual cleanup runs).
             if !self.format_ctx.is_null() {

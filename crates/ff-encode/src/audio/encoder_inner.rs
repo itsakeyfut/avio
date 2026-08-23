@@ -25,9 +25,9 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3,
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame,
-    SwrContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc,
-    av_packet_free, av_packet_unref, av_write_trailer, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, swresample,
+    av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
+    av_packet_unref, av_write_trailer, avformat_alloc_output_context2, avformat_free_context,
+    avformat_new_stream, avformat_write_header, swresample,
 };
 use std::ffi::{CString, c_void};
 use std::ptr;
@@ -44,7 +44,7 @@ pub(super) struct AudioEncoderInner {
     pub(super) stream_index: i32,
 
     /// Resampling context for audio format conversion
-    pub(super) swr_ctx: Option<*mut SwrContext>,
+    pub(super) swr_ctx: Option<ff_sys::ResampleContext>,
 
     /// Sample counter
     pub(super) sample_count: u64,
@@ -689,26 +689,21 @@ impl AudioEncoderInner {
             || !swresample::channel_layout::is_equal(&raw const src_ch_layout, target_ch_layout);
 
         if needs_resampling {
-            // Initialize resampler if needed
+            // Initialize resampler if needed (RAII: allocates, configures, and
+            // initializes internally; frees itself on drop).
             if self.swr_ctx.is_none() {
-                let swr_ctx = swresample::alloc_set_opts2(
-                    target_ch_layout,
-                    target_format,
-                    target_sample_rate,
-                    &raw const src_ch_layout,
-                    src_format,
-                    src_sample_rate,
-                )
-                .map_err(EncodeError::from_ffmpeg_error)?;
-
-                swresample::init(swr_ctx).map_err(EncodeError::from_ffmpeg_error)?;
-                self.swr_ctx = Some(swr_ctx);
+                self.swr_ctx = Some(
+                    ff_sys::ResampleContext::new(
+                        target_ch_layout,
+                        target_format,
+                        target_sample_rate,
+                        &raw const src_ch_layout,
+                        src_format,
+                        src_sample_rate,
+                    )
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?,
+                );
             }
-
-            let swr_ctx = self.swr_ctx.ok_or_else(|| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Resampling context not initialized".to_string(),
-            })?;
 
             // Estimate output sample count
             let out_samples = swresample::estimate_output_samples(
@@ -748,14 +743,20 @@ impl AudioEncoderInner {
             };
 
             // Convert
-            let samples_out = swresample::convert(
-                swr_ctx,
-                (*dst).data.as_mut_ptr().cast(),
-                out_samples,
-                in_ptrs.as_ptr(),
-                src.samples() as i32,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            let samples_out = self
+                .swr_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Resampling context not initialized".to_string(),
+                })?
+                .convert(
+                    (*dst).data.as_mut_ptr().cast(),
+                    out_samples,
+                    in_ptrs.as_ptr(),
+                    src.samples() as i32,
+                )
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
             (*dst).nb_samples = samples_out;
         } else {
@@ -914,10 +915,8 @@ impl AudioEncoderInner {
         // Free audio codec context (owned CodecContext frees itself when dropped).
         self.codec_ctx = None;
 
-        // Free resampling context
-        if let Some(mut ctx) = self.swr_ctx.take() {
-            swresample::free(&raw mut ctx);
-        }
+        // Free resampling context (owned ResampleContext drops on assignment).
+        self.swr_ctx = None;
 
         // Close output file
         if !self.format_ctx.is_null() {

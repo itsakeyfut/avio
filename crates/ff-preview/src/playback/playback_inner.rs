@@ -36,22 +36,17 @@ pub(crate) fn audio_frame_to_f32(frame: &AudioFrame) -> Vec<f32> {
 /// [`convert_to`](Self::convert_to) accepts explicit output dimensions so that overlay
 /// layers can be scaled to match the primary video track's canvas size before compositing.
 pub(crate) struct SwsRgbaConverter {
-    /// Nullable: `null` before the first `convert` call or after a geometry change.
-    ctx: *mut ff_sys::SwsContext,
+    /// `None` before the first `convert` call or after a geometry change.
+    /// The owned [`ff_sys::ScaleContext`] frees the underlying `SwsContext` on drop.
+    ctx: Option<ff_sys::ScaleContext>,
     /// Cached `(src_w, src_h, format, dst_w, dst_h)` so geometry changes can be detected.
     cache_key: Option<(u32, u32, PixelFormat, u32, u32)>,
 }
 
-// SAFETY: `SwsContext` is not thread-safe per the FFmpeg docs, but
-// `SwsRgbaConverter` owns its context exclusively and is only ever accessed
-// from the single presentation thread that calls `PreviewPlayer::run()`.
-// No concurrent access to `ctx` can occur.
-unsafe impl Send for SwsRgbaConverter {}
-
 impl SwsRgbaConverter {
     pub(crate) fn new() -> Self {
         Self {
-            ctx: std::ptr::null_mut(),
+            ctx: None,
             cache_key: None,
         }
     }
@@ -91,30 +86,25 @@ impl SwsRgbaConverter {
 
         // Re-create the context when geometry, format, or output size changes.
         if self.cache_key.as_ref() != Some(&key) {
-            // SAFETY: ctx is either null or was returned by get_context; freeing
-            // a null pointer is explicitly documented as safe by free_context.
-            unsafe { ff_sys::swscale::free_context(self.ctx) };
-            self.ctx = std::ptr::null_mut();
-
             let src_fmt = pixel_format_to_av(fmt);
             let dst_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA;
-            // SAFETY: dimensions are > 0 (checked above); formats are valid AV constants.
-            match unsafe {
-                ff_sys::swscale::get_context(
-                    src_w as i32,
-                    src_h as i32,
-                    src_fmt,
-                    dst_w as i32,
-                    dst_h as i32,
-                    dst_fmt,
-                    ff_sys::swscale::scale_flags::FAST_BILINEAR,
-                )
-            } {
-                Ok(ctx) => self.ctx = ctx,
-                Err(code) => {
+            // The old context (if any) drops on reassignment.
+            // Dimensions are > 0 (checked above); formats are valid AV constants.
+            match ff_sys::ScaleContext::new(
+                src_w as i32,
+                src_h as i32,
+                src_fmt,
+                dst_w as i32,
+                dst_h as i32,
+                dst_fmt,
+                ff_sys::swscale::scale_flags::FAST_BILINEAR,
+            ) {
+                Ok(ctx) => self.ctx = Some(ctx),
+                Err(e) => {
                     log::warn!(
                         "sws_getContext failed format={fmt:?} src={src_w}x{src_h} \
-                         dst={dst_w}x{dst_h} code={code}"
+                         dst={dst_w}x{dst_h} code={code}",
+                        code = e.code()
                     );
                     return false;
                 }
@@ -148,11 +138,14 @@ impl SwsRgbaConverter {
         ];
         let dst_strides: [i32; 4] = [dst_stride_val, 0, 0, 0];
 
-        // SAFETY: ctx is non-null (created above); src and dst pointers are valid
+        let Some(ctx) = self.ctx.as_mut() else {
+            log::warn!("sws_scale skipped: scaling context not initialized");
+            return false;
+        };
+        // SAFETY: ctx is initialized (created above); src and dst pointers are valid
         // for the lifetime of this call; buffer sizes match dst_w * dst_h * 4 bytes.
         let result = unsafe {
-            ff_sys::swscale::scale(
-                self.ctx,
+            ctx.scale(
                 src_ptrs.as_ptr(),
                 src_strides.as_ptr(),
                 0,
@@ -163,20 +156,14 @@ impl SwsRgbaConverter {
         };
         match result {
             Ok(_) => true,
-            Err(code) => {
-                log::warn!("sws_scale failed src={src_w}x{src_h} dst={dst_w}x{dst_h} code={code}");
+            Err(e) => {
+                log::warn!(
+                    "sws_scale failed src={src_w}x{src_h} dst={dst_w}x{dst_h} code={}",
+                    e.code()
+                );
                 false
             }
         }
-    }
-}
-
-impl Drop for SwsRgbaConverter {
-    fn drop(&mut self) {
-        // SAFETY: ctx is either null (safe no-op per free_context docs) or was
-        // returned by get_context; we have exclusive ownership so no concurrent
-        // access is possible.
-        unsafe { ff_sys::swscale::free_context(self.ctx) };
     }
 }
 
@@ -277,5 +264,31 @@ mod tests {
             "non-F32 frame should return an empty Vec, got {} samples",
             out.len()
         );
+    }
+
+    #[test]
+    fn convert_to_should_rebuild_scaler_when_source_geometry_changes() {
+        // Drive the cache-rebuild move-assign path: a second convert with a
+        // different source geometry replaces the cached `ScaleContext`, dropping
+        // the old one exactly once. Pure libswscale (no filters), so this runs in
+        // CI. RGBA in / RGBA out keeps the conversion format-agnostic.
+        let mut converter = SwsRgbaConverter::new();
+        let mut dst = Vec::new();
+
+        // First geometry: 8x8 -> 16x16 builds the initial context.
+        let frame_a = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+        assert!(converter.convert_to(&frame_a, &mut dst, 16, 16));
+        assert_eq!(dst.len(), 16 * 16 * 4);
+
+        // Second geometry: 4x4 -> 16x16 changes the cache key, so the context is
+        // rebuilt (old ScaleContext drops on reassignment).
+        let frame_b = VideoFrame::from_rgba(4, 4, vec![200u8; 4 * 4 * 4]).unwrap();
+        assert!(converter.convert_to(&frame_b, &mut dst, 16, 16));
+        assert_eq!(dst.len(), 16 * 16 * 4);
+
+        // Third convert reuses the cached context (same geometry as the second).
+        let frame_c = VideoFrame::from_rgba(4, 4, vec![50u8; 4 * 4 * 4]).unwrap();
+        assert!(converter.convert_to(&frame_c, &mut dst, 16, 16));
+        assert_eq!(dst.len(), 16 * 16 * 4);
     }
 }
