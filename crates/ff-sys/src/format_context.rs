@@ -10,12 +10,16 @@
 //! The mux (output) lifecycle is a separate owner (`OutputFormatContext`,
 //! tracked in #1493); this type covers demuxing only.
 
+use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::time::Duration;
 
-use crate::{AVFormatContext, AvError, Packet, avformat_close_input as ffi_avformat_close_input};
+use crate::{
+    AVCodecID, AVCodecParameters, AVFormatContext, AVMediaType, AVRational, AVStream, AvError,
+    Packet, avformat_close_input as ffi_avformat_close_input,
+};
 
 /// An owned input (demux) `AVFormatContext`.
 ///
@@ -91,6 +95,62 @@ impl InputFormatContext {
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
         self.ptr.as_ptr()
+    }
+
+    /// Returns the number of streams in the container.
+    #[must_use]
+    pub fn nb_streams(&self) -> u32 {
+        // SAFETY: `self.ptr` is a valid owned demux context; `nb_streams` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).nb_streams }
+    }
+
+    /// Returns the container duration in `AV_TIME_BASE` units (microseconds).
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned demux context; `duration` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).duration }
+    }
+
+    /// Returns the `AVInputFormat` flags, or `0` when the format is unset.
+    ///
+    /// Used to detect live/streaming sources (`AVFMT_TS_DISCONT`).
+    #[must_use]
+    pub fn iformat_flags(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned demux context. `iformat` is set for
+        //         every successfully opened input, but we null-check it defensively
+        //         and read `flags` (a plain field) only when it is present.
+        unsafe {
+            let iformat = (*self.ptr.as_ptr()).iformat;
+            if iformat.is_null() {
+                0
+            } else {
+                (*iformat).flags
+            }
+        }
+    }
+
+    /// Returns a borrowed handle to stream `index`, or `None` when out of range.
+    #[must_use]
+    pub fn stream(&self, index: usize) -> Option<StreamRef<'_>> {
+        // SAFETY: `self.ptr` is a valid owned demux context. We bound-check `index`
+        //         against `nb_streams` before indexing the `streams` array, and the
+        //         entries are valid stream pointers set by FFmpeg on open.
+        unsafe {
+            let ctx = self.ptr.as_ptr();
+            if index >= (*ctx).nb_streams as usize {
+                return None;
+            }
+            let stream_ptr = *(*ctx).streams.add(index);
+            NonNull::new(stream_ptr).map(|ptr| StreamRef {
+                ptr,
+                _marker: PhantomData,
+            })
+        }
+    }
+
+    /// Iterates the container's streams as borrowed handles.
+    pub fn streams(&self) -> impl Iterator<Item = StreamRef<'_>> + '_ {
+        (0..self.nb_streams() as usize).filter_map(move |i| self.stream(i))
     }
 
     /// Reads stream information, populating per-stream codec parameters.
@@ -173,6 +233,80 @@ impl Drop for InputFormatContext {
 //         ownership between threads is sound because Rust's ownership model
 //         guarantees exclusive access.
 unsafe impl Send for InputFormatContext {}
+
+/// A borrowed handle to one `AVStream` of an [`InputFormatContext`].
+///
+/// The lifetime ties the handle to the owning format context borrow, so it
+/// cannot outlive the context. It exposes only safe scalar accessors and the
+/// stream's [`codecpar`](StreamRef::codecpar); the raw `*mut AVStream` is
+/// private.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamRef<'a> {
+    ptr: NonNull<AVStream>,
+    _marker: PhantomData<&'a InputFormatContext>,
+}
+
+impl<'a> StreamRef<'a> {
+    /// Returns the stream index within its container.
+    #[must_use]
+    pub fn index(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).index }
+    }
+
+    /// Returns the stream's time base.
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).time_base }
+    }
+
+    /// Returns a borrowed handle to the stream's codec parameters.
+    #[must_use]
+    pub fn codecpar(&self) -> CodecParameters<'a> {
+        // SAFETY: `self.ptr` borrows a valid stream. FFmpeg allocates `codecpar`
+        //         together with the stream, so it is non-null for a demuxed stream.
+        unsafe {
+            let par = (*self.ptr.as_ptr()).codecpar;
+            CodecParameters {
+                ptr: NonNull::new_unchecked(par),
+                _marker: PhantomData,
+            }
+        }
+    }
+}
+
+/// A borrowed handle to an `AVCodecParameters` owned by a stream.
+///
+/// Exposes the scalar fields ff-decode reads and hands its raw pointer to the
+/// safe [`CodecContext::apply_parameters`](crate::CodecContext::apply_parameters)
+/// via a crate-private accessor; the raw pointer is not part of the public API.
+#[derive(Clone, Copy, Debug)]
+pub struct CodecParameters<'a> {
+    ptr: NonNull<AVCodecParameters>,
+    _marker: PhantomData<&'a InputFormatContext>,
+}
+
+impl CodecParameters<'_> {
+    /// Returns the media type (video / audio / ...).
+    #[must_use]
+    pub fn codec_type(&self) -> AVMediaType {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).codec_type }
+    }
+
+    /// Returns the codec id.
+    #[must_use]
+    pub fn codec_id(&self) -> AVCodecID {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).codec_id }
+    }
+
+    /// Returns the underlying raw pointer for FFI calls within the crate.
+    pub(crate) fn as_raw(&self) -> *const AVCodecParameters {
+        self.ptr.as_ptr()
+    }
+}
 
 #[cfg(test)]
 mod tests {

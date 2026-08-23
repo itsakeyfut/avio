@@ -11,8 +11,8 @@ use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
-    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError, Codec, Frame,
-    Packet, avcodec_free_context as ffi_avcodec_free_context,
+    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError, Codec,
+    CodecParameters, Frame, Packet, avcodec_free_context as ffi_avcodec_free_context,
 };
 
 /// The outcome of a [`CodecContext::receive_frame`] call.
@@ -85,6 +85,29 @@ impl CodecContext {
         self.ptr.as_ptr()
     }
 
+    /// Sets the number of decoding/encoding threads.
+    pub fn set_thread_count(&mut self, thread_count: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `thread_count` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).thread_count = thread_count };
+    }
+
+    /// Copies the parameters of `params` into the context (safe wrapper).
+    ///
+    /// This is the borrowed-handle counterpart of the raw
+    /// [`parameters_to_context`](Self::parameters_to_context); it takes a
+    /// [`CodecParameters`] borrowed from an [`InputFormatContext`](crate::InputFormatContext)
+    /// stream, so no raw pointer is exposed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the parameters cannot be copied.
+    pub fn apply_parameters(&mut self, params: &CodecParameters<'_>) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned context; `params` wraps a valid
+        //         `AVCodecParameters` borrowed from a live format context.
+        unsafe { crate::avcodec::parameters_to_context(self.ptr.as_ptr(), params.as_raw()) }
+            .map_err(AvError::new)
+    }
+
     /// Copies stream parameters into the context.
     ///
     /// # Safety
@@ -96,6 +119,21 @@ impl CodecContext {
     ) -> Result<(), AvError> {
         // SAFETY: `self.ptr` is a valid owned context; the caller upholds `par`.
         unsafe { crate::avcodec::parameters_to_context(self.ptr.as_ptr(), par) }
+            .map_err(AvError::new)
+    }
+
+    /// Opens the context with `codec` using default options (safe wrapper).
+    ///
+    /// This is the safe counterpart of the raw [`open`](Self::open); it always
+    /// passes a null options dictionary, which every ff-decode call site uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the codec cannot be opened.
+    pub fn open_codec(&mut self, codec: Codec) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned context and `codec` is a valid static
+        //         codec; a null options pointer is accepted by `avcodec_open2`.
+        unsafe { crate::avcodec::open2(self.ptr.as_ptr(), codec.as_ptr(), std::ptr::null_mut()) }
             .map_err(AvError::new)
     }
 

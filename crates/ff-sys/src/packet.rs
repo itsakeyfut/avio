@@ -3,9 +3,8 @@
 //! [`Packet`] allocates a packet and frees it exactly once on drop, replacing
 //! the manual `av_packet_alloc` + `av_packet_free` pair. Ownership is unique;
 //! [`try_clone`](Packet::try_clone) makes a ref-counted copy (`av_packet_ref`).
-//! Raw field access (stream_index / pts / ...) is still done through
-//! [`as_mut_ptr`](Packet::as_mut_ptr) for now (typed field accessors are a later
-//! step).
+//! Scalar fields ([`stream_index`](Packet::stream_index) / [`pts`](Packet::pts))
+//! are read through the typed accessors below.
 
 use std::ptr::NonNull;
 
@@ -50,6 +49,20 @@ impl Packet {
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
         self.ptr.as_ptr()
+    }
+
+    /// Returns the index of the stream this packet belongs to.
+    #[must_use]
+    pub fn stream_index(&self) -> std::os::raw::c_int {
+        // SAFETY: `self.ptr` is a valid owned packet; `stream_index` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).stream_index }
+    }
+
+    /// Returns the presentation timestamp (in the stream's time base).
+    #[must_use]
+    pub fn pts(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned packet; `pts` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pts }
     }
 
     /// Unreferences the packet's buffer, returning it to a blank state.

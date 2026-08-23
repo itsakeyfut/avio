@@ -36,17 +36,13 @@ impl VideoDecoderInner {
     ///
     /// av_seek_frame expects timestamps in stream time_base units when using a specific stream_index.
     fn duration_to_pts(&self, duration: Duration) -> i64 {
-        // Convert duration to stream time_base units for seeking
-        // SAFETY:
-        // - format_ctx is valid: owned by VideoDecoderInner, initialized in constructor via avformat_open_input
-        // - stream_index is valid: validated during decoder creation (find_stream_info + codec opening)
-        // - streams array access is valid: guaranteed by FFmpeg after successful avformat_open_input
-        let time_base = unsafe {
-            let stream = (*self.format_ctx.as_ptr())
-                .streams
-                .add(self.stream_index as usize);
-            (*(*stream)).time_base
-        };
+        // Convert duration to stream time_base units for seeking. The stream index
+        // was validated during decoder creation; fall back to a 1/1 time base if it
+        // is somehow absent (unreachable in practice).
+        let time_base = self
+            .format_ctx
+            .stream(self.stream_index as usize)
+            .map_or(ff_sys::AVRational { num: 1, den: 1 }, |s| s.time_base());
 
         // Convert: duration (seconds) * (time_base.den / time_base.num) = PTS
         let time_base_f64 = time_base.den as f64 / time_base.num as f64;
@@ -301,130 +297,104 @@ impl VideoDecoderInner {
             av_format,
         );
 
-        // SAFETY: We're creating temporary FFmpeg objects for scaling
-        unsafe {
-            // Reuse the cached SwScale context when the key matches; otherwise
-            // build a fresh owned context into the cache slot. The cache key is
-            // only set after scaling succeeds, so an error after a rebuild leaves
-            // the freshly built context keyless — it is dropped/replaced on the
-            // next call rather than being reused with a stale key.
-            let is_cached =
-                self.thumbnail_cache_key == Some(cache_key) && self.thumbnail_sws_ctx.is_some();
+        // Reuse the cached SwScale context when the key matches; otherwise build a
+        // fresh owned context into the cache slot. The cache key is only set after
+        // scaling succeeds, so an error after a rebuild leaves the freshly built
+        // context keyless — it is dropped/replaced on the next call rather than
+        // being reused with a stale key.
+        let is_cached =
+            self.thumbnail_cache_key == Some(cache_key) && self.thumbnail_sws_ctx.is_some();
 
-            if !is_cached {
-                // Drop any stale cached context, then build the replacement.
-                self.thumbnail_sws_ctx = None;
-                self.thumbnail_cache_key = None;
+        if !is_cached {
+            // Drop any stale cached context, then build the replacement.
+            self.thumbnail_sws_ctx = None;
+            self.thumbnail_cache_key = None;
 
-                self.thumbnail_sws_ctx = Some(
-                    ff_sys::ScaleContext::new(
-                        src_width as i32,
-                        src_height as i32,
-                        av_format,
-                        scaled_width as i32,
-                        scaled_height as i32,
-                        av_format,
-                        ff_sys::swscale::scale_flags::BILINEAR,
-                    )
-                    .map_err(|e| DecodeError::Ffmpeg {
-                        code: 0,
-                        message: format!("Failed to create scaling context: {e}"),
-                    })?,
-                );
-            }
-
-            let Some(sws_ctx) = self.thumbnail_sws_ctx.as_mut() else {
-                return Err(DecodeError::Ffmpeg {
+            self.thumbnail_sws_ctx = Some(
+                ff_sys::ScaleContext::new(
+                    src_width as i32,
+                    src_height as i32,
+                    av_format,
+                    scaled_width as i32,
+                    scaled_height as i32,
+                    av_format,
+                    ff_sys::swscale::scale_flags::BILINEAR,
+                )
+                .map_err(|e| DecodeError::Ffmpeg {
                     code: 0,
-                    message: "SwsContext not initialized".to_string(),
-                });
-            };
-
-            // Set up source frame with VideoFrame data (owned; freed on scope exit).
-            let mut src_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
-                code: e.code(),
-                message: format!(
-                    "Failed to allocate frame: {}",
-                    ff_sys::av_error_string(e.code())
-                ),
-            })?;
-
-            (*src_frame.as_mut_ptr()).width = src_width as i32;
-            (*src_frame.as_mut_ptr()).height = src_height as i32;
-            (*src_frame.as_mut_ptr()).format = av_format;
-
-            // Set up source frame data pointers directly from VideoFrame (no copy)
-            let planes = frame.planes();
-            let strides = frame.strides();
-
-            for (i, plane_data) in planes.iter().enumerate() {
-                if i >= ff_sys::AV_NUM_DATA_POINTERS as usize {
-                    break;
-                }
-                (*src_frame.as_mut_ptr()).data[i] = plane_data.as_ref().as_ptr().cast_mut();
-                (*src_frame.as_mut_ptr()).linesize[i] = strides[i] as i32;
-            }
-
-            // Allocate destination frame (owned; freed on scope exit).
-            let mut dst_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
-                code: e.code(),
-                message: format!(
-                    "Failed to allocate frame: {}",
-                    ff_sys::av_error_string(e.code())
-                ),
-            })?;
-
-            (*dst_frame.as_mut_ptr()).width = scaled_width as i32;
-            (*dst_frame.as_mut_ptr()).height = scaled_height as i32;
-            (*dst_frame.as_mut_ptr()).format = av_format;
-
-            // Allocate buffer for destination frame
-            if let Err(e) = dst_frame.get_buffer(0) {
-                // On a rebuild the freshly built context stays in the cache slot
-                // but keyless (thumbnail_cache_key was cleared above), so it is
-                // dropped/replaced on the next call rather than reused.
-                return Err(DecodeError::Ffmpeg {
-                    code: e.code(),
-                    message: format!(
-                        "Failed to allocate destination frame buffer: {}",
-                        ff_sys::av_error_string(e.code())
-                    ),
-                });
-            }
-
-            // Perform scaling
-            let scale_result = sws_ctx.scale(
-                (*src_frame.as_ptr()).data.as_ptr() as *const *const u8,
-                (*src_frame.as_ptr()).linesize.as_ptr(),
-                0,
-                src_height as i32,
-                (*dst_frame.as_ptr()).data.as_ptr() as *const *mut u8,
-                (*dst_frame.as_ptr()).linesize.as_ptr(),
+                    message: format!("Failed to create scaling context: {e}"),
+                })?,
             );
-
-            if let Err(e) = scale_result {
-                // On a rebuild the freshly built context stays in the cache slot
-                // but keyless (thumbnail_cache_key was cleared above), so it is
-                // dropped/replaced on the next call rather than reused.
-                return Err(DecodeError::Ffmpeg {
-                    code: 0,
-                    message: format!("Failed to scale frame: {e}"),
-                });
-            }
-
-            // Scaling successful - record the cache key for the (re)built context.
-            if !is_cached {
-                self.thumbnail_cache_key = Some(cache_key);
-            }
-
-            // Copy timestamp
-            (*dst_frame.as_mut_ptr()).pts = frame.timestamp().pts();
-
-            // Convert destination frame to VideoFrame
-            let video_frame = self.av_frame_to_video_frame(dst_frame.as_ptr())?;
-
-            Ok(video_frame)
         }
+
+        let Some(sws_ctx) = self.thumbnail_sws_ctx.as_mut() else {
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "SwsContext not initialized".to_string(),
+            });
+        };
+
+        // Borrow the source planes and strides directly from the VideoFrame; the
+        // scaler reads them in place, so no scratch source frame is needed.
+        let src_planes: Vec<&[u8]> = frame.planes().iter().map(AsRef::as_ref).collect();
+        let src_strides: Vec<i32> = frame.strides().iter().map(|&s| s as i32).collect();
+
+        // Allocate the destination frame (owned; freed on scope exit).
+        let mut dst_frame = ff_sys::Frame::new().map_err(|e| DecodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Failed to allocate frame: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
+
+        dst_frame.set_width(scaled_width as i32);
+        dst_frame.set_height(scaled_height as i32);
+        dst_frame.set_format(av_format);
+
+        // Allocate buffer for destination frame
+        if let Err(e) = dst_frame.get_buffer(0) {
+            // On a rebuild the freshly built context stays in the cache slot but
+            // keyless (thumbnail_cache_key was cleared above), so it is
+            // dropped/replaced on the next call rather than reused.
+            return Err(DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to allocate destination frame buffer: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            });
+        }
+
+        // Perform scaling from the borrowed source planes into the owned frame.
+        // SAFETY: `src_planes`/`src_strides` are the source frame's own planes and
+        // positive strides sized for `src_height`; `dst_frame` was allocated via
+        // `get_buffer` with the context's output geometry.
+        if let Err(e) = unsafe {
+            sws_ctx.scale_planes(&src_planes, &src_strides, src_height as i32, &mut dst_frame)
+        } {
+            // On a rebuild the freshly built context stays in the cache slot but
+            // keyless (thumbnail_cache_key was cleared above), so it is
+            // dropped/replaced on the next call rather than reused.
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: format!("Failed to scale frame: {e}"),
+            });
+        }
+
+        // Scaling successful - record the cache key for the (re)built context.
+        if !is_cached {
+            self.thumbnail_cache_key = Some(cache_key);
+        }
+
+        // Copy timestamp
+        dst_frame.set_pts(frame.timestamp().pts());
+
+        // Convert destination frame to VideoFrame.
+        // SAFETY: `dst_frame` holds valid scaled image data in `av_format`.
+        let video_frame = unsafe { self.av_frame_to_video_frame(&dst_frame)? };
+
+        Ok(video_frame)
     }
 
     // ── Reconnect helpers ─────────────────────────────────────────────────────
@@ -488,8 +458,7 @@ impl VideoDecoderInner {
             })?;
 
         // Re-find the video stream (index may differ in theory after reconnect).
-        // SAFETY: self.format_ctx is valid.
-        let (stream_index, _) = unsafe { Self::find_video_stream(self.format_ctx.as_mut_ptr()) }
+        let (stream_index, _) = Self::find_video_stream(&self.format_ctx)
             .ok_or_else(|| DecodeError::NoVideoStream { path: url.into() })?;
         self.stream_index = stream_index as i32;
 

@@ -76,7 +76,7 @@ pub use codec_context::{CodecContext, ReceiveOutcome};
 pub use constants::{AV_NOPTS_VALUE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
 pub use error::AvError;
 #[cfg(not(docsrs))]
-pub use format_context::InputFormatContext;
+pub use format_context::{CodecParameters, InputFormatContext, StreamRef};
 #[cfg(not(docsrs))]
 pub use frame::Frame;
 #[cfg(not(docsrs))]

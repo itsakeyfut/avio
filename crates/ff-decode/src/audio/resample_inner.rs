@@ -22,7 +22,7 @@
 
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{AudioFrame, SampleFormat};
-use ff_sys::{AVFormatContext, AVFrame, AVSampleFormat};
+use ff_sys::{AVSampleFormat, Frame, InputFormatContext};
 
 use crate::error::DecodeError;
 
@@ -150,14 +150,18 @@ unsafe fn create_channel_layout(channels: u32) -> ff_sys::AVChannelLayout {
 ///
 /// # Safety
 ///
-/// Caller must ensure `frame` is valid and `format` matches the actual frame format.
+/// Caller must ensure `format` matches the actual frame format.
 pub(crate) unsafe fn extract_planes(
-    frame: *const AVFrame,
+    frame: &Frame,
     nb_samples: usize,
     channels: u32,
     format: SampleFormat,
 ) -> Result<Vec<Vec<u8>>, DecodeError> {
-    // SAFETY: Caller ensures frame is valid and format matches actual frame format
+    // Plane data (`data[i]`) has no safe accessor by design, so it is read through
+    // the frame's raw pointer here; every other field goes through an accessor.
+    let frame_ptr = frame.as_ptr();
+    // SAFETY: `frame` is a valid owned frame and `format` matches its actual
+    //         sample format, so the plane pointers are valid for `plane_size` bytes.
     unsafe {
         let mut planes = Vec::new();
         let bytes_per_sample = format.bytes_per_sample();
@@ -168,7 +172,7 @@ pub(crate) unsafe fn extract_planes(
                 let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, 1)?;
                 let mut plane_data = vec![0u8; plane_size];
 
-                let src_ptr = (*frame).data[ch];
+                let src_ptr = (*frame_ptr).data[ch];
                 std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
 
                 planes.push(plane_data);
@@ -178,7 +182,7 @@ pub(crate) unsafe fn extract_planes(
             let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, channels as usize)?;
             let mut plane_data = vec![0u8; plane_size];
 
-            let src_ptr = (*frame).data[0];
+            let src_ptr = (*frame_ptr).data[0];
             std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
 
             planes.push(plane_data);
@@ -193,43 +197,45 @@ pub(crate) unsafe fn extract_planes(
 ///
 /// # Safety
 ///
-/// Caller must ensure `frame` and `format_ctx` are valid, and `stream_index`
-/// is a valid index into `format_ctx`'s stream list.
+/// Caller must ensure `stream_index` is a valid index into `format_ctx`'s stream
+/// list.
 pub(crate) unsafe fn av_frame_to_audio_frame(
-    frame: *const AVFrame,
-    format_ctx: *mut AVFormatContext,
+    frame: &Frame,
+    format_ctx: &InputFormatContext,
     stream_index: i32,
 ) -> Result<AudioFrame, DecodeError> {
-    // SAFETY: Caller ensures frame and format_ctx are valid
-    unsafe {
-        let nb_samples = checked_nb_samples((*frame).nb_samples)?;
-        let channels = (*frame).ch_layout.nb_channels as u32;
-        let sample_rate = (*frame).sample_rate as u32;
-        let format = convert_sample_format((*frame).format);
+    let nb_samples = checked_nb_samples(frame.nb_samples())?;
+    let channels = frame.channels() as u32;
+    let sample_rate = frame.sample_rate() as u32;
+    let format = convert_sample_format(frame.format());
 
-        // Extract timestamp
-        let pts = (*frame).pts;
-        let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
-            let time_base = (*(*stream)).time_base;
-            Timestamp::new(
-                pts as i64,
-                Rational::new(time_base.num as i32, time_base.den as i32),
-            )
-        } else {
-            Timestamp::invalid()
-        };
-
-        // Convert frame to planes
-        let planes = extract_planes(frame, nb_samples, channels, format)?;
-
-        AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(|e| {
-            DecodeError::Ffmpeg {
-                code: 0,
-                message: format!("Failed to create AudioFrame: {e}"),
+    // Extract timestamp
+    let pts = frame.pts();
+    let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
+        match format_ctx.stream(stream_index as usize) {
+            Some(stream) => {
+                let time_base = stream.time_base();
+                Timestamp::new(
+                    pts,
+                    Rational::new(time_base.num as i32, time_base.den as i32),
+                )
             }
-        })
-    }
+            None => Timestamp::invalid(),
+        }
+    } else {
+        Timestamp::invalid()
+    };
+
+    // Convert frame to planes
+    // SAFETY: `format` was derived from `frame.format()`, so it matches the frame.
+    let planes = unsafe { extract_planes(frame, nb_samples, channels, format)? };
+
+    AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(|e| {
+        DecodeError::Ffmpeg {
+            code: 0,
+            message: format!("Failed to create AudioFrame: {e}"),
+        }
+    })
 }
 
 /// Converts an `AVFrame` to an `AudioFrame`, applying sample format / sample
@@ -243,11 +249,12 @@ pub(crate) unsafe fn av_frame_to_audio_frame(
 ///
 /// # Safety
 ///
-/// Caller must ensure `frame` and `format_ctx` are valid.
+/// Caller must ensure `stream_index` is a valid index into `format_ctx`'s stream
+/// list.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn convert_frame_to_audio_frame(
-    frame: *mut AVFrame,
-    format_ctx: *mut AVFormatContext,
+    frame: &Frame,
+    format_ctx: &InputFormatContext,
     stream_index: i32,
     output_format: Option<SampleFormat>,
     output_sample_rate: Option<u32>,
@@ -255,17 +262,17 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
     swr_cache: &mut Option<ff_sys::ResampleContext>,
     swr_key: &mut Option<SwrKey>,
 ) -> Result<AudioFrame, DecodeError> {
-    // SAFETY: Caller ensures frame is valid
-    unsafe {
-        let nb_samples = checked_nb_samples((*frame).nb_samples)?;
-        let channels = (*frame).ch_layout.nb_channels as u32;
-        let sample_rate = (*frame).sample_rate as u32;
-        let src_format = (*frame).format;
+    let nb_samples = checked_nb_samples(frame.nb_samples())?;
+    let channels = frame.channels() as u32;
+    let sample_rate = frame.sample_rate() as u32;
+    let src_format = frame.format();
 
-        let needs_conversion =
-            output_format.is_some() || output_sample_rate.is_some() || output_channels.is_some();
+    let needs_conversion =
+        output_format.is_some() || output_sample_rate.is_some() || output_channels.is_some();
 
-        if needs_conversion {
+    if needs_conversion {
+        // SAFETY: forwarded to the resampler; the caller upholds `stream_index`.
+        unsafe {
             convert_with_swr(
                 frame,
                 nb_samples,
@@ -280,9 +287,10 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
                 swr_cache,
                 swr_key,
             )
-        } else {
-            av_frame_to_audio_frame(frame, format_ctx, stream_index)
         }
+    } else {
+        // SAFETY: the caller upholds `stream_index`.
+        unsafe { av_frame_to_audio_frame(frame, format_ctx, stream_index) }
     }
 }
 
@@ -297,10 +305,11 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
 ///
 /// # Safety
 ///
-/// Caller must ensure `frame` and `format_ctx` are valid.
+/// Caller must ensure `stream_index` is a valid index into `format_ctx`'s stream
+/// list.
 #[allow(clippy::too_many_arguments)]
 unsafe fn convert_with_swr(
-    frame: *mut AVFrame,
+    frame: &Frame,
     nb_samples: usize,
     src_channels: u32,
     src_sample_rate: u32,
@@ -308,7 +317,7 @@ unsafe fn convert_with_swr(
     output_format: Option<SampleFormat>,
     output_sample_rate: Option<u32>,
     output_channels: Option<u32>,
-    format_ctx: *mut AVFormatContext,
+    format_ctx: &InputFormatContext,
     stream_index: i32,
     swr_cache: &mut Option<ff_sys::ResampleContext>,
     swr_key: &mut Option<SwrKey>,
@@ -323,6 +332,7 @@ unsafe fn convert_with_swr(
         && src_sample_rate == dst_sample_rate
         && src_channels == dst_channels
     {
+        // SAFETY: the caller upholds `stream_index`.
         return unsafe { av_frame_to_audio_frame(frame, format_ctx, stream_index) };
     }
 
@@ -409,52 +419,50 @@ unsafe fn convert_with_swr(
 
     let mut out_buffer = vec![0u8; buffer_size];
 
-    // Prepare output pointers for swr_convert
-    let mut out_ptrs = if is_planar {
-        let plane_size = checked_buffer_size(out_samples, bytes_per_sample, 1)?;
-        (0..dst_channels)
-            .map(|i| {
-                let offset = i as usize * plane_size;
-                out_buffer[offset..].as_mut_ptr()
-            })
-            .collect::<Vec<_>>()
-    } else {
-        vec![out_buffer.as_mut_ptr()]
+    // Resample the source frame's samples into caller-owned output planes: one
+    // mutable slice per channel (planar) or a single interleaved slice (packed).
+    // The `out_slices` borrows of `out_buffer` end with this block, so the buffer
+    // can be read again below.
+    let converted_samples = {
+        let mut out_slices: Vec<&mut [u8]> = Vec::new();
+        if is_planar {
+            let plane_size = checked_buffer_size(out_samples, bytes_per_sample, 1)?;
+            let mut rest = out_buffer.as_mut_slice();
+            for _ in 0..dst_channels {
+                let (head, tail) = rest.split_at_mut(plane_size.min(rest.len()));
+                out_slices.push(head);
+                rest = tail;
+            }
+        } else {
+            out_slices.push(out_buffer.as_mut_slice());
+        }
+
+        // SAFETY: each `out_slices` plane is sized for `out_samples` (buffer_size
+        // above) and there is one entry per output plane; `frame` is a decoded
+        // audio frame holding `nb_samples` input samples.
+        unsafe { ctx.convert_into_planes(&mut out_slices, out_samples as i32, frame) }.map_err(
+            |e| DecodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Failed to convert samples: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            },
+        )?
     };
 
-    // Get input data pointers from frame
-    // SAFETY: frame is valid
-    let in_ptrs = unsafe { (*frame).data };
-
-    // Convert samples using SwResample
-    // SAFETY: All pointers are valid and buffers are properly sized
-    let converted_samples = unsafe {
-        ctx.convert(
-            out_ptrs.as_mut_ptr(),
-            out_samples as i32,
-            in_ptrs.as_ptr() as *const *const u8,
-            nb_samples as i32,
-        )
-    }
-    .map_err(|e| DecodeError::Ffmpeg {
-        code: e.code(),
-        message: format!(
-            "Failed to convert samples: {}",
-            ff_sys::av_error_string(e.code())
-        ),
-    })?;
-
     // Extract timestamp from original frame
-    // SAFETY: frame is valid
-    let timestamp = unsafe {
-        let pts = (*frame).pts;
-        if pts != ff_sys::AV_NOPTS_VALUE {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
-            let time_base = (*(*stream)).time_base;
-            Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
-        } else {
-            Timestamp::invalid()
+    let pts = frame.pts();
+    let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
+        match format_ctx.stream(stream_index as usize) {
+            Some(stream) => {
+                let time_base = stream.time_base();
+                Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
+            }
+            None => Timestamp::invalid(),
         }
+    } else {
+        Timestamp::invalid()
     };
 
     // Create planes for AudioFrame

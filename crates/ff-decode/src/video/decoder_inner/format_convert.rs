@@ -219,9 +219,9 @@ impl VideoDecoderInner {
                 ),
             })?;
 
-            (*dst_frame.as_mut_ptr()).width = dst_width as i32;
-            (*dst_frame.as_mut_ptr()).height = dst_height as i32;
-            (*dst_frame.as_mut_ptr()).format = dst_format;
+            dst_frame.set_width(dst_width as i32);
+            dst_frame.set_height(dst_height as i32);
+            dst_frame.set_format(dst_format);
 
             // Allocate buffer for destination frame
             dst_frame.get_buffer(0).map_err(|e| DecodeError::Ffmpeg {
@@ -232,26 +232,24 @@ impl VideoDecoderInner {
                 ),
             })?;
 
-            // Perform conversion/scaling (src_height is the number of input rows to process)
+            // Perform conversion/scaling from the decoder's frame into the owned
+            // destination frame (the number of input rows to process is read
+            // internally from the source frame's height).
+            // SAFETY: `dst_frame` was allocated via `get_buffer` just above and its
+            // geometry matches the context; `self.frame` is a decoded source frame.
+            // (Already inside an `unsafe` block above.)
             sws_ctx
-                .scale(
-                    (*self.frame.as_ptr()).data.as_ptr() as *const *const u8,
-                    (*self.frame.as_ptr()).linesize.as_ptr(),
-                    0,
-                    src_height as i32,
-                    (*dst_frame.as_ptr()).data.as_ptr() as *const *mut u8,
-                    (*dst_frame.as_ptr()).linesize.as_ptr(),
-                )
+                .scale_frames(&self.frame, &mut dst_frame)
                 .map_err(|e| DecodeError::Ffmpeg {
                     code: 0,
                     message: format!("Failed to scale frame: {e}"),
                 })?;
 
             // Copy timestamp
-            (*dst_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
+            dst_frame.set_pts(self.frame.pts());
 
             // Convert to VideoFrame
-            let video_frame = self.av_frame_to_video_frame(dst_frame.as_ptr())?;
+            let video_frame = self.av_frame_to_video_frame(&dst_frame)?;
 
             // dst_frame is automatically freed when it drops at scope end
 
