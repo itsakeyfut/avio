@@ -46,7 +46,7 @@ mod tests {
     /// Helper struct to manage decoded audio context.
     struct AudioDecoder {
         format_ctx: *mut crate::AVFormatContext,
-        codec_ctx: *mut crate::AVCodecContext,
+        codec_ctx: crate::CodecContext,
         stream_index: i32,
         frame: *mut crate::AVFrame,
         packet: *mut crate::AVPacket,
@@ -56,7 +56,7 @@ mod tests {
         /// Open an audio file and prepare for decoding.
         unsafe fn open(path: &std::path::Path) -> Result<Self, i32> {
             use crate::{
-                AVMediaType_AVMEDIA_TYPE_AUDIO, av_frame_alloc, av_packet_alloc, avcodec,
+                AVMediaType_AVMEDIA_TYPE_AUDIO, av_frame_alloc, av_packet_alloc,
                 avformat::{close_input, find_stream_info, open_input},
             };
 
@@ -87,22 +87,21 @@ mod tests {
             let codecpar = (*stream).codecpar;
 
             // Find decoder
-            let codec =
-                avcodec::find_decoder((*codecpar).codec_id).ok_or(crate::error_codes::EINVAL)?;
+            let codec = crate::Codec::find_decoder((*codecpar).codec_id)
+                .ok_or(crate::error_codes::EINVAL)?;
 
-            // Allocate codec context
-            let codec_ctx = avcodec::alloc_context3(codec)?;
+            // Allocate, configure, and open the owned codec context (frees on drop).
+            let mut codec_ctx = crate::CodecContext::new(Some(codec)).map_err(|e| e.code())?;
+            codec_ctx
+                .parameters_to_context(codecpar)
+                .map_err(|e| e.code())?;
+            codec_ctx
+                .open(codec, std::ptr::null_mut())
+                .map_err(|e| e.code())?;
 
-            // Copy parameters
-            avcodec::parameters_to_context(codec_ctx, codecpar)?;
-
-            // Open codec
-            avcodec::open2(codec_ctx, codec, std::ptr::null_mut())?;
-
-            // Allocate frame and packet
+            // Allocate frame and packet. On failure the owned `codec_ctx` drops (frees).
             let frame = av_frame_alloc();
             if frame.is_null() {
-                avcodec::free_context(&mut (codec_ctx as *mut _));
                 close_input(&mut (format_ctx as *mut _));
                 return Err(crate::error_codes::ENOMEM);
             }
@@ -110,7 +109,6 @@ mod tests {
             let packet = av_packet_alloc();
             if packet.is_null() {
                 crate::av_frame_free(&mut (frame as *mut _));
-                avcodec::free_context(&mut (codec_ctx as *mut _));
                 close_input(&mut (format_ctx as *mut _));
                 return Err(crate::error_codes::ENOMEM);
             }
@@ -131,7 +129,7 @@ mod tests {
 
             loop {
                 // Try to receive a frame from the decoder
-                match avcodec::receive_frame(self.codec_ctx, self.frame) {
+                match avcodec::receive_frame(self.codec_ctx.as_mut_ptr(), self.frame) {
                     Ok(()) => return Some(&*self.frame),
                     Err(e) if e == error_codes::EAGAIN => {
                         // Need more input
@@ -151,8 +149,9 @@ mod tests {
                         }
                         Err(_) => {
                             // EOF or error - flush decoder
-                            let _ = avcodec::send_packet(self.codec_ctx, std::ptr::null());
-                            match avcodec::receive_frame(self.codec_ctx, self.frame) {
+                            let _ =
+                                avcodec::send_packet(self.codec_ctx.as_mut_ptr(), std::ptr::null());
+                            match avcodec::receive_frame(self.codec_ctx.as_mut_ptr(), self.frame) {
                                 Ok(()) => return Some(&*self.frame),
                                 Err(_) => return None,
                             }
@@ -161,24 +160,24 @@ mod tests {
                 }
 
                 // Send packet to decoder
-                let _ = avcodec::send_packet(self.codec_ctx, self.packet);
+                let _ = avcodec::send_packet(self.codec_ctx.as_mut_ptr(), self.packet);
                 crate::av_packet_unref(self.packet);
             }
         }
 
         /// Get sample format of the decoded audio.
         unsafe fn sample_format(&self) -> crate::AVSampleFormat {
-            (*self.codec_ctx).sample_fmt
+            (*self.codec_ctx.as_ptr()).sample_fmt
         }
 
         /// Get sample rate of the decoded audio.
         unsafe fn sample_rate(&self) -> i32 {
-            (*self.codec_ctx).sample_rate
+            (*self.codec_ctx.as_ptr()).sample_rate
         }
 
         /// Get channel layout of the decoded audio.
         unsafe fn channel_layout(&self) -> &crate::AVChannelLayout {
-            &(*self.codec_ctx).ch_layout
+            &(*self.codec_ctx.as_ptr()).ch_layout
         }
     }
 
@@ -194,12 +193,12 @@ mod tests {
                 if !self.frame.is_null() {
                     crate::av_frame_free(&mut self.frame);
                 }
-                if !self.codec_ctx.is_null() {
-                    crate::avcodec::free_context(&mut self.codec_ctx);
-                }
                 if !self.format_ctx.is_null() {
                     crate::avformat::close_input(&mut self.format_ctx);
                 }
+                // `codec_ctx` (owned CodecContext) frees itself via field drop
+                // after this body; the codec and format contexts are independent
+                // allocations, so the order is sound.
             }
         }
     }
