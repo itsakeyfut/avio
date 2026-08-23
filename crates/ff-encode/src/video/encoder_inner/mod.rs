@@ -40,11 +40,10 @@ use ff_sys::{
     AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
-    av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free,
-    av_packet_new_side_data, av_packet_unref, av_write_trailer, avcodec,
-    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header, swresample, swscale,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, av_frame_alloc, av_frame_free, av_interleaved_write_frame,
+    av_mallocz, av_packet_alloc, av_packet_free, av_packet_new_side_data, av_packet_unref,
+    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
+    avformat_new_stream, avformat_write_header, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -67,10 +66,10 @@ pub(super) struct VideoEncoderInner {
     pub(super) audio_stream_index: i32,
 
     /// Scaling context for pixel format conversion
-    pub(super) sws_ctx: Option<*mut SwsContext>,
+    pub(super) sws_ctx: Option<ff_sys::ScaleContext>,
 
     /// Resampling context for audio format conversion
-    pub(super) swr_ctx: Option<*mut SwrContext>,
+    pub(super) swr_ctx: Option<ff_sys::ResampleContext>,
 
     /// Sample FIFO for fixed-frame-size codecs (AAC, FLAC, ALAC …).
     /// `None` for variable-frame-size codecs (PCM, Vorbis) where `frame_size == 0`.

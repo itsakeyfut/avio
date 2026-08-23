@@ -111,6 +111,44 @@ fn test_encode_different_resolutions() {
 }
 
 #[test]
+fn test_scaler_should_rebuild_when_source_dimensions_change() {
+    // Drive the video scale path AND its dimension-change cache-rebuild through a
+    // single encoder: the source frames differ from the encoder's output size (so
+    // libswscale runs), and their sizes change between pushes (so the cached
+    // ScaleContext is rebuilt, dropping the old one exactly once). MPEG-4 is
+    // always available and needs no filters, so this runs unconditionally in CI.
+    let output_path = test_output_path("test_scaler_rebuild.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Encoder creation failed (no suitable codec): {}", e);
+            return; // Skip test
+        }
+    };
+
+    // Two different source geometries, both != the 640x480 output, so each is
+    // scaled; the change between them forces one context rebuild (move-assign).
+    let source_sizes = [(320, 240), (800, 600), (800, 600), (320, 240)];
+    for (width, height) in source_sizes {
+        let frame = create_black_frame(width, height);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push scaled video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
 fn test_encode_different_framerates() {
     // Note: MPEG-4 supports max 65535 for timebase denominator (≈65 fps)
     let framerates = [24.0, 30.0, 60.0];

@@ -30,7 +30,7 @@ use ff_sys::{
     av_write_trailer, avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
     avfilter_graph_create_filter, avfilter_graph_free, avfilter_link, avformat,
     avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header, swscale,
+    avformat_write_header,
 };
 
 use crate::PreviewImageError;
@@ -350,22 +350,21 @@ unsafe fn encode_frame_as_png(
         }
         // SAFETY: src_pix_fmt and AVPixelFormat_AV_PIX_FMT_RGB24 are valid;
         // frame and cf buffers are allocated and large enough.
-        let sws_ctx = swscale::get_context(
+        let mut sws_ctx = ff_sys::ScaleContext::new(
             width,
             height,
             src_pix_fmt,
             width,
             height,
             AVPixelFormat_AV_PIX_FMT_RGB24,
-            swscale::scale_flags::BILINEAR,
+            ff_sys::swscale::scale_flags::BILINEAR,
         )
         .map_err(|e| {
             let mut f = cf;
             av_frame_free(std::ptr::addr_of_mut!(f));
-            PreviewImageError::from_ffmpeg_error(e)
+            PreviewImageError::from_ffmpeg_error(e.code())
         })?;
-        let scale_ret = swscale::scale(
-            sws_ctx,
+        let scale_ret = sws_ctx.scale(
             (*frame).data.as_ptr().cast::<*const u8>(),
             (*frame).linesize.as_ptr(),
             0,
@@ -373,11 +372,11 @@ unsafe fn encode_frame_as_png(
             (*cf).data.as_mut_ptr().cast_const(),
             (*cf).linesize.as_mut_ptr(),
         );
-        swscale::free_context(sws_ctx);
+        // sws_ctx drops at the end of this scope, freeing the context.
         if let Err(e) = scale_ret {
             let mut f = cf;
             av_frame_free(std::ptr::addr_of_mut!(f));
-            return Err(PreviewImageError::from_ffmpeg_error(e));
+            return Err(PreviewImageError::from_ffmpeg_error(e.code()));
         }
         cf
     } else {

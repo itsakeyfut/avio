@@ -20,7 +20,7 @@ use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
     AudioCodec, CString, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame,
     av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref, avformat_free_context,
-    avformat_new_stream, ptr, swresample, swscale,
+    avformat_new_stream, ptr, swresample,
 };
 
 impl VideoEncoderInner {
@@ -836,15 +836,11 @@ impl VideoEncoderInner {
         // Free audio codec context; drops on assignment.
         self.audio_codec_ctx = None;
 
-        // Free scaling context
-        if let Some(ctx) = self.sws_ctx.take() {
-            swscale::free_context(ctx);
-        }
+        // Free scaling context (owned ScaleContext drops on assignment).
+        self.sws_ctx = None;
 
-        // Free resampling context
-        if let Some(mut ctx) = self.swr_ctx.take() {
-            swresample::free(&raw mut ctx);
-        }
+        // Free resampling context (owned ResampleContext drops on assignment).
+        self.swr_ctx = None;
 
         // Free audio FIFO
         if let Some(fifo) = self.audio_fifo.take() {

@@ -14,7 +14,7 @@ use super::color::{pixel_format_to_av, sample_format_to_av};
 use super::{
     AVChannelLayout, AVCodecContext, AVFrame, AVPixelFormat, AudioFrame, EncodeError,
     VideoEncoderInner, VideoFrame, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_unref, ptr, swresample, swscale,
+    av_packet_unref, ptr, swresample,
 };
 
 /// Maximum number of planes in AVFrame data/linesize arrays.
@@ -118,24 +118,20 @@ impl VideoEncoderInner {
             || self.last_src_format != Some(src_fmt);
 
         if needs_new_context || self.sws_ctx.is_none() {
-            // Free old context if exists
-            if let Some(ctx) = self.sws_ctx.take() {
-                swscale::free_context(ctx);
-            }
-
-            // Create new SwsContext with fast BILINEAR algorithm
-            let sws = swscale::get_context(
-                src_width as i32,
-                src_height as i32,
-                src_fmt,
-                target_width as i32,
-                target_height as i32,
-                target_fmt,
-                ff_sys::swscale::scale_flags::BILINEAR, // Fast scaling algorithm
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
-
-            self.sws_ctx = Some(sws);
+            // Create a new scaling context with the fast BILINEAR algorithm.
+            // The old context (if any) drops on reassignment.
+            self.sws_ctx = Some(
+                ff_sys::ScaleContext::new(
+                    src_width as i32,
+                    src_height as i32,
+                    src_fmt,
+                    target_width as i32,
+                    target_height as i32,
+                    target_fmt,
+                    ff_sys::swscale::scale_flags::BILINEAR, // Fast scaling algorithm
+                )
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?,
+            );
             self.last_src_width = Some(src_width);
             self.last_src_height = Some(src_height);
             self.last_src_format = Some(src_fmt);
@@ -219,7 +215,7 @@ impl VideoEncoderInner {
 
     /// Scale frame using SwsContext (when formats or dimensions differ).
     pub(super) unsafe fn scale_frame(
-        &self,
+        &mut self,
         src: &VideoFrame,
         dst: *mut AVFrame,
         target_fmt: AVPixelFormat,
@@ -254,22 +250,22 @@ impl VideoEncoderInner {
             }
         }
 
-        // Perform scaling/conversion
-        let sws_ctx = self.sws_ctx.ok_or_else(|| EncodeError::Ffmpeg {
-            code: 0,
-            message: "Scaling context not initialized".to_string(),
-        })?;
-
-        swscale::scale(
-            sws_ctx,
-            src_data.as_ptr(),
-            src_linesize.as_ptr(),
-            0,
-            src.height() as i32,
-            (*dst).data.as_mut_ptr().cast_const(),
-            (*dst).linesize.as_mut_ptr(),
-        )
-        .map_err(EncodeError::from_ffmpeg_error)?;
+        // Perform scaling/conversion using the cached scaling context.
+        self.sws_ctx
+            .as_mut()
+            .ok_or_else(|| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Scaling context not initialized".to_string(),
+            })?
+            .scale(
+                src_data.as_ptr(),
+                src_linesize.as_ptr(),
+                0,
+                src.height() as i32,
+                (*dst).data.as_mut_ptr().cast_const(),
+                (*dst).linesize.as_mut_ptr(),
+            )
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         Ok(())
     }
@@ -429,26 +425,21 @@ impl VideoEncoderInner {
             || !swresample::channel_layout::is_equal(&raw const src_ch_layout, target_ch_layout);
 
         if needs_resampling {
-            // Initialize resampler if needed
+            // Initialize resampler if needed (RAII: allocates, configures, and
+            // initializes internally; frees itself on drop).
             if self.swr_ctx.is_none() {
-                let swr_ctx = swresample::alloc_set_opts2(
-                    target_ch_layout,
-                    target_format,
-                    target_sample_rate,
-                    &raw const src_ch_layout,
-                    src_format,
-                    src_sample_rate,
-                )
-                .map_err(EncodeError::from_ffmpeg_error)?;
-
-                swresample::init(swr_ctx).map_err(EncodeError::from_ffmpeg_error)?;
-                self.swr_ctx = Some(swr_ctx);
+                self.swr_ctx = Some(
+                    ff_sys::ResampleContext::new(
+                        target_ch_layout,
+                        target_format,
+                        target_sample_rate,
+                        &raw const src_ch_layout,
+                        src_format,
+                        src_sample_rate,
+                    )
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?,
+                );
             }
-
-            let swr_ctx = self.swr_ctx.ok_or_else(|| EncodeError::Ffmpeg {
-                code: 0,
-                message: "Resampling context not initialized".to_string(),
-            })?;
 
             // Estimate output sample count
             let out_samples = swresample::estimate_output_samples(
@@ -488,14 +479,20 @@ impl VideoEncoderInner {
             };
 
             // Convert
-            let samples_out = swresample::convert(
-                swr_ctx,
-                (*dst).data.as_mut_ptr().cast(),
-                out_samples,
-                in_ptrs.as_ptr(),
-                src.samples() as i32,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            let samples_out = self
+                .swr_ctx
+                .as_mut()
+                .ok_or_else(|| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Resampling context not initialized".to_string(),
+                })?
+                .convert(
+                    (*dst).data.as_mut_ptr().cast(),
+                    out_samples,
+                    in_ptrs.as_ptr(),
+                    src.samples() as i32,
+                )
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
             (*dst).nb_samples = samples_out;
         } else {
