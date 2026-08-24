@@ -164,11 +164,45 @@ impl Frame {
         unsafe { (*self.ptr.as_ptr()).nb_samples }
     }
 
+    /// Sets the number of audio samples per channel (audio frames).
+    pub fn set_nb_samples(&mut self, nb_samples: c_int) {
+        // SAFETY: `self.ptr` is a valid owned frame; `nb_samples` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).nb_samples = nb_samples };
+    }
+
     /// Returns the audio sample rate in Hz (audio frames).
     #[must_use]
     pub fn sample_rate(&self) -> c_int {
         // SAFETY: `self.ptr` is a valid owned frame; `sample_rate` is a plain field.
         unsafe { (*self.ptr.as_ptr()).sample_rate }
+    }
+
+    /// Sets the audio sample rate in Hz (audio frames).
+    pub fn set_sample_rate(&mut self, sample_rate: c_int) {
+        // SAFETY: `self.ptr` is a valid owned frame; `sample_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).sample_rate = sample_rate };
+    }
+
+    /// Copies `layout` into the frame's channel layout (audio frames).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `av_channel_layout_copy` fails (e.g. allocation
+    /// for an extended layout).
+    pub fn set_ch_layout(&mut self, layout: &crate::AVChannelLayout) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned frame; `layout` is a valid channel
+        //         layout; `av_channel_layout_copy` copies it into `ch_layout`.
+        let ret = unsafe {
+            crate::av_channel_layout_copy(
+                &raw mut (*self.ptr.as_ptr()).ch_layout,
+                std::ptr::from_ref(layout),
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
     }
 
     /// Returns the number of audio channels (audio frames).
@@ -425,6 +459,25 @@ mod tests {
         let frame = Frame::new().expect("frame allocation should succeed");
         assert!(!frame.as_ptr().is_null());
         // Dropping `frame` frees it exactly once (no panic / double free).
+    }
+
+    #[test]
+    fn set_sample_rate_and_nb_samples_should_round_trip() {
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_sample_rate(48_000);
+        frame.set_nb_samples(1024);
+        assert_eq!(frame.sample_rate(), 48_000);
+        assert_eq!(frame.nb_samples(), 1024);
+    }
+
+    #[test]
+    fn set_ch_layout_should_copy_the_channel_count() {
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        let layout = crate::swresample::channel_layout::with_channels(2);
+        frame
+            .set_ch_layout(&layout)
+            .expect("copying a standard stereo layout should succeed");
+        assert_eq!(frame.channels(), 2);
     }
 
     #[test]
