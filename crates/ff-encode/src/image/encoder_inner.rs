@@ -654,11 +654,16 @@ mod tests {
     // context must free itself with a null `pb` without closing anything.
     #[test]
     fn drop_with_unopened_context_should_not_panic() {
+        // Allocate the output context first; skip gracefully when no still-image
+        // muxer is available (CI's minimal FFmpeg is built without image2/png).
+        let Ok(format_ctx) = OutputFormatContext::new(None, std::path::Path::new("dummy.png"))
+        else {
+            return;
+        };
         // All owned fields free themselves on drop; `format_ctx` has no `pb`
         // opened, so its drop frees the context without closing an IO.
         let inner = ImageEncoderInner {
-            format_ctx: OutputFormatContext::new(None, std::path::Path::new("dummy.png"))
-                .expect("output context alloc"),
+            format_ctx,
             codec_ctx: ff_sys::CodecContext::new(None).expect("generic context alloc"),
             dst_frame: ff_sys::Frame::new().expect("frame alloc"),
             packet: ff_sys::Packet::new().expect("packet alloc"),
