@@ -16,7 +16,7 @@ use super::color::{
 use super::options::codec_to_id;
 use super::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, CString, EncodeError, VideoEncoderConfig, VideoEncoderInner,
-    av_frame_alloc, av_frame_free, av_write_trailer, avformat_write_header, ptr,
+    av_write_trailer, avformat_write_header, ptr,
 };
 
 /// FFmpeg pass-1 encoding flag: collect two-pass statistics, discard encoded output.
@@ -359,88 +359,72 @@ impl VideoEncoderInner {
             });
         }
 
-        let mut av_frame = av_frame_alloc();
-        if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate frame for pass 2".to_string(),
-            });
-        }
+        let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
+            code: 0,
+            message: "Cannot allocate frame for pass 2".to_string(),
+        })?;
 
         // Set frame format — always YUV420P (converted during pass 1).
-        (*av_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
-        (*av_frame).width = tf.width as i32;
-        (*av_frame).height = tf.height as i32;
+        av_frame.set_format(AVPixelFormat_AV_PIX_FMT_YUV420P);
+        av_frame.set_width(tf.width as i32);
+        av_frame.set_height(tf.height as i32);
 
         // Allocate the frame buffer.
-        let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
-        if ret < 0 {
-            av_frame_free(&raw mut av_frame);
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Cannot allocate pass-2 frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
+        av_frame.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Cannot allocate pass-2 frame buffer: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
-        // Copy the buffered YUV420P data into the AVFrame.
-        let uv_height = (tf.height as usize).div_ceil(2);
+        // Copy the buffered YUV420P data into the AVFrame. `video_plane_mut`
+        // self-sizes each destination plane (Y full height, U/V by subsampling)
+        // and yields `None` for an absent plane.
         for (plane_idx, (plane_data, src_stride)) in
             tf.planes.iter().zip(tf.strides.iter()).enumerate()
         {
-            if plane_idx >= 3 || (*av_frame).data[plane_idx].is_null() || plane_data.is_empty() {
+            if plane_idx >= 3 || plane_data.is_empty() {
                 break;
             }
-            let dst_stride = (*av_frame).linesize[plane_idx] as usize;
-            let plane_height = if plane_idx == 0 {
-                tf.height as usize
-            } else {
-                uv_height
+            // SAFETY: `av_frame` is a valid get_buffer'd frame; `linesize` is a plain field.
+            let dst_stride = (*av_frame.as_ptr()).linesize[plane_idx] as usize;
+            let Some(dst_plane) = av_frame.video_plane_mut(plane_idx) else {
+                break;
             };
 
-            for row in 0..plane_height {
+            let num_rows = dst_plane.len() / dst_stride;
+            for row in 0..num_rows {
                 let src_off = row * src_stride;
                 let dst_off = row * dst_stride;
                 let copy_len = (*src_stride).min(dst_stride);
 
                 if src_off + copy_len <= plane_data.len() {
-                    // SAFETY: bounds checked above; both pointers are valid and
-                    // the regions do not overlap.
-                    ptr::copy_nonoverlapping(
-                        plane_data.as_ptr().add(src_off),
-                        (*av_frame).data[plane_idx].add(dst_off),
-                        copy_len,
-                    );
+                    dst_plane[dst_off..dst_off + copy_len]
+                        .copy_from_slice(&plane_data[src_off..src_off + copy_len]);
                 }
             }
         }
 
-        (*av_frame).pts = tf.pts;
+        av_frame.set_pts(tf.pts);
 
         // Send to pass-2 encoder.
-        let send_result = self
-            .video_codec_ctx
+        self.video_codec_ctx
             .as_mut()
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Video codec not initialized".to_string(),
             })?
-            .send_frame(av_frame);
-        if let Err(e) = send_result {
-            av_frame_free(&raw mut av_frame);
-            return Err(EncodeError::Ffmpeg {
+            .send_frame(av_frame.as_ptr())
+            .map_err(|e| EncodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
                     "Failed to send frame to pass-2 encoder: {}",
                     ff_sys::av_error_string(e.code())
                 ),
-            });
-        }
+            })?;
 
-        let receive_result = self.receive_packets();
-        av_frame_free(&raw mut av_frame);
-        receive_result?;
+        // Receive packets (the owned `av_frame` drops at end of scope).
+        self.receive_packets()?;
 
         self.frame_count += 1;
         Ok(())

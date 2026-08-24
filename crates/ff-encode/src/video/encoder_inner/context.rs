@@ -19,8 +19,7 @@ use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
     AudioCodec, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame, av_mallocz,
-    av_packet_alloc, av_packet_free, av_packet_unref, avformat_free_context, avformat_new_stream,
-    ptr,
+    avformat_free_context, avformat_new_stream, ptr,
 };
 
 impl VideoEncoderInner {
@@ -730,18 +729,17 @@ impl VideoEncoderInner {
         let out_stream = *(*self.format_ctx).streams.add(out_stream_index as usize);
         let out_time_base = (*out_stream).time_base;
 
-        let pkt = av_packet_alloc();
-        if pkt.is_null() {
+        let Ok(mut pkt) = ff_sys::Packet::new() else {
             let mut src_ctx_ptr = src_ctx;
             ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "subtitle_passthrough: av_packet_alloc failed".to_string(),
             });
-        }
+        };
 
         loop {
-            match ff_sys::avformat::read_frame(src_ctx, pkt) {
+            match ff_sys::avformat::read_frame(src_ctx, pkt.as_mut_ptr()) {
                 Err(e) if e == ff_sys::error_codes::EOF => break,
                 Err(e) => {
                     log::warn!(
@@ -754,25 +752,29 @@ impl VideoEncoderInner {
                 Ok(()) => {}
             }
 
+            // This is a demux-input packet; its fields have no typed accessor and
+            // are read/written through the packet pointer.
+            let p = pkt.as_mut_ptr();
+
             // Skip packets from other streams.
-            if (*pkt).stream_index != source_stream_index as i32 {
-                av_packet_unref(pkt);
+            if (*p).stream_index != source_stream_index as i32 {
+                pkt.unref();
                 continue;
             }
 
             // Rescale timestamps from the source stream's time base to the output stream's.
             // SAFETY: pkt is valid; time bases are plain value types.
-            ff_sys::av_packet_rescale_ts(pkt, in_time_base, out_time_base);
-            (*pkt).stream_index = out_stream_index;
+            ff_sys::av_packet_rescale_ts(p, in_time_base, out_time_base);
+            (*p).stream_index = out_stream_index;
 
             // SRT/subtitle packets typically carry only PTS (DTS is AV_NOPTS_VALUE).
             // The matroska muxer requires a valid DTS for av_interleaved_write_frame;
             // mirror PTS → DTS when DTS is absent so packets are not silently dropped.
-            if (*pkt).dts == i64::MIN {
-                (*pkt).dts = (*pkt).pts;
+            if (*p).dts == i64::MIN {
+                (*p).dts = (*p).pts;
             }
 
-            let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
+            let write_ret = av_interleaved_write_frame(self.format_ctx, p);
             if write_ret < 0 {
                 log::warn!(
                     "subtitle_passthrough: av_interleaved_write_frame failed \
@@ -780,10 +782,10 @@ impl VideoEncoderInner {
                     ff_sys::av_error_string(write_ret)
                 );
             }
-            av_packet_unref(pkt);
+            pkt.unref();
         }
 
-        av_packet_free(std::ptr::from_mut::<*mut _>(&mut (pkt as *mut _)));
+        // `pkt` drops at end of scope, freeing it.
         let mut src_ctx_ptr = src_ctx;
         ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
 

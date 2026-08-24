@@ -12,9 +12,8 @@
 
 use super::color::{pixel_format_to_av, sample_format_to_av};
 use super::{
-    AVChannelLayout, AVCodecContext, AVFrame, AVPixelFormat, AudioFrame, EncodeError,
-    VideoEncoderInner, VideoFrame, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_unref, ptr, swresample,
+    AVChannelLayout, AVCodecContext, AVPixelFormat, AudioFrame, EncodeError, VideoEncoderInner,
+    VideoFrame, av_interleaved_write_frame, swresample,
 };
 
 /// Maximum number of planes in AVFrame data/linesize arrays.
@@ -37,25 +36,21 @@ impl VideoEncoderInner {
     pub(super) unsafe fn drain_pass1_packets(
         codec_ctx: &mut ff_sys::CodecContext,
     ) -> Result<(), EncodeError> {
-        let mut packet = av_packet_alloc();
-        if packet.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate packet".to_string(),
-            });
-        }
+        let mut packet = ff_sys::Packet::new().map_err(|_| EncodeError::Ffmpeg {
+            code: 0,
+            message: "Cannot allocate packet".to_string(),
+        })?;
 
         loop {
-            match codec_ctx.receive_packet(packet) {
+            match codec_ctx.receive_packet(packet.as_mut_ptr()) {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Discard — do not write to the format context.
-                    av_packet_unref(packet);
+                    packet.unref();
                 }
                 Ok(ff_sys::ReceiveOutcome::NeedInput | ff_sys::ReceiveOutcome::Drained) => {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -67,7 +62,6 @@ impl VideoEncoderInner {
             }
         }
 
-        av_packet_free(&raw mut packet);
         Ok(())
     }
 
@@ -90,13 +84,12 @@ impl VideoEncoderInner {
     ///
     /// # Safety
     ///
-    /// This function is unsafe because it directly manipulates FFmpeg AVFrame pointers.
-    /// The caller must ensure that `dst` is a valid, properly allocated AVFrame pointer
-    /// and that `codec_ctx` is a valid, open `AVCodecContext`.
+    /// The caller must ensure `codec_ctx` is a valid, open `AVCodecContext`; its
+    /// fields are read through the raw pointer. `dst` is a safe owned frame.
     pub(super) unsafe fn convert_video_frame(
         &mut self,
         src: &VideoFrame,
-        dst: *mut AVFrame,
+        dst: &mut ff_sys::Frame,
         codec_ctx: *mut AVCodecContext,
     ) -> Result<(), EncodeError> {
         let target_fmt = (*codec_ctx).pix_fmt;
@@ -145,29 +138,26 @@ impl VideoEncoderInner {
     pub(super) unsafe fn copy_frame_direct(
         &self,
         src: &VideoFrame,
-        dst: *mut AVFrame,
+        dst: &mut ff_sys::Frame,
         target_fmt: AVPixelFormat,
     ) -> Result<(), EncodeError> {
         // Set frame properties
-        (*dst).format = target_fmt;
-        (*dst).width = src.width() as i32;
-        (*dst).height = src.height() as i32;
+        dst.set_format(target_fmt);
+        dst.set_width(src.width() as i32);
+        dst.set_height(src.height() as i32);
 
         // Allocate frame buffer
-        let ret = ff_sys::av_frame_get_buffer(dst, 0);
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Cannot allocate frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
+        dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Cannot allocate frame buffer: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
         // Copy each plane directly
         for (i, plane) in src.planes().iter().enumerate() {
-            if i >= (*dst).data.len() || (*dst).data[i].is_null() {
+            if i >= MAX_PLANES {
                 break;
             }
 
@@ -181,31 +171,32 @@ impl VideoEncoderInner {
                     message: format!("Missing stride for plane {}", i),
                 })?;
 
-            let dst_stride = (*dst).linesize[i] as usize;
             let plane_data = plane.data();
-            let plane_height = self.get_plane_height(src.height(), i, src.format());
+            // The destination stride is the frame's own linesize for plane i.
+            // SAFETY: `dst` is a valid get_buffer'd frame; `linesize` is a plain field.
+            let dst_stride = (*dst.as_ptr()).linesize[i] as usize;
+            // `video_plane_mut` yields `None` for an absent plane (null data),
+            // matching the previous null-plane break; it self-sizes to the plane's
+            // `linesize * plane_height`, superseding the removed `get_plane_height`.
+            let Some(dst_plane) = dst.video_plane_mut(i) else {
+                break;
+            };
 
-            // Optimization: If strides match, copy entire plane at once
+            // Optimization: If strides match, copy the whole plane at once.
             if src_stride == dst_stride {
-                let total_size = src_stride * plane_height;
-                if total_size <= plane_data.len() {
-                    ptr::copy_nonoverlapping(plane_data.as_ptr(), (*dst).data[i], total_size);
-                    continue;
-                }
-            }
-
-            // Copy line by line to handle different strides
-            for y in 0..plane_height {
-                let src_offset = y * src_stride;
-                let dst_offset = y * dst_stride;
-                let line_size = src_stride.min(dst_stride);
-
-                if src_offset + line_size <= plane_data.len() {
-                    ptr::copy_nonoverlapping(
-                        plane_data.as_ptr().add(src_offset),
-                        (*dst).data[i].add(dst_offset),
-                        line_size,
-                    );
+                let n = plane_data.len().min(dst_plane.len());
+                dst_plane[..n].copy_from_slice(&plane_data[..n]);
+            } else {
+                // Copy line by line to handle different strides.
+                let row_bytes = src_stride.min(dst_stride);
+                let num_rows = dst_plane.len() / dst_stride;
+                for row in 0..num_rows {
+                    let src_off = row * src_stride;
+                    let dst_off = row * dst_stride;
+                    if src_off + row_bytes <= plane_data.len() {
+                        dst_plane[dst_off..dst_off + row_bytes]
+                            .copy_from_slice(&plane_data[src_off..src_off + row_bytes]);
+                    }
                 }
             }
         }
@@ -217,106 +208,41 @@ impl VideoEncoderInner {
     pub(super) unsafe fn scale_frame(
         &mut self,
         src: &VideoFrame,
-        dst: *mut AVFrame,
+        dst: &mut ff_sys::Frame,
         target_fmt: AVPixelFormat,
         target_width: u32,
         target_height: u32,
     ) -> Result<(), EncodeError> {
         // Set frame properties
-        (*dst).format = target_fmt;
-        (*dst).width = target_width as i32;
-        (*dst).height = target_height as i32;
+        dst.set_format(target_fmt);
+        dst.set_width(target_width as i32);
+        dst.set_height(target_height as i32);
 
         // Allocate frame buffer
-        let ret = ff_sys::av_frame_get_buffer(dst, 0);
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Cannot allocate frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
+        dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Cannot allocate frame buffer: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
 
-        // Prepare source data pointers and strides
-        let mut src_data: [*const u8; MAX_PLANES] = [ptr::null(); MAX_PLANES];
-        let mut src_linesize: [i32; MAX_PLANES] = [0; MAX_PLANES];
+        // Prepare source plane slices and strides.
+        let src_planes: Vec<&[u8]> = src.planes().iter().map(|p| p.data()).collect();
+        let src_strides: Vec<i32> = src.strides().iter().map(|&s| s as i32).collect();
 
-        for (i, plane) in src.planes().iter().enumerate() {
-            if i < MAX_PLANES {
-                src_data[i] = plane.data().as_ptr();
-                src_linesize[i] = src.strides()[i] as i32;
-            }
-        }
-
-        // Perform scaling/conversion using the cached scaling context.
+        // Perform scaling/conversion using the cached scaling context (kept across
+        // frames — unlike the single-use image encoder, this context is reused).
         self.sws_ctx
             .as_mut()
             .ok_or_else(|| EncodeError::Ffmpeg {
                 code: 0,
                 message: "Scaling context not initialized".to_string(),
             })?
-            .scale(
-                src_data.as_ptr(),
-                src_linesize.as_ptr(),
-                0,
-                src.height() as i32,
-                (*dst).data.as_mut_ptr().cast_const(),
-                (*dst).linesize.as_mut_ptr(),
-            )
+            .scale_planes(&src_planes, &src_strides, src.height() as i32, dst)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         Ok(())
-    }
-
-    /// Calculate the height of a plane for a given frame height and pixel format.
-    ///
-    /// Different pixel formats have different plane heights. For YUV 4:2:0 formats,
-    /// the U/V planes are half the height of the Y plane.
-    ///
-    /// # Arguments
-    ///
-    /// * `frame_height` - The height of the entire frame
-    /// * `plane_index` - The plane index (0: Y/RGB, 1: U/UV, 2: V)
-    /// * `format` - The pixel format
-    ///
-    /// # Returns
-    ///
-    /// The height (number of rows) for the specified plane.
-    #[allow(clippy::manual_div_ceil)]
-    pub(super) fn get_plane_height(
-        &self,
-        frame_height: u32,
-        plane_index: usize,
-        format: ff_format::PixelFormat,
-    ) -> usize {
-        use ff_format::PixelFormat;
-
-        match format {
-            // YUV 4:2:0 - U and V planes are half height
-            PixelFormat::Yuv420p | PixelFormat::Yuv420p10le => {
-                if plane_index == 0 {
-                    frame_height as usize
-                } else {
-                    // Safe division with ceiling: (height + 1) / 2
-                    // Equivalent to div_ceil(2) but more explicit about avoiding overflow
-                    // Note: div_ceil() internally uses (n + d - 1) / d which could overflow
-                    ((frame_height as usize) + 1) / 2
-                }
-            }
-            // Semi-planar NV12/NV21/P010 - UV plane is half height
-            PixelFormat::Nv12 | PixelFormat::Nv21 | PixelFormat::P010le => {
-                if plane_index == 0 {
-                    frame_height as usize
-                } else {
-                    // Safe division with ceiling: (height + 1) / 2
-                    ((frame_height as usize) + 1) / 2
-                }
-            }
-            // All other formats - full height for all planes
-            _ => frame_height as usize,
-        }
     }
 
     /// Receive encoded packets from the encoder.
@@ -327,13 +253,10 @@ impl VideoEncoderInner {
             });
         }
 
-        let mut packet = av_packet_alloc();
-        if packet.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate packet".to_string(),
-            });
-        }
+        let mut packet = ff_sys::Packet::new().map_err(|_| EncodeError::Ffmpeg {
+            code: 0,
+            message: "Cannot allocate packet".to_string(),
+        })?;
 
         loop {
             let recv = self
@@ -342,7 +265,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .receive_packet(packet);
+                .receive_packet(packet.as_mut_ptr());
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -352,7 +275,6 @@ impl VideoEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -363,33 +285,33 @@ impl VideoEncoderInner {
                 }
             }
 
-            // Set stream index
-            (*packet).stream_index = self.video_stream_index;
+            // Set stream index and, for keyframes, attach HDR10 side data. These
+            // packet fields have no typed accessor, so they are read/written
+            // through the packet pointer.
+            let pkt = packet.as_mut_ptr();
+            (*pkt).stream_index = self.video_stream_index;
 
-            // Attach HDR10 side data to keyframe packets.
             if let Some(ref meta) = self.hdr10_metadata {
                 const AV_PKT_FLAG_KEY: i32 = 1;
-                if (*packet).flags & AV_PKT_FLAG_KEY != 0 {
-                    self.attach_hdr10_side_data(packet, meta);
+                if (*pkt).flags & AV_PKT_FLAG_KEY != 0 {
+                    self.attach_hdr10_side_data(pkt, meta);
                 }
             }
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
+            let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
             if write_ret < 0 {
-                av_packet_unref(packet);
-                av_packet_free(&raw mut packet);
+                packet.unref();
                 return Err(EncodeError::MuxingFailed {
                     reason: ff_sys::av_error_string(write_ret),
                 });
             }
 
-            self.bytes_written += (*packet).size as u64;
+            self.bytes_written += (*pkt).size as u64;
 
-            av_packet_unref(packet);
+            packet.unref();
         }
 
-        av_packet_free(&raw mut packet);
         Ok(())
     }
 
@@ -397,7 +319,7 @@ impl VideoEncoderInner {
     pub(super) unsafe fn convert_audio_frame(
         &mut self,
         src: &AudioFrame,
-        dst: *mut AVFrame,
+        dst: &mut ff_sys::Frame,
     ) -> Result<(), EncodeError> {
         let codec_ctx = self
             .audio_codec_ctx
@@ -448,37 +370,40 @@ impl VideoEncoderInner {
                 src.samples() as i32,
             );
 
-            // Set frame properties
-            (*dst).format = target_format;
-            (*dst).sample_rate = target_sample_rate;
-            (*dst).nb_samples = out_samples;
-
-            // Copy target channel layout
-            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, target_ch_layout)
-                .map_err(EncodeError::from_ffmpeg_error)?;
-
-            // Allocate frame buffer
-            let ret = ff_sys::av_frame_get_buffer(dst, 0);
-            if ret < 0 {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!(
-                        "Cannot allocate audio frame buffer: {}",
-                        ff_sys::av_error_string(ret)
-                    ),
-                });
+            // Set frame properties. These audio scalar fields have no typed
+            // setter, so they are written through the frame pointer.
+            // SAFETY: `dst` is a valid owned frame; these are plain fields.
+            {
+                let p = dst.as_mut_ptr();
+                (*p).format = target_format;
+                (*p).sample_rate = target_sample_rate;
+                (*p).nb_samples = out_samples;
             }
 
-            // Prepare input pointers
-            let in_ptrs: Vec<*const u8> = if src.format().is_planar() {
-                // Planar: one pointer per channel
-                src.planes().iter().map(|p| p.as_ptr()).collect()
+            // Copy target channel layout
+            swresample::channel_layout::copy(
+                &raw mut (*dst.as_mut_ptr()).ch_layout,
+                target_ch_layout,
+            )
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+            // Allocate frame buffer
+            dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Cannot allocate audio frame buffer: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
+
+            // Prepare input plane slices (planar: one per channel; packed: one).
+            let in_planes: Vec<&[u8]> = if src.format().is_planar() {
+                src.planes().iter().map(Vec::as_slice).collect()
             } else {
-                // Packed: single pointer
-                vec![src.planes()[0].as_ptr()]
+                vec![src.planes()[0].as_slice()]
             };
 
-            // Convert
+            // Convert into the output frame's planes.
             let samples_out = self
                 .swr_ctx
                 .as_mut()
@@ -486,52 +411,50 @@ impl VideoEncoderInner {
                     code: 0,
                     message: "Resampling context not initialized".to_string(),
                 })?
-                .convert(
-                    (*dst).data.as_mut_ptr().cast(),
-                    out_samples,
-                    in_ptrs.as_ptr(),
-                    src.samples() as i32,
-                )
+                .convert_into_frame(dst, &in_planes, src.samples() as i32)
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-            (*dst).nb_samples = samples_out;
+            // SAFETY: `dst` is a valid owned frame; `nb_samples` is a plain field.
+            (*dst.as_mut_ptr()).nb_samples = samples_out;
         } else {
-            // No resampling needed, direct copy
-            (*dst).format = src_format;
-            (*dst).sample_rate = src_sample_rate;
-            (*dst).nb_samples = src.samples() as i32;
-
-            // Copy channel layout
-            swresample::channel_layout::copy(&raw mut (*dst).ch_layout, &raw const src_ch_layout)
-                .map_err(EncodeError::from_ffmpeg_error)?;
-
-            // Allocate frame buffer
-            let ret = ff_sys::av_frame_get_buffer(dst, 0);
-            if ret < 0 {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!(
-                        "Cannot allocate audio frame buffer: {}",
-                        ff_sys::av_error_string(ret)
-                    ),
-                });
+            // No resampling needed, direct copy. These audio scalar fields have no
+            // typed setter, so they are written through the frame pointer.
+            // SAFETY: `dst` is a valid owned frame; these are plain fields.
+            {
+                let p = dst.as_mut_ptr();
+                (*p).format = src_format;
+                (*p).sample_rate = src_sample_rate;
+                (*p).nb_samples = src.samples() as i32;
             }
 
-            // Copy audio data
+            // Copy channel layout
+            swresample::channel_layout::copy(
+                &raw mut (*dst.as_mut_ptr()).ch_layout,
+                &raw const src_ch_layout,
+            )
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+            // Allocate frame buffer
+            dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Cannot allocate audio frame buffer: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
+
+            // Copy audio data into the destination frame's planes.
             if src.format().is_planar() {
-                // Copy each plane
                 for (i, plane) in src.planes().iter().enumerate() {
-                    if i < (*dst).data.len() && !(*dst).data[i].is_null() {
-                        let size = plane.len();
-                        ptr::copy_nonoverlapping(plane.as_ptr(), (*dst).data[i], size);
+                    if let Some(dst_plane) = dst.audio_plane_mut(i) {
+                        let n = plane.len().min(dst_plane.len());
+                        dst_plane[..n].copy_from_slice(&plane[..n]);
                     }
                 }
-            } else {
-                // Copy single packed buffer
-                if !(*dst).data[0].is_null() {
-                    let size = src.planes()[0].len();
-                    ptr::copy_nonoverlapping(src.planes()[0].as_ptr(), (*dst).data[0], size);
-                }
+            } else if let Some(dst_plane) = dst.audio_plane_mut(0) {
+                let src_plane = &src.planes()[0];
+                let n = src_plane.len().min(dst_plane.len());
+                dst_plane[..n].copy_from_slice(&src_plane[..n]);
             }
         }
 
@@ -546,13 +469,10 @@ impl VideoEncoderInner {
             });
         }
 
-        let mut packet = av_packet_alloc();
-        if packet.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate packet".to_string(),
-            });
-        }
+        let mut packet = ff_sys::Packet::new().map_err(|_| EncodeError::Ffmpeg {
+            code: 0,
+            message: "Cannot allocate packet".to_string(),
+        })?;
 
         loop {
             let recv = self
@@ -561,7 +481,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Audio codec not initialized".to_string(),
                 })?
-                .receive_packet(packet);
+                .receive_packet(packet.as_mut_ptr());
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -571,7 +491,6 @@ impl VideoEncoderInner {
                     break;
                 }
                 Err(e) => {
-                    av_packet_free(&raw mut packet);
                     return Err(EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -582,25 +501,24 @@ impl VideoEncoderInner {
                 }
             }
 
-            // Set stream index
-            (*packet).stream_index = self.audio_stream_index;
+            // Set stream index. This packet field has no typed accessor, so it is
+            // written through the packet pointer.
+            (*packet.as_mut_ptr()).stream_index = self.audio_stream_index;
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
+            let write_ret = av_interleaved_write_frame(self.format_ctx, packet.as_mut_ptr());
             if write_ret < 0 {
-                av_packet_unref(packet);
-                av_packet_free(&raw mut packet);
+                packet.unref();
                 return Err(EncodeError::MuxingFailed {
                     reason: ff_sys::av_error_string(write_ret),
                 });
             }
 
-            self.bytes_written += (*packet).size as u64;
+            self.bytes_written += (*packet.as_ptr()).size as u64;
 
-            av_packet_unref(packet);
+            packet.unref();
         }
 
-        av_packet_free(&raw mut packet);
         Ok(())
     }
 }
