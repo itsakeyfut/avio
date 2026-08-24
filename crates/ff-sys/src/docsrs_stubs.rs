@@ -33,7 +33,9 @@ pub struct SwsContext(());
 pub struct SwrContext(());
 pub struct AVBufferRef(());
 pub struct AVIOContext(());
-pub struct AVOutputFormat(());
+pub struct AVOutputFormat {
+    pub flags: c_int,
+}
 pub struct AVAudioFifo(());
 
 pub struct AVInputFormat {
@@ -131,6 +133,7 @@ pub struct AVFormatContext {
     pub nb_chapters: c_uint,
     pub chapters: *mut *mut AVChapter,
     pub iformat: *mut AVInputFormat,
+    pub oformat: *const AVOutputFormat,
     pub bit_rate: i64,
     pub pb: *mut AVIOContext,
     pub priv_data: *mut c_void,
@@ -1470,6 +1473,78 @@ impl Drop for InputFormatContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for InputFormatContext {}
+
+// ── RAII owner stub (mirrors crate::format_context::OutputFormatContext) ──────
+// Keeps `ff_sys::OutputFormatContext` available so the mux consumers compile for
+// docs.rs while the real `format_context` module is cfg'd out.
+
+#[derive(Debug)]
+pub struct OutputFormatContext {
+    _ptr: std::ptr::NonNull<AVFormatContext>,
+}
+
+impl OutputFormatContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new(
+        _format_name: Option<&str>,
+        _filename: &std::path::Path,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVFormatContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
+        self._ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn nb_streams(&self) -> u32 {
+        0
+    }
+
+    #[must_use]
+    pub fn oformat_flags(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn is_nofile(&self) -> bool {
+        false
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open_io(&mut self, _path: &std::path::Path) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn write_header(&mut self) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn write_trailer(&mut self) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    pub fn close_io(&mut self) {}
+}
+
+impl Drop for OutputFormatContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for OutputFormatContext {}
 
 // ── Borrowed stream / params stubs (mirror crate::format_context) ─────────────
 

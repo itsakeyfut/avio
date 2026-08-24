@@ -24,17 +24,16 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
     AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_NONE,
     AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, av_interleaved_write_frame, av_write_trailer,
-    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header, swresample,
+    AVCodecID_AV_CODEC_ID_VORBIS, OutputFormatContext, av_interleaved_write_frame,
+    avformat_new_stream, swresample,
 };
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 use std::ptr;
 
 /// Internal encoder state with FFmpeg contexts.
 pub(super) struct AudioEncoderInner {
-    /// Output format context
-    pub(super) format_ctx: *mut AVFormatContext,
+    /// Output format context (owned; frees itself and closes its IO on drop)
+    pub(super) format_ctx: OutputFormatContext,
 
     /// Audio codec context
     pub(super) codec_ctx: Option<ff_sys::CodecContext>,
@@ -80,33 +79,16 @@ impl AudioEncoderInner {
         unsafe {
             ff_sys::ensure_initialized();
 
-            // Allocate output format context
-            let c_path = CString::new(config.path.to_str().ok_or_else(|| {
-                EncodeError::CannotCreateFile {
-                    path: config.path.clone(),
-                }
-            })?)
-            .map_err(|_| EncodeError::CannotCreateFile {
-                path: config.path.clone(),
-            })?;
-
-            let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
-            let ret = avformat_alloc_output_context2(
-                &raw mut format_ctx,
-                ptr::null_mut(),
-                ptr::null(),
-                c_path.as_ptr(),
-            );
-
-            if ret < 0 || format_ctx.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
+            // Allocate output format context (owned; muxer guessed from the path).
+            // On any early return below, its `Drop` closes the IO and frees it.
+            let format_ctx =
+                OutputFormatContext::new(None, &config.path).map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
                     message: format!(
                         "Cannot create output context: {}",
-                        ff_sys::av_error_string(ret)
+                        ff_sys::av_error_string(e.code())
                     ),
-                });
-            }
+                })?;
 
             let mut encoder = Self {
                 format_ctx,
@@ -123,27 +105,21 @@ impl AudioEncoderInner {
             // Initialize audio encoder
             encoder.init_audio_encoder(config)?;
 
-            // Open output file
-            if let Ok(pb) =
-                ff_sys::avformat::open_output(&config.path, ff_sys::avformat::avio_flags::WRITE)
-            {
-                (*format_ctx).pb = pb;
-            } else {
-                encoder.cleanup();
-                return Err(EncodeError::CannotCreateFile {
+            // Open output file (the owned context closes it on drop).
+            encoder.format_ctx.open_io(&config.path).map_err(|_| {
+                EncodeError::CannotCreateFile {
                     path: config.path.clone(),
-                });
-            }
+                }
+            })?;
 
             // Write file header
-            let ret = avformat_write_header(format_ctx, ptr::null_mut());
-            if ret < 0 {
-                encoder.cleanup();
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!("Cannot write header: {}", ff_sys::av_error_string(ret)),
-                });
-            }
+            encoder
+                .format_ctx
+                .write_header()
+                .map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!("Cannot write header: {}", ff_sys::av_error_string(e.code())),
+                })?;
 
             Ok(encoder)
         }
@@ -251,7 +227,7 @@ impl AudioEncoderInner {
         }
 
         // Create stream
-        let stream = avformat_new_stream(self.format_ctx, codec_ptr);
+        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
         if stream.is_null() {
             // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
@@ -271,7 +247,7 @@ impl AudioEncoderInner {
             .parameters_from_context((*stream).codecpar)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        self.stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
+        self.stream_index = (self.format_ctx.nb_streams() - 1) as i32;
         self.codec_ctx = Some(codec_ctx);
 
         Ok(())
@@ -762,7 +738,8 @@ impl AudioEncoderInner {
             (*packet.as_mut_ptr()).stream_index = self.stream_index;
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx, packet.as_mut_ptr());
+            let write_ret =
+                av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), packet.as_mut_ptr());
             if write_ret < 0 {
                 packet.unref();
                 return Err(EncodeError::MuxingFailed {
@@ -803,13 +780,15 @@ impl AudioEncoderInner {
             }
 
             // Write trailer
-            let ret = av_write_trailer(self.format_ctx);
-            if ret < 0 {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
-                });
-            }
+            self.format_ctx
+                .write_trailer()
+                .map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Cannot write trailer: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?;
 
             Ok(())
         } // unsafe
@@ -829,14 +808,8 @@ impl AudioEncoderInner {
         // Free resampling context (owned ResampleContext drops on assignment).
         self.swr_ctx = None;
 
-        // Close output file
-        if !self.format_ctx.is_null() {
-            if !(*self.format_ctx).pb.is_null() {
-                ff_sys::avformat::close_output(&raw mut (*self.format_ctx).pb);
-            }
-            avformat_free_context(self.format_ctx);
-            self.format_ctx = ptr::null_mut();
-        }
+        // The owned `format_ctx` closes its IO and frees itself when the struct
+        // drops; nothing to close here.
     }
 }
 

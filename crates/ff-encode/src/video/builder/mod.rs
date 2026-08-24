@@ -820,7 +820,12 @@ mod tests {
     fn create_mock_encoder(video_codec_name: &str, audio_codec_name: &str) -> VideoEncoder {
         VideoEncoder {
             inner: Some(VideoEncoderInner {
-                format_ctx: std::ptr::null_mut(),
+                // A real (unopened) mux context; the mock never muxes and drops it untouched.
+                format_ctx: ff_sys::OutputFormatContext::new(
+                    None,
+                    std::path::Path::new("mock.mp4"),
+                )
+                .expect("mock output context allocation should succeed"),
                 video_codec_ctx: None,
                 audio_codec_ctx: None,
                 video_stream_index: -1,

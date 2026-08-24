@@ -37,12 +37,11 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
     AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
-    AVFormatContext, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, av_interleaved_write_frame, av_mallocz,
-    av_packet_new_side_data, av_write_trailer, avcodec, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, swresample,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, av_interleaved_write_frame, av_mallocz,
+    av_packet_new_side_data, avcodec, avformat_new_stream, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -50,7 +49,7 @@ use std::ptr;
 /// Internal encoder state with FFmpeg contexts.
 pub(super) struct VideoEncoderInner {
     /// Output format context
-    pub(super) format_ctx: *mut AVFormatContext,
+    pub(super) format_ctx: OutputFormatContext,
 
     /// Video codec context
     pub(super) video_codec_ctx: Option<ff_sys::CodecContext>,
@@ -159,42 +158,22 @@ impl VideoEncoderInner {
         unsafe {
             ff_sys::ensure_initialized();
 
-            // Allocate output format context
-            let c_path = CString::new(config.path.to_str().ok_or_else(|| {
-                EncodeError::CannotCreateFile {
-                    path: config.path.clone(),
-                }
-            })?)
-            .map_err(|_| EncodeError::CannotCreateFile {
-                path: config.path.clone(),
-            })?;
-
             // For image-sequence outputs (path contains '%'), use the `image2`
             // muxer explicitly. The `image2` muxer manages I/O internally
             // (AVFMT_NOFILE), so we must not call avio_open on it.
             let is_image_sequence = config.path.to_str().is_some_and(|s| s.contains('%'));
 
-            let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
-            let ret = avformat_alloc_output_context2(
-                &raw mut format_ctx,
-                ptr::null_mut(),
-                if is_image_sequence {
-                    b"image2\0".as_ptr() as *const i8
-                } else {
-                    ptr::null()
-                },
-                c_path.as_ptr(),
-            );
-
-            if ret < 0 || format_ctx.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!(
-                        "Cannot create output context: {}",
-                        ff_sys::av_error_string(ret)
-                    ),
-                });
-            }
+            // Allocate output format context (owned; frees itself / closes its IO
+            // on drop, so any early return below cannot leak it).
+            let format_ctx =
+                OutputFormatContext::new(is_image_sequence.then_some("image2"), &config.path)
+                    .map_err(|e| EncodeError::Ffmpeg {
+                        code: e.code(),
+                        message: format!(
+                            "Cannot create output context: {}",
+                            ff_sys::av_error_string(e.code())
+                        ),
+                    })?;
 
             let mut encoder = Self {
                 format_ctx,
@@ -274,31 +253,30 @@ impl VideoEncoderInner {
             // Image-sequence output (path contains '%') uses the `image2` muxer which
             // manages I/O internally (AVFMT_NOFILE) — skip avio_open in that case.
             if !config.two_pass {
-                if !is_image_sequence {
-                    if let Ok(pb) = ff_sys::avformat::open_output(
-                        &config.path,
-                        ff_sys::avformat::avio_flags::WRITE,
-                    ) {
-                        (*format_ctx).pb = pb;
-                    } else {
-                        encoder.cleanup();
-                        return Err(EncodeError::CannotCreateFile {
+                // Muxers that manage their own IO (image2 sequences, AVFMT_NOFILE)
+                // must not have a `pb` opened for them.
+                if !encoder.format_ctx.is_nofile() {
+                    encoder.format_ctx.open_io(&config.path).map_err(|_| {
+                        EncodeError::CannotCreateFile {
                             path: config.path.clone(),
-                        });
-                    }
+                        }
+                    })?;
                 }
 
-                Self::apply_movflags(format_ctx, config.container);
-                Self::apply_metadata(format_ctx, &config.metadata);
-                Self::apply_chapters(format_ctx, &config.chapters);
-                let ret = avformat_write_header(format_ctx, ptr::null_mut());
-                if ret < 0 {
-                    encoder.cleanup();
-                    return Err(EncodeError::Ffmpeg {
-                        code: ret,
-                        message: format!("Cannot write header: {}", ff_sys::av_error_string(ret)),
-                    });
-                }
+                let fmt = encoder.format_ctx.as_mut_ptr();
+                Self::apply_movflags(fmt, config.container);
+                Self::apply_metadata(fmt, &config.metadata);
+                Self::apply_chapters(fmt, &config.chapters);
+                encoder
+                    .format_ctx
+                    .write_header()
+                    .map_err(|e| EncodeError::Ffmpeg {
+                        code: e.code(),
+                        message: format!(
+                            "Cannot write header: {}",
+                            ff_sys::av_error_string(e.code())
+                        ),
+                    })?;
             }
 
             Ok(encoder)
@@ -643,13 +621,15 @@ impl VideoEncoderInner {
             self.write_subtitle_packets()?;
 
             // Write trailer
-            let ret = av_write_trailer(self.format_ctx);
-            if ret < 0 {
-                return Err(EncodeError::Ffmpeg {
-                    code: ret,
-                    message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
-                });
-            }
+            self.format_ctx
+                .write_trailer()
+                .map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Cannot write trailer: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?;
 
             Ok(())
         } // unsafe
@@ -936,7 +916,10 @@ mod tests {
     /// Helper function to create a dummy encoder inner for testing.
     fn create_dummy_encoder_inner() -> VideoEncoderInner {
         VideoEncoderInner {
-            format_ctx: ptr::null_mut(),
+            // A real (unopened) mux context; the test only exercises the sws
+            // tracking fields and drops the context untouched.
+            format_ctx: OutputFormatContext::new(None, std::path::Path::new("dummy.mp4"))
+                .expect("dummy output context allocation should succeed"),
             video_codec_ctx: None,
             audio_codec_ctx: None,
             video_stream_index: -1,
