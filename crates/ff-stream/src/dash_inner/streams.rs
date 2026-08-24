@@ -42,14 +42,15 @@ pub(super) unsafe fn open_aac_encoder(
         .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available"))?;
 
     let mut enc = ff_sys::CodecContext::new(Some(codec)).map_err(|e| ffmpeg_err(e.code()))?;
-    let ctx = enc.as_mut_ptr();
 
-    (*ctx).sample_rate = sample_rate;
-    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
-    (*ctx).bit_rate = 192_000;
-    (*ctx).time_base.num = 1;
-    (*ctx).time_base.den = sample_rate;
-    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
+    enc.set_sample_rate(sample_rate);
+    enc.set_sample_fmt(ff_sys::swresample::sample_format::FLTP);
+    enc.set_bit_rate(192_000);
+    enc.set_time_base(ff_sys::AVRational {
+        num: 1,
+        den: sample_rate,
+    });
+    enc.set_ch_layout_default(nb_channels);
 
     // On open failure `enc` drops (Drop = avcodec_free_context), so no manual free.
     enc.open(codec, std::ptr::null_mut())
