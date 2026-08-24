@@ -37,13 +37,12 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
     AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
-    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
+    AVFormatContext, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, av_frame_alloc, av_frame_free, av_interleaved_write_frame,
-    av_mallocz, av_packet_alloc, av_packet_free, av_packet_new_side_data, av_packet_unref,
-    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header, swresample,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, av_interleaved_write_frame, av_mallocz,
+    av_packet_new_side_data, av_write_trailer, avcodec, avformat_alloc_output_context2,
+    avformat_free_context, avformat_new_stream, avformat_write_header, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -325,40 +324,31 @@ impl VideoEncoderInner {
                     .as_mut_ptr();
 
                 // Convert the incoming frame to YUV420P (the pass-1 codec's format).
-                let mut av_frame = av_frame_alloc();
-                if av_frame.is_null() {
-                    return Err(EncodeError::Ffmpeg {
-                        code: 0,
-                        message: "Cannot allocate frame".to_string(),
-                    });
-                }
+                let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                })?;
 
-                let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
-                if let Err(e) = convert_result {
-                    av_frame_free(&raw mut av_frame);
-                    return Err(e);
-                }
+                self.convert_video_frame(frame, &mut av_frame, pass1_ctx)?;
 
-                // Buffer the converted YUV420P data for pass-2 replay.
+                // Buffer the converted YUV420P data for pass-2 replay. `video_plane`
+                // self-sizes each plane (Y full height, U/V by chroma subsampling)
+                // and yields `None` (→ empty Vec) for an absent plane.
                 let width = (*pass1_ctx).width as u32;
                 let height = (*pass1_ctx).height as u32;
-                let uv_height = (height as usize).div_ceil(2);
 
                 let planes: Vec<Vec<u8>> = (0..3)
                     .map(|i| {
-                        if (*av_frame).data[i].is_null() {
-                            return Vec::new();
-                        }
-                        let stride = (*av_frame).linesize[i] as usize;
-                        let h = if i == 0 { height as usize } else { uv_height };
-                        // SAFETY: data[i] points to a valid buffer of stride * h bytes
-                        // allocated by av_frame_get_buffer inside convert_video_frame.
-                        std::slice::from_raw_parts((*av_frame).data[i], stride * h).to_vec()
+                        av_frame
+                            .video_plane(i)
+                            .map(<[u8]>::to_vec)
+                            .unwrap_or_default()
                     })
                     .collect();
 
-                let strides: Vec<usize> =
-                    (0..3).map(|i| (*av_frame).linesize[i] as usize).collect();
+                let strides: Vec<usize> = (0..3)
+                    .map(|i| (*av_frame.as_ptr()).linesize[i] as usize)
+                    .collect();
 
                 self.buffered_frames.push(TwoPassFrame {
                     planes,
@@ -371,33 +361,26 @@ impl VideoEncoderInner {
 
                 // Send to pass-1 encoder and discard the encoded output.
                 // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
-                (*av_frame).pts = self.frame_count as i64 * 1000;
-                let send_result = self
-                    .pass1_codec_ctx
+                av_frame.set_pts(self.frame_count as i64 * 1000);
+                self.pass1_codec_ctx
                     .as_mut()
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Pass-1 codec context not initialized".to_string(),
                     })?
-                    .send_frame(av_frame);
-                if let Err(e) = send_result {
-                    av_frame_free(&raw mut av_frame);
-                    return Err(EncodeError::Ffmpeg {
+                    .send_frame(av_frame.as_ptr())
+                    .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
                             "Failed to send frame to pass-1 encoder: {}",
                             ff_sys::av_error_string(e.code())
                         ),
-                    });
-                }
+                    })?;
 
-                let drain_result =
-                    Self::drain_pass1_packets(self.pass1_codec_ctx.as_mut().ok_or_else(|| {
-                        EncodeError::InvalidConfig {
-                            reason: "Pass-1 codec context not initialized".to_string(),
-                        }
-                    })?);
-                av_frame_free(&raw mut av_frame);
-                drain_result?;
+                Self::drain_pass1_packets(self.pass1_codec_ctx.as_mut().ok_or_else(|| {
+                    EncodeError::InvalidConfig {
+                        reason: "Pass-1 codec context not initialized".to_string(),
+                    }
+                })?)?;
 
                 self.frame_count += 1;
                 return Ok(());
@@ -413,52 +396,35 @@ impl VideoEncoderInner {
                 .as_mut_ptr();
 
             // Allocate AVFrame
-            let mut av_frame = av_frame_alloc();
-            if av_frame.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Cannot allocate frame".to_string(),
-                });
-            }
+            let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame".to_string(),
+            })?;
 
             // Convert VideoFrame to AVFrame
-            let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
-            if let Err(e) = convert_result {
-                av_frame_free(&raw mut av_frame);
-                return Err(e);
-            }
+            self.convert_video_frame(frame, &mut av_frame, codec_ctx)?;
 
             // Set frame properties.
             // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
-            (*av_frame).pts = self.frame_count as i64 * 1000;
+            av_frame.set_pts(self.frame_count as i64 * 1000);
 
             // Send frame to encoder
-            let send_result = self
-                .video_codec_ctx
+            self.video_codec_ctx
                 .as_mut()
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .send_frame(av_frame);
-            if let Err(e) = send_result {
-                av_frame_free(&raw mut av_frame);
-                return Err(EncodeError::Ffmpeg {
+                .send_frame(av_frame.as_ptr())
+                .map_err(|e| EncodeError::Ffmpeg {
                     code: e.code(),
                     message: format!(
                         "Failed to send frame: {}",
                         ff_sys::av_error_string(e.code())
                     ),
-                });
-            }
+                })?;
 
-            // Receive packets
-            let receive_result = self.receive_packets();
-
-            // Always cleanup the frame
-            av_frame_free(&raw mut av_frame);
-
-            // Check if receiving packets failed
-            receive_result?;
+            // Receive packets (the owned `av_frame` drops at end of scope).
+            self.receive_packets()?;
 
             self.frame_count += 1;
 
@@ -487,38 +453,28 @@ impl VideoEncoderInner {
             let frame_size = (*codec_ctx).frame_size;
 
             // Allocate and convert incoming frame.
-            let mut av_frame = av_frame_alloc();
-            if av_frame.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Cannot allocate frame".to_string(),
-                });
-            }
-            if let Err(e) = self.convert_audio_frame(frame, av_frame) {
-                av_frame_free(&raw mut av_frame);
-                return Err(e);
-            }
+            let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame".to_string(),
+            })?;
+            self.convert_audio_frame(frame, &mut av_frame)?;
 
             // ── Variable frame-size path (PCM, Vorbis …) ────────────────────
             if frame_size <= 0 || self.audio_fifo.is_none() {
-                (*av_frame).pts = self.audio_sample_count as i64;
-                let send_result = self
-                    .audio_codec_ctx
+                av_frame.set_pts(self.audio_sample_count as i64);
+                self.audio_codec_ctx
                     .as_mut()
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame(av_frame);
-                av_frame_free(&raw mut av_frame);
-                if let Err(e) = send_result {
-                    return Err(EncodeError::Ffmpeg {
+                    .send_frame(av_frame.as_ptr())
+                    .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
                             "Failed to send audio frame: {}",
                             ff_sys::av_error_string(e.code())
                         ),
-                    });
-                }
+                    })?;
                 self.receive_audio_packets()?;
                 self.audio_sample_count += frame.samples() as u64;
                 return Ok(());
@@ -529,73 +485,67 @@ impl VideoEncoderInner {
                 reason: "Audio FIFO not initialized for fixed-frame-size codec".to_string(),
             })?;
 
-            // Write converted samples into the FIFO.
-            let nb_samples = (*av_frame).nb_samples;
-            let write_result = ff_sys::swresample::audio_fifo::write(
-                fifo,
-                (*av_frame).data.as_ptr() as *const *mut _,
-                nb_samples,
-            );
-            av_frame_free(&raw mut av_frame);
-            write_result.map_err(EncodeError::from_ffmpeg_error)?;
+            // Write converted samples into the FIFO, then let `av_frame` drop.
+            {
+                let nb_samples = (*av_frame.as_ptr()).nb_samples;
+                ff_sys::swresample::audio_fifo::write(
+                    fifo,
+                    (*av_frame.as_ptr()).data.as_ptr() as *const *mut _,
+                    nb_samples,
+                )
+                .map_err(EncodeError::from_ffmpeg_error)?;
+            }
+            drop(av_frame);
 
             // Drain full frame_size chunks.
             while ff_sys::swresample::audio_fifo::size(fifo) >= frame_size {
-                let mut out_frame = av_frame_alloc();
-                if out_frame.is_null() {
-                    return Err(EncodeError::Ffmpeg {
-                        code: 0,
-                        message: "Cannot allocate audio frame".to_string(),
-                    });
+                let mut out_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate audio frame".to_string(),
+                })?;
+                // These audio scalar fields have no typed setter, so they are
+                // written through the frame pointer.
+                {
+                    let p = out_frame.as_mut_ptr();
+                    (*p).nb_samples = frame_size;
+                    (*p).format = (*codec_ctx).sample_fmt;
+                    (*p).sample_rate = (*codec_ctx).sample_rate;
                 }
-                (*out_frame).nb_samples = frame_size;
-                (*out_frame).format = (*codec_ctx).sample_fmt;
-                (*out_frame).sample_rate = (*codec_ctx).sample_rate;
                 swresample::channel_layout::copy(
-                    &raw mut (*out_frame).ch_layout,
+                    &raw mut (*out_frame.as_mut_ptr()).ch_layout,
                     &raw const (*codec_ctx).ch_layout,
                 )
                 .map_err(EncodeError::from_ffmpeg_error)?;
 
-                let ret = ff_sys::av_frame_get_buffer(out_frame, 0);
-                if ret < 0 {
-                    av_frame_free(&raw mut out_frame);
-                    return Err(EncodeError::Ffmpeg {
-                        code: ret,
-                        message: format!(
-                            "Cannot allocate audio frame buffer: {}",
-                            ff_sys::av_error_string(ret)
-                        ),
-                    });
-                }
+                out_frame.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
+                    code: e.code(),
+                    message: format!(
+                        "Cannot allocate audio frame buffer: {}",
+                        ff_sys::av_error_string(e.code())
+                    ),
+                })?;
 
-                if let Err(e) = ff_sys::swresample::audio_fifo::read(
+                ff_sys::swresample::audio_fifo::read(
                     fifo,
-                    (*out_frame).data.as_mut_ptr().cast(),
+                    (*out_frame.as_mut_ptr()).data.as_mut_ptr().cast(),
                     frame_size,
-                ) {
-                    av_frame_free(&raw mut out_frame);
-                    return Err(EncodeError::from_ffmpeg_error(e));
-                }
+                )
+                .map_err(EncodeError::from_ffmpeg_error)?;
 
-                (*out_frame).pts = self.audio_sample_count as i64;
-                let send_result = self
-                    .audio_codec_ctx
+                out_frame.set_pts(self.audio_sample_count as i64);
+                self.audio_codec_ctx
                     .as_mut()
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame(out_frame);
-                av_frame_free(&raw mut out_frame);
-                if let Err(e) = send_result {
-                    return Err(EncodeError::Ffmpeg {
+                    .send_frame(out_frame.as_ptr())
+                    .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
                             "Failed to send audio frame: {}",
                             ff_sys::av_error_string(e.code())
                         ),
-                    });
-                }
+                    })?;
                 self.receive_audio_packets()?;
                 self.audio_sample_count += frame_size as u64;
             }
@@ -640,35 +590,39 @@ impl VideoEncoderInner {
                     })?
                     .as_mut_ptr();
                 let remaining = ff_sys::swresample::audio_fifo::size(fifo);
-                if remaining > 0 {
-                    let mut out_frame = av_frame_alloc();
-                    if !out_frame.is_null() {
-                        (*out_frame).nb_samples = remaining;
-                        (*out_frame).format = (*codec_ctx).sample_fmt;
-                        (*out_frame).sample_rate = (*codec_ctx).sample_rate;
-                        let _ = swresample::channel_layout::copy(
-                            &raw mut (*out_frame).ch_layout,
-                            &raw const (*codec_ctx).ch_layout,
-                        );
-                        if ff_sys::av_frame_get_buffer(out_frame, 0) == 0 {
-                            let _ = ff_sys::swresample::audio_fifo::read(
-                                fifo,
-                                (*out_frame).data.as_mut_ptr().cast(),
-                                remaining,
-                            );
-                            (*out_frame).pts = self.audio_sample_count as i64;
-                            let _ = self
-                                .audio_codec_ctx
-                                .as_mut()
-                                .ok_or_else(|| EncodeError::InvalidConfig {
-                                    reason: "Audio codec not initialized".to_string(),
-                                })?
-                                .send_frame(out_frame);
-                            let _ = self.receive_audio_packets();
-                            self.audio_sample_count += remaining as u64;
-                        }
-                        av_frame_free(&raw mut out_frame);
+                if remaining > 0
+                    && let Ok(mut out_frame) = ff_sys::Frame::new()
+                {
+                    // These audio scalar fields have no typed setter, so they are
+                    // written through the frame pointer.
+                    {
+                        let p = out_frame.as_mut_ptr();
+                        (*p).nb_samples = remaining;
+                        (*p).format = (*codec_ctx).sample_fmt;
+                        (*p).sample_rate = (*codec_ctx).sample_rate;
                     }
+                    let _ = swresample::channel_layout::copy(
+                        &raw mut (*out_frame.as_mut_ptr()).ch_layout,
+                        &raw const (*codec_ctx).ch_layout,
+                    );
+                    if out_frame.get_buffer(0).is_ok() {
+                        let _ = ff_sys::swresample::audio_fifo::read(
+                            fifo,
+                            (*out_frame.as_mut_ptr()).data.as_mut_ptr().cast(),
+                            remaining,
+                        );
+                        out_frame.set_pts(self.audio_sample_count as i64);
+                        let _ = self
+                            .audio_codec_ctx
+                            .as_mut()
+                            .ok_or_else(|| EncodeError::InvalidConfig {
+                                reason: "Audio codec not initialized".to_string(),
+                            })?
+                            .send_frame(out_frame.as_ptr());
+                        let _ = self.receive_audio_packets();
+                        self.audio_sample_count += remaining as u64;
+                    }
+                    // `out_frame` drops here.
                 }
             }
 
@@ -819,80 +773,6 @@ mod tests {
             assert!(h265_candidates.contains(&"libaom-av1"));
             assert!(!h265_candidates.contains(&"libx265"));
         }
-    }
-
-    #[test]
-    fn test_get_plane_height_yuv420p() {
-        let inner = create_dummy_encoder_inner();
-
-        // Test YUV420P format - Y plane is full height, U/V planes are half height
-        // Even height (640x480)
-        assert_eq!(
-            inner.get_plane_height(480, 0, ff_format::PixelFormat::Yuv420p),
-            480
-        );
-        assert_eq!(
-            inner.get_plane_height(480, 1, ff_format::PixelFormat::Yuv420p),
-            240
-        );
-        assert_eq!(
-            inner.get_plane_height(480, 2, ff_format::PixelFormat::Yuv420p),
-            240
-        );
-
-        // Odd height (641x481) - test ceiling division
-        assert_eq!(
-            inner.get_plane_height(481, 0, ff_format::PixelFormat::Yuv420p),
-            481
-        );
-        assert_eq!(
-            inner.get_plane_height(481, 1, ff_format::PixelFormat::Yuv420p),
-            241
-        ); // (481 + 1) / 2 = 241
-        assert_eq!(
-            inner.get_plane_height(481, 2, ff_format::PixelFormat::Yuv420p),
-            241
-        );
-    }
-
-    #[test]
-    fn test_get_plane_height_nv12() {
-        let inner = create_dummy_encoder_inner();
-
-        // Test NV12 format - Y plane is full height, UV plane is half height
-        assert_eq!(
-            inner.get_plane_height(1080, 0, ff_format::PixelFormat::Nv12),
-            1080
-        );
-        assert_eq!(
-            inner.get_plane_height(1080, 1, ff_format::PixelFormat::Nv12),
-            540
-        );
-
-        // Odd height
-        assert_eq!(
-            inner.get_plane_height(1081, 0, ff_format::PixelFormat::Nv12),
-            1081
-        );
-        assert_eq!(
-            inner.get_plane_height(1081, 1, ff_format::PixelFormat::Nv12),
-            541
-        ); // (1081 + 1) / 2 = 541
-    }
-
-    #[test]
-    fn test_get_plane_height_rgba() {
-        let inner = create_dummy_encoder_inner();
-
-        // Test RGBA format - all planes are full height (only 1 plane)
-        assert_eq!(
-            inner.get_plane_height(720, 0, ff_format::PixelFormat::Rgba),
-            720
-        );
-        assert_eq!(
-            inner.get_plane_height(720, 1, ff_format::PixelFormat::Rgba),
-            720
-        );
     }
 
     #[test]
