@@ -20,14 +20,14 @@ use crate::audio::codec_options::{AudioCodecOptions, Mp3Quality};
 use crate::{AudioCodec, EncodeError};
 use ff_format::AudioFrame;
 use ff_sys::{
-    AVAudioFifo, AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
-    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_DTS,
-    AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame,
-    av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_unref, av_write_trailer, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header, swresample,
+    AVAudioFifo, AVChannelLayout, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
+    AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_NONE,
+    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
+    AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame, av_frame_alloc, av_frame_free,
+    av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer,
+    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swresample,
 };
 use std::ffi::{CString, c_void};
 use std::ptr;
@@ -172,14 +172,11 @@ impl AudioEncoderInner {
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Configure codec context
-        (*codec_ctx.as_mut_ptr()).codec_id = codec_to_id(config.codec);
-        (*codec_ctx.as_mut_ptr()).sample_rate = config.sample_rate as i32;
+        codec_ctx.set_codec_id(codec_to_id(config.codec));
+        codec_ctx.set_sample_rate(config.sample_rate as i32);
 
         // Set channel layout using FFmpeg 7.x API
-        swresample::channel_layout::set_default(
-            &raw mut (*codec_ctx.as_mut_ptr()).ch_layout,
-            config.channels as i32,
-        );
+        codec_ctx.set_ch_layout_default(config.channels as i32);
 
         // Select the first sample format the codec actually supports; fall back to FLTP.
         // Reading sample_fmts before avcodec_open2 is required — the encoder uses
@@ -193,14 +190,14 @@ impl AudioEncoderInner {
                 ff_sys::swresample::sample_format::FLTP
             }
         };
-        (*codec_ctx.as_mut_ptr()).sample_fmt = target_fmt;
+        codec_ctx.set_sample_fmt(target_fmt);
 
         // Set bitrate
         if let Some(br) = config.bitrate {
-            (*codec_ctx.as_mut_ptr()).bit_rate = br as i64;
+            codec_ctx.set_bit_rate(br as i64);
         } else {
             // Default bitrate based on codec
-            (*codec_ctx.as_mut_ptr()).bit_rate = match config.codec {
+            codec_ctx.set_bit_rate(match config.codec {
                 AudioCodec::Aac => 192_000,
                 AudioCodec::Opus => 128_000,
                 AudioCodec::Mp3 => 192_000,
@@ -214,19 +211,20 @@ impl AudioEncoderInner {
                 AudioCodec::Dts => 0,  // Lossless/variable
                 AudioCodec::Alac => 0, // Lossless
                 _ => 192_000,
-            };
+            });
         }
 
         // Set time base
-        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
-        (*codec_ctx.as_mut_ptr()).time_base.den = config.sample_rate as i32;
+        codec_ctx.set_time_base(ff_sys::AVRational {
+            num: 1,
+            den: config.sample_rate as i32,
+        });
 
         // Apply per-codec options before opening the codec context.
         if let Some(opts) = &config.codec_options {
-            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
-            // avcodec_alloc_context3. Options are applied before avcodec_open2
-            // so they take effect during codec initialisation.
-            Self::apply_codec_options(codec_ctx.as_mut_ptr(), opts, &encoder_name);
+            // Options are applied before avcodec_open2 so they take effect during
+            // codec initialisation.
+            Self::apply_codec_options(&mut codec_ctx, opts, &encoder_name);
         }
 
         // Open codec
@@ -238,7 +236,7 @@ impl AudioEncoderInner {
         // the encoder requires a fixed number of samples and does not advertise
         // VARIABLE_FRAME_SIZE.  AVAudioFifo handles both planar and packed
         // layouts internally and is backed by a ring-buffer (O(1) read/write).
-        let required = (*codec_ctx.as_mut_ptr()).frame_size as usize;
+        let required = codec_ctx.frame_size() as usize;
         let caps = (*codec_ptr).capabilities as u32;
         if required > 0 && caps & ff_sys::avcodec::codec_caps::VARIABLE_FRAME_SIZE == 0 {
             self.fifo =
@@ -263,7 +261,7 @@ impl AudioEncoderInner {
             });
         }
 
-        (*stream).time_base = (*codec_ctx.as_mut_ptr()).time_base;
+        (*stream).time_base = codec_ctx.time_base();
 
         // Copy ALL codec parameters (including extradata) from the open codec
         // context to the stream.  avcodec_parameters_from_context must be
@@ -280,139 +278,86 @@ impl AudioEncoderInner {
         Ok(())
     }
 
-    /// Apply per-codec options via `av_opt_set` before `avcodec_open2`.
+    /// Apply per-codec options before `avcodec_open2`.
     ///
-    /// All `av_opt_set` return values are checked; a negative value is logged
-    /// as a warning and the option is skipped (never returns an error).
-    unsafe fn apply_codec_options(
-        codec_ctx: *mut AVCodecContext,
+    /// All option failures are logged as a warning and the option is skipped
+    /// (never returns an error).
+    fn apply_codec_options(
+        codec_ctx: &mut ff_sys::CodecContext,
         opts: &AudioCodecOptions,
         encoder_name: &str,
     ) {
         match opts {
             AudioCodecOptions::Opus(opus) => {
                 // application
-                if let Ok(s) = CString::new(opus.application.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"application\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("application", opus.application.as_str())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=application value={} encoder={encoder_name}",
+                        opus.application.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=application value={} encoder={encoder_name}",
-                            opus.application.as_str()
-                        );
-                    }
                 }
                 // frame_duration (libopus expects microseconds)
                 if let Some(dur_ms) = opus.frame_duration_ms {
                     let dur_us_str = (i64::from(dur_ms) * 1000).to_string();
-                    if let Ok(s) = CString::new(dur_us_str.as_str()) {
-                        // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                        let ret = ff_sys::av_opt_set(
-                            (*codec_ctx).priv_data,
-                            b"frame_duration\0".as_ptr() as *const i8,
-                            s.as_ptr(),
-                            0,
+                    if codec_ctx.set_opt("frame_duration", &dur_us_str).is_err() {
+                        log::warn!(
+                            "av_opt_set failed option=frame_duration value={dur_us_str} \
+                             encoder={encoder_name}"
                         );
-                        if ret < 0 {
-                            log::warn!(
-                                "av_opt_set failed option=frame_duration value={dur_us_str} \
-                                 encoder={encoder_name}"
-                            );
-                        }
                     }
                 }
             }
             AudioCodecOptions::Aac(aac) => {
                 // profile (aac_low / aac_he / aac_he_v2)
                 let profile_str = aac.profile.as_str();
-                if let Ok(s) = CString::new(profile_str) {
-                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"profile\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx.set_opt("profile", profile_str).is_err() {
+                    log::warn!(
+                        "AAC profile={profile_str} not supported by encoder \
+                         encoder={encoder_name}"
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "AAC profile={profile_str} not supported by encoder \
-                             ret={ret} encoder={encoder_name}"
-                        );
-                    }
                 }
                 // vbr (libfdk_aac VBR quality 1–5)
-                if let Some(q) = aac.vbr_quality {
-                    let q_str = q.to_string();
-                    if let Ok(s) = CString::new(q_str.as_str()) {
-                        // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                        let ret = ff_sys::av_opt_set(
-                            (*codec_ctx).priv_data,
-                            b"vbr\0".as_ptr() as *const i8,
-                            s.as_ptr(),
-                            0,
-                        );
-                        if ret < 0 {
-                            log::warn!(
-                                "av_opt_set failed option=vbr value={q} \
-                                 encoder={encoder_name}"
-                            );
-                        }
-                    }
+                if let Some(q) = aac.vbr_quality
+                    && codec_ctx.set_opt("vbr", &q.to_string()).is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=vbr value={q} \
+                         encoder={encoder_name}"
+                    );
                 }
             }
             AudioCodecOptions::Mp3(mp3) => {
                 match mp3.quality {
                     Mp3Quality::Vbr(q) => {
                         // VBR mode: override bitrate to 0 and set the libmp3lame q scale.
-                        // SAFETY: codec_ctx is non-null; direct field write is safe.
-                        (*codec_ctx).bit_rate = 0;
-                        let q_str = q.to_string();
-                        if let Ok(s) = CString::new(q_str.as_str()) {
-                            // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                            let ret = ff_sys::av_opt_set(
-                                (*codec_ctx).priv_data,
-                                b"q\0".as_ptr() as *const i8,
-                                s.as_ptr(),
-                                0,
+                        codec_ctx.set_bit_rate(0);
+                        if codec_ctx.set_opt("q", &q.to_string()).is_err() {
+                            log::warn!(
+                                "av_opt_set failed option=q value={q} \
+                                 encoder={encoder_name}"
                             );
-                            if ret < 0 {
-                                log::warn!(
-                                    "av_opt_set failed option=q value={q} \
-                                     encoder={encoder_name}"
-                                );
-                            }
                         }
                     }
                     Mp3Quality::Cbr(bitrate) => {
                         // CBR mode: set the fixed bitrate directly on the codec context.
-                        // SAFETY: codec_ctx is non-null; direct field write is safe.
-                        (*codec_ctx).bit_rate = i64::from(bitrate);
+                        codec_ctx.set_bit_rate(i64::from(bitrate));
                     }
                 }
             }
             AudioCodecOptions::Flac(flac) => {
                 // compression_level
-                let level_str = flac.compression_level.to_string();
-                if let Ok(s) = CString::new(level_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"compression_level\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("compression_level", &flac.compression_level.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=compression_level value={} \
+                         encoder={encoder_name}",
+                        flac.compression_level
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=compression_level value={} \
-                             encoder={encoder_name}",
-                            flac.compression_level
-                        );
-                    }
                 }
             }
         }

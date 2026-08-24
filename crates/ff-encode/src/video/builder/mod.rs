@@ -840,7 +840,6 @@ mod tests {
                 pass1_codec_ctx: None,
                 buffered_frames: Vec::new(),
                 two_pass_config: None,
-                stats_in_cstr: None,
                 subtitle_passthrough: None,
                 hdr10_metadata: None,
             }),
