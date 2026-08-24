@@ -5,15 +5,14 @@
 //!
 //! ## Resource management
 //!
-//! [`ImageEncoderInner`] owns every FFmpeg pointer allocated during a single
-//! still-image encode. Its [`Drop`] implementation frees the raw handles
-//! (frame → packet → sws_ctx → format_ctx); `codec_ctx` is an owned
-//! [`ff_sys::CodecContext`] that frees itself when the struct drops, after the
-//! manual cleanup body has run. The encoder's `AVCodecContext` and the output
-//! `AVFormatContext` are independent allocations with no cross-reference, so
-//! this order is sound. Because `Drop` runs on every exit path — including
-//! panics and early `?` returns — no manual cleanup is needed at individual
-//! error sites.
+//! [`ImageEncoderInner`] owns every FFmpeg resource allocated during a single
+//! still-image encode. The destination frame, the packet, the codec context,
+//! and the scaling context are owned RAII values ([`ff_sys::Frame`],
+//! [`ff_sys::Packet`], [`ff_sys::CodecContext`], [`ff_sys::ScaleContext`]) that
+//! free themselves on drop. Only the output `AVFormatContext` remains a raw
+//! pointer; its [`Drop`] closes the IO context and frees the format context.
+//! Because `Drop` runs on every exit path — including panics and early `?`
+//! returns — no manual cleanup is needed at individual error sites.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_code)]
@@ -37,8 +36,7 @@ use ff_sys::{
     AVCodecID, AVCodecID_AV_CODEC_ID_BMP, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_PNG,
     AVCodecID_AV_CODEC_ID_TIFF, AVCodecID_AV_CODEC_ID_WEBP, AVColorRange_AVCOL_RANGE_JPEG,
     AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_frame_alloc, av_frame_free,
-    av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_interleaved_write_frame, av_write_trailer,
     avformat, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
     avformat_write_header, swscale,
 };
@@ -66,30 +64,25 @@ pub(super) struct ImageEncodeOptions {
 
 /// Owns all FFmpeg resources for a single still-image encode operation.
 ///
-/// Every field is initialised to null/`None`. Resources are set as they are
-/// successfully allocated so that `Drop` only frees what actually exists.
+/// The destination frame, packet, codec context, and scaling context are owned
+/// RAII values that free themselves on drop. The output `AVFormatContext`
+/// starts null and is filled in as it is allocated, so the manual `Drop` only
+/// frees it when it actually exists.
 ///
 /// # Drop contract
 ///
-/// The manual `Drop` body releases the raw handles in this order:
-///
-/// 1. `dst_frame` — `av_frame_free`
-/// 2. `packet`    — `av_packet_free`
-/// 3. `sws_ctx`   — `sws_freeContext`
-/// 4. `format_ctx`— IO close (`avio_closep`) then `avformat_free_context`
-///
-/// `codec_ctx` is an owned [`ff_sys::CodecContext`]; it frees itself via field
-/// drop *after* the manual body, so the `AVCodecContext` is released last. That
-/// is sound because the encoder's `AVCodecContext` and the output
-/// `AVFormatContext` are independent allocations that do not reference each
-/// other. (The audio/video encoders hold their codec contexts as `Option` and
-/// take them to `None` before freeing `format_ctx`; here `codec_ctx` is a
-/// by-value field that is always present, so it is simply dropped last.)
+/// The manual `Drop` body only closes the IO context (`avio_closep`) and frees
+/// the output `AVFormatContext` (`avformat_free_context`). The owned
+/// [`ff_sys::Frame`], [`ff_sys::Packet`], [`ff_sys::ScaleContext`], and
+/// [`ff_sys::CodecContext`] fields free themselves via field drop after the
+/// manual body. That ordering is sound because the encoder's `AVCodecContext`
+/// and the output `AVFormatContext` are independent allocations that do not
+/// reference each other.
 struct ImageEncoderInner {
     format_ctx: *mut AVFormatContext,
     codec_ctx: ff_sys::CodecContext,
-    dst_frame: *mut ff_sys::AVFrame,
-    packet: *mut ff_sys::AVPacket,
+    dst_frame: ff_sys::Frame,
+    packet: ff_sys::Packet,
     sws_ctx: Option<ff_sys::ScaleContext>,
     dst_width: u32,
     dst_height: u32,
@@ -127,12 +120,16 @@ impl ImageEncoderInner {
         let codec_ctx = ff_sys::CodecContext::new(Some(codec))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // Start with the raw pointers null so Drop is safe from the very first field.
+        // Allocate the owned frame / packet up front; the format context starts
+        // null and is filled in as it is allocated.
+        let dst_frame =
+            ff_sys::Frame::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
+        let packet = ff_sys::Packet::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         let mut inner = Self {
             format_ctx: ptr::null_mut(),
             codec_ctx,
-            dst_frame: ptr::null_mut(),
-            packet: ptr::null_mut(),
+            dst_frame,
+            packet,
             sws_ctx: None,
             dst_width,
             dst_height,
@@ -253,31 +250,15 @@ impl ImageEncoderInner {
             return Err(EncodeError::from_ffmpeg_error(ret));
         }
 
-        // ── Step 10: Allocate destination frame ───────────────────────────────
-        inner.dst_frame = av_frame_alloc();
-        if inner.dst_frame.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate destination frame".to_string(),
-            });
-        }
-        (*inner.dst_frame).format = pix_fmt;
-        (*inner.dst_frame).width = dst_width as i32;
-        (*inner.dst_frame).height = dst_height as i32;
+        // ── Step 10: Configure destination frame and allocate its buffer ──────
+        inner.dst_frame.set_format(pix_fmt);
+        inner.dst_frame.set_width(dst_width as i32);
+        inner.dst_frame.set_height(dst_height as i32);
 
-        let ret = ff_sys::av_frame_get_buffer(inner.dst_frame, 0);
-        if ret < 0 {
-            return Err(EncodeError::from_ffmpeg_error(ret));
-        }
-
-        // ── Step 11: Allocate packet ──────────────────────────────────────────
-        inner.packet = av_packet_alloc();
-        if inner.packet.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate packet".to_string(),
-            });
-        }
+        inner
+            .dst_frame
+            .get_buffer(0)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         Ok(inner)
     }
@@ -312,17 +293,9 @@ impl ImageEncoderInner {
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?,
             );
 
-            let mut src_data: [*const u8; MAX_PLANES] = [ptr::null(); MAX_PLANES];
-            let mut src_linesize: [i32; MAX_PLANES] = [0; MAX_PLANES];
-            for (i, plane) in src.planes().iter().enumerate() {
-                if i < MAX_PLANES {
-                    src_data[i] = plane.data().as_ptr();
-                    src_linesize[i] = src.strides()[i] as i32;
-                }
-            }
+            let src_planes: Vec<&[u8]> = src.planes().iter().map(|p| p.data()).collect();
+            let src_strides: Vec<i32> = src.strides().iter().map(|&s| s as i32).collect();
 
-            let dst_data = (*self.dst_frame).data.as_mut_ptr().cast_const();
-            let dst_linesize = (*self.dst_frame).linesize.as_mut_ptr();
             let scale_result = self
                 .sws_ctx
                 .as_mut()
@@ -330,13 +303,11 @@ impl ImageEncoderInner {
                     code: 0,
                     message: "Scaling context not initialized".to_string(),
                 })?
-                .scale(
-                    src_data.as_ptr(),
-                    src_linesize.as_ptr(),
-                    0,
+                .scale_planes(
+                    &src_planes,
+                    &src_strides,
                     src.height() as i32,
-                    dst_data,
-                    dst_linesize,
+                    &mut self.dst_frame,
                 );
 
             // Drop the context now — single use; the owned field frees it.
@@ -346,38 +317,42 @@ impl ImageEncoderInner {
         } else {
             // Direct plane copy — same format and dimensions.
             for (i, plane) in src.planes().iter().enumerate() {
-                if i >= MAX_PLANES || (*self.dst_frame).data[i].is_null() {
+                if i >= MAX_PLANES {
                     break;
                 }
                 let src_stride = src.strides()[i];
-                let dst_stride = (*self.dst_frame).linesize[i] as usize;
                 let plane_data = plane.data();
+                // The destination stride is the frame's own linesize for plane i.
+                // SAFETY: `dst_frame` is a valid get_buffer'd frame; `linesize` is
+                //         a plain field.
+                let dst_stride = (*self.dst_frame.as_ptr()).linesize[i] as usize;
+                // `video_plane_mut` yields `None` for an absent plane (null data),
+                // matching the previous null-plane break.
+                let Some(dst_plane) = self.dst_frame.video_plane_mut(i) else {
+                    break;
+                };
 
                 if src_stride == dst_stride {
-                    std::ptr::copy_nonoverlapping(
-                        plane_data.as_ptr(),
-                        (*self.dst_frame).data[i],
-                        plane_data.len(),
-                    );
+                    let n = plane_data.len().min(dst_plane.len());
+                    dst_plane[..n].copy_from_slice(&plane_data[..n]);
                 } else {
                     let row_bytes = src_stride.min(dst_stride);
                     let num_rows = plane_data.len() / src_stride;
                     for row in 0..num_rows {
-                        std::ptr::copy_nonoverlapping(
-                            plane_data[row * src_stride..].as_ptr(),
-                            (*self.dst_frame).data[i].add(row * dst_stride),
-                            row_bytes,
-                        );
+                        let src_off = row * src_stride;
+                        let dst_off = row * dst_stride;
+                        dst_plane[dst_off..dst_off + row_bytes]
+                            .copy_from_slice(&plane_data[src_off..src_off + row_bytes]);
                     }
                 }
             }
         }
 
-        (*self.dst_frame).pts = 0;
+        self.dst_frame.set_pts(0);
 
         // ── Send frame → encoder ──────────────────────────────────────────────
         self.codec_ctx
-            .send_frame(self.dst_frame)
+            .send_frame(self.dst_frame.as_ptr())
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Receive packets ───────────────────────────────────────────────────
@@ -411,13 +386,15 @@ impl ImageEncoderInner {
         loop {
             match self
                 .codec_ctx
-                .receive_packet(self.packet)
+                .receive_packet(self.packet.as_mut_ptr())
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?
             {
                 ff_sys::ReceiveOutcome::Frame => {
-                    (*self.packet).stream_index = 0;
-                    let ret = av_interleaved_write_frame(self.format_ctx, self.packet);
-                    av_packet_unref(self.packet);
+                    // SAFETY: `packet` is a valid owned packet; `stream_index` is a
+                    //         plain field.
+                    (*self.packet.as_mut_ptr()).stream_index = 0;
+                    let ret = av_interleaved_write_frame(self.format_ctx, self.packet.as_mut_ptr());
+                    self.packet.unref();
                     if ret < 0 {
                         return Err(EncodeError::from_ffmpeg_error(ret));
                     }
@@ -436,32 +413,14 @@ impl ImageEncoderInner {
 
 impl Drop for ImageEncoderInner {
     fn drop(&mut self) {
-        // SAFETY: Every pointer was allocated by the FFmpeg API and is either
-        // null (never allocated, or already freed) or a valid owned allocation.
-        // We check for null before each free to make Drop idempotent.
+        // The owned `dst_frame`, `packet`, `sws_ctx`, and `codec_ctx` fields free
+        // themselves via field drop after this body; only the raw output
+        // `AVFormatContext` needs manual cleanup here.
         //
-        // Release order for the raw handles (see the struct's Drop contract):
-        //   1. dst_frame  — av_frame_free  (sets pointer to null)
-        //   2. packet     — av_packet_free (sets pointer to null)
-        //   3. sws_ctx    — sws_freeContext
-        //   4. format_ctx — avio_closep (if pb still open) + avformat_free_context
-        // `codec_ctx` (owned CodecContext) frees itself last via field drop,
-        // after this body; sound as the two contexts are independent.
+        // SAFETY: `format_ctx` is either null (never allocated) or a valid owned
+        // allocation; the null check keeps Drop idempotent.
         unsafe {
-            if !self.dst_frame.is_null() {
-                // SAFETY: dst_frame is non-null and owned by this struct.
-                av_frame_free(&raw mut self.dst_frame);
-            }
-            if !self.packet.is_null() {
-                // SAFETY: packet is non-null and owned by this struct.
-                av_packet_free(&raw mut self.packet);
-            }
-            // sws_ctx is an owned Option<ff_sys::ScaleContext>; it frees itself
-            // via field drop (after this manual body), so no manual free here.
-            // codec_ctx is an owned ff_sys::CodecContext; it frees itself when the
-            // struct is dropped (after this manual cleanup runs).
             if !self.format_ctx.is_null() {
-                // SAFETY: format_ctx is non-null and owned by this struct.
                 // Close the IO context if it hasn't been closed yet (it is set
                 // to null by avio_closep, so this check prevents a double-close
                 // when encode_frame already closed it on success).
@@ -760,18 +719,18 @@ mod tests {
     }
 
     // Verify Drop does not panic on a partially-initialised inner struct whose
-    // raw pointers are all null. This guards the partial-allocation cleanup path
+    // format context is null. This guards the partial-allocation cleanup path
     // exercised when `open` returns early with an error before every field is set.
     #[test]
     fn drop_on_uninitialised_inner_should_not_panic() {
         // A `None` codec yields a generic owned context that frees itself on drop;
-        // the raw pointers are null, so the manual Drop checks skip them.
-        // SAFETY: all raw pointers are null; Drop checks for null before freeing.
+        // the owned frame / packet free themselves; `format_ctx` is null, so the
+        // manual Drop check skips it.
         let inner = ImageEncoderInner {
             format_ctx: ptr::null_mut(),
             codec_ctx: ff_sys::CodecContext::new(None).expect("generic context alloc"),
-            dst_frame: ptr::null_mut(),
-            packet: ptr::null_mut(),
+            dst_frame: ff_sys::Frame::new().expect("frame alloc"),
+            packet: ff_sys::Packet::new().expect("packet alloc"),
             sws_ctx: None,
             dst_width: 0,
             dst_height: 0,

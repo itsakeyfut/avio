@@ -4,12 +4,14 @@
 //! context, and frees it exactly once on drop, replacing the manual
 //! `swresample::alloc_set_opts2` + `swresample::init` + `swr_free`
 //! sequence. The value is always initialized once constructed (there is no
-//! un-initialized state), so the query methods are safe. The safe
-//! [`convert_into_planes`](ResampleContext::convert_into_planes) method resamples
-//! an owned [`Frame`]'s audio into caller-provided plane slices;
-//! [`convert`](ResampleContext::convert) stays `unsafe` for callers that still
-//! pass raw plane pointers, and [`new`](Self::new) is `unsafe` because it takes
-//! raw channel-layout pointers.
+//! un-initialized state), so the query methods are safe.
+//! [`convert_into_planes`](ResampleContext::convert_into_planes) resamples an
+//! owned [`Frame`]'s audio into caller-provided plane slices, and its mirror
+//! [`convert_into_frame`](ResampleContext::convert_into_frame) resamples caller
+//! plane slices into an owned output [`Frame`]; both take borrowed slices instead
+//! of raw pointers. [`convert`](ResampleContext::convert) stays `unsafe` for
+//! callers that still pass raw plane pointers, and [`new`](Self::new) is `unsafe`
+//! because it takes raw channel-layout pointers.
 
 use std::os::raw::c_int;
 use std::ptr::NonNull;
@@ -128,6 +130,67 @@ impl ResampleContext {
                 out_ptrs.as_mut_ptr(),
                 dst_count,
                 in_ptrs.as_ptr() as *const *const u8,
+                in_count,
+            )
+        }
+        .map_err(AvError::new)
+    }
+
+    /// Resamples / reformats caller-provided input plane slices into an owned
+    /// output [`Frame`]'s planes (safe-borrow wrapper, mirror of
+    /// [`convert_into_planes`](Self::convert_into_planes) with the roles swapped).
+    ///
+    /// `in_planes` holds one byte slice per input plane (one per channel for
+    /// planar formats, a single interleaved slice for packed formats) and
+    /// `in_count` is the number of samples per channel they hold. The output is
+    /// written into `dst`'s allocated planes, up to `dst.nb_samples` samples per
+    /// channel. Returns the number of samples produced per channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if conversion fails.
+    ///
+    /// # Safety
+    ///
+    /// `swr_convert` reads `in_count` samples from each input plane and writes up
+    /// to `dst.nb_samples` samples into each output plane, bounds the slice types
+    /// cannot express. The caller must ensure:
+    /// - `dst` is a get_buffer'd audio [`Frame`] whose planes hold at least
+    ///   `dst.nb_samples` samples per channel for the configured output format;
+    /// - each `in_planes[i]` is at least `in_count * bytes_per_sample` bytes;
+    /// - `in_planes` has one entry per input plane the configured format needs
+    ///   (planar formats need one plane per channel); at most
+    ///   [`AV_NUM_DATA_POINTERS`] planes are forwarded on each side.
+    /// An undersized or missing plane is an out-of-bounds / null access.
+    pub unsafe fn convert_into_frame(
+        &mut self,
+        dst: &mut Frame,
+        in_planes: &[&[u8]],
+        in_count: c_int,
+    ) -> Result<c_int, AvError> {
+        // Build fixed-size input pointer array from the borrowed slices; unused
+        // entries stay null, matching how FFmpeg treats absent planes.
+        const PLANES: usize = AV_NUM_DATA_POINTERS as usize;
+        let mut in_ptrs: [*const u8; PLANES] = [std::ptr::null(); PLANES];
+        for (i, plane) in in_planes.iter().enumerate().take(PLANES) {
+            in_ptrs[i] = plane.as_ptr();
+        }
+
+        let dst_ptr = dst.as_mut_ptr();
+        // SAFETY: `self.ptr` is a valid initialized context. `out_ptrs` is a local
+        //         copy of `dst`'s (get_buffer'd) output plane pointers and `in_ptrs`
+        //         a local copy of the caller's input plane pointers, both valid for
+        //         the duration of the call; `swr_convert` reads/writes only within
+        //         them for the sample counts given (upheld by the caller, see
+        //         # Safety).
+        unsafe {
+            let mut out_ptrs: [*mut u8; PLANES] = (*dst_ptr).data;
+            let out_count = (*dst_ptr).nb_samples;
+            crate::swresample::convert(
+                self.ptr.as_ptr(),
+                out_ptrs.as_mut_ptr(),
+                out_count,
+                in_ptrs.as_ptr(),
                 in_count,
             )
         }
@@ -276,6 +339,53 @@ mod tests {
         // SAFETY: `dst[0]` is sized for `samples` stereo S16 samples; `src` holds
         //         `samples` input samples.
         let produced = unsafe { ctx.convert_into_planes(&mut dst, samples, &src) }
+            .expect("conversion should succeed");
+        assert_eq!(
+            produced, samples,
+            "identity resample returns all input samples"
+        );
+    }
+
+    #[test]
+    fn convert_into_frame_should_write_resampled_samples() {
+        // Identity stereo S16 resample (48k -> 48k) into a get_buffer'd output
+        // frame: exercises the safe frame-output convert without a rate change.
+        let out_layout = channel_layout::stereo();
+        let in_layout = channel_layout::stereo();
+        // SAFETY: the two layouts are valid for the duration of the call.
+        let mut ctx = unsafe {
+            ResampleContext::new(
+                &out_layout,
+                sample_format::S16,
+                48000,
+                &in_layout,
+                sample_format::S16,
+                48000,
+            )
+        }
+        .expect("context creation should succeed");
+
+        let samples: c_int = 256;
+
+        // Source: packed S16 stereo input plane holding `samples` samples.
+        let in_plane = vec![0u8; samples as usize * 2 * 2];
+        let in_planes: [&[u8]; 1] = [in_plane.as_slice()];
+
+        // Destination: a get_buffer'd packed S16 stereo frame sized for `samples`.
+        let mut dst = crate::Frame::new().expect("frame allocation should succeed");
+        // SAFETY: set the audio fields on a fresh frame, then allocate its buffer.
+        unsafe {
+            let p = dst.as_mut_ptr();
+            (*p).format = sample_format::S16;
+            (*p).nb_samples = samples;
+            (*p).sample_rate = 48000;
+            channel_layout::set_default(&raw mut (*p).ch_layout, 2);
+        }
+        dst.get_buffer(0).expect("dst buffer alloc should succeed");
+
+        // SAFETY: `dst` is a get_buffer'd frame sized for `samples`; `in_planes[0]`
+        //         holds `samples` packed stereo S16 input samples.
+        let produced = unsafe { ctx.convert_into_frame(&mut dst, &in_planes, samples) }
             .expect("conversion should succeed");
         assert_eq!(
             produced, samples,

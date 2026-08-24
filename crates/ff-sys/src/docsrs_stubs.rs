@@ -1630,6 +1630,24 @@ impl Frame {
         0
     }
 
+    #[must_use]
+    pub fn video_plane(&self, _i: usize) -> Option<&[u8]> {
+        None
+    }
+
+    pub fn video_plane_mut(&mut self, _i: usize) -> Option<&mut [u8]> {
+        None
+    }
+
+    #[must_use]
+    pub fn audio_plane(&self, _i: usize) -> Option<&[u8]> {
+        None
+    }
+
+    pub fn audio_plane_mut(&mut self, _i: usize) -> Option<&mut [u8]> {
+        None
+    }
+
     pub fn unref(&mut self) {}
 
     /// # Errors
@@ -1852,6 +1870,19 @@ impl ResampleContext {
         _dst: &mut [&mut [u8]],
         _dst_count: c_int,
         _src: &Frame,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn convert_into_frame(
+        &mut self,
+        _dst: &mut Frame,
+        _in_planes: &[&[u8]],
+        _in_count: c_int,
     ) -> Result<c_int, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
