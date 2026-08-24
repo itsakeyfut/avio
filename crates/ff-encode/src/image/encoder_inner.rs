@@ -208,23 +208,23 @@ impl ImageEncoderInner {
         }
 
         // ── Step 3: Configure codec context ──────────────────────────────────
-        (*inner.codec_ctx.as_mut_ptr()).width = dst_width as i32;
-        (*inner.codec_ctx.as_mut_ptr()).height = dst_height as i32;
-        (*inner.codec_ctx.as_mut_ptr()).time_base = AVRational { num: 1, den: 1 };
-        (*inner.codec_ctx.as_mut_ptr()).pix_fmt = pix_fmt;
+        inner.codec_ctx.set_width(dst_width as i32);
+        inner.codec_ctx.set_height(dst_height as i32);
+        inner.codec_ctx.set_time_base(AVRational { num: 1, den: 1 });
+        inner.codec_ctx.set_pix_fmt(pix_fmt);
 
         // For MJPEG, declare full-range (JPEG) color so FFmpeg does not emit
         // "deprecated pixel format used" warnings that appear when using the
         // deprecated YUVJ420P format. Using YUV420P + AVCOL_RANGE_JPEG is the
         // recommended replacement since FFmpeg 5.x.
         if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
-            // SAFETY: codec_ctx is non-null; color_range is a plain integer field.
-            (*inner.codec_ctx.as_mut_ptr()).color_range = AVColorRange_AVCOL_RANGE_JPEG;
+            inner
+                .codec_ctx
+                .set_color_range(AVColorRange_AVCOL_RANGE_JPEG);
         }
 
         if let Some(q) = opts.quality {
-            // SAFETY: codec_ctx is non-null and freshly allocated.
-            apply_quality(inner.codec_ctx.as_mut_ptr(), codec_id, q);
+            apply_quality(&mut inner.codec_ctx, codec_id, q);
         }
 
         // ── Step 4: Open codec ────────────────────────────────────────────────
@@ -238,8 +238,8 @@ impl ImageEncoderInner {
         let par = (*stream).codecpar;
         (*par).codec_id = codec_id;
         (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-        (*par).width = (*inner.codec_ctx.as_mut_ptr()).width;
-        (*par).height = (*inner.codec_ctx.as_mut_ptr()).height;
+        (*par).width = inner.codec_ctx.width();
+        (*par).height = inner.codec_ctx.height();
         (*par).format = pix_fmt;
 
         // ── Step 8: Open output file ──────────────────────────────────────────
@@ -564,64 +564,34 @@ fn pixel_format_to_av(fmt: PixelFormat) -> AVPixelFormat {
 ///
 /// Must be called after the codec context fields are set but before
 /// `avcodec_open2`.
-///
-/// # Safety
-///
-/// `codec_ctx` must be a valid, non-null pointer to an allocated
-/// `AVCodecContext` whose `priv_data` is valid (guaranteed after
-/// `avcodec_alloc_context3`).
-unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCodecID, quality: u32) {
+fn apply_quality(codec_ctx: &mut ff_sys::CodecContext, codec_id: AVCodecID, quality: u32) {
     let q = quality.min(100);
 
     if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
         // Map 0–100 (100 = best) → MJPEG qscale 1–31 (1 = best, 31 = worst).
         let qscale = (1 + (100 - q) * 30 / 100) as i32;
-        (*codec_ctx).qmin = qscale;
-        (*codec_ctx).qmax = qscale;
+        codec_ctx.set_qmin(qscale);
+        codec_ctx.set_qmax(qscale);
         log::info!("MJPEG quality applied quality={q} qscale={qscale}");
     } else if codec_id == AVCodecID_AV_CODEC_ID_PNG {
         // Map 0–100 → compression_level 0–9 (9 = maximum compression).
         let level = q * 9 / 100;
-        if (*codec_ctx).priv_data.is_null() {
-            log::warn!("PNG compression_level: priv_data is null, skipping quality={q}");
-            return;
-        }
-        let Ok(key) = CString::new("compression_level") else {
-            return;
-        };
-        let Ok(val) = CString::new(level.to_string()) else {
-            return;
-        };
-        // SAFETY: priv_data is non-null; key/val are valid NUL-terminated strings.
-        let ret = ff_sys::av_opt_set((*codec_ctx).priv_data, key.as_ptr(), val.as_ptr(), 0);
-        if ret < 0 {
+        if let Err(e) = codec_ctx.set_opt("compression_level", &level.to_string()) {
             log::warn!(
                 "av_opt_set compression_level failed, ignoring \
                  quality={q} error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         } else {
             log::info!("PNG compression_level applied quality={q} level={level}");
         }
     } else if codec_id == AVCodecID_AV_CODEC_ID_WEBP {
         // Direct 0–100 mapping for WebP quality.
-        if (*codec_ctx).priv_data.is_null() {
-            log::warn!("WebP quality: priv_data is null, skipping quality={q}");
-            return;
-        }
-        let Ok(key) = CString::new("quality") else {
-            return;
-        };
-        let Ok(val) = CString::new(q.to_string()) else {
-            return;
-        };
-        // SAFETY: priv_data is non-null; key/val are valid NUL-terminated strings.
-        let ret = ff_sys::av_opt_set((*codec_ctx).priv_data, key.as_ptr(), val.as_ptr(), 0);
-        if ret < 0 {
+        if let Err(e) = codec_ctx.set_opt("quality", &q.to_string()) {
             log::warn!(
                 "av_opt_set quality failed for WebP, ignoring \
                  quality={q} error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         } else {
             log::info!("WebP quality applied quality={q}");

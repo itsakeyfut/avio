@@ -111,12 +111,6 @@ pub(super) struct VideoEncoderInner {
     /// Stored configuration for reconstructing the pass-2 codec context.
     pub(super) two_pass_config: Option<VideoEncoderConfig>,
 
-    /// Owned `stats_in` C string that must outlive the pass-2 codec context.
-    ///
-    /// Nulled out in `cleanup()` before `avcodec_free_context` to prevent FFmpeg
-    /// from calling `av_free` on a Rust-allocated pointer.
-    pub(super) stats_in_cstr: Option<std::ffi::CString>,
-
     /// Subtitle passthrough info: (source_path, source_stream_index, output_stream_index).
     ///
     /// Set by `init_subtitle_passthrough`; read by `write_subtitle_packets`.
@@ -224,7 +218,6 @@ impl VideoEncoderInner {
                 pass1_codec_ctx: None,
                 buffered_frames: Vec::new(),
                 two_pass_config: None,
-                stats_in_cstr: None,
                 subtitle_passthrough: None,
                 hdr10_metadata: config.hdr10_metadata.clone(),
             };
@@ -1083,7 +1076,6 @@ mod tests {
             pass1_codec_ctx: None,
             buffered_frames: Vec::new(),
             two_pass_config: None,
-            stats_in_cstr: None,
             subtitle_passthrough: None,
             hdr10_metadata: None,
         }

@@ -7,11 +7,13 @@
 //! `open` (raw options dictionary), `parameters_to_context` (raw parameters), and
 //! `send_eof` / `flush_buffers` (opened-context precondition) remain `unsafe`.
 
+use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
 use crate::{
-    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AVPixelFormat, AVRational,
+    AVCodecContext, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
+    AVColorTransferCharacteristic, AVDictionary, AVFrame, AVPacket, AVPixelFormat, AVRational,
     AVSampleFormat, AvError, Codec, CodecParameters, Frame, Packet,
     avcodec_free_context as ffi_avcodec_free_context,
 };
@@ -54,6 +56,13 @@ fn classify_receive(result: Result<(), c_int>) -> Result<ReceiveOutcome, AvError
 #[derive(Debug)]
 pub struct CodecContext {
     ptr: NonNull<AVCodecContext>,
+    /// Owned two-pass `stats_in` buffer, when one is set.
+    ///
+    /// FFmpeg's `stats_in` field must point to a NUL-terminated string that
+    /// outlives the codec context but that FFmpeg must not free. Storing the
+    /// [`CString`] here keeps it alive; [`Drop`] nulls the field before
+    /// `avcodec_free_context` so FFmpeg never `av_free`s this Rust-owned buffer.
+    stats_in: Option<CString>,
 }
 
 impl CodecContext {
@@ -71,7 +80,10 @@ impl CodecContext {
         // `alloc_context3` returns `Ok` only with a non-null pointer.
         NonNull::new(ptr)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
-            .map(|ptr| Self { ptr })
+            .map(|ptr| Self {
+                ptr,
+                stats_in: None,
+            })
     }
 
     /// Returns the context pointer for read-only use.
@@ -142,6 +154,296 @@ impl CodecContext {
     pub fn height(&self) -> c_int {
         // SAFETY: `self.ptr` is a valid owned context; `height` is a plain field.
         unsafe { (*self.ptr.as_ptr()).height }
+    }
+
+    /// Sets the codec id.
+    pub fn set_codec_id(&mut self, codec_id: AVCodecID) {
+        // SAFETY: `self.ptr` is a valid owned context; `codec_id` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).codec_id = codec_id };
+    }
+
+    /// Sets the frame rate.
+    pub fn set_framerate(&mut self, framerate: AVRational) {
+        // SAFETY: `self.ptr` is a valid owned context; `framerate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).framerate = framerate };
+    }
+
+    /// Sets the target bit rate in bits per second.
+    pub fn set_bit_rate(&mut self, bit_rate: i64) {
+        // SAFETY: `self.ptr` is a valid owned context; `bit_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).bit_rate = bit_rate };
+    }
+
+    /// Sets the rate-control maximum bit rate.
+    pub fn set_rc_max_rate(&mut self, rc_max_rate: i64) {
+        // SAFETY: `self.ptr` is a valid owned context; `rc_max_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).rc_max_rate = rc_max_rate };
+    }
+
+    /// Sets the rate-control buffer size.
+    pub fn set_rc_buffer_size(&mut self, rc_buffer_size: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `rc_buffer_size` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).rc_buffer_size = rc_buffer_size };
+    }
+
+    /// Sets the color primaries.
+    pub fn set_color_primaries(&mut self, color_primaries: AVColorPrimaries) {
+        // SAFETY: `self.ptr` is a valid owned context; `color_primaries` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).color_primaries = color_primaries };
+    }
+
+    /// Sets the color transfer characteristic.
+    pub fn set_color_trc(&mut self, color_trc: AVColorTransferCharacteristic) {
+        // SAFETY: `self.ptr` is a valid owned context; `color_trc` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).color_trc = color_trc };
+    }
+
+    /// Sets the colorspace.
+    pub fn set_colorspace(&mut self, colorspace: AVColorSpace) {
+        // SAFETY: `self.ptr` is a valid owned context; `colorspace` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).colorspace = colorspace };
+    }
+
+    /// Sets the color range.
+    pub fn set_color_range(&mut self, color_range: AVColorRange) {
+        // SAFETY: `self.ptr` is a valid owned context; `color_range` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).color_range = color_range };
+    }
+
+    /// Sets the audio sample rate in Hz.
+    pub fn set_sample_rate(&mut self, sample_rate: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `sample_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).sample_rate = sample_rate };
+    }
+
+    /// Sets the audio sample format.
+    pub fn set_sample_fmt(&mut self, sample_fmt: AVSampleFormat) {
+        // SAFETY: `self.ptr` is a valid owned context; `sample_fmt` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).sample_fmt = sample_fmt };
+    }
+
+    /// Sets the maximum number of B-frames.
+    pub fn set_max_b_frames(&mut self, max_b_frames: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `max_b_frames` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).max_b_frames = max_b_frames };
+    }
+
+    /// Sets the group-of-pictures size.
+    pub fn set_gop_size(&mut self, gop_size: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `gop_size` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).gop_size = gop_size };
+    }
+
+    /// Sets the number of reference frames.
+    pub fn set_refs(&mut self, refs: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `refs` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).refs = refs };
+    }
+
+    /// Sets the minimum quantizer.
+    pub fn set_qmin(&mut self, qmin: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `qmin` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).qmin = qmin };
+    }
+
+    /// Sets the maximum quantizer.
+    pub fn set_qmax(&mut self, qmax: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `qmax` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).qmax = qmax };
+    }
+
+    /// Initialises `ch_layout` to the default native layout for `nb_channels`.
+    pub fn set_ch_layout_default(&mut self, nb_channels: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `av_channel_layout_default`
+        //         writes the default native layout into the `ch_layout` field.
+        unsafe {
+            crate::av_channel_layout_default(&raw mut (*self.ptr.as_ptr()).ch_layout, nb_channels);
+        }
+    }
+
+    /// Sets the codec flags bitmask.
+    pub fn set_flags(&mut self, flags: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `flags` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).flags = flags };
+    }
+
+    /// Returns the codec flags bitmask.
+    #[must_use]
+    pub fn flags(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `flags` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).flags }
+    }
+
+    /// Returns the time base.
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        // SAFETY: `self.ptr` is a valid owned context; `time_base` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).time_base }
+    }
+
+    /// Returns the codec id.
+    #[must_use]
+    pub fn codec_id(&self) -> AVCodecID {
+        // SAFETY: `self.ptr` is a valid owned context; `codec_id` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).codec_id }
+    }
+
+    /// Returns the encoder frame size (samples per audio frame).
+    #[must_use]
+    pub fn frame_size(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `frame_size` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).frame_size }
+    }
+
+    /// Returns the audio sample rate in Hz.
+    #[must_use]
+    pub fn sample_rate(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `sample_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).sample_rate }
+    }
+
+    /// Returns the number of audio channels.
+    #[must_use]
+    pub fn channels(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `ch_layout.nb_channels` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).ch_layout.nb_channels }
+    }
+
+    /// Sets a private codec option to a string value.
+    ///
+    /// Targets the context's `priv_data`, matching a direct
+    /// `av_opt_set(ctx->priv_data, key, value, 0)`. The caller decides how to
+    /// react to a failure; this never logs or silently skips.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `key` or `value` contains an interior NUL, or if
+    /// FFmpeg rejects the option.
+    pub fn set_opt(&mut self, key: &str, value: &str) -> Result<(), AvError> {
+        let key_c = CString::new(key).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        let val_c = CString::new(value).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        // SAFETY: `self.ptr` is a valid owned context whose `priv_data` is set by
+        //         `avcodec_alloc_context3`; `key_c`/`val_c` are valid NUL-terminated
+        //         C strings kept alive across the call, which copies both.
+        let ret = unsafe {
+            crate::av_opt_set(
+                (*self.ptr.as_ptr()).priv_data,
+                key_c.as_ptr(),
+                val_c.as_ptr(),
+                0,
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sets an option on the context itself, searching child objects.
+    ///
+    /// Targets the context (cast to the AVOptions object) with
+    /// `AV_OPT_SEARCH_CHILDREN`, matching a direct
+    /// `av_opt_set(ctx, key, value, AV_OPT_SEARCH_CHILDREN)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `key` or `value` contains an interior NUL, or if
+    /// FFmpeg rejects the option.
+    /// Sets a codec-private option whose value is arbitrary bytes (not
+    /// necessarily UTF-8), preserving the raw bytes exactly (e.g. a 4-byte
+    /// FourCC tag). Targets `priv_data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the key has an interior NUL or FFmpeg rejects
+    /// the option.
+    pub fn set_opt_cstr(&mut self, key: &str, value: &CStr) -> Result<(), AvError> {
+        let key_c = CString::new(key).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        // SAFETY: `self.ptr` is a valid owned context whose `priv_data` is set by
+        //         `avcodec_alloc_context3`; `key_c` and `value` are valid
+        //         NUL-terminated C strings kept alive across the call, which copies
+        //         both.
+        let ret = unsafe {
+            crate::av_opt_set(
+                (*self.ptr.as_ptr()).priv_data,
+                key_c.as_ptr(),
+                value.as_ptr(),
+                0,
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sets an option on the context (searching child objects), for options that
+    /// live on the encoder context itself rather than `priv_data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the key/value has an interior NUL or FFmpeg
+    /// rejects the option.
+    pub fn set_opt_search_children(&mut self, key: &str, value: &str) -> Result<(), AvError> {
+        let key_c = CString::new(key).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        let val_c = CString::new(value).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        // SAFETY: `self.ptr` is a valid owned context usable as an AVOptions object;
+        //         `key_c`/`val_c` are valid NUL-terminated C strings kept alive
+        //         across the call, which copies both.
+        let ret = unsafe {
+            crate::av_opt_set(
+                self.ptr.as_ptr().cast(),
+                key_c.as_ptr(),
+                val_c.as_ptr(),
+                crate::AV_OPT_SEARCH_CHILDREN as c_int,
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Stores a copy of the two-pass statistics and points `stats_in` at it.
+    ///
+    /// The copy is owned by this context; [`Drop`] nulls the raw `stats_in` field
+    /// before `avcodec_free_context`, so FFmpeg never frees the Rust-owned buffer.
+    pub fn set_stats_in(&mut self, stats: &CStr) {
+        // Store first, then take the pointer of the stored copy so the pointer we
+        // hand FFmpeg refers to a buffer this context keeps alive.
+        self.stats_in = Some(stats.to_owned());
+        if let Some(owned) = self.stats_in.as_ref() {
+            let stats_ptr = owned.as_ptr().cast_mut();
+            // SAFETY: `self.ptr` is a valid owned context; `stats_ptr` points into a
+            //         CString owned by `self.stats_in`, kept alive until Drop nulls
+            //         this field.
+            unsafe { (*self.ptr.as_ptr()).stats_in = stats_ptr };
+        }
+    }
+
+    /// Clears `stats_in` and drops the owned statistics buffer.
+    pub fn clear_stats_in(&mut self) {
+        // SAFETY: `self.ptr` is a valid owned context; nulling `stats_in` is sound.
+        unsafe { (*self.ptr.as_ptr()).stats_in = ptr::null_mut() };
+        self.stats_in = None;
+    }
+
+    /// Returns a copy of the encoder's two-pass statistics output, if any.
+    #[must_use]
+    pub fn stats_out(&self) -> Option<CString> {
+        // SAFETY: `self.ptr` is a valid owned context; `stats_out` is null or a
+        //         valid NUL-terminated C string owned by the context.
+        unsafe {
+            let p = (*self.ptr.as_ptr()).stats_out;
+            if p.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr(p).to_owned())
+            }
+        }
     }
 
     /// Copies the parameters of `params` into the context (safe wrapper).
@@ -310,11 +612,18 @@ impl CodecContext {
 impl Drop for CodecContext {
     fn drop(&mut self) {
         // SAFETY: we uniquely own the context (NonNull, not Copy/Clone), so this
-        //         runs exactly once. `avcodec_free_context` frees it and writes
-        //         null into our local copy of the pointer, which is then discarded.
-        //         The raw binding is used directly so this type does not depend on
-        //         the `avcodec::free_context` wrapper (retired in #1490).
+        //         runs exactly once. When we own the `stats_in` buffer we null the
+        //         field first so `avcodec_free_context` does not `av_free` the
+        //         Rust-owned CString (a double-free); `self.stats_in` then drops
+        //         normally, freeing the Rust buffer. `avcodec_free_context` frees
+        //         the context and writes null into our local copy of the pointer,
+        //         which is then discarded. The raw binding is used directly so this
+        //         type does not depend on the `avcodec::free_context` wrapper
+        //         (retired in #1490).
         unsafe {
+            if self.stats_in.is_some() {
+                (*self.ptr.as_ptr()).stats_in = ptr::null_mut();
+            }
             let mut raw = self.ptr.as_ptr();
             ffi_avcodec_free_context(&mut raw);
         }
@@ -352,6 +661,69 @@ mod tests {
         assert_eq!(ctx.width(), 1920);
         assert_eq!(ctx.height(), 1080);
         assert_eq!(ctx.pix_fmt(), crate::AVPixelFormat_AV_PIX_FMT_YUV420P);
+    }
+
+    #[test]
+    fn set_then_get_should_round_trip_scalar_fields() {
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        ctx.set_codec_id(crate::AVCodecID_AV_CODEC_ID_H264);
+        ctx.set_bit_rate(2_000_000);
+        ctx.set_sample_rate(48_000);
+        ctx.set_gop_size(12);
+        ctx.set_max_b_frames(2);
+        ctx.set_refs(3);
+        ctx.set_qmin(10);
+        ctx.set_qmax(40);
+        ctx.set_framerate(AVRational { num: 30, den: 1 });
+        ctx.set_flags(0);
+        ctx.set_flags(ctx.flags() | 0x0400);
+
+        assert_eq!(ctx.codec_id(), crate::AVCodecID_AV_CODEC_ID_H264);
+        assert_eq!(ctx.sample_rate(), 48_000);
+        assert_eq!(ctx.flags() & 0x0400, 0x0400);
+    }
+
+    #[test]
+    fn set_ch_layout_default_should_set_channel_count() {
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        ctx.set_ch_layout_default(2);
+        assert_eq!(ctx.channels(), 2);
+    }
+
+    #[test]
+    fn set_opt_unknown_key_should_return_err() {
+        // A generic context has null `priv_data`; `av_opt_set` reports the unknown
+        // option as an error rather than applying it. This holds for any FFmpeg
+        // build, so the assertion is build-independent.
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        assert!(ctx.set_opt("no_such_option_xyz", "0").is_err());
+    }
+
+    #[test]
+    fn set_opt_search_children_unknown_key_should_return_err() {
+        // The search-children path targets the context object; an unknown option
+        // is rejected on any FFmpeg build, so the assertion is build-independent.
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        assert!(
+            ctx.set_opt_search_children("no_such_option_xyz", "0")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stats_in_round_trip_should_drop_once() {
+        // Setting `stats_in` stores a Rust-owned CString and points the raw field
+        // at it. Drop must null the field before `avcodec_free_context` so neither
+        // FFmpeg nor Rust double-frees the buffer. Constructing, setting, and
+        // dropping cleanly (no panic / double free) exercises that invariant.
+        let stats = CString::new("frame stats data").expect("no interior NUL");
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        ctx.set_stats_in(&stats);
+        // stats_out is null on a fresh generic context.
+        assert!(ctx.stats_out().is_none());
+        ctx.clear_stats_in();
+        ctx.set_stats_in(&stats);
+        // Dropping `ctx` here must not double-free the owned stats buffer.
     }
 
     #[test]

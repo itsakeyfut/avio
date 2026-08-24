@@ -90,19 +90,15 @@ impl VideoEncoderInner {
         })?)?;
 
         // ── Step 2: Collect stats_out (before freeing pass 1) ────────────────
-        // SAFETY: stats_out is either null or a valid C string owned by the
-        // codec context; it remains valid until the owned context is dropped below.
-        let pass1_ptr = self
+        let stats_out = self
             .pass1_codec_ctx
             .as_ref()
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Pass-1 codec context not initialized".to_string(),
             })?
-            .as_ptr();
-        let stats_str = if !(*pass1_ptr).stats_out.is_null() {
-            std::ffi::CStr::from_ptr((*pass1_ptr).stats_out)
-                .to_string_lossy()
-                .into_owned()
+            .stats_out();
+        let stats_str = if let Some(stats) = stats_out {
+            stats.to_string_lossy().into_owned()
         } else {
             log::warn!(
                 "two-pass pass-1 produced no stats_out; pass-2 quality may not improve \
@@ -226,124 +222,94 @@ impl VideoEncoderInner {
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Mirror the same codec configuration as pass 1.
-        (*codec_ctx.as_mut_ptr()).codec_id = codec_to_id(config.video_codec);
-        (*codec_ctx.as_mut_ptr()).width = width as i32;
-        (*codec_ctx.as_mut_ptr()).height = height as i32;
-        (*codec_ctx.as_mut_ptr()).time_base.num = 1;
-        (*codec_ctx.as_mut_ptr()).time_base.den = (fps * 1000.0) as i32;
-        (*codec_ctx.as_mut_ptr()).framerate.num = fps as i32;
-        (*codec_ctx.as_mut_ptr()).framerate.den = 1;
-        (*codec_ctx.as_mut_ptr()).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        codec_ctx.set_codec_id(codec_to_id(config.video_codec));
+        codec_ctx.set_width(width as i32);
+        codec_ctx.set_height(height as i32);
+        codec_ctx.set_time_base(ff_sys::AVRational {
+            num: 1,
+            den: (fps * 1000.0) as i32,
+        });
+        codec_ctx.set_framerate(ff_sys::AVRational {
+            num: fps as i32,
+            den: 1,
+        });
+        codec_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
 
         match config.video_bitrate_mode.as_ref() {
             Some(BitrateMode::Cbr(bps)) => {
-                (*codec_ctx.as_mut_ptr()).bit_rate = *bps as i64;
+                codec_ctx.set_bit_rate(*bps as i64);
             }
             Some(BitrateMode::Vbr { target, max }) => {
-                (*codec_ctx.as_mut_ptr()).bit_rate = *target as i64;
-                (*codec_ctx.as_mut_ptr()).rc_max_rate = *max as i64;
-                (*codec_ctx.as_mut_ptr()).rc_buffer_size = (*max * 2) as i32;
+                codec_ctx.set_bit_rate(*target as i64);
+                codec_ctx.set_rc_max_rate(*max as i64);
+                codec_ctx.set_rc_buffer_size((*max * 2) as i32);
             }
             Some(BitrateMode::Crf(q)) => {
-                let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Invalid CRF value".to_string(),
-                })?;
-                // SAFETY: priv_data, option name, and value are all valid pointers.
-                let ret = ff_sys::av_opt_set(
-                    (*codec_ctx.as_mut_ptr()).priv_data,
-                    b"crf\0".as_ptr() as *const i8,
-                    crf_str.as_ptr(),
-                    0,
-                );
-                if ret < 0 {
+                if codec_ctx.set_opt("crf", &q.to_string()).is_err() {
                     log::warn!(
                         "crf option not supported by pass-2 encoder, falling back to default \
                          encoder={encoder_name} crf={q}"
                     );
-                    (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
+                    codec_ctx.set_bit_rate(2_000_000);
                 }
             }
             None => {
-                (*codec_ctx.as_mut_ptr()).bit_rate = 2_000_000;
+                codec_ctx.set_bit_rate(2_000_000);
             }
         }
 
-        if encoder_name.contains("264") || encoder_name.contains("265") {
-            let preset_cstr =
-                CString::new(config.preset.as_str()).map_err(|_| EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Invalid preset value".to_string(),
-                })?;
-            // SAFETY: priv_data, option name, and value are all valid pointers.
-            let ret = ff_sys::av_opt_set(
-                (*codec_ctx.as_mut_ptr()).priv_data,
-                b"preset\0".as_ptr() as *const i8,
-                preset_cstr.as_ptr(),
-                0,
+        if (encoder_name.contains("264") || encoder_name.contains("265"))
+            && codec_ctx.set_opt("preset", config.preset.as_str()).is_err()
+        {
+            log::warn!(
+                "preset option not supported by pass-2 encoder, ignoring \
+                 encoder={encoder_name} preset={}",
+                config.preset
             );
-            if ret < 0 {
-                log::warn!(
-                    "preset option not supported by pass-2 encoder, ignoring \
-                     encoder={encoder_name} preset={}",
-                    config.preset
-                );
-            }
         }
 
         // Apply per-codec options before opening the pass-2 codec context.
         if let Some(opts) = config.codec_options.as_ref() {
-            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
-            // avcodec_alloc_context3. Options are applied before avcodec_open2
-            // so they take effect during codec initialisation.
-            Self::apply_codec_options(codec_ctx.as_mut_ptr(), opts, &encoder_name);
+            // Options are applied before avcodec_open2 so they take effect during
+            // codec initialisation.
+            Self::apply_codec_options(&mut codec_ctx, opts, &encoder_name);
         }
 
         // Apply explicit pixel format override for pass 2 (mirrors pass 1).
         if let Some(fmt) = config.pixel_format.as_ref() {
-            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx.as_mut_ptr()).pix_fmt = pixel_format_to_av(*fmt);
+            codec_ctx.set_pix_fmt(pixel_format_to_av(*fmt));
         }
 
         // Apply HDR10 color context for pass 2 (mirrors pass 1).
         if config.hdr10_metadata.is_some() {
-            // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
-            (*codec_ctx.as_mut_ptr()).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
-            (*codec_ctx.as_mut_ptr()).color_trc =
-                ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
-            (*codec_ctx.as_mut_ptr()).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
+            codec_ctx.set_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020);
+            codec_ctx.set_color_trc(ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084);
+            codec_ctx.set_colorspace(ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL);
         }
 
         // Apply explicit color overrides for pass 2 (mirrors pass 1; take priority over HDR10).
         if let Some(cs) = config.color_space {
-            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx.as_mut_ptr()).colorspace = color_space_to_av(cs);
+            codec_ctx.set_colorspace(color_space_to_av(cs));
         }
         if let Some(trc) = config.color_transfer {
-            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx.as_mut_ptr()).color_trc = color_transfer_to_av(trc);
+            codec_ctx.set_color_trc(color_transfer_to_av(trc));
         }
         if let Some(cp) = config.color_primaries {
-            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
-            (*codec_ctx.as_mut_ptr()).color_primaries = color_primaries_to_av(cp);
+            codec_ctx.set_color_primaries(color_primaries_to_av(cp));
         }
 
         // Set the pass-2 flag and provide stats_in.
-        // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
-        (*codec_ctx.as_mut_ptr()).flags |= AV_CODEC_FLAG_PASS2;
+        codec_ctx.set_flags(codec_ctx.flags() | AV_CODEC_FLAG_PASS2);
 
-        // Point stats_in to our owned CString (kept alive in self.stats_in_cstr
-        // until cleanup() nulls the pointer and drops it).
+        // Hand the pass-1 statistics to the encoder. The CodecContext takes an
+        // owned copy and keeps it alive; its Drop nulls the raw field before the
+        // context is freed.
         if !stats.is_empty() {
             let stats_cstr = CString::new(stats).map_err(|_| EncodeError::Ffmpeg {
                 code: 0,
                 message: "Invalid stats string from pass 1".to_string(),
             })?;
-            // SAFETY: stats_cstr.as_ptr() is valid for the lifetime of stats_cstr,
-            // which is stored in self.stats_in_cstr and dropped only after the codec
-            // context is freed in cleanup().
-            (*codec_ctx.as_mut_ptr()).stats_in = stats_cstr.as_ptr().cast_mut();
-            self.stats_in_cstr = Some(stats_cstr);
+            codec_ctx.set_stats_in(&stats_cstr);
         }
 
         // Try to open the pass-2 codec with PASS2 flag. Some encoders (e.g. the
@@ -357,9 +323,8 @@ impl VideoEncoderInner {
             );
             // Null stats_in and drop the owned CString BEFORE re-opening so the
             // discarded pass-2 attempt never references the Rust-owned pointer.
-            (*codec_ctx.as_mut_ptr()).flags &= !AV_CODEC_FLAG_PASS2;
-            (*codec_ctx.as_mut_ptr()).stats_in = ptr::null_mut();
-            self.stats_in_cstr = None;
+            codec_ctx.set_flags(codec_ctx.flags() & !AV_CODEC_FLAG_PASS2);
+            codec_ctx.clear_stats_in();
             codec_ctx
                 .open(selected_codec, ptr::null_mut())
                 .map_err(|e| EncodeError::Ffmpeg {

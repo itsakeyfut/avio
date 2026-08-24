@@ -1176,6 +1176,85 @@ impl CodecContext {
         0
     }
 
+    pub fn set_codec_id(&mut self, _codec_id: AVCodecID) {}
+    pub fn set_framerate(&mut self, _framerate: AVRational) {}
+    pub fn set_bit_rate(&mut self, _bit_rate: i64) {}
+    pub fn set_rc_max_rate(&mut self, _rc_max_rate: i64) {}
+    pub fn set_rc_buffer_size(&mut self, _rc_buffer_size: c_int) {}
+    pub fn set_color_primaries(&mut self, _color_primaries: AVColorPrimaries) {}
+    pub fn set_color_trc(&mut self, _color_trc: AVColorTransferCharacteristic) {}
+    pub fn set_colorspace(&mut self, _colorspace: AVColorSpace) {}
+    pub fn set_color_range(&mut self, _color_range: AVColorRange) {}
+    pub fn set_sample_rate(&mut self, _sample_rate: c_int) {}
+    pub fn set_sample_fmt(&mut self, _sample_fmt: AVSampleFormat) {}
+    pub fn set_max_b_frames(&mut self, _max_b_frames: c_int) {}
+    pub fn set_gop_size(&mut self, _gop_size: c_int) {}
+    pub fn set_refs(&mut self, _refs: c_int) {}
+    pub fn set_qmin(&mut self, _qmin: c_int) {}
+    pub fn set_qmax(&mut self, _qmax: c_int) {}
+    pub fn set_ch_layout_default(&mut self, _nb_channels: c_int) {}
+    pub fn set_flags(&mut self, _flags: c_int) {}
+
+    #[must_use]
+    pub fn flags(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+    #[must_use]
+    pub fn codec_id(&self) -> AVCodecID {
+        0
+    }
+    #[must_use]
+    pub fn frame_size(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn sample_rate(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn channels(&self) -> c_int {
+        0
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_opt(&mut self, _key: &str, _value: &str) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_opt_cstr(
+        &mut self,
+        _key: &str,
+        _value: &core::ffi::CStr,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_opt_search_children(
+        &mut self,
+        _key: &str,
+        _value: &str,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    pub fn set_stats_in(&mut self, _stats: &std::ffi::CStr) {}
+
+    pub fn clear_stats_in(&mut self) {}
+
+    #[must_use]
+    pub fn stats_out(&self) -> Option<std::ffi::CString> {
+        None
+    }
+
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn apply_parameters(

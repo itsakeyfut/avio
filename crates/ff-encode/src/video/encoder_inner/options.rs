@@ -11,16 +11,15 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
-    AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD,
-    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1,
-    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
-    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
-    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
-    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
-    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
-    AVCodecID_AV_CODEC_ID_VP9, AudioCodec, CString, EncodeError, VideoCodec, VideoEncoderInner,
-    avcodec,
+    AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC,
+    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS,
+    AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC,
+    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG,
+    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4,
+    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
+    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
+    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AudioCodec,
+    CString, EncodeError, VideoCodec, VideoEncoderInner, avcodec,
 };
 
 /// Convert VideoCodec to FFmpeg AVCodecID.
@@ -78,508 +77,284 @@ pub(super) fn audio_codec_to_id(codec: AudioCodec) -> AVCodecID {
 impl VideoEncoderInner {
     /// Apply per-codec options to an allocated (not yet opened) codec context.
     ///
-    /// All `av_opt_set` return values are checked; a negative value is logged
-    /// as a warning and skipped — it never propagates as an error.
-    ///
-    /// # Safety
-    ///
-    /// `codec_ctx` must be a valid non-null pointer to an allocated
-    /// `AVCodecContext` whose `priv_data` has been set by
-    /// `avcodec_alloc_context3`. Must be called **before** `avcodec_open2`.
-    pub(super) unsafe fn apply_codec_options(
-        codec_ctx: *mut AVCodecContext,
+    /// All option failures are logged as a warning and skipped — they never
+    /// propagate as an error. Must be called **before** `avcodec_open2`.
+    pub(super) fn apply_codec_options(
+        codec_ctx: &mut ff_sys::CodecContext,
         opts: &crate::video::codec_options::VideoCodecOptions,
         encoder_name: &str,
     ) {
         use crate::video::codec_options::VideoCodecOptions;
-        use std::ffi::CString;
 
         match opts {
             VideoCodecOptions::H264(h264) => {
                 // profile
-                if let Ok(s) = CString::new(h264.profile.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null (set by avcodec_alloc_context3);
-                    // option name and value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"profile\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx.set_opt("profile", h264.profile.as_str()).is_err() {
+                    log::warn!(
+                        "av_opt_set failed option=profile value={} encoder={encoder_name}",
+                        h264.profile.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=profile value={} encoder={encoder_name}",
-                            h264.profile.as_str()
-                        );
-                    }
                 }
                 // level (only when explicitly set)
-                if let Some(level) = h264.level {
-                    let level_str = level.to_string();
-                    if let Ok(s) = CString::new(level_str.as_str()) {
-                        // SAFETY: codec_ctx and priv_data are non-null; option name and
-                        // value are valid NUL-terminated C strings.
-                        let ret = ff_sys::av_opt_set(
-                            (*codec_ctx).priv_data,
-                            b"level\0".as_ptr() as *const i8,
-                            s.as_ptr(),
-                            0,
-                        );
-                        if ret < 0 {
-                            log::warn!(
-                                "av_opt_set failed option=level value={level} \
-                                 encoder={encoder_name}"
-                            );
-                        }
-                    }
+                if let Some(level) = h264.level
+                    && codec_ctx.set_opt("level", &level.to_string()).is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=level value={level} \
+                         encoder={encoder_name}"
+                    );
                 }
                 // Direct codec context fields.
-                // SAFETY: codec_ctx is a valid allocated AVCodecContext.
-                (*codec_ctx).max_b_frames = h264.bframes as i32;
-                (*codec_ctx).gop_size = h264.gop_size as i32;
-                (*codec_ctx).refs = h264.refs as i32;
+                codec_ctx.set_max_b_frames(h264.bframes as i32);
+                codec_ctx.set_gop_size(h264.gop_size as i32);
+                codec_ctx.set_refs(h264.refs as i32);
                 // preset (libx264-specific; hardware encoders return a negative value
                 // which we log and skip — never returned as an error)
                 if let Some(preset) = h264.preset
-                    && let Ok(s) = CString::new(preset.as_str())
+                    && codec_ctx.set_opt("preset", preset.as_str()).is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name
-                    // and value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"preset\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=preset value={} \
+                         encoder={encoder_name}",
+                        preset.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=preset value={} \
-                             encoder={encoder_name}",
-                            preset.as_str()
-                        );
-                    }
                 }
                 // tune (libx264-specific; hardware encoders return a negative value
                 // which we log and skip — never returned as an error)
                 if let Some(tune) = h264.tune
-                    && let Ok(s) = CString::new(tune.as_str())
+                    && codec_ctx.set_opt("tune", tune.as_str()).is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name
-                    // and value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tune\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=tune value={} \
+                         encoder={encoder_name}",
+                        tune.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tune value={} \
-                             encoder={encoder_name}",
-                            tune.as_str()
-                        );
-                    }
                 }
             }
             VideoCodecOptions::H265(h265) => {
                 // profile
-                if let Ok(s) = CString::new(h265.profile.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"profile\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx.set_opt("profile", h265.profile.as_str()).is_err() {
+                    log::warn!(
+                        "av_opt_set failed option=profile value={} encoder={encoder_name}",
+                        h265.profile.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=profile value={} encoder={encoder_name}",
-                            h265.profile.as_str()
-                        );
-                    }
                 }
                 // Auto-select yuv420p10le for Main10 (may be overridden by an explicit
                 // pixel_format() call applied after apply_codec_options returns).
                 if h265.profile == crate::video::codec_options::H265Profile::Main10 {
-                    // SAFETY: codec_ctx is valid; direct field write is safe.
-                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE;
+                    codec_ctx.set_pix_fmt(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE);
                 }
                 // tier
-                if let Ok(s) = CString::new(h265.tier.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tier\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx.set_opt("tier", h265.tier.as_str()).is_err() {
+                    log::warn!(
+                        "av_opt_set failed option=tier value={} encoder={encoder_name}",
+                        h265.tier.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tier value={} encoder={encoder_name}",
-                            h265.tier.as_str()
-                        );
-                    }
                 }
                 // level (only when explicitly set)
-                if let Some(level) = h265.level {
-                    let level_str = level.to_string();
-                    if let Ok(s) = CString::new(level_str.as_str()) {
-                        // SAFETY: codec_ctx and priv_data are non-null; option name and
-                        // value are valid NUL-terminated C strings.
-                        let ret = ff_sys::av_opt_set(
-                            (*codec_ctx).priv_data,
-                            b"level\0".as_ptr() as *const i8,
-                            s.as_ptr(),
-                            0,
-                        );
-                        if ret < 0 {
-                            log::warn!(
-                                "av_opt_set failed option=level value={level} \
-                                 encoder={encoder_name}"
-                            );
-                        }
-                    }
+                if let Some(level) = h265.level
+                    && codec_ctx.set_opt("level", &level.to_string()).is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=level value={level} \
+                         encoder={encoder_name}"
+                    );
                 }
                 // preset (libx265-specific; hardware HEVC encoders return a negative value
                 // which we log and skip — never returned as an error)
                 if let Some(ref preset) = h265.preset
-                    && let Ok(s) = CString::new(preset.as_str())
+                    && codec_ctx.set_opt("preset", preset.as_str()).is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name
-                    // and value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"preset\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=preset value={preset} \
+                         encoder={encoder_name}"
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=preset value={preset} \
-                             encoder={encoder_name}"
-                        );
-                    }
                 }
                 // x265-params raw passthrough (libx265 only)
                 if let Some(ref params) = h265.x265_params
-                    && let Ok(s) = CString::new(params.as_str())
+                    && codec_ctx.set_opt("x265-params", params.as_str()).is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name
-                    // and value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"x265-params\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=x265-params value={params} \
+                         encoder={encoder_name}"
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=x265-params value={params} \
-                             encoder={encoder_name}"
-                        );
-                    }
                 }
             }
             VideoCodecOptions::Av1(av1) => {
                 // cpu-used
-                let cpu_used_str = av1.cpu_used.to_string();
-                if let Ok(s) = CString::new(cpu_used_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"cpu-used\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("cpu-used", &av1.cpu_used.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=cpu-used value={} encoder={encoder_name}",
+                        av1.cpu_used
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=cpu-used value={} encoder={encoder_name}",
-                            av1.cpu_used
-                        );
-                    }
                 }
                 // tile-rows
-                let tile_rows_str = av1.tile_rows.to_string();
-                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile-rows\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("tile-rows", &av1.tile_rows.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile-rows value={} encoder={encoder_name}",
+                        av1.tile_rows
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile-rows value={} encoder={encoder_name}",
-                            av1.tile_rows
-                        );
-                    }
                 }
                 // tile-columns
-                let tile_cols_str = av1.tile_cols.to_string();
-                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile-columns\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("tile-columns", &av1.tile_cols.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile-columns value={} \
+                         encoder={encoder_name}",
+                        av1.tile_cols
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile-columns value={} \
-                             encoder={encoder_name}",
-                            av1.tile_cols
-                        );
-                    }
                 }
                 // usage
-                if let Ok(s) = CString::new(av1.usage.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"usage\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx.set_opt("usage", av1.usage.as_str()).is_err() {
+                    log::warn!(
+                        "av_opt_set failed option=usage value={} encoder={encoder_name}",
+                        av1.usage.as_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=usage value={} encoder={encoder_name}",
-                            av1.usage.as_str()
-                        );
-                    }
                 }
             }
             VideoCodecOptions::Av1Svt(svt) => {
                 // preset (0–13)
-                let preset_str = svt.preset.to_string();
-                if let Ok(s) = CString::new(preset_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"preset\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("preset", &svt.preset.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=preset value={} \
+                         encoder={encoder_name}",
+                        svt.preset
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=preset value={} \
-                             encoder={encoder_name}",
-                            svt.preset
-                        );
-                    }
                 }
                 // tile-rows
-                let tile_rows_str = svt.tile_rows.to_string();
-                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile_rows\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("tile_rows", &svt.tile_rows.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile_rows value={} \
+                         encoder={encoder_name}",
+                        svt.tile_rows
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile_rows value={} \
-                             encoder={encoder_name}",
-                            svt.tile_rows
-                        );
-                    }
                 }
                 // tile-columns
-                let tile_cols_str = svt.tile_cols.to_string();
-                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile_columns\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                if codec_ctx
+                    .set_opt("tile_columns", &svt.tile_cols.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile_columns value={} \
+                         encoder={encoder_name}",
+                        svt.tile_cols
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile_columns value={} \
-                             encoder={encoder_name}",
-                            svt.tile_cols
-                        );
-                    }
                 }
                 // svtav1-params raw passthrough
                 if let Some(ref params) = svt.svtav1_params
-                    && let Ok(s) = CString::new(params.as_str())
+                    && codec_ctx.set_opt("svtav1-params", params.as_str()).is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; option name and
-                    // value are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"svtav1-params\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=svtav1-params value={params} \
+                         encoder={encoder_name}"
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=svtav1-params value={params} \
-                             encoder={encoder_name}"
-                        );
-                    }
                 }
             }
             VideoCodecOptions::Vp9(vp9) => {
                 // CQ mode: override bitrate to 0 and set crf
                 if let Some(cq) = vp9.cq_level {
-                    // SAFETY: codec_ctx is non-null; direct field write is safe.
-                    (*codec_ctx).bit_rate = 0;
-                    let cq_str = cq.to_string();
-                    if let Ok(s) = CString::new(cq_str.as_str()) {
-                        // SAFETY: codec_ctx and priv_data are non-null; strings are
-                        // NUL-terminated.
-                        let ret = ff_sys::av_opt_set(
-                            (*codec_ctx).priv_data,
-                            b"crf\0".as_ptr() as *const i8,
-                            s.as_ptr(),
-                            0,
-                        );
-                        if ret < 0 {
-                            log::warn!(
-                                "av_opt_set failed option=crf value={cq} \
-                                 encoder={encoder_name}"
-                            );
-                        }
-                    }
-                }
-                // cpu-used
-                let cpu_used_str = vp9.cpu_used.to_string();
-                if let Ok(s) = CString::new(cpu_used_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"cpu-used\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
+                    codec_ctx.set_bit_rate(0);
+                    if codec_ctx.set_opt("crf", &cq.to_string()).is_err() {
                         log::warn!(
-                            "av_opt_set failed option=cpu-used value={} \
-                             encoder={encoder_name}",
-                            vp9.cpu_used
-                        );
-                    }
-                }
-                // tile-columns
-                let tile_cols_str = vp9.tile_columns.to_string();
-                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile-columns\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile-columns value={} \
-                             encoder={encoder_name}",
-                            vp9.tile_columns
-                        );
-                    }
-                }
-                // tile-rows
-                let tile_rows_str = vp9.tile_rows.to_string();
-                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"tile-rows\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=tile-rows value={} \
-                             encoder={encoder_name}",
-                            vp9.tile_rows
-                        );
-                    }
-                }
-                // row-mt
-                let row_mt_str = if vp9.row_mt { "1" } else { "0" };
-                if let Ok(s) = CString::new(row_mt_str) {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"row-mt\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=row-mt value={row_mt_str} \
+                            "av_opt_set failed option=crf value={cq} \
                              encoder={encoder_name}"
                         );
                     }
+                }
+                // cpu-used
+                if codec_ctx
+                    .set_opt("cpu-used", &vp9.cpu_used.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=cpu-used value={} \
+                         encoder={encoder_name}",
+                        vp9.cpu_used
+                    );
+                }
+                // tile-columns
+                if codec_ctx
+                    .set_opt("tile-columns", &vp9.tile_columns.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile-columns value={} \
+                         encoder={encoder_name}",
+                        vp9.tile_columns
+                    );
+                }
+                // tile-rows
+                if codec_ctx
+                    .set_opt("tile-rows", &vp9.tile_rows.to_string())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=tile-rows value={} \
+                         encoder={encoder_name}",
+                        vp9.tile_rows
+                    );
+                }
+                // row-mt
+                let row_mt_str = if vp9.row_mt { "1" } else { "0" };
+                if codec_ctx.set_opt("row-mt", row_mt_str).is_err() {
+                    log::warn!(
+                        "av_opt_set failed option=row-mt value={row_mt_str} \
+                         encoder={encoder_name}"
+                    );
                 }
             }
             VideoCodecOptions::ProRes(prores) => {
                 // Set pixel format based on profile before avcodec_open2.
                 // 4444 profiles need yuva444p10le; 422 profiles need yuv422p10le.
-                // SAFETY: codec_ctx is non-null; direct field write is safe.
                 if prores.profile.is_4444() {
-                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE;
+                    codec_ctx.set_pix_fmt(ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE);
                 } else {
-                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE;
+                    codec_ctx.set_pix_fmt(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE);
                 }
 
-                // Apply profile via av_opt_set on priv_data.
-                let profile_str = prores.profile.profile_id().to_string();
-                if let Ok(s) = CString::new(profile_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"profile\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=profile value={} \
-                             encoder={encoder_name}",
-                            prores.profile.profile_id()
-                        );
-                    }
-                }
-
-                // Apply optional vendor tag.
-                if let Some(vendor) = prores.vendor
-                    && let Ok(s) = CString::new(vendor.as_ref())
+                // Apply profile via the private-option setter.
+                if codec_ctx
+                    .set_opt("profile", &prores.profile.profile_id().to_string())
+                    .is_err()
                 {
-                    // SAFETY: codec_ctx and priv_data are non-null; strings are
-                    // NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"vendor\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
+                    log::warn!(
+                        "av_opt_set failed option=profile value={} \
+                         encoder={encoder_name}",
+                        prores.profile.profile_id()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=vendor \
+                }
+
+                // Apply optional vendor tag (a 4-byte FourCC). Pass the raw bytes
+                // via a CString so a non-ASCII tag is not mangled by a lossy
+                // UTF-8 conversion.
+                if let Some(vendor) = prores.vendor {
+                    match std::ffi::CString::new(&vendor[..]) {
+                        Ok(vendor_c) => {
+                            if codec_ctx.set_opt_cstr("vendor", &vendor_c).is_err() {
+                                log::warn!(
+                                    "av_opt_set failed option=vendor \
+                                     encoder={encoder_name}"
+                                );
+                            }
+                        }
+                        Err(_) => log::warn!(
+                            "prores vendor tag has an interior NUL; skipping \
                              encoder={encoder_name}"
-                        );
+                        ),
                     }
                 }
             }
@@ -587,40 +362,30 @@ impl VideoEncoderInner {
                 use ff_format::PixelFormat;
 
                 // Set pixel format based on variant before avcodec_open2.
-                // SAFETY: codec_ctx is non-null; direct field write is safe.
-                (*codec_ctx).pix_fmt = match dnxhd.variant.pixel_format() {
+                codec_ctx.set_pix_fmt(match dnxhd.variant.pixel_format() {
                     PixelFormat::Yuv422p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
                     PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
                     PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
                     _ => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
-                };
+                });
 
                 // For DNxHD variants, override bit_rate with the required fixed rate.
                 if let Some(bps) = dnxhd.variant.fixed_bitrate_bps() {
-                    // SAFETY: codec_ctx is non-null; direct field write is safe.
-                    (*codec_ctx).bit_rate = bps;
+                    codec_ctx.set_bit_rate(bps);
                 }
 
-                // Apply vprofile via av_opt_set on codec_ctx with AV_OPT_SEARCH_CHILDREN.
-                // Using the codec context (not priv_data) with SEARCH_CHILDREN allows the
-                // option to be found in child objects including priv_data.
-                if let Ok(s) = CString::new(dnxhd.variant.vprofile_str()) {
-                    // SAFETY: codec_ctx is non-null and cast to *mut c_void as required
-                    // by av_opt_set. AV_OPT_SEARCH_CHILDREN (1) searches child objects.
-                    // Strings are valid NUL-terminated C strings.
-                    let ret = ff_sys::av_opt_set(
-                        codec_ctx as *mut std::ffi::c_void,
-                        b"vprofile\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        ff_sys::AV_OPT_SEARCH_CHILDREN as i32,
+                // Apply vprofile on the codec context with AV_OPT_SEARCH_CHILDREN.
+                // Targeting the context (not priv_data) lets the option be found in
+                // child objects including priv_data.
+                if codec_ctx
+                    .set_opt_search_children("vprofile", dnxhd.variant.vprofile_str())
+                    .is_err()
+                {
+                    log::warn!(
+                        "av_opt_set failed option=vprofile value={} \
+                         encoder={encoder_name}",
+                        dnxhd.variant.vprofile_str()
                     );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=vprofile value={} \
-                             encoder={encoder_name}",
-                            dnxhd.variant.vprofile_str()
-                        );
-                    }
                 }
             }
         }

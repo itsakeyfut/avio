@@ -461,11 +461,10 @@ unsafe fn encode_frame_as_png_inner(
         }
     };
 
-    // SAFETY: codec_ctx is non-null (allocation succeeded).
-    (*codec_ctx.as_mut_ptr()).width = width;
-    (*codec_ctx.as_mut_ptr()).height = height;
-    (*codec_ctx.as_mut_ptr()).time_base = AVRational { num: 1, den: 1 };
-    (*codec_ctx.as_mut_ptr()).pix_fmt = pix_fmt;
+    codec_ctx.set_width(width);
+    codec_ctx.set_height(height);
+    codec_ctx.set_time_base(AVRational { num: 1, den: 1 });
+    codec_ctx.set_pix_fmt(pix_fmt);
 
     if let Err(e) = codec_ctx.open(codec, ptr::null_mut()) {
         drop(codec_ctx);
@@ -1216,16 +1215,15 @@ unsafe fn encode_gif_unsafe(
     let out_pix_fmt = (*first_frame).format;
 
     // Configure GIF encoder.
-    // SAFETY: codec_ctx is non-null.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let fps_int = fps.round().max(1.0) as u32;
-    (*codec_ctx.as_mut_ptr()).width = out_width;
-    (*codec_ctx.as_mut_ptr()).height = out_height;
-    (*codec_ctx.as_mut_ptr()).time_base = AVRational {
+    codec_ctx.set_width(out_width);
+    codec_ctx.set_height(out_height);
+    codec_ctx.set_time_base(AVRational {
         num: 1,
         den: fps_int as i32,
-    };
-    (*codec_ctx.as_mut_ptr()).pix_fmt = out_pix_fmt;
+    });
+    codec_ctx.set_pix_fmt(out_pix_fmt);
 
     // Set GIF to loop infinitely (option "loop" = 0).
     // SAFETY: priv_data is valid after alloc_context3; av_opt_set handles unknown options gracefully.
