@@ -77,10 +77,10 @@ pub use buffersink::{BufferSinkOutcome, buffersink_get_frame};
 pub use codec::Codec;
 #[cfg(not(docsrs))]
 pub use codec_context::{CodecContext, ReceiveOutcome};
-pub use constants::{AV_NOPTS_VALUE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
+pub use constants::{AV_NOPTS_VALUE, AVFMT_NOFILE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
 pub use error::AvError;
 #[cfg(not(docsrs))]
-pub use format_context::{CodecParameters, InputFormatContext, StreamRef};
+pub use format_context::{CodecParameters, InputFormatContext, OutputFormatContext, StreamRef};
 #[cfg(not(docsrs))]
 pub use frame::Frame;
 #[cfg(not(docsrs))]

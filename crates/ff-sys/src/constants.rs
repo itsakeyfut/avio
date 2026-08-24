@@ -13,6 +13,15 @@ pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 /// `avformat_find_stream_info` has been called.
 pub const AVFMT_TS_DISCONT: i32 = 0x0200;
 
+/// `AVFMT_NOFILE` — `AVOutputFormat` flag indicating the muxer manages its own
+/// I/O and has no `AVIOContext` (`pb`) opened by the caller.
+///
+/// Set for muxers such as `image2` (image sequences), `hls`, `dash`, and similar
+/// segment/directory formats. When set, the caller must not `avio_open` a `pb`,
+/// and the owned [`OutputFormatContext`](crate::OutputFormatContext) must not
+/// close one on drop.
+pub const AVFMT_NOFILE: i32 = 0x0001;
+
 /// `AV_BUFFERSRC_FLAG_KEEP_REF` normalized to `i32` for cross-platform use.
 ///
 /// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS

@@ -16,7 +16,7 @@ use super::color::{
 use super::options::codec_to_id;
 use super::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, CString, EncodeError, VideoEncoderConfig, VideoEncoderInner,
-    av_write_trailer, avformat_write_header, ptr,
+    ptr,
 };
 
 /// FFmpeg pass-1 encoding flag: collect two-pass statistics, discard encoded output.
@@ -124,26 +124,23 @@ impl VideoEncoderInner {
         self.init_pass2_codec_ctx(&config, &stats_str)?;
 
         // ── Step 5: Open output file and write header ────────────────────────
-        match ff_sys::avformat::open_output(&output_path, ff_sys::avformat::avio_flags::WRITE) {
-            Ok(pb) => (*self.format_ctx).pb = pb,
-            Err(_) => {
-                return Err(EncodeError::CannotCreateFile { path: output_path });
-            }
-        }
+        self.format_ctx
+            .open_io(&output_path)
+            .map_err(|_| EncodeError::CannotCreateFile { path: output_path })?;
 
-        Self::apply_movflags(self.format_ctx, config.container);
-        Self::apply_metadata(self.format_ctx, &config.metadata);
-        Self::apply_chapters(self.format_ctx, &config.chapters);
-        let ret = avformat_write_header(self.format_ctx, ptr::null_mut());
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
+        let fmt = self.format_ctx.as_mut_ptr();
+        Self::apply_movflags(fmt, config.container);
+        Self::apply_metadata(fmt, &config.metadata);
+        Self::apply_chapters(fmt, &config.chapters);
+        self.format_ctx
+            .write_header()
+            .map_err(|e| EncodeError::Ffmpeg {
+                code: e.code(),
                 message: format!(
                     "Cannot write header in pass 2: {}",
-                    ff_sys::av_error_string(ret)
+                    ff_sys::av_error_string(e.code())
                 ),
-            });
-        }
+            })?;
 
         // ── Step 6: Re-encode all buffered frames ────────────────────────────
         let frames = std::mem::take(&mut self.buffered_frames);
@@ -178,13 +175,15 @@ impl VideoEncoderInner {
         // Write subtitle passthrough packets before trailer.
         self.write_subtitle_packets()?;
 
-        let ret = av_write_trailer(self.format_ctx);
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
-            });
-        }
+        self.format_ctx
+            .write_trailer()
+            .map_err(|e| EncodeError::Ffmpeg {
+                code: e.code(),
+                message: format!(
+                    "Cannot write trailer: {}",
+                    ff_sys::av_error_string(e.code())
+                ),
+            })?;
 
         Ok(())
     }

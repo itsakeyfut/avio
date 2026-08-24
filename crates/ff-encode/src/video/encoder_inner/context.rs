@@ -19,7 +19,7 @@ use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
     AudioCodec, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame, av_mallocz,
-    avformat_free_context, avformat_new_stream, ptr,
+    avformat_new_stream, ptr,
 };
 
 impl VideoEncoderInner {
@@ -309,7 +309,7 @@ impl VideoEncoderInner {
         );
 
         // Create stream
-        let stream = avformat_new_stream(self.format_ctx, codec_ptr);
+        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
         if stream.is_null() {
             // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
@@ -329,7 +329,7 @@ impl VideoEncoderInner {
             (*(*stream).codecpar).format = codec_ctx.pix_fmt();
         }
 
-        self.video_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
+        self.video_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
 
         // In two-pass mode the pass-1 context is stored separately; the real
         // (pass-2) video_codec_ctx is initialised later in run_pass2().
@@ -424,7 +424,7 @@ impl VideoEncoderInner {
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Create stream
-        let stream = avformat_new_stream(self.format_ctx, codec_ptr);
+        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
         if stream.is_null() {
             // The owned codec_ctx frees itself on return.
             return Err(EncodeError::Ffmpeg {
@@ -452,7 +452,7 @@ impl VideoEncoderInner {
         let fifo_sample_fmt = codec_ctx.sample_fmt();
         let fifo_nb_channels = codec_ctx.channels();
 
-        self.audio_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
+        self.audio_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
         self.audio_codec_ctx = Some(codec_ctx);
 
         // Allocate sample FIFO for codecs that require a fixed frame_size (AAC, FLAC, ALAC …).
@@ -518,7 +518,7 @@ impl VideoEncoderInner {
         for (data, mime_type, filename) in attachments {
             // Create a new stream for the attachment.
             // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
-            let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+            let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
             if out_stream.is_null() {
                 log::warn!("attachment: avformat_new_stream failed, skipping filename={filename}");
                 continue;
@@ -640,9 +640,9 @@ impl VideoEncoderInner {
         }
 
         // Record the output stream index before adding the new stream.
-        let out_stream_index = (*self.format_ctx).nb_streams as i32;
+        let out_stream_index = self.format_ctx.nb_streams() as i32;
         // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
-        let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+        let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
         if out_stream.is_null() {
             log::warn!("subtitle_passthrough: avformat_new_stream failed");
             let mut src_ctx_ptr = src_ctx;
@@ -726,7 +726,9 @@ impl VideoEncoderInner {
         let in_time_base = (*in_stream).time_base;
 
         // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
-        let out_stream = *(*self.format_ctx).streams.add(out_stream_index as usize);
+        let out_stream = *(*self.format_ctx.as_mut_ptr())
+            .streams
+            .add(out_stream_index as usize);
         let out_time_base = (*out_stream).time_base;
 
         let Ok(mut pkt) = ff_sys::Packet::new() else {
@@ -774,7 +776,7 @@ impl VideoEncoderInner {
                 (*p).dts = (*p).pts;
             }
 
-            let write_ret = av_interleaved_write_frame(self.format_ctx, p);
+            let write_ret = av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), p);
             if write_ret < 0 {
                 log::warn!(
                     "subtitle_passthrough: av_interleaved_write_frame failed \
@@ -817,13 +819,7 @@ impl VideoEncoderInner {
             ff_sys::swresample::audio_fifo::free(fifo);
         }
 
-        // Close output file
-        if !self.format_ctx.is_null() {
-            if !(*self.format_ctx).pb.is_null() {
-                ff_sys::avformat::close_output(&raw mut (*self.format_ctx).pb);
-            }
-            avformat_free_context(self.format_ctx);
-            self.format_ctx = ptr::null_mut();
-        }
+        // The owned `format_ctx` closes its IO and frees itself when the struct
+        // drops; nothing to close here.
     }
 }

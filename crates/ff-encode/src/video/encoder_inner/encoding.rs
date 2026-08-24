@@ -299,7 +299,7 @@ impl VideoEncoderInner {
             }
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
+            let write_ret = av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), pkt);
             if write_ret < 0 {
                 packet.unref();
                 return Err(EncodeError::MuxingFailed {
@@ -506,7 +506,8 @@ impl VideoEncoderInner {
             (*packet.as_mut_ptr()).stream_index = self.audio_stream_index;
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx, packet.as_mut_ptr());
+            let write_ret =
+                av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), packet.as_mut_ptr());
             if write_ret < 0 {
                 packet.unref();
                 return Err(EncodeError::MuxingFailed {

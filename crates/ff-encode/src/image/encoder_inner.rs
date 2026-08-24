@@ -7,12 +7,12 @@
 //!
 //! [`ImageEncoderInner`] owns every FFmpeg resource allocated during a single
 //! still-image encode. The destination frame, the packet, the codec context,
-//! and the scaling context are owned RAII values ([`ff_sys::Frame`],
-//! [`ff_sys::Packet`], [`ff_sys::CodecContext`], [`ff_sys::ScaleContext`]) that
-//! free themselves on drop. Only the output `AVFormatContext` remains a raw
-//! pointer; its [`Drop`] closes the IO context and frees the format context.
-//! Because `Drop` runs on every exit path — including panics and early `?`
-//! returns — no manual cleanup is needed at individual error sites.
+//! the scaling context, and the output format context are owned RAII values
+//! ([`ff_sys::Frame`], [`ff_sys::Packet`], [`ff_sys::CodecContext`],
+//! [`ff_sys::ScaleContext`], [`ff_sys::OutputFormatContext`]) that free
+//! themselves on drop; the format context also closes its IO on drop. Because
+//! drop runs on every exit path — including panics and early `?` returns — no
+//! manual cleanup is needed at individual error sites.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_code)]
@@ -27,7 +27,6 @@
 #![allow(clippy::manual_c_str_literals)]
 #![allow(clippy::unused_self)]
 
-use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
 
@@ -35,10 +34,9 @@ use ff_format::{PixelFormat, VideoFrame};
 use ff_sys::{
     AVCodecID, AVCodecID_AV_CODEC_ID_BMP, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_PNG,
     AVCodecID_AV_CODEC_ID_TIFF, AVCodecID_AV_CODEC_ID_WEBP, AVColorRange_AVCOL_RANGE_JPEG,
-    AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_interleaved_write_frame, av_write_trailer,
-    avformat, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header, swscale,
+    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, OutputFormatContext, av_interleaved_write_frame,
+    avformat_new_stream, swscale,
 };
 
 use crate::EncodeError;
@@ -64,22 +62,12 @@ pub(super) struct ImageEncodeOptions {
 
 /// Owns all FFmpeg resources for a single still-image encode operation.
 ///
-/// The destination frame, packet, codec context, and scaling context are owned
-/// RAII values that free themselves on drop. The output `AVFormatContext`
-/// starts null and is filled in as it is allocated, so the manual `Drop` only
-/// frees it when it actually exists.
-///
-/// # Drop contract
-///
-/// The manual `Drop` body only closes the IO context (`avio_closep`) and frees
-/// the output `AVFormatContext` (`avformat_free_context`). The owned
-/// [`ff_sys::Frame`], [`ff_sys::Packet`], [`ff_sys::ScaleContext`], and
-/// [`ff_sys::CodecContext`] fields free themselves via field drop after the
-/// manual body. That ordering is sound because the encoder's `AVCodecContext`
-/// and the output `AVFormatContext` are independent allocations that do not
-/// reference each other.
+/// The destination frame, packet, codec context, scaling context, and output
+/// format context are owned RAII values that free themselves on drop, so no
+/// early-return path leaks them.
 struct ImageEncoderInner {
-    format_ctx: *mut AVFormatContext,
+    /// Output format context (owned; frees itself and closes its IO on drop).
+    format_ctx: OutputFormatContext,
     codec_ctx: ff_sys::CodecContext,
     dst_frame: ff_sys::Frame,
     packet: ff_sys::Packet,
@@ -111,22 +99,41 @@ impl ImageEncoderInner {
             .pixel_format
             .map_or_else(|| preferred_pix_fmt(codec_id), pixel_format_to_av);
 
-        // Find the encoder and allocate the owned codec context up front so the
-        // struct can hold it by value; the remaining raw pointers start null and
-        // are filled in as they are allocated.
+        // Find the encoder and allocate the owned codec context, frame, packet,
+        // and (below) format context up front so the struct holds them by value.
         let codec = ff_sys::Codec::find_encoder(codec_id).ok_or(EncodeError::UnsupportedCodec {
             codec: format!("codec_id={codec_id}"),
         })?;
         let codec_ctx = ff_sys::CodecContext::new(Some(codec))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // Allocate the owned frame / packet up front; the format context starts
-        // null and is filled in as it is allocated.
         let dst_frame =
             ff_sys::Frame::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         let packet = ff_sys::Packet::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
+        // ── Step 1: Output format context (owned) ─────────────────────────────
+        // Prefer an explicit single-image muxer when one is known. Auto-detection
+        // (NULL format name) resolves to the `image2` muxer for most still-image
+        // formats, which expects a `%d` sequence pattern in the filename and emits
+        // a cosmetic warning for ordinary names like "frame.jpg"; a dedicated
+        // single-image muxer ("mjpeg", "apng", …) avoids that. If no explicit
+        // muxer is known (e.g. BMP) or it is unavailable on a minimal FFmpeg
+        // build, fall back to auto-detection. The owned context frees itself and
+        // closes its IO on drop, so any early return below cannot leak it.
+        let format_ctx = match codec_fallback_format(codec_id) {
+            Some(fmt) => OutputFormatContext::new(Some(fmt), path)
+                .or_else(|_| OutputFormatContext::new(None, path)),
+            None => OutputFormatContext::new(None, path),
+        }
+        .map_err(|e| EncodeError::Ffmpeg {
+            code: e.code(),
+            message: format!(
+                "Cannot create output context: {}",
+                ff_sys::av_error_string(e.code())
+            ),
+        })?;
+
         let mut inner = Self {
-            format_ctx: ptr::null_mut(),
+            format_ctx,
             codec_ctx,
             dst_frame,
             packet,
@@ -136,67 +143,8 @@ impl ImageEncoderInner {
             pix_fmt,
         };
 
-        // ── Step 1: Output format context ─────────────────────────────────────
-        let c_path = CString::new(path.to_str().ok_or_else(|| EncodeError::CannotCreateFile {
-            path: path.to_path_buf(),
-        })?)
-        .map_err(|_| EncodeError::CannotCreateFile {
-            path: path.to_path_buf(),
-        })?;
-
-        // Prefer an explicit muxer name when one is available.
-        //
-        // The auto-detection path (NULL format name) resolves to the `image2`
-        // muxer for most still-image formats.  `image2` expects filenames that
-        // contain a `%d` sequence-number pattern and emits a cosmetic warning:
-        //   "[image2 @ …] The specified filename '…' does not contain an image
-        //    sequence pattern"
-        // for any ordinary name like "frame.jpg".  Using a dedicated single-image
-        // muxer ("mjpeg", "apng", …) avoids that warning entirely.
-        //
-        // If no explicit muxer is known (e.g. BMP), or if the explicit muxer
-        // fails for any reason, we fall back to auto-detection.
-        let explicit_fmt = codec_fallback_format(codec_id);
-
-        let mut ret = if let Some(fmt) = explicit_fmt {
-            avformat_alloc_output_context2(
-                &raw mut inner.format_ctx,
-                ptr::null_mut(),
-                fmt,
-                c_path.as_ptr(),
-            )
-        } else {
-            avformat_alloc_output_context2(
-                &raw mut inner.format_ctx,
-                ptr::null_mut(),
-                ptr::null(),
-                c_path.as_ptr(),
-            )
-        };
-
-        // Fallback to auto-detection if the explicit muxer was unavailable or
-        // failed (e.g. on a minimal FFmpeg build that omits the dedicated muxer).
-        if ret < 0 || inner.format_ctx.is_null() {
-            ret = avformat_alloc_output_context2(
-                &raw mut inner.format_ctx,
-                ptr::null_mut(),
-                ptr::null(),
-                c_path.as_ptr(),
-            );
-        }
-
-        if ret < 0 || inner.format_ctx.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Cannot create output context: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
-
         // ── Step 2: Video stream ──────────────────────────────────────────────
-        let stream = avformat_new_stream(inner.format_ctx, ptr::null());
+        let stream = avformat_new_stream(inner.format_ctx.as_mut_ptr(), ptr::null());
         if stream.is_null() {
             return Err(EncodeError::Ffmpeg {
                 code: 0,
@@ -240,15 +188,16 @@ impl ImageEncoderInner {
         (*par).format = pix_fmt;
 
         // ── Step 8: Open output file ──────────────────────────────────────────
-        let io_ctx = avformat::open_output(path, avformat::avio_flags::WRITE)
-            .map_err(EncodeError::from_ffmpeg_error)?;
-        (*inner.format_ctx).pb = io_ctx;
+        inner
+            .format_ctx
+            .open_io(path)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 9: Write file header ─────────────────────────────────────────
-        let ret = avformat_write_header(inner.format_ctx, ptr::null_mut());
-        if ret < 0 {
-            return Err(EncodeError::from_ffmpeg_error(ret));
-        }
+        inner
+            .format_ctx
+            .write_header()
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 10: Configure destination frame and allocate its buffer ──────
         inner.dst_frame.set_format(pix_fmt);
@@ -367,9 +316,10 @@ impl ImageEncoderInner {
         self.drain_packets(true)?;
 
         // ── Finalise file ─────────────────────────────────────────────────────
-        av_write_trailer(self.format_ctx);
-        // SAFETY: format_ctx and pb are non-null at this point.
-        avformat::close_output(&raw mut (*self.format_ctx).pb);
+        // Preserve the prior behaviour of not surfacing a trailer error here.
+        let _ = self.format_ctx.write_trailer();
+        // Close the IO now (nulls `pb`) so the later drop does not double-close.
+        self.format_ctx.close_io();
 
         Ok(())
     }
@@ -393,7 +343,10 @@ impl ImageEncoderInner {
                     // SAFETY: `packet` is a valid owned packet; `stream_index` is a
                     //         plain field.
                     (*self.packet.as_mut_ptr()).stream_index = 0;
-                    let ret = av_interleaved_write_frame(self.format_ctx, self.packet.as_mut_ptr());
+                    let ret = av_interleaved_write_frame(
+                        self.format_ctx.as_mut_ptr(),
+                        self.packet.as_mut_ptr(),
+                    );
                     self.packet.unref();
                     if ret < 0 {
                         return Err(EncodeError::from_ffmpeg_error(ret));
@@ -408,29 +361,6 @@ impl ImageEncoderInner {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for ImageEncoderInner {
-    fn drop(&mut self) {
-        // The owned `dst_frame`, `packet`, `sws_ctx`, and `codec_ctx` fields free
-        // themselves via field drop after this body; only the raw output
-        // `AVFormatContext` needs manual cleanup here.
-        //
-        // SAFETY: `format_ctx` is either null (never allocated) or a valid owned
-        // allocation; the null check keeps Drop idempotent.
-        unsafe {
-            if !self.format_ctx.is_null() {
-                // Close the IO context if it hasn't been closed yet (it is set
-                // to null by avio_closep, so this check prevents a double-close
-                // when encode_frame already closed it on success).
-                if !(*self.format_ctx).pb.is_null() {
-                    avformat::close_output(&raw mut (*self.format_ctx).pb);
-                }
-                avformat_free_context(self.format_ctx);
-                self.format_ctx = ptr::null_mut();
-            }
-        }
     }
 }
 
@@ -468,17 +398,17 @@ pub(super) fn codec_from_extension(path: &Path) -> Result<AVCodecID, EncodeError
 /// perform image-sequence pattern validation and are present in all standard
 /// FFmpeg builds.  Returns `None` for codecs whose primary muxer is `image2`
 /// and for which no dedicated alternative is commonly available.
-fn codec_fallback_format(codec_id: AVCodecID) -> Option<*const std::os::raw::c_char> {
+fn codec_fallback_format(codec_id: AVCodecID) -> Option<&'static str> {
     // Use if/else rather than match to avoid the non_upper_case_globals lint
     // that fires when bindgen-generated constants appear in pattern position.
     if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
-        Some(c"mjpeg".as_ptr())
+        Some("mjpeg")
     } else if codec_id == AVCodecID_AV_CODEC_ID_PNG {
-        Some(c"apng".as_ptr())
+        Some("apng")
     } else if codec_id == AVCodecID_AV_CODEC_ID_TIFF {
-        Some(c"tiff".as_ptr())
+        Some("tiff")
     } else if codec_id == AVCodecID_AV_CODEC_ID_WEBP {
-        Some(c"webp".as_ptr())
+        Some("webp")
     } else {
         None
     }
@@ -718,16 +648,17 @@ mod tests {
         );
     }
 
-    // Verify Drop does not panic on a partially-initialised inner struct whose
-    // format context is null. This guards the partial-allocation cleanup path
-    // exercised when `open` returns early with an error before every field is set.
+    // Verify Drop does not panic on an inner struct whose output context was
+    // allocated but never opened (`open_io`) — the early-return path when `open`
+    // fails after allocating the context but before writing the header. The owned
+    // context must free itself with a null `pb` without closing anything.
     #[test]
-    fn drop_on_uninitialised_inner_should_not_panic() {
-        // A `None` codec yields a generic owned context that frees itself on drop;
-        // the owned frame / packet free themselves; `format_ctx` is null, so the
-        // manual Drop check skips it.
+    fn drop_with_unopened_context_should_not_panic() {
+        // All owned fields free themselves on drop; `format_ctx` has no `pb`
+        // opened, so its drop frees the context without closing an IO.
         let inner = ImageEncoderInner {
-            format_ctx: ptr::null_mut(),
+            format_ctx: OutputFormatContext::new(None, std::path::Path::new("dummy.png"))
+                .expect("output context alloc"),
             codec_ctx: ff_sys::CodecContext::new(None).expect("generic context alloc"),
             dst_frame: ff_sys::Frame::new().expect("frame alloc"),
             packet: ff_sys::Packet::new().expect("packet alloc"),

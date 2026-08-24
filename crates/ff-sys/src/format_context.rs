@@ -1,4 +1,4 @@
-//! RAII owner for an input (demux) `AVFormatContext`.
+//! RAII owners for input (demux) and output (mux) `AVFormatContext`s.
 //!
 //! [`InputFormatContext`] opens a demuxing context and frees it exactly once on
 //! drop, replacing the manual `avformat::open_input*` + `avformat::close_input`
@@ -7,10 +7,15 @@
 //! (an owned Packet is a later step), so that method is `unsafe`: the caller
 //! upholds the usual FFmpeg preconditions.
 //!
-//! The mux (output) lifecycle is a separate owner (`OutputFormatContext`,
-//! tracked in #1493); this type covers demuxing only.
+//! [`OutputFormatContext`] owns the mux (output) lifecycle: it allocates a
+//! muxing context, opens/closes its IO (`pb`), writes the header/trailer, and
+//! frees the context exactly once on drop (closing a caller-opened `pb`),
+//! replacing the manual `avformat_alloc_output_context2` + `avio_open` +
+//! `avformat_free_context` teardown. Like `InputFormatContext`, it exposes a
+//! transitional `as_mut_ptr` for the write path (stream creation, packet
+//! writing) not yet wrapped.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
@@ -264,6 +269,203 @@ impl Drop for InputFormatContext {
 //         guarantees exclusive access.
 unsafe impl Send for InputFormatContext {}
 
+/// An owned output (mux) `AVFormatContext`.
+///
+/// Allocates a muxing context and frees it exactly once on drop, closing the IO
+/// (`pb`) it opened unless the muxer manages its own IO (`AVFMT_NOFILE`). This
+/// replaces the manual `avformat_alloc_output_context2` + `avio_open` +
+/// `avformat_free_context` teardown scattered across every mux consumer, so no
+/// early-return path can leak the context.
+///
+/// Exactly-once free is guaranteed by construction: the value owns a
+/// [`NonNull`] and is neither `Copy` nor `Clone`.
+///
+/// The lifecycle (allocation, IO open/close, header/trailer) is wrapped as
+/// methods; the write path (`avformat_new_stream`, per-stream field setup,
+/// `av_interleaved_write_frame`) still goes through [`as_mut_ptr`] for now, so
+/// this type carries a transitional raw accessor like [`InputFormatContext`]
+/// (both are removed when the safe layer is sealed).
+///
+/// [`as_mut_ptr`]: OutputFormatContext::as_mut_ptr
+#[derive(Debug)]
+pub struct OutputFormatContext {
+    ptr: NonNull<AVFormatContext>,
+}
+
+impl OutputFormatContext {
+    /// Allocates a muxing context for `filename`, optionally forcing the muxer
+    /// named `format_name` (otherwise it is guessed from the filename).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the format cannot be resolved or the context
+    /// cannot be allocated.
+    pub fn new(format_name: Option<&str>, filename: &Path) -> Result<Self, AvError> {
+        crate::ensure_initialized();
+
+        let c_format = match format_name {
+            Some(name) => {
+                Some(CString::new(name).map_err(|_| AvError::new(crate::error_codes::EINVAL))?)
+            }
+            None => None,
+        };
+        let filename_str = filename
+            .to_str()
+            .ok_or_else(|| AvError::new(crate::error_codes::EINVAL))?;
+        let c_filename =
+            CString::new(filename_str).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+
+        let mut ctx: *mut AVFormatContext = std::ptr::null_mut();
+        // SAFETY: `ctx` is a valid out-pointer initialised to null; the two C
+        //         strings outlive the call; a null `oformat` lets FFmpeg pick the
+        //         muxer from `format_name` / `filename`.
+        let ret = unsafe {
+            crate::avformat_alloc_output_context2(
+                &mut ctx,
+                std::ptr::null_mut(),
+                c_format.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                c_filename.as_ptr(),
+            )
+        };
+        if ret < 0 {
+            return Err(AvError::new(ret));
+        }
+        NonNull::new(ctx)
+            .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
+            .map(|ptr| Self { ptr })
+    }
+
+    /// Returns the context pointer for read-only use.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const AVFormatContext {
+        self.ptr.as_ptr()
+    }
+
+    /// Returns the context pointer for mutation and FFI calls (stream creation,
+    /// packet writing, and per-stream field setup during migration).
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
+        self.ptr.as_ptr()
+    }
+
+    /// Returns the number of streams registered on the context.
+    #[must_use]
+    pub fn nb_streams(&self) -> u32 {
+        // SAFETY: `self.ptr` is a valid owned mux context; `nb_streams` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).nb_streams }
+    }
+
+    /// Returns the `AVOutputFormat` flags, or `0` when the format is unset.
+    #[must_use]
+    pub fn oformat_flags(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned mux context. `oformat` is set for
+        //         every successfully allocated output, but we null-check it
+        //         defensively before reading `flags` (a plain field).
+        unsafe {
+            let oformat = (*self.ptr.as_ptr()).oformat;
+            if oformat.is_null() {
+                0
+            } else {
+                (*oformat).flags
+            }
+        }
+    }
+
+    /// Returns `true` when the muxer manages its own IO (`AVFMT_NOFILE`), so the
+    /// caller must not open or close a `pb`.
+    #[must_use]
+    pub fn is_nofile(&self) -> bool {
+        self.oformat_flags() & crate::constants::AVFMT_NOFILE != 0
+    }
+
+    /// Opens the output IO for `path` (write mode) and attaches it as the
+    /// context's `pb`.
+    ///
+    /// Callers must skip this for [`is_nofile`](Self::is_nofile) muxers, which
+    /// manage their own IO.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the output cannot be opened for writing.
+    pub fn open_io(&mut self, path: &Path) -> Result<(), AvError> {
+        // SAFETY: `open_output` validates the path and returns a freshly opened
+        //         AVIO context; we take ownership of it as this context's `pb`.
+        let pb = unsafe { crate::avformat::open_output(path, crate::avformat::avio_flags::WRITE) }
+            .map_err(AvError::new)?;
+        // SAFETY: `self.ptr` is a valid owned mux context; `pb` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pb = pb };
+        Ok(())
+    }
+
+    /// Writes the container header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the header cannot be written.
+    pub fn write_header(&mut self) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned mux context; no muxer options.
+        let ret = unsafe { crate::avformat_write_header(self.ptr.as_ptr(), std::ptr::null_mut()) };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Writes the container trailer, finalising the output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the trailer cannot be written.
+    pub fn write_trailer(&mut self) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned mux context whose header was written.
+        let ret = unsafe { crate::av_write_trailer(self.ptr.as_ptr()) };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Closes the output IO (`pb`) early, before drop.
+    ///
+    /// Used by segment muxers (HLS/DASH) that close the caller-opened `pb` right
+    /// after the header write so the muxer can manage its own segment files. The
+    /// close nulls `pb`, so a later drop does not double-close. This is a no-op
+    /// when `pb` is already null.
+    pub fn close_io(&mut self) {
+        // SAFETY: `self.ptr` is a valid owned mux context; `close_output`
+        //         null-checks `pb` and nulls it after closing.
+        unsafe { crate::avformat::close_output(&mut (*self.ptr.as_ptr()).pb) };
+    }
+}
+
+impl Drop for OutputFormatContext {
+    fn drop(&mut self) {
+        // SAFETY: we uniquely own the context (NonNull, not Copy/Clone), so this
+        //         runs exactly once. Close the caller-opened `pb` if one is still
+        //         open (it is null for `AVFMT_NOFILE` muxers, where the caller
+        //         opened none, and after `close_io`), then free the context. A
+        //         non-null `pb` is always one the caller opened and owns, so it
+        //         must be closed regardless of the muxer flags — mirroring the
+        //         manual `if pb != null { avio_closep }` teardown this replaces.
+        //         `close_output` null-checks and nulls `pb`; `avformat_free_context`
+        //         does not touch `pb`.
+        unsafe {
+            let ctx = self.ptr.as_ptr();
+            if !(*ctx).pb.is_null() {
+                crate::avformat::close_output(&mut (*ctx).pb);
+            }
+            crate::avformat_free_context(ctx);
+        }
+    }
+}
+
+// SAFETY: an `AVFormatContext` is not safe for concurrent access, but moving
+//         ownership between threads is sound because Rust's ownership model
+//         guarantees exclusive access.
+unsafe impl Send for OutputFormatContext {}
+
 /// A borrowed handle to one `AVStream` of an [`InputFormatContext`].
 ///
 /// The lifetime ties the handle to the owning format context borrow, so it
@@ -405,5 +607,28 @@ mod tests {
         // context (the error path returns before any owned value is built).
         let result = InputFormatContext::open(Path::new("/nonexistent/path/to/file.mp4"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn output_new_should_error_on_bogus_format() {
+        // A format name that matches no muxer makes allocation fail, returning
+        // before any owned context is built (nothing to leak).
+        let result =
+            OutputFormatContext::new(Some("definitely_not_a_real_muxer"), Path::new("out.bin"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn output_new_should_allocate_and_drop() {
+        // Allocate a normal file muxer (guessed from the `.mp4` extension) and
+        // drop it immediately. This exercises the success path, the
+        // `oformat`-flag read, and free-on-drop with a never-opened `pb`. Skip
+        // gracefully if the mp4 muxer is absent from a minimal FFmpeg build.
+        let Ok(ctx) = OutputFormatContext::new(None, Path::new("out.mp4")) else {
+            return;
+        };
+        // mp4 is a normal file muxer, not one that manages its own IO.
+        assert!(!ctx.is_nofile());
+        // `ctx` drops here: frees the context (its `pb` was never opened).
     }
 }
