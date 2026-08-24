@@ -169,21 +169,13 @@ impl ImageDecoderInner {
     }
 
     /// Returns the image width in pixels.
-    ///
-    /// Reads `AVCodecContext::width` via the raw pointer: there is no safe
-    /// codec-context dimension accessor yet (retained for the ff-sys RAII follow-up).
     pub(crate) fn width(&self) -> u32 {
-        // SAFETY: codec_ctx is valid for the lifetime of `self`.
-        unsafe { (*self.codec_ctx.as_ptr()).width as u32 }
+        self.codec_ctx.width() as u32
     }
 
     /// Returns the image height in pixels.
-    ///
-    /// Reads `AVCodecContext::height` via the raw pointer: there is no safe
-    /// codec-context dimension accessor yet (retained for the ff-sys RAII follow-up).
     pub(crate) fn height(&self) -> u32 {
-        // SAFETY: codec_ctx is valid for the lifetime of `self`.
-        unsafe { (*self.codec_ctx.as_ptr()).height as u32 }
+        self.codec_ctx.height() as u32
     }
 
     /// Decodes the image, consuming `self` and returning a [`VideoFrame`].

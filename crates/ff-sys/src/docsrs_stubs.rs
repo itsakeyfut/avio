@@ -1154,6 +1154,28 @@ impl CodecContext {
 
     pub fn set_thread_count(&mut self, _thread_count: c_int) {}
 
+    pub fn set_width(&mut self, _width: c_int) {}
+    pub fn set_height(&mut self, _height: c_int) {}
+    pub fn set_pix_fmt(&mut self, _pix_fmt: AVPixelFormat) {}
+    pub fn set_time_base(&mut self, _time_base: AVRational) {}
+
+    #[must_use]
+    pub fn pix_fmt(&self) -> AVPixelFormat {
+        0
+    }
+    #[must_use]
+    pub fn sample_fmt(&self) -> AVSampleFormat {
+        0
+    }
+    #[must_use]
+    pub fn width(&self) -> c_int {
+        0
+    }
+    #[must_use]
+    pub fn height(&self) -> c_int {
+        0
+    }
+
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn apply_parameters(
@@ -1304,6 +1326,16 @@ impl InputFormatContext {
     }
 
     #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn iformat_name(&self) -> Option<String> {
+        None
+    }
+
+    #[must_use]
     pub fn stream(&self, _index: usize) -> Option<StreamRef<'_>> {
         None
     }
@@ -1376,6 +1408,11 @@ impl<'a> StreamRef<'a> {
     }
 
     #[must_use]
+    pub fn avg_frame_rate(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
     pub fn codecpar(&self) -> CodecParameters<'a> {
         // SAFETY: stub; never executed on docs.rs.
         unsafe {
@@ -1402,6 +1439,41 @@ impl CodecParameters<'_> {
     #[must_use]
     pub fn codec_id(&self) -> AVCodecID {
         0
+    }
+
+    #[must_use]
+    pub fn width(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn height(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn sample_rate(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn color_space(&self) -> AVColorSpace {
+        0
+    }
+
+    #[must_use]
+    pub fn color_range(&self) -> AVColorRange {
+        0
+    }
+
+    #[must_use]
+    pub fn color_primaries(&self) -> AVColorPrimaries {
+        0
+    }
+
+    #[must_use]
+    pub fn ch_layout(&self) -> AVChannelLayout {
+        AVChannelLayout::default()
     }
 }
 
@@ -1624,6 +1696,21 @@ impl ScaleContext {
         _src_strides: &[c_int],
         _src_h: c_int,
         _dst: &mut Frame,
+    ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn scale_slices(
+        &mut self,
+        _src: &[&[u8]],
+        _src_strides: &[c_int],
+        _src_h: c_int,
+        _dst: &mut [&mut [u8]],
+        _dst_strides: &[c_int],
     ) -> Result<c_int, crate::AvError> {
         Err(crate::AvError::new(-1))
     }

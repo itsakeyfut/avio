@@ -1,7 +1,6 @@
 use super::{
-    AVCodecContext, AVCodecID, AVFormatContext, AVMediaType_AVMEDIA_TYPE_VIDEO, CStr,
-    ContainerInfo, DecodeError, Duration, InputFormatContext, Rational, VideoDecoderInner,
-    VideoStreamInfo,
+    AVCodecID, AVMediaType_AVMEDIA_TYPE_VIDEO, CStr, ContainerInfo, DecodeError, Duration,
+    InputFormatContext, Rational, VideoDecoderInner, VideoStreamInfo,
 };
 
 impl VideoDecoderInner {
@@ -29,39 +28,23 @@ impl VideoDecoderInner {
         unsafe { CStr::from_ptr(name_ptr).to_string_lossy().into_owned() }
     }
 
-    /// Extracts video stream information from FFmpeg structures.
-    pub(super) unsafe fn extract_stream_info(
-        format_ctx: *mut AVFormatContext,
-        stream_index: i32,
-        codec_ctx: *mut AVCodecContext,
+    /// Extracts video stream information from the borrowed stream and codec
+    /// context.
+    pub(super) fn extract_stream_info(
+        stream: ff_sys::StreamRef<'_>,
+        codec_ctx: &ff_sys::CodecContext,
+        duration_val: i64,
     ) -> Result<VideoStreamInfo, DecodeError> {
-        // SAFETY: Caller ensures all pointers are valid
-        let (
-            width,
-            height,
-            fps_rational,
-            duration_val,
-            pix_fmt,
-            color_space_val,
-            color_range_val,
-            color_primaries_val,
-            codec_id,
-        ) = unsafe {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
-            let codecpar = (*(*stream)).codecpar;
-
-            (
-                (*codecpar).width as u32,
-                (*codecpar).height as u32,
-                (*(*stream)).avg_frame_rate,
-                (*format_ctx).duration,
-                (*codec_ctx).pix_fmt,
-                (*codecpar).color_space,
-                (*codecpar).color_range,
-                (*codecpar).color_primaries,
-                (*codecpar).codec_id,
-            )
-        };
+        let codecpar = stream.codecpar();
+        let stream_index = stream.index();
+        let width = codecpar.width() as u32;
+        let height = codecpar.height() as u32;
+        let fps_rational = stream.avg_frame_rate();
+        let pix_fmt = codec_ctx.pix_fmt();
+        let color_space_val = codecpar.color_space();
+        let color_range_val = codecpar.color_range();
+        let color_primaries_val = codecpar.color_primaries();
+        let codec_id = codecpar.codec_id();
 
         // Extract frame rate
         let frame_rate = if fps_rational.den != 0 {
@@ -114,39 +97,23 @@ impl VideoDecoderInner {
         Ok(builder.build())
     }
 
-    /// Extracts container-level information from the `AVFormatContext`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `format_ctx` is valid and `avformat_find_stream_info` has been called.
-    pub(super) unsafe fn extract_container_info(format_ctx: *mut AVFormatContext) -> ContainerInfo {
-        // SAFETY: Caller ensures format_ctx is valid
-        unsafe {
-            let format_name = if (*format_ctx).iformat.is_null() {
-                String::new()
-            } else {
-                let ptr = (*(*format_ctx).iformat).name;
-                if ptr.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
-                }
-            };
+    /// Extracts container-level information from the format context.
+    pub(super) fn extract_container_info(format_ctx: &InputFormatContext) -> ContainerInfo {
+        let format_name = format_ctx.iformat_name().unwrap_or_default();
 
-            let bit_rate = {
-                let br = (*format_ctx).bit_rate;
-                if br > 0 { Some(br as u64) } else { None }
-            };
+        let bit_rate = {
+            let br = format_ctx.bit_rate();
+            if br > 0 { Some(br as u64) } else { None }
+        };
 
-            let nb_streams = (*format_ctx).nb_streams as u32;
+        let nb_streams = format_ctx.nb_streams();
 
-            let mut builder = ContainerInfo::builder()
-                .format_name(format_name)
-                .nb_streams(nb_streams);
-            if let Some(br) = bit_rate {
-                builder = builder.bit_rate(br);
-            }
-            builder.build()
+        let mut builder = ContainerInfo::builder()
+            .format_name(format_name)
+            .nb_streams(nb_streams);
+        if let Some(br) = bit_rate {
+            builder = builder.bit_rate(br);
         }
+        builder.build()
     }
 }

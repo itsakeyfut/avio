@@ -11,8 +11,9 @@ use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
-    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AvError, Codec,
-    CodecParameters, Frame, Packet, avcodec_free_context as ffi_avcodec_free_context,
+    AVCodecContext, AVCodecParameters, AVDictionary, AVFrame, AVPacket, AVPixelFormat, AVRational,
+    AVSampleFormat, AvError, Codec, CodecParameters, Frame, Packet,
+    avcodec_free_context as ffi_avcodec_free_context,
 };
 
 /// The outcome of a [`CodecContext::receive_frame`] call.
@@ -89,6 +90,58 @@ impl CodecContext {
     pub fn set_thread_count(&mut self, thread_count: c_int) {
         // SAFETY: `self.ptr` is a valid owned context; `thread_count` is a plain field.
         unsafe { (*self.ptr.as_ptr()).thread_count = thread_count };
+    }
+
+    /// Sets the coded picture width.
+    pub fn set_width(&mut self, width: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `width` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).width = width };
+    }
+
+    /// Sets the coded picture height.
+    pub fn set_height(&mut self, height: c_int) {
+        // SAFETY: `self.ptr` is a valid owned context; `height` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).height = height };
+    }
+
+    /// Sets the pixel format.
+    pub fn set_pix_fmt(&mut self, pix_fmt: AVPixelFormat) {
+        // SAFETY: `self.ptr` is a valid owned context; `pix_fmt` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pix_fmt = pix_fmt };
+    }
+
+    /// Sets the time base.
+    pub fn set_time_base(&mut self, time_base: AVRational) {
+        // SAFETY: `self.ptr` is a valid owned context; `time_base` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).time_base = time_base };
+    }
+
+    /// Returns the pixel format.
+    #[must_use]
+    pub fn pix_fmt(&self) -> AVPixelFormat {
+        // SAFETY: `self.ptr` is a valid owned context; `pix_fmt` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pix_fmt }
+    }
+
+    /// Returns the sample format.
+    #[must_use]
+    pub fn sample_fmt(&self) -> AVSampleFormat {
+        // SAFETY: `self.ptr` is a valid owned context; `sample_fmt` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).sample_fmt }
+    }
+
+    /// Returns the coded picture width.
+    #[must_use]
+    pub fn width(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `width` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).width }
+    }
+
+    /// Returns the coded picture height.
+    #[must_use]
+    pub fn height(&self) -> c_int {
+        // SAFETY: `self.ptr` is a valid owned context; `height` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).height }
     }
 
     /// Copies the parameters of `params` into the context (safe wrapper).
@@ -284,6 +337,29 @@ mod tests {
         let ctx = CodecContext::new(None).expect("alloc should succeed");
         assert!(!ctx.as_ptr().is_null());
         // Dropping `ctx` here frees the context exactly once (no panic / double free).
+    }
+
+    #[test]
+    fn set_then_get_should_round_trip_dimensions_and_formats() {
+        // A `None` codec yields a generic context whose scalar fields can be set
+        // and read back without opening any codec.
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        ctx.set_width(1920);
+        ctx.set_height(1080);
+        ctx.set_pix_fmt(crate::AVPixelFormat_AV_PIX_FMT_YUV420P);
+        ctx.set_time_base(AVRational { num: 1, den: 30 });
+
+        assert_eq!(ctx.width(), 1920);
+        assert_eq!(ctx.height(), 1080);
+        assert_eq!(ctx.pix_fmt(), crate::AVPixelFormat_AV_PIX_FMT_YUV420P);
+    }
+
+    #[test]
+    fn sample_fmt_should_read_back_default() {
+        // A fresh generic context reports its (default) sample format without a
+        // codec being opened; reading it must not panic.
+        let ctx = CodecContext::new(None).expect("alloc should succeed");
+        let _ = ctx.sample_fmt();
     }
 
     #[test]

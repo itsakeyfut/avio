@@ -30,10 +30,7 @@ use ff_format::channel::ChannelLayout;
 use ff_format::codec::AudioCodec;
 use ff_format::container::ContainerInfo;
 use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
-use ff_sys::{
-    AVCodecContext, AVCodecID, AVFormatContext, AVMediaType_AVMEDIA_TYPE_AUDIO, Frame,
-    InputFormatContext, Packet,
-};
+use ff_sys::{AVCodecID, AVMediaType_AVMEDIA_TYPE_AUDIO, Frame, InputFormatContext, Packet};
 
 use super::resample_inner;
 
@@ -200,22 +197,18 @@ impl AudioDecoderInner {
                 ),
             })?;
 
-        // Extract stream information. `extract_stream_info` / `extract_container_info`
-        // still read fields with no safe accessor yet (codec-context sample_fmt,
-        // container bit_rate / iformat name), so they keep the raw pointer path;
-        // safe-ifying them is left to the ff-sys RAII follow-up.
-        // SAFETY: All pointers are valid
-        let stream_info = unsafe {
-            Self::extract_stream_info(
-                ctx.as_mut_ptr(),
-                stream_index as i32,
-                codec_ctx.as_mut_ptr(),
-            )?
-        };
+        // Extract stream and container information through the borrowed
+        // stream / codec-context accessors.
+        let duration_val = ctx.duration();
+        let stream = ctx
+            .stream(stream_index)
+            .ok_or_else(|| DecodeError::NoAudioStream {
+                path: path.to_path_buf(),
+            })?;
+        let stream_info = Self::extract_stream_info(stream, &codec_ctx, duration_val)?;
 
         // Extract container information
-        // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
-        let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
+        let container_info = Self::extract_container_info(&ctx);
 
         // Allocate packet and frame (owned; free on drop, including on an early
         // return from a later `?` in this constructor).
@@ -283,26 +276,20 @@ impl AudioDecoderInner {
         unsafe { CStr::from_ptr(name_ptr).to_string_lossy().into_owned() }
     }
 
-    /// Extracts audio stream information from FFmpeg structures.
-    unsafe fn extract_stream_info(
-        format_ctx: *mut AVFormatContext,
-        stream_index: i32,
-        codec_ctx: *mut AVCodecContext,
+    /// Extracts audio stream information from the borrowed stream and codec
+    /// context.
+    fn extract_stream_info(
+        stream: ff_sys::StreamRef<'_>,
+        codec_ctx: &ff_sys::CodecContext,
+        duration_val: i64,
     ) -> Result<AudioStreamInfo, DecodeError> {
-        // SAFETY: Caller ensures all pointers are valid
-        let (sample_rate, channels, sample_fmt, duration_val, channel_layout, codec_id) = unsafe {
-            let stream = (*format_ctx).streams.add(stream_index as usize);
-            let codecpar = (*(*stream)).codecpar;
-
-            (
-                (*codecpar).sample_rate as u32,
-                (*codecpar).ch_layout.nb_channels as u32,
-                (*codec_ctx).sample_fmt,
-                (*format_ctx).duration,
-                (*codecpar).ch_layout,
-                (*codecpar).codec_id,
-            )
-        };
+        let codecpar = stream.codecpar();
+        let stream_index = stream.index();
+        let channel_layout = codecpar.ch_layout();
+        let sample_rate = codecpar.sample_rate() as u32;
+        let channels = channel_layout.nb_channels as u32;
+        let sample_fmt = codec_ctx.sample_fmt();
+        let codec_id = codecpar.codec_id();
 
         // Extract duration
         let duration = if duration_val > 0 {
@@ -339,40 +326,24 @@ impl AudioDecoderInner {
         Ok(builder.build())
     }
 
-    /// Extracts container-level information from the `AVFormatContext`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `format_ctx` is valid and `avformat_find_stream_info` has been called.
-    unsafe fn extract_container_info(format_ctx: *mut AVFormatContext) -> ContainerInfo {
-        // SAFETY: Caller ensures format_ctx is valid
-        unsafe {
-            let format_name = if (*format_ctx).iformat.is_null() {
-                String::new()
-            } else {
-                let ptr = (*(*format_ctx).iformat).name;
-                if ptr.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
-                }
-            };
+    /// Extracts container-level information from the format context.
+    fn extract_container_info(format_ctx: &InputFormatContext) -> ContainerInfo {
+        let format_name = format_ctx.iformat_name().unwrap_or_default();
 
-            let bit_rate = {
-                let br = (*format_ctx).bit_rate;
-                if br > 0 { Some(br as u64) } else { None }
-            };
+        let bit_rate = {
+            let br = format_ctx.bit_rate();
+            if br > 0 { Some(br as u64) } else { None }
+        };
 
-            let nb_streams = (*format_ctx).nb_streams as u32;
+        let nb_streams = format_ctx.nb_streams();
 
-            let mut builder = ContainerInfo::builder()
-                .format_name(format_name)
-                .nb_streams(nb_streams);
-            if let Some(br) = bit_rate {
-                builder = builder.bit_rate(br);
-            }
-            builder.build()
+        let mut builder = ContainerInfo::builder()
+            .format_name(format_name)
+            .nb_streams(nb_streams);
+        if let Some(br) = bit_rate {
+            builder = builder.bit_rate(br);
         }
+        builder.build()
     }
 
     /// Converts FFmpeg channel layout to our `ChannelLayout` enum.
