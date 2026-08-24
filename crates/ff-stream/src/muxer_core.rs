@@ -1,7 +1,8 @@
 //! Shared `FFmpeg` muxer state for all streaming outputs.
 //!
-//! [`MuxerCore`] owns all raw `FFmpeg` contexts (video/audio encoder, resampler,
-//! scaler, output format context). The four protocol-specific inner types
+//! [`MuxerCore`] owns the `FFmpeg` encode/mux state: the encoder contexts,
+//! resampler, scaler, and encoder frames as RAII owners, plus the raw output
+//! format context (`out_ctx`). The four protocol-specific inner types
 //! (`RtmpInner`, `SrtInner`, `LiveHlsInner`, `LiveDashInner`) each hold a
 //! `MuxerCore` and delegate every method except `open_unsafe` to it.
 
@@ -20,8 +21,7 @@ use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AVFormatContext, AVFrame, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational,
-    AVSampleFormat, av_frame_alloc, av_frame_free, av_frame_get_buffer, av_frame_unref,
+    AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat,
     av_rescale_q, av_write_trailer, avformat_free_context,
 };
 
@@ -51,8 +51,8 @@ pub(crate) struct MuxerCore {
     pub(crate) swr_ctx: Option<ff_sys::ResampleContext>,
     /// `None` until swscale is needed; recreated if source dimensions/format change.
     pub(crate) sws_ctx: Option<ff_sys::ScaleContext>,
-    pub(crate) vid_enc_frame: *mut AVFrame,
-    pub(crate) aud_enc_frame: *mut AVFrame,
+    pub(crate) vid_enc_frame: ff_sys::Frame,
+    pub(crate) aud_enc_frame: ff_sys::Frame,
     pub(crate) vid_out_stream_idx: i32,
     /// `-1` when audio is not configured.
     pub(crate) aud_out_stream_idx: i32,
@@ -83,9 +83,9 @@ pub(crate) struct MuxerCore {
     pub(crate) close_pb_after_trailer: bool,
 }
 
-// SAFETY: MuxerCore exclusively owns all raw FFmpeg pointers. FFmpeg contexts
-// are not safe for concurrent access, but transferring ownership between threads
-// is safe (no shared state).
+// SAFETY: MuxerCore exclusively owns its FFmpeg state (RAII owners plus the raw
+// out_ctx). FFmpeg contexts are not safe for concurrent access, but transferring
+// ownership between threads is safe (no shared state).
 unsafe impl Send for MuxerCore {}
 
 impl MuxerCore {
@@ -115,18 +115,12 @@ impl MuxerCore {
         log_prefix: &'static str,
         close_pb_after_trailer: bool,
     ) -> Result<Self, StreamError> {
-        let vid_enc_frame = av_frame_alloc();
-        let aud_enc_frame = av_frame_alloc();
-
-        if vid_enc_frame.is_null() || aud_enc_frame.is_null() {
-            if !vid_enc_frame.is_null() {
-                av_frame_free(&mut (vid_enc_frame as *mut _));
-            }
-            if !aud_enc_frame.is_null() {
-                av_frame_free(&mut (aud_enc_frame as *mut _));
-            }
+        // Owned frames: each frees exactly once on drop. On the error arm the
+        // successfully-allocated one (if any) drops at the end of this statement.
+        let (Ok(vid_enc_frame), Ok(aud_enc_frame)) = (ff_sys::Frame::new(), ff_sys::Frame::new())
+        else {
             return Err(ffmpeg_err_msg("cannot allocate encoder frames"));
-        }
+        };
 
         Ok(Self {
             out_ctx,
@@ -174,121 +168,95 @@ impl MuxerCore {
             || src_h != self.enc_height
             || src_fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NONE;
 
-        if needs_conversion {
-            // (Re)create SwsContext when source properties change.
-            if self.last_sws_src_fmt != Some(src_fmt)
+        // (Re)create SwsContext when source properties change.
+        if needs_conversion
+            && (self.last_sws_src_fmt != Some(src_fmt)
                 || self.last_sws_src_w != Some(src_w)
-                || self.last_sws_src_h != Some(src_h)
-            {
-                // Move-assign the new context; the old one (if any) drops here.
-                self.sws_ctx = Some(
-                    ff_sys::ScaleContext::new(
-                        src_w,
-                        src_h,
-                        src_fmt,
-                        self.enc_width,
-                        self.enc_height,
-                        AVPixelFormat_AV_PIX_FMT_YUV420P,
-                        ff_sys::swscale::scale_flags::BILINEAR,
-                    )
-                    .map_err(|_| {
-                        ffmpeg_err_msg(&format!(
-                            "{} swscale context creation failed for video frame",
-                            self.log_prefix
-                        ))
-                    })?,
-                );
-                self.last_sws_src_fmt = Some(src_fmt);
-                self.last_sws_src_w = Some(src_w);
-                self.last_sws_src_h = Some(src_h);
-            }
+                || self.last_sws_src_h != Some(src_h))
+        {
+            // Move-assign the new context; the old one (if any) drops here.
+            self.sws_ctx = Some(
+                ff_sys::ScaleContext::new(
+                    src_w,
+                    src_h,
+                    src_fmt,
+                    self.enc_width,
+                    self.enc_height,
+                    AVPixelFormat_AV_PIX_FMT_YUV420P,
+                    ff_sys::swscale::scale_flags::BILINEAR,
+                )
+                .map_err(|_| {
+                    ffmpeg_err_msg(&format!(
+                        "{} swscale context creation failed for video frame",
+                        self.log_prefix
+                    ))
+                })?,
+            );
+            self.last_sws_src_fmt = Some(src_fmt);
+            self.last_sws_src_w = Some(src_w);
+            self.last_sws_src_h = Some(src_h);
+        }
 
-            (*self.vid_enc_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
-            (*self.vid_enc_frame).width = self.enc_width;
-            (*self.vid_enc_frame).height = self.enc_height;
-            self.set_vid_enc_pts();
+        // Configure and allocate the encoder frame (common to both paths).
+        self.vid_enc_frame
+            .set_format(AVPixelFormat_AV_PIX_FMT_YUV420P);
+        self.vid_enc_frame.set_width(self.enc_width);
+        self.vid_enc_frame.set_height(self.enc_height);
+        self.set_vid_enc_pts();
 
-            let buf_ret = av_frame_get_buffer(self.vid_enc_frame, 0);
-            if buf_ret < 0 {
-                av_frame_unref(self.vid_enc_frame);
-                return Err(ffmpeg_err(buf_ret));
-            }
+        if let Err(e) = self.vid_enc_frame.get_buffer(0) {
+            self.vid_enc_frame.unref();
+            return Err(ffmpeg_err(e.code()));
+        }
 
-            // Build source plane/linesize arrays from the VideoFrame.
-            let planes = frame.planes();
-            let strides = frame.strides();
-            let mut src_data = [ptr::null::<u8>(); 8];
-            let mut src_linesize = [0i32; 8];
-            for (i, (plane, &stride)) in planes.iter().zip(strides.iter()).enumerate().take(8) {
-                src_data[i] = plane.as_ref().as_ptr();
-                src_linesize[i] = stride as i32;
-            }
+        if needs_conversion {
+            // Scale/convert the source into the encoder frame.
+            let src_planes: Vec<&[u8]> = frame.planes().iter().map(AsRef::as_ref).collect();
+            let src_strides: Vec<i32> = frame.strides().iter().map(|&s| s as i32).collect();
 
             self.sws_ctx
                 .as_mut()
                 .ok_or_else(|| {
                     ffmpeg_err_msg(&format!("{} swscale context missing", self.log_prefix))
                 })?
-                .scale(
-                    src_data.as_ptr(),
-                    src_linesize.as_ptr(),
-                    0,
-                    src_h,
-                    (*self.vid_enc_frame).data.as_mut_ptr().cast_const(),
-                    (*self.vid_enc_frame).linesize.as_mut_ptr(),
-                )
+                .scale_planes(&src_planes, &src_strides, src_h, &mut self.vid_enc_frame)
                 .map_err(|_| {
                     ffmpeg_err_msg(&format!("{} swscale conversion failed", self.log_prefix))
                 })?;
         } else {
-            // Same format and dimensions — copy planes directly.
-            (*self.vid_enc_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
-            (*self.vid_enc_frame).width = self.enc_width;
-            (*self.vid_enc_frame).height = self.enc_height;
-            self.set_vid_enc_pts();
-
-            let buf_ret = av_frame_get_buffer(self.vid_enc_frame, 0);
-            if buf_ret < 0 {
-                av_frame_unref(self.vid_enc_frame);
-                return Err(ffmpeg_err(buf_ret));
-            }
-
-            // Copy Y/U/V planes line-by-line.
+            // Same format and dimensions — copy Y/U/V planes via self-sizing
+            // accessors (each plane's height comes from the frame descriptor).
             let planes = frame.planes();
             let strides = frame.strides();
             for (plane_idx, (src_plane, &src_stride)) in
                 planes.iter().zip(strides.iter()).enumerate().take(3)
             {
-                let dst_stride = (*self.vid_enc_frame).linesize[plane_idx] as usize;
-                let dst_ptr = (*self.vid_enc_frame).data[plane_idx];
-                if dst_ptr.is_null() {
+                // SAFETY: vid_enc_frame is a get_buffer'd frame; linesize is a plain field.
+                let dst_stride = (*self.vid_enc_frame.as_ptr()).linesize[plane_idx] as usize;
+                let Some(dst_plane) = self.vid_enc_frame.video_plane_mut(plane_idx) else {
                     continue;
-                }
-                let rows = if plane_idx == 0 {
-                    self.enc_height as usize
-                } else {
-                    (self.enc_height as usize).div_ceil(2)
                 };
-                let copy_width = dst_stride.min(src_stride);
                 let src_bytes: &[u8] = src_plane.as_ref();
-                for row in 0..rows {
+                let copy_width = dst_stride.min(src_stride);
+                let num_rows = dst_plane.len() / dst_stride;
+                for row in 0..num_rows {
                     let src_off = row * src_stride;
                     let dst_off = row * dst_stride;
                     if src_off + copy_width > src_bytes.len() {
                         break;
                     }
-                    // SAFETY: dst_ptr + dst_off is within the allocated frame buffer.
-                    ptr::copy_nonoverlapping(
-                        src_bytes.as_ptr().add(src_off),
-                        dst_ptr.add(dst_off),
-                        copy_width,
-                    );
+                    dst_plane[dst_off..dst_off + copy_width]
+                        .copy_from_slice(&src_bytes[src_off..src_off + copy_width]);
                 }
             }
         }
 
-        if self.vid_enc_ctx.send_frame(self.vid_enc_frame).is_ok() {
-            // SAFETY: vid_enc_ctx and out_ctx are valid; vid_out_stream_idx is valid.
+        if self
+            .vid_enc_ctx
+            .send_frame(self.vid_enc_frame.as_ptr())
+            .is_ok()
+        {
+            // SAFETY: out_ctx is valid; vid_out_stream_idx is valid.
             drain_encoder(
                 self.vid_enc_ctx.as_mut_ptr(),
                 self.out_ctx,
@@ -301,7 +269,7 @@ impl MuxerCore {
             );
         }
 
-        av_frame_unref(self.vid_enc_frame);
+        self.vid_enc_frame.unref();
         self.video_frame_count += 1;
         Ok(())
     }
@@ -319,10 +287,6 @@ impl MuxerCore {
         if self.aud_enc_ctx.is_none() || self.aud_out_stream_idx < 0 {
             return; // audio not configured
         }
-        let aud_ptr = match self.aud_enc_ctx.as_mut() {
-            Some(c) => c.as_mut_ptr(),
-            None => return,
-        };
 
         let in_fmt = sample_format_to_av(frame.format());
         let in_rate = frame.sample_rate() as i32;
@@ -334,55 +298,51 @@ impl MuxerCore {
             || self.last_swr_in_channels != Some(in_channels)
         {
             let in_layout = ff_sys::swresample::channel_layout::with_channels(in_channels);
-            let enc_ch_layout = &(*aud_ptr).ch_layout;
-
-            // Move-assign the new resampler; the old one (if any) drops here.
-            if let Ok(ctx) = ff_sys::ResampleContext::new(
-                enc_ch_layout,
-                ff_sys::swresample::sample_format::FLTP,
-                self.aud_sample_rate,
-                &in_layout,
-                in_fmt,
-                in_rate,
-            ) {
-                self.swr_ctx = Some(ctx);
-                self.last_swr_in_fmt = Some(in_fmt);
-                self.last_swr_in_rate = Some(in_rate);
-                self.last_swr_in_channels = Some(in_channels);
-            } else {
+            // Borrow the encoder's channel layout only for the resampler build.
+            let new_ctx = {
+                let Some(aud_ctx) = self.aud_enc_ctx.as_ref() else {
+                    return;
+                };
+                ff_sys::ResampleContext::new(
+                    aud_ctx.ch_layout(),
+                    ff_sys::swresample::sample_format::FLTP,
+                    self.aud_sample_rate,
+                    &in_layout,
+                    in_fmt,
+                    in_rate,
+                )
+            };
+            let Ok(ctx) = new_ctx else {
                 log::warn!("{} swr alloc failed, dropping audio frame", self.log_prefix);
                 return;
-            }
+            };
+            // Move-assign the new resampler; the old one (if any) drops here.
+            self.swr_ctx = Some(ctx);
+            self.last_swr_in_fmt = Some(in_fmt);
+            self.last_swr_in_rate = Some(in_rate);
+            self.last_swr_in_channels = Some(in_channels);
         }
 
         // Prepare the encoder frame.
-        (*self.aud_enc_frame).format = ff_sys::swresample::sample_format::FLTP;
-        (*self.aud_enc_frame).sample_rate = self.aud_sample_rate;
-        (*self.aud_enc_frame).nb_samples = self.aud_frame_size;
-        let _ = ff_sys::swresample::channel_layout::copy(
-            &mut (*self.aud_enc_frame).ch_layout,
-            &(*aud_ptr).ch_layout,
-        );
+        self.aud_enc_frame
+            .set_format(ff_sys::swresample::sample_format::FLTP);
+        self.aud_enc_frame.set_sample_rate(self.aud_sample_rate);
+        self.aud_enc_frame.set_nb_samples(self.aud_frame_size);
+        if let Some(aud_ctx) = self.aud_enc_ctx.as_ref() {
+            let _ = self.aud_enc_frame.set_ch_layout(aud_ctx.ch_layout());
+        }
 
-        let buf_ret = av_frame_get_buffer(self.aud_enc_frame, 0);
-        if buf_ret < 0 {
-            av_frame_unref(self.aud_enc_frame);
+        if self.aud_enc_frame.get_buffer(0).is_err() {
+            self.aud_enc_frame.unref();
             return;
         }
 
-        // Build input plane pointers from the AudioFrame.
-        let planes = frame.planes();
-        let mut in_data = [ptr::null::<u8>(); 8];
-        for (i, plane) in planes.iter().enumerate().take(8) {
-            in_data[i] = plane.as_ptr();
-        }
-
-        let dst_data = (*self.aud_enc_frame).data.as_mut_ptr();
-        let out_count = self.aud_frame_size;
-        let in_ptr = in_data.as_ptr();
+        // Resample the input into the encoder frame's planes.
+        let in_planes: Vec<&[u8]> = frame.planes().iter().map(Vec::as_slice).collect();
         let in_count = frame.samples() as i32;
         let samples_out = if let Some(swr) = self.swr_ctx.as_mut() {
-            swr.convert(dst_data, out_count, in_ptr, in_count).ok()
+            swr.convert_into_frame(&mut self.aud_enc_frame, &in_planes, in_count)
+                .ok()
         } else {
             None
         };
@@ -390,16 +350,18 @@ impl MuxerCore {
         if let Some(n) = samples_out
             && n > 0
         {
-            (*self.aud_enc_frame).nb_samples = n;
-            (*self.aud_enc_frame).pts = self.audio_pts;
-            if ff_sys::avcodec::send_frame(aud_ptr, self.aud_enc_frame).is_ok() {
+            self.aud_enc_frame.set_nb_samples(n);
+            self.aud_enc_frame.set_pts(self.audio_pts);
+            if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
+                && aud_ctx.send_frame(self.aud_enc_frame.as_ptr()).is_ok()
+            {
                 let aud_frame_period = AVRational {
-                    num: (*aud_ptr).frame_size,
-                    den: (*aud_ptr).sample_rate,
+                    num: aud_ctx.frame_size(),
+                    den: aud_ctx.sample_rate(),
                 };
-                // SAFETY: aud_enc_ctx and out_ctx are valid; aud_out_stream_idx is valid.
+                // SAFETY: out_ctx is valid; aud_out_stream_idx is valid.
                 drain_encoder(
-                    aud_ptr,
+                    aud_ctx.as_mut_ptr(),
                     self.out_ctx,
                     self.aud_out_stream_idx,
                     self.log_prefix,
@@ -409,7 +371,7 @@ impl MuxerCore {
             self.audio_pts += i64::from(n);
         }
 
-        av_frame_unref(self.aud_enc_frame);
+        self.aud_enc_frame.unref();
     }
 
     /// Flush both encoders, write the container trailer, and release all resources.
@@ -440,42 +402,47 @@ impl MuxerCore {
         );
 
         // ── Flush audio encoder ───────────────────────────────────────────────
-        if self.aud_out_stream_idx >= 0
-            && let Some(aud_ptr) = self
-                .aud_enc_ctx
-                .as_mut()
-                .map(ff_sys::CodecContext::as_mut_ptr)
-        {
+        if self.aud_out_stream_idx >= 0 && self.aud_enc_ctx.is_some() {
             // Drain any remaining resampler buffered samples.
             if self.swr_ctx.is_some() {
-                (*self.aud_enc_frame).format = ff_sys::swresample::sample_format::FLTP;
-                (*self.aud_enc_frame).sample_rate = self.aud_sample_rate;
-                (*self.aud_enc_frame).nb_samples = self.aud_frame_size;
-                let _ = ff_sys::swresample::channel_layout::copy(
-                    &mut (*self.aud_enc_frame).ch_layout,
-                    &(*aud_ptr).ch_layout,
-                );
+                self.aud_enc_frame
+                    .set_format(ff_sys::swresample::sample_format::FLTP);
+                self.aud_enc_frame.set_sample_rate(self.aud_sample_rate);
+                self.aud_enc_frame.set_nb_samples(self.aud_frame_size);
+                if let Some(aud_ctx) = self.aud_enc_ctx.as_ref() {
+                    let _ = self.aud_enc_frame.set_ch_layout(aud_ctx.ch_layout());
+                }
 
-                if av_frame_get_buffer(self.aud_enc_frame, 0) == 0 {
-                    let dst_data = (*self.aud_enc_frame).data.as_mut_ptr();
+                if self.aud_enc_frame.get_buffer(0).is_ok() {
                     let out_count = self.aud_frame_size;
+                    // Flush the resampler with a NULL input. `convert_into_frame`
+                    // models the normal-input case; the flush needs a NULL input
+                    // pointer, so the raw `convert` is used here.
                     let flushed = if let Some(swr) = self.swr_ctx.as_mut() {
-                        swr.convert(dst_data, out_count, ptr::null(), 0).ok()
+                        swr.convert(
+                            (*self.aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
+                            out_count,
+                            ptr::null(),
+                            0,
+                        )
+                        .ok()
                     } else {
                         None
                     };
                     if let Some(n) = flushed
                         && n > 0
                     {
-                        (*self.aud_enc_frame).nb_samples = n;
-                        (*self.aud_enc_frame).pts = self.audio_pts;
-                        if ff_sys::avcodec::send_frame(aud_ptr, self.aud_enc_frame).is_ok() {
+                        self.aud_enc_frame.set_nb_samples(n);
+                        self.aud_enc_frame.set_pts(self.audio_pts);
+                        if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
+                            && aud_ctx.send_frame(self.aud_enc_frame.as_ptr()).is_ok()
+                        {
                             let aud_frame_period = AVRational {
-                                num: (*aud_ptr).frame_size,
-                                den: (*aud_ptr).sample_rate,
+                                num: aud_ctx.frame_size(),
+                                den: aud_ctx.sample_rate(),
                             };
                             drain_encoder(
-                                aud_ptr,
+                                aud_ctx.as_mut_ptr(),
                                 self.out_ctx,
                                 self.aud_out_stream_idx,
                                 self.log_prefix,
@@ -483,23 +450,25 @@ impl MuxerCore {
                             );
                         }
                     }
-                    av_frame_unref(self.aud_enc_frame);
+                    self.aud_enc_frame.unref();
                 }
             }
 
             // Flush the AAC encoder itself.
-            let _ = ff_sys::avcodec::send_frame(aud_ptr, ptr::null());
-            let aud_frame_period = AVRational {
-                num: (*aud_ptr).frame_size,
-                den: (*aud_ptr).sample_rate,
-            };
-            drain_encoder(
-                aud_ptr,
-                self.out_ctx,
-                self.aud_out_stream_idx,
-                self.log_prefix,
-                aud_frame_period,
-            );
+            if let Some(aud_ctx) = self.aud_enc_ctx.as_mut() {
+                let _ = aud_ctx.send_frame(ptr::null());
+                let aud_frame_period = AVRational {
+                    num: aud_ctx.frame_size(),
+                    den: aud_ctx.sample_rate(),
+                };
+                drain_encoder(
+                    aud_ctx.as_mut_ptr(),
+                    self.out_ctx,
+                    self.aud_out_stream_idx,
+                    self.log_prefix,
+                    aud_frame_period,
+                );
+            }
         }
 
         // ── Write trailer ─────────────────────────────────────────────────────
@@ -514,7 +483,8 @@ impl MuxerCore {
 
         log::info!("{} output finished", self.log_prefix);
 
-        // Zero all pointers so Drop does not double-free.
+        // Free the raw out_ctx and null it so Drop does not double-free; the owned
+        // frames/contexts drop with the struct.
         self.free_all();
     }
 
@@ -522,22 +492,24 @@ impl MuxerCore {
     ///
     /// # Safety
     ///
-    /// `vid_enc_frame` and `vid_enc_ctx` must be valid non-null pointers.
+    /// Calls the `av_rescale_q` FFI; `vid_enc_ctx` must be a valid codec context.
     unsafe fn set_vid_enc_pts(&mut self) {
-        (*self.vid_enc_frame).pts = av_rescale_q(
+        let pts = av_rescale_q(
             self.video_frame_count as i64,
             AVRational {
                 num: 1,
                 den: self.fps_int,
             },
-            (*self.vid_enc_ctx.as_ptr()).time_base,
+            self.vid_enc_ctx.time_base(),
         );
+        self.vid_enc_frame.set_pts(pts);
     }
 
-    /// Free all owned `FFmpeg` contexts and zero the pointers.
+    /// Release the raw output format context and drop the optional owned contexts.
     ///
-    /// Each pointer is checked for null before freeing. After this call all
-    /// pointers are null, so a second call is a no-op.
+    /// The owned encoder frames / codec / resampler / scaler contexts free on their
+    /// own `Drop`; this only needs to close `out_ctx.pb` (RTMP/SRT) and free the raw
+    /// `out_ctx`, nulling it so a second call (from `Drop`) is a no-op.
     ///
     /// For RTMP/SRT (`close_pb_after_trailer = true`) closes `out_ctx.pb`
     /// before freeing `out_ctx` — handles the abnormal Drop path where
@@ -545,21 +517,15 @@ impl MuxerCore {
     ///
     /// # Safety
     ///
-    /// Must only be called when no other reference to the contained pointers exists.
+    /// Must only be called when no other reference to `out_ctx` exists.
     unsafe fn free_all(&mut self) {
         // Owned scale / resample / audio-codec contexts drop when set to `None`;
         // a second call re-`None`s them, so this is idempotent. The `vid_enc_ctx`
         // field is not an `Option` — it drops exactly once when the struct drops.
         self.sws_ctx = None;
         self.swr_ctx = None;
-        if !self.vid_enc_frame.is_null() {
-            av_frame_free(&mut (self.vid_enc_frame as *mut _));
-            self.vid_enc_frame = ptr::null_mut();
-        }
-        if !self.aud_enc_frame.is_null() {
-            av_frame_free(&mut (self.aud_enc_frame as *mut _));
-            self.aud_enc_frame = ptr::null_mut();
-        }
+        // `vid_enc_frame` / `aud_enc_frame` are owned `Frame`s: they free exactly
+        // once when the struct drops, so there is nothing to free here.
         self.aud_enc_ctx = None;
         if !self.out_ctx.is_null() {
             // For RTMP/SRT: close pb if still open (Drop path where

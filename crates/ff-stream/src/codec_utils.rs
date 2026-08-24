@@ -18,8 +18,7 @@
 
 use ff_sys::{
     AVCodecContext, AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE, AVRational,
-    AVSampleFormat, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_rescale_ts, av_packet_unref, av_rescale_q,
+    AVSampleFormat, av_interleaved_write_frame, av_packet_rescale_ts, av_rescale_q,
 };
 
 use ff_format::{PixelFormat, SampleFormat};
@@ -94,14 +93,15 @@ pub(crate) unsafe fn open_aac_encoder(
         .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available (tried aac, libfdk_aac)"))?;
 
     let mut enc = ff_sys::CodecContext::new(Some(codec)).map_err(|e| ffmpeg_err(e.code()))?;
-    let ctx = enc.as_mut_ptr();
 
-    (*ctx).sample_rate = sample_rate;
-    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
-    (*ctx).bit_rate = bit_rate;
-    (*ctx).time_base.num = 1;
-    (*ctx).time_base.den = sample_rate;
-    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
+    enc.set_sample_rate(sample_rate);
+    enc.set_sample_fmt(ff_sys::swresample::sample_format::FLTP);
+    enc.set_bit_rate(bit_rate);
+    enc.set_time_base(AVRational {
+        num: 1,
+        den: sample_rate,
+    });
+    enc.set_ch_layout_default(nb_channels);
 
     // On open failure `enc` drops (Drop = avcodec_free_context), so no manual free.
     enc.open(codec, std::ptr::null_mut())
@@ -189,6 +189,10 @@ pub(crate) fn sample_format_to_av(fmt: SampleFormat) -> AVSampleFormat {
 ///   one call to `avcodec_send_frame` preceding this call.
 /// - `out_ctx` must be a valid `AVFormatContext` whose header has been written.
 /// - `stream_idx` must be a valid index into `out_ctx`'s stream array.
+// `enc_ctx` stays a raw `*mut AVCodecContext` (issue carve-out): this helper is
+// shared by the MuxerCore/live family and the HLS/DASH transcode paths, so its
+// signature is kept stable; the internal packet is owned (`Packet`) so there is
+// no manual `av_packet_free`.
 pub(crate) unsafe fn drain_encoder(
     enc_ctx: *mut AVCodecContext,
     out_ctx: *mut AVFormatContext,
@@ -196,10 +200,9 @@ pub(crate) unsafe fn drain_encoder(
     log_prefix: &str,
     frame_period: AVRational,
 ) {
-    let mut pkt = av_packet_alloc();
-    if pkt.is_null() {
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         return;
-    }
+    };
 
     // SAFETY: out_ctx is valid and stream_idx is a valid stream index.
     let stream_tb = (*(*(*out_ctx).streams.add(stream_idx as usize))).time_base;
@@ -213,7 +216,7 @@ pub(crate) unsafe fn drain_encoder(
     let frame_dur_enc_tb = av_rescale_q(1, frame_period, enc_tb);
 
     loop {
-        match ff_sys::avcodec::receive_packet(enc_ctx, pkt) {
+        match ff_sys::avcodec::receive_packet(enc_ctx, pkt.as_mut_ptr()) {
             Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
                 break;
             }
@@ -221,18 +224,21 @@ pub(crate) unsafe fn drain_encoder(
             Ok(()) => {}
         }
 
+        // The packet fields have no typed accessor; touch them through the pointer.
+        let p = pkt.as_mut_ptr();
+
         // Always override duration with the correct per-frame value BEFORE rescaling.
         if frame_dur_enc_tb > 0 {
-            (*pkt).duration = frame_dur_enc_tb;
+            (*p).duration = frame_dur_enc_tb;
         }
 
         // Rescale pts/dts/duration from encoder time_base to stream time_base.
-        // SAFETY: pkt is valid; enc_tb and stream_tb are valid AVRational values.
-        av_packet_rescale_ts(pkt, enc_tb, stream_tb);
+        // SAFETY: p is valid; enc_tb and stream_tb are valid AVRational values.
+        av_packet_rescale_ts(p, enc_tb, stream_tb);
 
-        (*pkt).stream_index = stream_idx;
-        let ret = av_interleaved_write_frame(out_ctx, pkt);
-        av_packet_unref(pkt);
+        (*p).stream_index = stream_idx;
+        let ret = av_interleaved_write_frame(out_ctx, p);
+        pkt.unref();
         if ret < 0 {
             log::warn!(
                 "{log_prefix} av_interleaved_write_frame failed \
@@ -242,6 +248,4 @@ pub(crate) unsafe fn drain_encoder(
             break;
         }
     }
-
-    av_packet_free(&mut pkt);
 }

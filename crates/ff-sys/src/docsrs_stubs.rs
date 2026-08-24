@@ -1219,6 +1219,10 @@ impl CodecContext {
     pub fn channels(&self) -> c_int {
         0
     }
+    #[must_use]
+    pub fn ch_layout(&self) -> &AVChannelLayout {
+        Box::leak(Box::new(AVChannelLayout::default()))
+    }
 
     /// # Errors
     /// Stub; never executed on docs.rs.
@@ -1621,9 +1625,16 @@ impl Frame {
     pub fn nb_samples(&self) -> c_int {
         0
     }
+    pub fn set_nb_samples(&mut self, _nb_samples: c_int) {}
     #[must_use]
     pub fn sample_rate(&self) -> c_int {
         0
+    }
+    pub fn set_sample_rate(&mut self, _sample_rate: c_int) {}
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_ch_layout(&mut self, _layout: &AVChannelLayout) -> Result<(), crate::AvError> {
+        Ok(())
     }
     #[must_use]
     pub fn channels(&self) -> c_int {

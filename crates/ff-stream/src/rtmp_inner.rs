@@ -150,18 +150,20 @@ impl RtmpInner {
             avformat_free_context(out_ctx);
             ffmpeg_err(e.code())
         })?;
-        let venc = vid_enc_ctx.as_mut_ptr();
-
-        (*venc).width = enc_width;
-        (*venc).height = enc_height;
-        (*venc).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-        (*venc).time_base.num = 1;
-        (*venc).time_base.den = fps_int;
-        (*venc).framerate.num = fps_int;
-        (*venc).framerate.den = 1;
+        vid_enc_ctx.set_width(enc_width);
+        vid_enc_ctx.set_height(enc_height);
+        vid_enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
+        vid_enc_ctx.set_time_base(ff_sys::AVRational {
+            num: 1,
+            den: fps_int,
+        });
+        vid_enc_ctx.set_framerate(ff_sys::AVRational {
+            num: fps_int,
+            den: 1,
+        });
         // GOP size of 2 s gives a reasonable keyframe interval for RTMP.
-        (*venc).gop_size = fps_int * 2;
-        (*venc).bit_rate = video_bitrate as i64;
+        vid_enc_ctx.set_gop_size(fps_int * 2);
+        vid_enc_ctx.set_bit_rate(video_bitrate as i64);
 
         // On open failure `vid_enc_ctx` drops (frees the codec context); only the
         // raw format context needs an explicit free.
@@ -178,7 +180,7 @@ impl RtmpInner {
             avformat_free_context(out_ctx);
             return Err(ffmpeg_err_msg("cannot create video output stream"));
         }
-        (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
+        (*vid_out_stream).time_base = vid_enc_ctx.time_base();
         let vid_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
 
         // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
@@ -195,8 +197,8 @@ impl RtmpInner {
                 avformat_free_context(out_ctx);
             })?;
 
-        let aud_frame_size = if (*aud_enc_ctx.as_ptr()).frame_size > 0 {
-            (*aud_enc_ctx.as_ptr()).frame_size
+        let aud_frame_size = if aud_enc_ctx.frame_size() > 0 {
+            aud_enc_ctx.frame_size()
         } else {
             1024
         };

@@ -309,6 +309,17 @@ impl CodecContext {
         unsafe { (*self.ptr.as_ptr()).ch_layout.nb_channels }
     }
 
+    /// Returns a reference to the codec's channel layout.
+    ///
+    /// The reference borrows `self`, so it cannot outlive the context. Used to
+    /// pass the encoder's layout to a resampler or to copy it onto a frame.
+    #[must_use]
+    pub fn ch_layout(&self) -> &crate::AVChannelLayout {
+        // SAFETY: `self.ptr` is a valid owned context; `ch_layout` is a plain
+        //         embedded field, and the returned borrow is tied to `&self`.
+        unsafe { &(*self.ptr.as_ptr()).ch_layout }
+    }
+
     /// Sets a private codec option to a string value.
     ///
     /// Targets the context's `priv_data`, matching a direct
@@ -646,6 +657,13 @@ mod tests {
         let ctx = CodecContext::new(None).expect("alloc should succeed");
         assert!(!ctx.as_ptr().is_null());
         // Dropping `ctx` here frees the context exactly once (no panic / double free).
+    }
+
+    #[test]
+    fn ch_layout_should_return_the_configured_layout() {
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        ctx.set_ch_layout_default(2);
+        assert_eq!(ctx.ch_layout().nb_channels, 2);
     }
 
     #[test]
