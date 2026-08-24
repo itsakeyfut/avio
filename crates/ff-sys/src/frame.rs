@@ -4,19 +4,21 @@
 //! manual `av_frame_alloc` + `av_frame_free` pair. Ownership is unique;
 //! [`try_clone`](Frame::try_clone) makes a ref-counted copy (`av_frame_ref`)
 //! rather than a deep copy. Scalar fields (width / height / format / pts / ...)
-//! are read and written through the typed accessors below; plane data
-//! (`data` / `linesize`) is not exposed as a raw-pointer accessor — it is handled
-//! by the swscale / swresample safe APIs ([`ScaleContext`](crate::ScaleContext),
-//! [`ResampleContext`](crate::ResampleContext)).
+//! are read and written through the typed accessors below. Plane data is never
+//! exposed as a raw pointer: the [`video_plane`](Frame::video_plane) /
+//! [`audio_plane`](Frame::audio_plane) accessors (and their `_mut` forms) return
+//! self-sizing safe slices, and the swscale / swresample APIs
+//! ([`ScaleContext`](crate::ScaleContext), [`ResampleContext`](crate::ResampleContext))
+//! consume the frames for scaling / resampling.
 
 use std::os::raw::c_int;
 use std::ptr::NonNull;
 
 use crate::{
-    AVFrame, AVRational, AvError, av_frame_alloc as ffi_av_frame_alloc,
+    AV_NUM_DATA_POINTERS, AVFrame, AVRational, AvError, av_frame_alloc as ffi_av_frame_alloc,
     av_frame_free as ffi_av_frame_free, av_frame_get_buffer as ffi_av_frame_get_buffer,
     av_frame_move_ref as ffi_av_frame_move_ref, av_frame_ref as ffi_av_frame_ref,
-    av_frame_unref as ffi_av_frame_unref,
+    av_frame_unref as ffi_av_frame_unref, av_pix_fmt_desc_get as ffi_av_pix_fmt_desc_get,
 };
 
 /// An owned `AVFrame`.
@@ -179,6 +181,150 @@ impl Frame {
         unsafe { (*self.ptr.as_ptr()).ch_layout.nb_channels }
     }
 
+    // ── Plane data accessors ──────────────────────────────────────────────────
+    //
+    // Typed, self-sizing views over one image / audio plane. Each length is
+    // computed from the frame's own valid fields, so no raw pointer or size
+    // leaks to the caller. `None` is returned for any plane that is absent or
+    // whose format cannot be described (see per-method docs), which keeps these
+    // methods safe.
+    //
+    // Invariant: the length is derived from the frame's current `format` /
+    // dimensions / `nb_samples`, so these assume those were set before
+    // [`get_buffer`](Self::get_buffer) and not enlarged afterwards (the normal
+    // alloc -> set -> get_buffer -> use order). Growing a dimension after
+    // `get_buffer` without reallocating would desync the fields from the buffer.
+
+    /// Returns an immutable view of video plane `i`, sized to the plane's own
+    /// `linesize[i] * plane_height(i)` bytes.
+    ///
+    /// Returns `None` when the plane is absent or cannot be sized: `i` is out of
+    /// range, `data[i]` is null, the pixel format has no descriptor, or
+    /// `linesize[i]` / `height` is not positive.
+    #[must_use]
+    pub fn video_plane(&self, i: usize) -> Option<&[u8]> {
+        let len = self.video_plane_len(i)?;
+        // SAFETY: `video_plane_len` returned `Some`, so `i < AV_NUM_DATA_POINTERS`,
+        //         `data[i]` is non-null, and `len` is `linesize[i]` (> 0) times the
+        //         plane height, i.e. the byte count FFmpeg allocated for this plane.
+        //         The slice borrows `self` for its lifetime.
+        unsafe {
+            let data = (*self.ptr.as_ptr()).data[i];
+            Some(std::slice::from_raw_parts(data, len))
+        }
+    }
+
+    /// Returns a mutable view of video plane `i`, sized to the plane's own
+    /// `linesize[i] * plane_height(i)` bytes.
+    ///
+    /// Returns `None` under the same conditions as [`video_plane`](Self::video_plane).
+    pub fn video_plane_mut(&mut self, i: usize) -> Option<&mut [u8]> {
+        let len = self.video_plane_len(i)?;
+        // SAFETY: as in `video_plane`; `&mut self` guarantees exclusive access, so
+        //         the returned mutable slice is unique for its lifetime.
+        unsafe {
+            let data = (*self.ptr.as_ptr()).data[i];
+            Some(std::slice::from_raw_parts_mut(data, len))
+        }
+    }
+
+    /// Returns an immutable view of audio plane `i`, sized to the samples it
+    /// holds (one plane per channel for planar formats, a single interleaved
+    /// plane 0 for packed formats).
+    ///
+    /// Returns `None` when the plane is absent or cannot be sized: `i` is out of
+    /// range, `data[i]` is null, or the sample format is unusable.
+    #[must_use]
+    pub fn audio_plane(&self, i: usize) -> Option<&[u8]> {
+        let len = self.audio_plane_len(i)?;
+        // SAFETY: `audio_plane_len` returned `Some`, so `i` is in range, `data[i]`
+        //         is non-null, and `len` is the byte count for this plane derived
+        //         from `nb_samples`, the channel count, and the sample size. The
+        //         slice borrows `self` for its lifetime.
+        unsafe {
+            let data = (*self.ptr.as_ptr()).data[i];
+            Some(std::slice::from_raw_parts(data, len))
+        }
+    }
+
+    /// Returns a mutable view of audio plane `i`, sized as in
+    /// [`audio_plane`](Self::audio_plane).
+    ///
+    /// Returns `None` under the same conditions as [`audio_plane`](Self::audio_plane).
+    pub fn audio_plane_mut(&mut self, i: usize) -> Option<&mut [u8]> {
+        let len = self.audio_plane_len(i)?;
+        // SAFETY: as in `audio_plane`; `&mut self` guarantees exclusive access, so
+        //         the returned mutable slice is unique for its lifetime.
+        unsafe {
+            let data = (*self.ptr.as_ptr()).data[i];
+            Some(std::slice::from_raw_parts_mut(data, len))
+        }
+    }
+
+    /// Computes the byte length of video plane `i`, or `None` if the plane is
+    /// absent / cannot be sized. Shared by the video plane accessors.
+    fn video_plane_len(&self, i: usize) -> Option<usize> {
+        if i >= AV_NUM_DATA_POINTERS as usize {
+            return None;
+        }
+        // SAFETY: `self.ptr` is a valid owned frame; `data`, `linesize`, `format`,
+        //         and `height` are plain fields.
+        let (data, linesize, format, height) = unsafe {
+            let p = self.ptr.as_ptr();
+            ((*p).data[i], (*p).linesize[i], (*p).format, (*p).height)
+        };
+        // RK-008: a non-positive linesize would make the byte count wrap; guard it
+        // (a get_buffer'd encoder frame always has a positive linesize). A
+        // non-positive `height` would likewise wrap `plane_h as usize`, so guard it
+        // too (symmetric with the audio accessor's `nb_samples` / channel guards).
+        if data.is_null() || linesize <= 0 || height <= 0 {
+            return None;
+        }
+        let plane_h = plane_height(format, height, i)?;
+        Some(linesize as usize * plane_h as usize)
+    }
+
+    /// Computes the byte length of audio plane `i`, or `None` if the plane is
+    /// absent / cannot be sized. Shared by the audio plane accessors.
+    fn audio_plane_len(&self, i: usize) -> Option<usize> {
+        if i >= AV_NUM_DATA_POINTERS as usize {
+            return None;
+        }
+        // SAFETY: `self.ptr` is a valid owned frame; `data`, `format`,
+        //         `nb_samples`, and `ch_layout.nb_channels` are plain fields.
+        let (data, format, nb_samples, channels) = unsafe {
+            let p = self.ptr.as_ptr();
+            (
+                (*p).data[i],
+                (*p).format,
+                (*p).nb_samples,
+                (*p).ch_layout.nb_channels,
+            )
+        };
+        if data.is_null() {
+            return None;
+        }
+        let bytes = crate::swresample::sample_format::bytes_per_sample(format);
+        if bytes <= 0 || nb_samples < 0 || channels <= 0 {
+            return None;
+        }
+        let bytes = bytes as usize;
+        let nb_samples = nb_samples as usize;
+        if crate::swresample::sample_format::is_planar(format) {
+            // Planar: one plane per channel.
+            if i >= channels as usize {
+                return None;
+            }
+            Some(nb_samples * bytes)
+        } else {
+            // Packed: a single interleaved plane 0.
+            if i != 0 {
+                return None;
+            }
+            Some(nb_samples * channels as usize * bytes)
+        }
+    }
+
     /// Unreferences the frame's buffers, returning it to a blank state.
     pub fn unref(&mut self) {
         // SAFETY: `self.ptr` is a valid owned frame.
@@ -229,6 +375,28 @@ impl Frame {
             Ok(dst)
         }
     }
+}
+
+/// Returns the pixel height of video plane `plane` for `format`, or `None` if
+/// the format has no pixel descriptor.
+///
+/// Plane 0 spans the full frame height; subsequent (chroma) planes are
+/// subsampled vertically by `log2_chroma_h` from the format's descriptor.
+fn plane_height(format: c_int, height: c_int, plane: usize) -> Option<c_int> {
+    // SAFETY: `av_pix_fmt_desc_get` takes the format by value and returns a
+    //         pointer into FFmpeg's static descriptor table (or null for an
+    //         unknown format); the pointee is read only while valid here.
+    let desc = unsafe { ffi_av_pix_fmt_desc_get(format) };
+    if desc.is_null() {
+        return None;
+    }
+    if plane == 0 {
+        return Some(height);
+    }
+    // SAFETY: `desc` is non-null (checked); `log2_chroma_h` is a plain field.
+    let log2_chroma_h = unsafe { (*desc).log2_chroma_h };
+    let round = (1_i32 << log2_chroma_h) - 1;
+    Some((height + round) >> log2_chroma_h)
 }
 
 impl Drop for Frame {
@@ -343,5 +511,142 @@ mod tests {
             );
         }
         // Both drop cleanly: `dst` frees the moved buffer, `src` is blank.
+    }
+
+    #[test]
+    fn video_plane_mut_should_round_trip_through_video_plane() {
+        // A get_buffer'd RGB24 frame has a single packed plane whose slice length
+        // is `linesize[0] * height`; a pattern written via the mut accessor reads
+        // back identically through the shared accessor.
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_format(crate::AVPixelFormat_AV_PIX_FMT_RGB24);
+        frame.set_width(16);
+        frame.set_height(16);
+        frame.get_buffer(0).expect("buffer alloc should succeed");
+
+        // SAFETY: `frame` is a valid get_buffer'd frame; `linesize[0]` is a field.
+        let expected_len = unsafe { (*frame.as_ptr()).linesize[0] as usize } * 16;
+
+        {
+            let plane = frame
+                .video_plane_mut(0)
+                .expect("plane 0 exists on a get_buffer'd RGB24 frame");
+            assert_eq!(plane.len(), expected_len, "len == linesize[0] * height");
+            for (i, b) in plane.iter_mut().enumerate() {
+                *b = (i % 251) as u8;
+            }
+        }
+
+        let plane = frame
+            .video_plane(0)
+            .expect("plane 0 exists on a get_buffer'd RGB24 frame");
+        assert_eq!(plane.len(), expected_len);
+        assert!(
+            plane.iter().enumerate().all(|(i, &b)| b == (i % 251) as u8),
+            "written pattern reads back unchanged"
+        );
+    }
+
+    #[test]
+    fn video_plane_should_size_chroma_planes_by_subsampling() {
+        // YUV420P chroma planes (1, 2) are vertically subsampled by 2, so their
+        // slice length is `linesize[i] * (height + 1) / 2`. Cover an even and an
+        // odd height to exercise the `(height + round) >> log2_chroma_h` rounding.
+        for height in [16i32, 17i32] {
+            let mut frame = Frame::new().expect("frame allocation should succeed");
+            frame.set_format(crate::AVPixelFormat_AV_PIX_FMT_YUV420P);
+            frame.set_width(16);
+            frame.set_height(height);
+            frame.get_buffer(0).expect("buffer alloc should succeed");
+
+            // SAFETY: `frame` is a valid get_buffer'd YUV420P frame; linesize is a field.
+            let (ls0, ls1) = unsafe {
+                let p = frame.as_ptr();
+                ((*p).linesize[0], (*p).linesize[1])
+            };
+            let chroma_h = (height + 1) / 2;
+
+            assert_eq!(
+                frame.video_plane(0).map(<[u8]>::len),
+                Some(ls0 as usize * height as usize),
+                "luma plane = linesize[0] * height (height={height})"
+            );
+            assert_eq!(
+                frame.video_plane(1).map(<[u8]>::len),
+                Some(ls1 as usize * chroma_h as usize),
+                "chroma plane = linesize[1] * (height+1)/2 (height={height})"
+            );
+        }
+    }
+
+    #[test]
+    fn video_plane_should_return_none_on_negative_linesize() {
+        // RK-008 guard: a non-positive linesize cannot size a slice, so the
+        // accessor must refuse it rather than compute a wrapped length.
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_format(crate::AVPixelFormat_AV_PIX_FMT_RGB24);
+        frame.set_width(16);
+        frame.set_height(16);
+        frame.get_buffer(0).expect("buffer alloc should succeed");
+
+        // SAFETY: `frame` is a valid owned frame; force `linesize[0]` negative.
+        unsafe {
+            (*frame.as_mut_ptr()).linesize[0] = -1;
+        }
+        assert!(
+            frame.video_plane(0).is_none(),
+            "a negative linesize must yield None"
+        );
+    }
+
+    #[test]
+    fn audio_plane_len_should_match_planar_and_packed_layout() {
+        use crate::swresample::{channel_layout, sample_format};
+
+        let samples: c_int = 100;
+
+        // Planar S16P stereo: one plane per channel, each `samples * 2` bytes.
+        let mut planar = Frame::new().expect("frame allocation should succeed");
+        // SAFETY: set the audio fields on a fresh frame, then allocate its buffer.
+        unsafe {
+            let p = planar.as_mut_ptr();
+            (*p).format = sample_format::S16P;
+            (*p).nb_samples = samples;
+            (*p).sample_rate = 48000;
+            channel_layout::set_default(&raw mut (*p).ch_layout, 2);
+        }
+        planar.get_buffer(0).expect("planar buffer alloc");
+        assert_eq!(
+            planar.audio_plane(0).map(<[u8]>::len),
+            Some(samples as usize * 2)
+        );
+        assert_eq!(
+            planar.audio_plane(1).map(<[u8]>::len),
+            Some(samples as usize * 2)
+        );
+        assert!(
+            planar.audio_plane(2).is_none(),
+            "planar stereo has no third channel plane"
+        );
+
+        // Packed S16 stereo: a single interleaved plane 0 of `samples * 2ch * 2`.
+        let mut packed = Frame::new().expect("frame allocation should succeed");
+        // SAFETY: set the audio fields on a fresh frame, then allocate its buffer.
+        unsafe {
+            let p = packed.as_mut_ptr();
+            (*p).format = sample_format::S16;
+            (*p).nb_samples = samples;
+            (*p).sample_rate = 48000;
+            channel_layout::set_default(&raw mut (*p).ch_layout, 2);
+        }
+        packed.get_buffer(0).expect("packed buffer alloc");
+        assert_eq!(
+            packed.audio_plane(0).map(<[u8]>::len),
+            Some(samples as usize * 2 * 2)
+        );
+        assert!(
+            packed.audio_plane(1).is_none(),
+            "packed audio exposes only plane 0"
+        );
     }
 }
