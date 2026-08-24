@@ -1913,3 +1913,25 @@ impl Drop for ResampleContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for ResampleContext {}
+
+// ── Free-function stub (mirrors crate::buffersink) ────────────────────────────
+// Under DOCS_RS the real `buffersink` module is cfg'd out; these shape-compatible
+// stubs keep `ff_sys::BufferSinkOutcome` / `ff_sys::buffersink_get_frame`
+// available for docs.rs.
+
+/// Stub mirror of `crate::buffersink::BufferSinkOutcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferSinkOutcome {
+    Frame,
+    NeedMore,
+    Drained,
+}
+
+/// # Safety
+/// Stub; never executed on docs.rs.
+pub unsafe fn buffersink_get_frame(
+    _sink: *mut AVFilterContext,
+    _dst: &mut Frame,
+) -> Result<BufferSinkOutcome, crate::AvError> {
+    Err(crate::AvError::new(-1))
+}
