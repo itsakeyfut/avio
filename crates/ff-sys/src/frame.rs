@@ -105,6 +105,12 @@ impl Frame {
         unsafe { (*self.ptr.as_ptr()).format = format };
     }
 
+    /// Sets the picture type (e.g. `AV_PICTURE_TYPE_I` to hint a keyframe).
+    pub fn set_pict_type(&mut self, pict_type: crate::AVPictureType) {
+        // SAFETY: `self.ptr` is a valid owned frame; `pict_type` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pict_type = pict_type };
+    }
+
     /// Returns the presentation timestamp (in the frame's time base).
     #[must_use]
     pub fn pts(&self) -> i64 {
@@ -459,6 +465,17 @@ mod tests {
         let frame = Frame::new().expect("frame allocation should succeed");
         assert!(!frame.as_ptr().is_null());
         // Dropping `frame` frees it exactly once (no panic / double free).
+    }
+
+    #[test]
+    fn set_pict_type_should_round_trip() {
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_pict_type(crate::AVPictureType_AV_PICTURE_TYPE_I);
+        // SAFETY: `frame` is a valid owned frame; `pict_type` is a plain field.
+        assert_eq!(
+            unsafe { (*frame.as_ptr()).pict_type },
+            crate::AVPictureType_AV_PICTURE_TYPE_I
+        );
     }
 
     #[test]
