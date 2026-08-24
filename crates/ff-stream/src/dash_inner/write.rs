@@ -5,14 +5,13 @@ use std::ptr;
 
 use ff_sys::{
     AVFormatContext, AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_frame_alloc, av_frame_get_buffer,
-    av_frame_unref, av_opt_set, av_packet_alloc, av_packet_free, av_packet_unref, av_rescale_q,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_opt_set, av_rescale_q,
     av_write_trailer, avformat_alloc_output_context2, avformat_new_stream, avformat_write_header,
 };
 
 use crate::error::StreamError;
 
-use super::context::{RenditionState, cleanup_output_ctx, free_frames};
+use super::context::{RenditionState, cleanup_output_ctx};
 use super::streams::{detect_fps, open_aac_encoder, select_h264_encoder};
 use super::{ffmpeg_err, ffmpeg_err_msg};
 
@@ -305,33 +304,28 @@ pub(super) unsafe fn write_dash_unsafe(
     );
 
     // ── 12. Allocate frame and packet buffers ──────────────────────────────────
-    let mut pkt = av_packet_alloc();
-    if pkt.is_null() {
+    // Owned frames/packet: each frees exactly once on drop. On the error arm any
+    // successfully-allocated locals drop at the end of this statement.
+    let (
+        Ok(mut pkt),
+        Ok(mut vid_dec_frame),
+        Ok(mut vid_enc_frame),
+        Ok(mut aud_dec_frame),
+        Ok(mut aud_enc_frame),
+    ) = (
+        ff_sys::Packet::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+    )
+    else {
         av_write_trailer(out_ctx);
         ff_sys::avformat::close_output(&mut (*out_ctx).pb);
         cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err_msg("cannot allocate packet"));
-    }
-
-    let vid_dec_frame = av_frame_alloc();
-    let vid_enc_frame = av_frame_alloc();
-    let aud_dec_frame = av_frame_alloc();
-    let aud_enc_frame = av_frame_alloc();
-
-    if vid_dec_frame.is_null()
-        || vid_enc_frame.is_null()
-        || aud_dec_frame.is_null()
-        || aud_enc_frame.is_null()
-    {
-        free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
-        av_packet_free(&mut pkt);
-        av_write_trailer(out_ctx);
-        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-        cleanup_output_ctx(out_ctx);
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err_msg("cannot allocate frame"));
-    }
+        return Err(ffmpeg_err_msg("cannot allocate frame or packet"));
+    };
 
     // ── 13. Decode–encode loop ─────────────────────────────────────────────────
     let mut video_frame_count: u64 = 0;
@@ -346,58 +340,50 @@ pub(super) unsafe fn write_dash_unsafe(
         num: 1,
         den: fps_int,
     };
-    // SAFETY: aud_enc_ctx (if present) is valid after avcodec_open2.
     let aud_frame_period = if let Some(aud) = aud_enc_ctx.as_ref() {
         AVRational {
-            num: (*aud.as_ptr()).frame_size,
-            den: (*aud.as_ptr()).sample_rate,
+            num: aud.frame_size(),
+            den: aud.sample_rate(),
         }
     } else {
         AVRational { num: 1, den: 48000 } // unused; aud_enc_ctx is None
     };
 
     loop {
-        match ff_sys::avformat::read_frame(input_ctx, pkt) {
+        match ff_sys::avformat::read_frame(input_ctx, pkt.as_mut_ptr()) {
             Err(e) if e == ff_sys::error_codes::EOF => break,
             Err(_e) => {
                 // Non-EOF read errors: continue to try next packet
-                av_packet_unref(pkt);
+                pkt.unref();
                 continue;
             }
             Ok(()) => {}
         }
 
-        let stream_idx = (*pkt).stream_index;
+        let stream_idx = pkt.stream_index();
 
         if stream_idx == video_stream_idx {
             // ── Video path ────────────────────────────────────────────────────
-            if ff_sys::avcodec::send_packet(vid_dec_ctx.as_mut_ptr(), pkt).is_err() {
-                av_packet_unref(pkt);
+            if vid_dec_ctx.send_packet(&pkt).is_err() {
+                pkt.unref();
                 continue;
             }
-            av_packet_unref(pkt);
+            pkt.unref();
 
-            loop {
-                match ff_sys::avcodec::receive_frame(vid_dec_ctx.as_mut_ptr(), vid_dec_frame) {
-                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                        break;
-                    }
-                    Err(_) => break,
-                    Ok(()) => {}
-                }
-
+            while let Ok(ReceiveOutcome::Frame) = vid_dec_ctx.receive_frame(&mut vid_dec_frame) {
                 // Force keyframe at intervals
-                (*vid_dec_frame).pict_type =
+                vid_dec_frame.set_pict_type(
                     if video_frame_count.is_multiple_of(u64::from(keyframe_interval)) {
                         AVPictureType_AV_PICTURE_TYPE_I
                     } else {
                         AVPictureType_AV_PICTURE_TYPE_NONE
-                    };
+                    },
+                );
 
                 // Convert decoded frame to YUV420P at encoder dimensions
-                let src_fmt = (*vid_dec_frame).format;
-                let src_w = (*vid_dec_frame).width;
-                let src_h = (*vid_dec_frame).height;
+                let src_fmt = vid_dec_frame.format();
+                let src_w = vid_dec_frame.width();
+                let src_h = vid_dec_frame.height();
 
                 // Recreate SwsContext when source properties change
                 if last_src_fmt != Some(src_fmt)
@@ -419,49 +405,38 @@ pub(super) unsafe fn write_dash_unsafe(
                         last_src_w = Some(src_w);
                         last_src_h = Some(src_h);
                     } else {
-                        av_frame_unref(vid_dec_frame);
+                        vid_dec_frame.unref();
                         continue;
                     }
                 }
 
                 // Prepare encoder frame
-                (*vid_enc_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
-                (*vid_enc_frame).width = enc_width;
-                (*vid_enc_frame).height = enc_height;
+                vid_enc_frame.set_format(AVPixelFormat_AV_PIX_FMT_YUV420P);
+                vid_enc_frame.set_width(enc_width);
+                vid_enc_frame.set_height(enc_height);
                 // SAFETY: av_rescale_q is safe for valid AVRational values.
-                (*vid_enc_frame).pts = av_rescale_q(
+                vid_enc_frame.set_pts(av_rescale_q(
                     video_frame_count as i64,
                     AVRational {
                         num: 1,
                         den: fps_int,
                     },
-                    (*vid_enc_ctx.as_ptr()).time_base,
-                );
+                    vid_enc_ctx.time_base(),
+                ));
 
-                let buf_ret = av_frame_get_buffer(vid_enc_frame, 0);
-                if buf_ret < 0 {
-                    av_frame_unref(vid_dec_frame);
+                if vid_enc_frame.get_buffer(0).is_err() {
+                    vid_dec_frame.unref();
                     continue;
                 }
 
                 // Scale decoded frame into encoder frame
                 let scaled = if let Some(sws) = sws_ctx.as_mut() {
-                    sws.scale(
-                        (*vid_dec_frame).data.as_ptr() as *const *const u8,
-                        (*vid_dec_frame).linesize.as_ptr(),
-                        0,
-                        src_h,
-                        (*vid_enc_frame).data.as_mut_ptr().cast_const(),
-                        (*vid_enc_frame).linesize.as_mut_ptr(),
-                    )
-                    .is_ok()
+                    sws.scale_frames(&vid_dec_frame, &mut vid_enc_frame).is_ok()
                 } else {
                     false
                 };
 
-                if scaled
-                    && ff_sys::avcodec::send_frame(vid_enc_ctx.as_mut_ptr(), vid_enc_frame).is_ok()
-                {
+                if scaled && vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
                     crate::codec_utils::drain_encoder(
                         vid_enc_ctx.as_mut_ptr(),
                         out_ctx,
@@ -471,61 +446,45 @@ pub(super) unsafe fn write_dash_unsafe(
                     );
                 }
 
-                av_frame_unref(vid_enc_frame);
-                av_frame_unref(vid_dec_frame);
+                vid_enc_frame.unref();
+                vid_dec_frame.unref();
                 video_frame_count += 1;
             }
         } else if stream_idx == audio_stream_idx
-            && let Some(aud_dec_ptr) = aud_dec_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr)
-            && let Some(aud_enc_ptr) = aud_enc_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr)
+            && let Some(aud_dec) = aud_dec_ctx.as_mut()
+            && let Some(aud_enc) = aud_enc_ctx.as_mut()
         {
             // ── Audio path ────────────────────────────────────────────────────
-            if ff_sys::avcodec::send_packet(aud_dec_ptr, pkt).is_err() {
-                av_packet_unref(pkt);
+            if aud_dec.send_packet(&pkt).is_err() {
+                pkt.unref();
                 continue;
             }
-            av_packet_unref(pkt);
+            pkt.unref();
 
-            loop {
-                match ff_sys::avcodec::receive_frame(aud_dec_ptr, aud_dec_frame) {
-                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                        break;
-                    }
-                    Err(_) => break,
-                    Ok(()) => {}
-                }
-
-                let enc_frame_size = if (*aud_enc_ptr).frame_size > 0 {
-                    (*aud_enc_ptr).frame_size
+            while let Ok(ReceiveOutcome::Frame) = aud_dec.receive_frame(&mut aud_dec_frame) {
+                let enc_frame_size = if aud_enc.frame_size() > 0 {
+                    aud_enc.frame_size()
                 } else {
-                    (*aud_dec_frame).nb_samples
+                    aud_dec_frame.nb_samples()
                 };
 
-                (*aud_enc_frame).format = (*aud_enc_ptr).sample_fmt;
-                (*aud_enc_frame).sample_rate = (*aud_enc_ptr).sample_rate;
-                (*aud_enc_frame).nb_samples = enc_frame_size;
-                let _ = ff_sys::swresample::channel_layout::copy(
-                    &mut (*aud_enc_frame).ch_layout,
-                    &(*aud_enc_ptr).ch_layout,
-                );
+                aud_enc_frame.set_format(aud_enc.sample_fmt());
+                aud_enc_frame.set_sample_rate(aud_enc.sample_rate());
+                aud_enc_frame.set_nb_samples(enc_frame_size);
+                let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
 
-                let buf_ret = av_frame_get_buffer(aud_enc_frame, 0);
-                if buf_ret < 0 {
-                    av_frame_unref(aud_dec_frame);
+                if aud_enc_frame.get_buffer(0).is_err() {
+                    aud_dec_frame.unref();
                     continue;
                 }
 
-                let in_data = (*aud_dec_frame).data.as_ptr() as *const *const u8;
-                let in_samples = (*aud_dec_frame).nb_samples;
-
+                // Resample the decoded planes into the encoder frame.
+                let in_planes: Vec<&[u8]> =
+                    (0..).map_while(|i| aud_dec_frame.audio_plane(i)).collect();
+                let in_count = aud_dec_frame.nb_samples();
                 let samples_out = if let Some(swr) = swr_ctx.as_mut() {
-                    swr.convert(
-                        (*aud_enc_frame).data.as_mut_ptr(),
-                        enc_frame_size,
-                        in_data,
-                        in_samples,
-                    )
-                    .ok()
+                    swr.convert_into_frame(&mut aud_enc_frame, &in_planes, in_count)
+                        .ok()
                 } else {
                     None
                 };
@@ -533,11 +492,11 @@ pub(super) unsafe fn write_dash_unsafe(
                 if let Some(n) = samples_out
                     && n > 0
                 {
-                    (*aud_enc_frame).nb_samples = n;
-                    (*aud_enc_frame).pts = audio_sample_count;
-                    if ff_sys::avcodec::send_frame(aud_enc_ptr, aud_enc_frame).is_ok() {
+                    aud_enc_frame.set_nb_samples(n);
+                    aud_enc_frame.set_pts(audio_sample_count);
+                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc_ptr,
+                            aud_enc.as_mut_ptr(),
                             out_ctx,
                             aud_out_stream_idx,
                             "dash",
@@ -547,11 +506,11 @@ pub(super) unsafe fn write_dash_unsafe(
                     audio_sample_count += i64::from(n);
                 }
 
-                av_frame_unref(aud_enc_frame);
-                av_frame_unref(aud_dec_frame);
+                aud_enc_frame.unref();
+                aud_dec_frame.unref();
             }
         } else {
-            av_packet_unref(pkt);
+            pkt.unref();
         }
     }
 
@@ -565,25 +524,25 @@ pub(super) unsafe fn write_dash_unsafe(
         vid_frame_period,
     );
 
-    if let Some(aud_enc_ptr) = aud_enc_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr) {
+    if let Some(aud_enc) = aud_enc_ctx.as_mut() {
         // Flush resampler
         if swr_ctx.is_some() {
-            let enc_frame_size = if (*aud_enc_ptr).frame_size > 0 {
-                (*aud_enc_ptr).frame_size
+            let enc_frame_size = if aud_enc.frame_size() > 0 {
+                aud_enc.frame_size()
             } else {
                 1024
             };
-            (*aud_enc_frame).format = (*aud_enc_ptr).sample_fmt;
-            (*aud_enc_frame).sample_rate = (*aud_enc_ptr).sample_rate;
-            (*aud_enc_frame).nb_samples = enc_frame_size;
-            let _ = ff_sys::swresample::channel_layout::copy(
-                &mut (*aud_enc_frame).ch_layout,
-                &(*aud_enc_ptr).ch_layout,
-            );
-            if av_frame_get_buffer(aud_enc_frame, 0) == 0 {
+            aud_enc_frame.set_format(aud_enc.sample_fmt());
+            aud_enc_frame.set_sample_rate(aud_enc.sample_rate());
+            aud_enc_frame.set_nb_samples(enc_frame_size);
+            let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
+            if aud_enc_frame.get_buffer(0).is_ok() {
+                // Flush the resampler with a NULL input. `convert_into_frame`
+                // models the normal-input case; the flush needs a NULL input
+                // pointer, so the raw `convert` is used here.
                 let flushed = if let Some(swr) = swr_ctx.as_mut() {
                     swr.convert(
-                        (*aud_enc_frame).data.as_mut_ptr(),
+                        (*aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
                         enc_frame_size,
                         ptr::null(),
                         0,
@@ -595,11 +554,11 @@ pub(super) unsafe fn write_dash_unsafe(
                 if let Some(n) = flushed
                     && n > 0
                 {
-                    (*aud_enc_frame).nb_samples = n;
-                    (*aud_enc_frame).pts = audio_sample_count;
-                    if ff_sys::avcodec::send_frame(aud_enc_ptr, aud_enc_frame).is_ok() {
+                    aud_enc_frame.set_nb_samples(n);
+                    aud_enc_frame.set_pts(audio_sample_count);
+                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc_ptr,
+                            aud_enc.as_mut_ptr(),
                             out_ctx,
                             aud_out_stream_idx,
                             "dash",
@@ -607,12 +566,12 @@ pub(super) unsafe fn write_dash_unsafe(
                         );
                     }
                 }
-                av_frame_unref(aud_enc_frame);
+                aud_enc_frame.unref();
             }
         }
-        let _ = ff_sys::avcodec::send_frame(aud_enc_ptr, ptr::null());
+        let _ = aud_enc.send_frame(ptr::null());
         crate::codec_utils::drain_encoder(
-            aud_enc_ptr,
+            aud_enc.as_mut_ptr(),
             out_ctx,
             aud_out_stream_idx,
             "dash",
@@ -625,11 +584,8 @@ pub(super) unsafe fn write_dash_unsafe(
     // pb was already closed after avformat_write_header; skip double-close.
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    // Owned encoder / decoder / resample / scale contexts drop on scope exit;
-    // only the raw frames and format contexts need explicit teardown.
-    free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
-    av_packet_free(&mut pkt);
-
+    // Owned frames/packet and encoder / decoder / resample / scale contexts drop
+    // on scope exit; only the raw format contexts need explicit teardown.
     cleanup_output_ctx(out_ctx);
     ff_sys::avformat::close_input(&mut input_ctx);
 
@@ -956,31 +912,27 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     );
 
     // ── 12. Allocate frame and packet buffers ─────────────────────────────────
-    let mut pkt = av_packet_alloc();
-    if pkt.is_null() {
+    // Owned frames/packet: each frees exactly once on drop. On the error arm any
+    // successfully-allocated locals drop at the end of this statement.
+    let (
+        Ok(mut pkt),
+        Ok(mut vid_dec_frame),
+        Ok(mut vid_enc_frame),
+        Ok(mut aud_dec_frame),
+        Ok(mut aud_enc_frame),
+    ) = (
+        ff_sys::Packet::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+        ff_sys::Frame::new(),
+    )
+    else {
         av_write_trailer(out_ctx);
         cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err_msg("cannot allocate packet"));
-    }
-
-    let vid_dec_frame = av_frame_alloc();
-    let vid_enc_frame = av_frame_alloc();
-    let aud_dec_frame = av_frame_alloc();
-    let aud_enc_frame = av_frame_alloc();
-
-    if vid_dec_frame.is_null()
-        || vid_enc_frame.is_null()
-        || aud_dec_frame.is_null()
-        || aud_enc_frame.is_null()
-    {
-        free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
-        av_packet_free(&mut pkt);
-        av_write_trailer(out_ctx);
-        cleanup_output_ctx(out_ctx);
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err_msg("cannot allocate frame"));
-    }
+        return Err(ffmpeg_err_msg("cannot allocate frame or packet"));
+    };
 
     // ── 13. Decode–encode loop ────────────────────────────────────────────────
     let mut video_frame_count: u64 = 0;
@@ -991,55 +943,47 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         num: 1,
         den: fps_int,
     };
-    // SAFETY: aud_enc_ctx (if present) is valid after avcodec_open2.
     let aud_frame_period = if let Some(aud) = aud_enc_ctx.as_ref() {
         AVRational {
-            num: (*aud.as_ptr()).frame_size,
-            den: (*aud.as_ptr()).sample_rate,
+            num: aud.frame_size(),
+            den: aud.sample_rate(),
         }
     } else {
         AVRational { num: 1, den: 48000 } // unused; aud_enc_ctx is None
     };
 
     loop {
-        match ff_sys::avformat::read_frame(input_ctx, pkt) {
+        match ff_sys::avformat::read_frame(input_ctx, pkt.as_mut_ptr()) {
             Err(e) if e == ff_sys::error_codes::EOF => break,
             Err(_) => {
-                av_packet_unref(pkt);
+                pkt.unref();
                 continue;
             }
             Ok(()) => {}
         }
 
-        let stream_idx = (*pkt).stream_index;
+        let stream_idx = pkt.stream_index();
 
         if stream_idx == video_stream_idx {
             // ── Video path ────────────────────────────────────────────────────
-            if ff_sys::avcodec::send_packet(vid_dec_ctx.as_mut_ptr(), pkt).is_err() {
-                av_packet_unref(pkt);
+            if vid_dec_ctx.send_packet(&pkt).is_err() {
+                pkt.unref();
                 continue;
             }
-            av_packet_unref(pkt);
+            pkt.unref();
 
-            loop {
-                match ff_sys::avcodec::receive_frame(vid_dec_ctx.as_mut_ptr(), vid_dec_frame) {
-                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                        break;
-                    }
-                    Err(_) => break,
-                    Ok(()) => {}
-                }
+            while let Ok(ReceiveOutcome::Frame) = vid_dec_ctx.receive_frame(&mut vid_dec_frame) {
+                vid_dec_frame.set_pict_type(
+                    if video_frame_count.is_multiple_of(u64::from(keyframe_interval)) {
+                        AVPictureType_AV_PICTURE_TYPE_I
+                    } else {
+                        AVPictureType_AV_PICTURE_TYPE_NONE
+                    },
+                );
 
-                let pict_type = if video_frame_count.is_multiple_of(u64::from(keyframe_interval)) {
-                    AVPictureType_AV_PICTURE_TYPE_I
-                } else {
-                    AVPictureType_AV_PICTURE_TYPE_NONE
-                };
-                (*vid_dec_frame).pict_type = pict_type;
-
-                let src_fmt = (*vid_dec_frame).format;
-                let src_w = (*vid_dec_frame).width;
-                let src_h = (*vid_dec_frame).height;
+                let src_fmt = vid_dec_frame.format();
+                let src_w = vid_dec_frame.width();
+                let src_h = vid_dec_frame.height();
 
                 for state in &mut rendition_states {
                     // Recreate SwsContext when source properties change
@@ -1066,44 +1010,30 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                         }
                     }
 
-                    (*vid_enc_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
-                    (*vid_enc_frame).width = state.enc_width;
-                    (*vid_enc_frame).height = state.enc_height;
+                    vid_enc_frame.set_format(AVPixelFormat_AV_PIX_FMT_YUV420P);
+                    vid_enc_frame.set_width(state.enc_width);
+                    vid_enc_frame.set_height(state.enc_height);
                     // SAFETY: av_rescale_q is safe for valid AVRational values.
-                    (*vid_enc_frame).pts = av_rescale_q(
+                    vid_enc_frame.set_pts(av_rescale_q(
                         video_frame_count as i64,
                         AVRational {
                             num: 1,
                             den: fps_int,
                         },
-                        (*state.vid_enc_ctx.as_ptr()).time_base,
-                    );
+                        state.vid_enc_ctx.time_base(),
+                    ));
 
-                    if av_frame_get_buffer(vid_enc_frame, 0) < 0 {
+                    if vid_enc_frame.get_buffer(0).is_err() {
                         continue;
                     }
 
                     let scaled = if let Some(sws) = state.sws_ctx.as_mut() {
-                        sws.scale(
-                            (*vid_dec_frame).data.as_ptr() as *const *const u8,
-                            (*vid_dec_frame).linesize.as_ptr(),
-                            0,
-                            src_h,
-                            (*vid_enc_frame).data.as_mut_ptr().cast_const(),
-                            (*vid_enc_frame).linesize.as_mut_ptr(),
-                        )
-                        .is_ok()
+                        sws.scale_frames(&vid_dec_frame, &mut vid_enc_frame).is_ok()
                     } else {
                         false
                     };
 
-                    if scaled
-                        && ff_sys::avcodec::send_frame(
-                            state.vid_enc_ctx.as_mut_ptr(),
-                            vid_enc_frame,
-                        )
-                        .is_ok()
-                    {
+                    if scaled && state.vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             state.vid_enc_ctx.as_mut_ptr(),
                             out_ctx,
@@ -1113,63 +1043,47 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                         );
                     }
 
-                    av_frame_unref(vid_enc_frame);
+                    vid_enc_frame.unref();
                 }
 
-                av_frame_unref(vid_dec_frame);
+                vid_dec_frame.unref();
                 video_frame_count += 1;
             }
         } else if stream_idx == audio_stream_idx
-            && let Some(aud_dec_ptr) = aud_dec_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr)
-            && let Some(aud_enc_ptr) = aud_enc_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr)
+            && let Some(aud_dec) = aud_dec_ctx.as_mut()
+            && let Some(aud_enc) = aud_enc_ctx.as_mut()
         {
             // ── Audio path ────────────────────────────────────────────────────
-            if ff_sys::avcodec::send_packet(aud_dec_ptr, pkt).is_err() {
-                av_packet_unref(pkt);
+            if aud_dec.send_packet(&pkt).is_err() {
+                pkt.unref();
                 continue;
             }
-            av_packet_unref(pkt);
+            pkt.unref();
 
-            loop {
-                match ff_sys::avcodec::receive_frame(aud_dec_ptr, aud_dec_frame) {
-                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                        break;
-                    }
-                    Err(_) => break,
-                    Ok(()) => {}
-                }
-
-                let enc_frame_size = if (*aud_enc_ptr).frame_size > 0 {
-                    (*aud_enc_ptr).frame_size
+            while let Ok(ReceiveOutcome::Frame) = aud_dec.receive_frame(&mut aud_dec_frame) {
+                let enc_frame_size = if aud_enc.frame_size() > 0 {
+                    aud_enc.frame_size()
                 } else {
-                    (*aud_dec_frame).nb_samples
+                    aud_dec_frame.nb_samples()
                 };
 
-                (*aud_enc_frame).format = (*aud_enc_ptr).sample_fmt;
-                (*aud_enc_frame).sample_rate = (*aud_enc_ptr).sample_rate;
-                (*aud_enc_frame).nb_samples = enc_frame_size;
-                let _ = ff_sys::swresample::channel_layout::copy(
-                    &mut (*aud_enc_frame).ch_layout,
-                    &(*aud_enc_ptr).ch_layout,
-                );
+                aud_enc_frame.set_format(aud_enc.sample_fmt());
+                aud_enc_frame.set_sample_rate(aud_enc.sample_rate());
+                aud_enc_frame.set_nb_samples(enc_frame_size);
+                let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
 
-                let buf_ret = av_frame_get_buffer(aud_enc_frame, 0);
-                if buf_ret < 0 {
-                    av_frame_unref(aud_dec_frame);
+                if aud_enc_frame.get_buffer(0).is_err() {
+                    aud_dec_frame.unref();
                     continue;
                 }
 
-                let in_data = (*aud_dec_frame).data.as_ptr() as *const *const u8;
-                let in_samples = (*aud_dec_frame).nb_samples;
-
+                // Resample the decoded planes into the encoder frame.
+                let in_planes: Vec<&[u8]> =
+                    (0..).map_while(|i| aud_dec_frame.audio_plane(i)).collect();
+                let in_count = aud_dec_frame.nb_samples();
                 let samples_out = if let Some(swr) = swr_ctx.as_mut() {
-                    swr.convert(
-                        (*aud_enc_frame).data.as_mut_ptr(),
-                        enc_frame_size,
-                        in_data,
-                        in_samples,
-                    )
-                    .ok()
+                    swr.convert_into_frame(&mut aud_enc_frame, &in_planes, in_count)
+                        .ok()
                 } else {
                     None
                 };
@@ -1177,11 +1091,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 if let Some(n) = samples_out
                     && n > 0
                 {
-                    (*aud_enc_frame).nb_samples = n;
-                    (*aud_enc_frame).pts = audio_sample_count;
-                    if ff_sys::avcodec::send_frame(aud_enc_ptr, aud_enc_frame).is_ok() {
+                    aud_enc_frame.set_nb_samples(n);
+                    aud_enc_frame.set_pts(audio_sample_count);
+                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc_ptr,
+                            aud_enc.as_mut_ptr(),
                             out_ctx,
                             aud_out_stream_idx,
                             "dash",
@@ -1191,11 +1105,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     audio_sample_count += i64::from(n);
                 }
 
-                av_frame_unref(aud_enc_frame);
-                av_frame_unref(aud_dec_frame);
+                aud_enc_frame.unref();
+                aud_dec_frame.unref();
             }
         } else {
-            av_packet_unref(pkt);
+            pkt.unref();
         }
     }
 
@@ -1211,24 +1125,24 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         );
     }
 
-    if let Some(aud_enc_ptr) = aud_enc_ctx.as_mut().map(ff_sys::CodecContext::as_mut_ptr) {
+    if let Some(aud_enc) = aud_enc_ctx.as_mut() {
         if swr_ctx.is_some() {
-            let enc_frame_size = if (*aud_enc_ptr).frame_size > 0 {
-                (*aud_enc_ptr).frame_size
+            let enc_frame_size = if aud_enc.frame_size() > 0 {
+                aud_enc.frame_size()
             } else {
                 1024
             };
-            (*aud_enc_frame).format = (*aud_enc_ptr).sample_fmt;
-            (*aud_enc_frame).sample_rate = (*aud_enc_ptr).sample_rate;
-            (*aud_enc_frame).nb_samples = enc_frame_size;
-            let _ = ff_sys::swresample::channel_layout::copy(
-                &mut (*aud_enc_frame).ch_layout,
-                &(*aud_enc_ptr).ch_layout,
-            );
-            if av_frame_get_buffer(aud_enc_frame, 0) == 0 {
+            aud_enc_frame.set_format(aud_enc.sample_fmt());
+            aud_enc_frame.set_sample_rate(aud_enc.sample_rate());
+            aud_enc_frame.set_nb_samples(enc_frame_size);
+            let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
+            if aud_enc_frame.get_buffer(0).is_ok() {
+                // Flush the resampler with a NULL input. `convert_into_frame`
+                // models the normal-input case; the flush needs a NULL input
+                // pointer, so the raw `convert` is used here.
                 let flushed = if let Some(swr) = swr_ctx.as_mut() {
                     swr.convert(
-                        (*aud_enc_frame).data.as_mut_ptr(),
+                        (*aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
                         enc_frame_size,
                         ptr::null(),
                         0,
@@ -1240,11 +1154,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 if let Some(n) = flushed
                     && n > 0
                 {
-                    (*aud_enc_frame).nb_samples = n;
-                    (*aud_enc_frame).pts = audio_sample_count;
-                    if ff_sys::avcodec::send_frame(aud_enc_ptr, aud_enc_frame).is_ok() {
+                    aud_enc_frame.set_nb_samples(n);
+                    aud_enc_frame.set_pts(audio_sample_count);
+                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc_ptr,
+                            aud_enc.as_mut_ptr(),
                             out_ctx,
                             aud_out_stream_idx,
                             "dash",
@@ -1252,12 +1166,12 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                         );
                     }
                 }
-                av_frame_unref(aud_enc_frame);
+                aud_enc_frame.unref();
             }
         }
-        let _ = ff_sys::avcodec::send_frame(aud_enc_ptr, ptr::null());
+        let _ = aud_enc.send_frame(ptr::null());
         crate::codec_utils::drain_encoder(
-            aud_enc_ptr,
+            aud_enc.as_mut_ptr(),
             out_ctx,
             aud_out_stream_idx,
             "dash",
@@ -1269,11 +1183,9 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     av_write_trailer(out_ctx);
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    // Owned encoder / decoder / resample / scale contexts (including every
-    // rendition in the Vec) drop on scope exit; only the raw frames and format
-    // contexts need explicit teardown.
-    free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
-    av_packet_free(&mut pkt);
+    // Owned frames/packet and encoder / decoder / resample / scale contexts
+    // (including every rendition in the Vec) drop on scope exit; only the raw
+    // format contexts need explicit teardown.
     cleanup_output_ctx(out_ctx);
     ff_sys::avformat::close_input(&mut input_ctx);
 

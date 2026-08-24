@@ -2,8 +2,8 @@
 
 use std::ptr;
 
-use ff_sys::{AVFormatContext, AVFrame, AVPixelFormat};
-use ff_sys::{av_frame_free, avformat_free_context};
+use ff_sys::avformat_free_context;
+use ff_sys::{AVFormatContext, AVPixelFormat};
 
 // ============================================================================
 // Per-rendition encoder state for ABR
@@ -33,25 +33,5 @@ pub(super) unsafe fn cleanup_output_ctx(mut out_ctx: *mut AVFormatContext) {
         avformat_free_context(out_ctx);
         out_ctx = ptr::null_mut();
         let _ = out_ctx; // suppress unused warning
-    }
-}
-
-pub(super) unsafe fn free_frames(
-    mut vid_dec: *mut AVFrame,
-    mut vid_enc: *mut AVFrame,
-    mut aud_dec: *mut AVFrame,
-    mut aud_enc: *mut AVFrame,
-) {
-    if !vid_dec.is_null() {
-        av_frame_free(&mut vid_dec as *mut *mut _);
-    }
-    if !vid_enc.is_null() {
-        av_frame_free(&mut vid_enc as *mut *mut _);
-    }
-    if !aud_dec.is_null() {
-        av_frame_free(&mut aud_dec as *mut *mut _);
-    }
-    if !aud_enc.is_null() {
-        av_frame_free(&mut aud_enc as *mut *mut _);
     }
 }
