@@ -37,9 +37,9 @@ use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
-    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame,
-    InputFormatContext, Packet,
+    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace, AVFrame,
+    AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext,
+    Packet,
 };
 
 use crate::HardwareAccel;
@@ -271,22 +271,18 @@ impl VideoDecoderInner {
             }
         })?;
 
-        // Extract stream information. `extract_stream_info` / `extract_container_info`
-        // still read fields with no safe accessor yet (codec-context pix_fmt,
-        // stream avg_frame_rate, container bit_rate / iformat name), so they keep the
-        // raw pointer path; safe-ifying them is left to the ff-sys RAII follow-up.
-        // SAFETY: All pointers are valid
-        let stream_info = unsafe {
-            Self::extract_stream_info(
-                ctx.as_mut_ptr(),
-                stream_index as i32,
-                codec_ctx.as_mut_ptr(),
-            )?
-        };
+        // Extract stream and container information through the borrowed
+        // stream / codec-context accessors.
+        let duration_val = ctx.duration();
+        let stream = ctx
+            .stream(stream_index)
+            .ok_or_else(|| DecodeError::NoVideoStream {
+                path: path.to_path_buf(),
+            })?;
+        let stream_info = Self::extract_stream_info(stream, &codec_ctx, duration_val)?;
 
         // Extract container information
-        // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
-        let container_info = unsafe { Self::extract_container_info(ctx.as_mut_ptr()) };
+        let container_info = Self::extract_container_info(&ctx);
 
         // Allocate packet and frame (owned; free on drop, including on an early
         // return from a later `?` in this constructor).

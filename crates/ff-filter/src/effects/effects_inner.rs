@@ -555,10 +555,10 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         }
     };
 
-    (*enc_ctx.as_mut_ptr()).width = frame_width;
-    (*enc_ctx.as_mut_ptr()).height = frame_height;
-    (*enc_ctx.as_mut_ptr()).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
-    (*enc_ctx.as_mut_ptr()).time_base = filter_tb;
+    enc_ctx.set_width(frame_width);
+    enc_ctx.set_height(frame_height);
+    enc_ctx.set_pix_fmt(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P);
+    enc_ctx.set_time_base(filter_tb);
 
     if let Err(e) = enc_ctx.open(enc_codec, std::ptr::null_mut()) {
         let mut fp = first_frame;

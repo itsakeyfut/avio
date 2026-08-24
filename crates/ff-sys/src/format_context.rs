@@ -10,6 +10,7 @@
 //! The mux (output) lifecycle is a separate owner (`OutputFormatContext`,
 //! tracked in #1493); this type covers demuxing only.
 
+use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
@@ -17,8 +18,9 @@ use std::ptr::NonNull;
 use std::time::Duration;
 
 use crate::{
-    AVCodecID, AVCodecParameters, AVFormatContext, AVMediaType, AVRational, AVStream, AvError,
-    Packet, avformat_close_input as ffi_avformat_close_input,
+    AVChannelLayout, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
+    AVFormatContext, AVMediaType, AVRational, AVStream, AvError, Packet,
+    avformat_close_input as ffi_avformat_close_input,
 };
 
 /// An owned input (demux) `AVFormatContext`.
@@ -126,6 +128,34 @@ impl InputFormatContext {
             } else {
                 (*iformat).flags
             }
+        }
+    }
+
+    /// Returns the container's overall bit rate in bits per second, or `0` when
+    /// unknown.
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned demux context; `bit_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).bit_rate }
+    }
+
+    /// Returns the input format's short name (for example `"mov,mp4,..."`), or
+    /// `None` when the format or its name is unset.
+    #[must_use]
+    pub fn iformat_name(&self) -> Option<String> {
+        // SAFETY: `self.ptr` is a valid owned demux context. `iformat` is set for
+        //         every successfully opened input, but we null-check both it and
+        //         its `name` pointer defensively before reading the C string.
+        unsafe {
+            let iformat = (*self.ptr.as_ptr()).iformat;
+            if iformat.is_null() {
+                return None;
+            }
+            let name = (*iformat).name;
+            if name.is_null() {
+                return None;
+            }
+            Some(CStr::from_ptr(name).to_string_lossy().into_owned())
         }
     }
 
@@ -261,6 +291,13 @@ impl<'a> StreamRef<'a> {
         unsafe { (*self.ptr.as_ptr()).time_base }
     }
 
+    /// Returns the stream's average frame rate (may be `0/0` when unknown).
+    #[must_use]
+    pub fn avg_frame_rate(&self) -> AVRational {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).avg_frame_rate }
+    }
+
     /// Returns a borrowed handle to the stream's codec parameters.
     #[must_use]
     pub fn codecpar(&self) -> CodecParameters<'a> {
@@ -300,6 +337,56 @@ impl CodecParameters<'_> {
     pub fn codec_id(&self) -> AVCodecID {
         // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
         unsafe { (*self.ptr.as_ptr()).codec_id }
+    }
+
+    /// Returns the coded width in pixels (0 for non-video streams).
+    #[must_use]
+    pub fn width(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).width }
+    }
+
+    /// Returns the coded height in pixels (0 for non-video streams).
+    #[must_use]
+    pub fn height(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).height }
+    }
+
+    /// Returns the audio sample rate in Hz (0 for non-audio streams).
+    #[must_use]
+    pub fn sample_rate(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).sample_rate }
+    }
+
+    /// Returns the color space.
+    #[must_use]
+    pub fn color_space(&self) -> AVColorSpace {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).color_space }
+    }
+
+    /// Returns the color range.
+    #[must_use]
+    pub fn color_range(&self) -> AVColorRange {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).color_range }
+    }
+
+    /// Returns the color primaries.
+    #[must_use]
+    pub fn color_primaries(&self) -> AVColorPrimaries {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).color_primaries }
+    }
+
+    /// Returns a copy of the channel layout (order / channel count / mask).
+    #[must_use]
+    pub fn ch_layout(&self) -> AVChannelLayout {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream;
+        //         `ch_layout` is a plain POD field copied out by value.
+        unsafe { (*self.ptr.as_ptr()).ch_layout }
     }
 
     /// Returns the underlying raw pointer for FFI calls within the crate.

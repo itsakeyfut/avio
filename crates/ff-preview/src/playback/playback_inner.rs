@@ -116,42 +116,35 @@ impl SwsRgbaConverter {
         let total = rgba_stride * dst_h as usize;
         dst.resize(total, 0u8);
 
-        // Collect per-plane pointers and strides from the VideoFrame.
+        // Collect per-plane borrowed slices and strides from the VideoFrame.
         // VideoFrame stores at most 4 planes.
         let n = frame.num_planes().min(4);
-        let mut src_ptrs: [*const u8; 4] = [std::ptr::null(); 4];
-        let mut src_strides: [i32; 4] = [0i32; 4];
+        let mut src_planes: Vec<&[u8]> = Vec::with_capacity(n);
+        let mut src_strides: Vec<i32> = Vec::with_capacity(n);
         for i in 0..n {
             if let (Some(plane), Some(stride)) = (frame.plane(i), frame.stride(i)) {
-                src_ptrs[i] = plane.as_ptr();
-                src_strides[i] = stride as i32;
+                src_planes.push(plane);
+                src_strides.push(stride as i32);
             }
         }
 
-        let dst_ptr = dst.as_mut_ptr();
-        let dst_stride_val = rgba_stride as i32;
-        let mut dst_ptrs: [*mut u8; 4] = [
-            dst_ptr,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        ];
-        let dst_strides: [i32; 4] = [dst_stride_val, 0, 0, 0];
+        let dst_strides: [i32; 1] = [rgba_stride as i32];
+        let mut dst_slices: [&mut [u8]; 1] = [dst.as_mut_slice()];
 
         let Some(ctx) = self.ctx.as_mut() else {
             log::warn!("sws_scale skipped: scaling context not initialized");
             return false;
         };
-        // SAFETY: ctx is initialized (created above); src and dst pointers are valid
-        // for the lifetime of this call; buffer sizes match dst_w * dst_h * 4 bytes.
+        // SAFETY: ctx is initialized (created above); each src plane is sized for
+        // `src_h` rows at its stride, and the single RGBA dst plane is sized
+        // `dst_w * dst_h * 4` bytes (resized above) at `rgba_stride`.
         let result = unsafe {
-            ctx.scale(
-                src_ptrs.as_ptr(),
-                src_strides.as_ptr(),
-                0,
+            ctx.scale_slices(
+                &src_planes,
+                &src_strides,
                 src_h as i32,
-                dst_ptrs.as_mut_ptr().cast::<*mut u8>(),
-                dst_strides.as_ptr(),
+                &mut dst_slices,
+                &dst_strides,
             )
         };
         match result {

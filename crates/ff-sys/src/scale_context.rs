@@ -158,6 +158,79 @@ impl ScaleContext {
         .map_err(AvError::new)
     }
 
+    /// Scales / converts borrowed source plane slices into borrowed destination
+    /// plane slices (safe wrapper).
+    ///
+    /// `src` holds one byte slice per source plane and `src_strides` the matching
+    /// per-plane stride (line size in bytes); `src_h` is the number of source rows
+    /// to process. `dst` holds one mutable byte slice per destination plane and
+    /// `dst_strides` their per-plane strides. This is the fully borrowed-slice
+    /// counterpart of [`scale_planes`](Self::scale_planes) for callers whose
+    /// destination is a plain buffer rather than an owned [`Frame`].
+    ///
+    /// The strides are taken as-is (top-down, positive) following the
+    /// `av_image_copy` convention, so this path never reintroduces the
+    /// negative-linesize row inversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if scaling fails.
+    ///
+    /// # Safety
+    ///
+    /// `sws_scale` reads up to `src_strides[i] * src_h` bytes from each `src[i]`
+    /// and writes up to `dst_strides[i] * out_h` bytes into each `dst[i]`, bounds
+    /// the slice types cannot express. The caller must ensure:
+    /// - `src.len() == src_strides.len()` and `dst.len() == dst_strides.len()`,
+    ///   both describing this context's input / output planes;
+    /// - each `src[i]` is at least `src_strides[i] * src_h` bytes (per-plane
+    ///   height per the pixel format's subsampling);
+    /// - each `dst[i]` is at least `dst_strides[i] * out_h` bytes for this
+    ///   context's output geometry;
+    /// - no stride is negative.
+    /// A shorter slice or mismatched stride is an out-of-bounds read / write.
+    pub unsafe fn scale_slices(
+        &mut self,
+        src: &[&[u8]],
+        src_strides: &[c_int],
+        src_h: c_int,
+        dst: &mut [&mut [u8]],
+        dst_strides: &[c_int],
+    ) -> Result<c_int, AvError> {
+        // Build fixed-size plane / stride arrays from the borrowed slices. Unused
+        // entries stay null / zero, matching how FFmpeg frames leave absent planes.
+        const PLANES: usize = AV_NUM_DATA_POINTERS as usize;
+        let mut src_ptrs: [*const u8; PLANES] = [std::ptr::null(); PLANES];
+        let mut src_line: [c_int; PLANES] = [0; PLANES];
+        for (i, (plane, &stride)) in src.iter().zip(src_strides).enumerate().take(PLANES) {
+            src_ptrs[i] = plane.as_ptr();
+            src_line[i] = stride;
+        }
+
+        let mut dst_ptrs: [*mut u8; PLANES] = [std::ptr::null_mut(); PLANES];
+        let mut dst_line: [c_int; PLANES] = [0; PLANES];
+        for (i, (plane, &stride)) in dst.iter_mut().zip(dst_strides).enumerate().take(PLANES) {
+            dst_ptrs[i] = plane.as_mut_ptr();
+            dst_line[i] = stride;
+        }
+
+        // SAFETY: `src_ptrs` / `dst_ptrs` and their stride arrays describe the
+        //         borrowed planes for the duration of the call; `sws_scale`
+        //         reads/writes only within the sized planes.
+        unsafe {
+            crate::swscale::scale(
+                self.ptr.as_ptr(),
+                src_ptrs.as_ptr(),
+                src_line.as_ptr(),
+                0,
+                src_h,
+                dst_ptrs.as_ptr(),
+                dst_line.as_ptr(),
+            )
+        }
+        .map_err(AvError::new)
+    }
+
     /// Scales / converts a slice of the source image into the destination.
     ///
     /// Returns the height of the output slice.
@@ -368,5 +441,100 @@ mod tests {
             unsafe { ctx.scale_planes(&src_planes, &src_strides, src_h as c_int, &mut dst) }
                 .expect("plane scaling should succeed");
         assert_eq!(out_h, 32, "should process all 32 output rows");
+    }
+
+    #[test]
+    fn scale_slices_should_downscale_from_borrowed_slices() {
+        // Feed a single RGB24 plane (borrowed Vec) in and a borrowed Vec out
+        // through the fully-slice path.
+        let src_w = 64usize;
+        let src_h = 64usize;
+        let src_stride = src_w * 3;
+        let src_buf = vec![0u8; src_stride * src_h];
+        let src_planes: [&[u8]; 1] = [src_buf.as_slice()];
+        let src_strides: [c_int; 1] = [src_stride as c_int];
+
+        let dst_w = 32usize;
+        let dst_h = 32usize;
+        let dst_stride = dst_w * 3;
+        let mut dst_buf = vec![0u8; dst_stride * dst_h];
+        let mut dst_planes: [&mut [u8]; 1] = [dst_buf.as_mut_slice()];
+        let dst_strides: [c_int; 1] = [dst_stride as c_int];
+
+        let mut ctx = ScaleContext::new(
+            src_w as c_int,
+            src_h as c_int,
+            AVPixelFormat_AV_PIX_FMT_RGB24,
+            dst_w as c_int,
+            dst_h as c_int,
+            AVPixelFormat_AV_PIX_FMT_RGB24,
+            crate::swscale::scale_flags::BILINEAR,
+        )
+        .expect("context creation should succeed");
+
+        // SAFETY: the single src plane is sized `src_stride * src_h`; the single
+        // dst plane is sized `dst_stride * dst_h`.
+        let out_h = unsafe {
+            ctx.scale_slices(
+                &src_planes,
+                &src_strides,
+                src_h as c_int,
+                &mut dst_planes,
+                &dst_strides,
+            )
+        }
+        .expect("slice scaling should succeed");
+        assert_eq!(out_h, dst_h as c_int, "should process all 32 output rows");
+    }
+
+    #[test]
+    fn scale_slices_should_preserve_vertical_row_order() {
+        // RK-008 guard: strides are taken as-is (positive), so an identity-size
+        // scale must keep the source's top-half brightness on top.
+        let (w, h) = (16usize, 16usize);
+        let stride = w * 3;
+        let mut src_buf = vec![0u8; stride * h];
+        for y in 0..h {
+            let val = if y < h / 2 { 200u8 } else { 40u8 };
+            for b in &mut src_buf[y * stride..y * stride + w * 3] {
+                *b = val;
+            }
+        }
+        let src_planes: [&[u8]; 1] = [src_buf.as_slice()];
+        let src_strides: [c_int; 1] = [stride as c_int];
+
+        let mut dst_buf = vec![0u8; stride * h];
+        let mut dst_planes: [&mut [u8]; 1] = [dst_buf.as_mut_slice()];
+        let dst_strides: [c_int; 1] = [stride as c_int];
+
+        let mut ctx = ScaleContext::new(
+            w as c_int,
+            h as c_int,
+            AVPixelFormat_AV_PIX_FMT_RGB24,
+            w as c_int,
+            h as c_int,
+            AVPixelFormat_AV_PIX_FMT_RGB24,
+            crate::swscale::scale_flags::BILINEAR,
+        )
+        .expect("context creation should succeed");
+
+        // SAFETY: both single planes are sized `stride * h`.
+        unsafe {
+            ctx.scale_slices(
+                &src_planes,
+                &src_strides,
+                h as c_int,
+                &mut dst_planes,
+                &dst_strides,
+            )
+        }
+        .expect("slice scaling should succeed");
+
+        let top = dst_buf[0];
+        let bottom = dst_buf[(h - 1) * stride];
+        assert!(
+            top > bottom,
+            "top row ({top}) must stay brighter than bottom ({bottom}); a row inversion would flip this"
+        );
     }
 }
