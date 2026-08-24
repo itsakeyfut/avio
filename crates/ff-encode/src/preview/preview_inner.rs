@@ -25,9 +25,8 @@ use std::time::Duration;
 
 use ff_sys::{
     AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVRational, av_buffersink_get_frame, av_frame_alloc, av_frame_free, av_frame_get_buffer,
-    av_interleaved_write_frame, av_opt_set, av_packet_alloc, av_packet_free, av_packet_unref,
-    av_write_trailer, avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
+    AVRational, av_interleaved_write_frame, av_opt_set, av_packet_unref, av_write_trailer,
+    avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
     avfilter_graph_create_filter, avfilter_graph_free, avfilter_link, avformat,
     avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
     avformat_write_header,
@@ -271,27 +270,28 @@ unsafe fn generate_sprite_sheet_unsafe(
     }
 
     // ── Step 3: pull one output frame from the tile filter ────────────────────
-    let tile_frame = av_frame_alloc();
-    if tile_frame.is_null() {
+    let Ok(mut tile_frame) = ff_sys::Frame::new() else {
         bail!(graph, "av_frame_alloc failed for tile frame");
-    }
+    };
 
-    let ret = av_buffersink_get_frame(sink_ctx, tile_frame);
-    let got_frame = ret >= 0;
-
-    if !got_frame {
-        let mut f = tile_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
+    if !matches!(
+        ff_sys::buffersink_get_frame(sink_ctx, &mut tile_frame),
+        Ok(ff_sys::BufferSinkOutcome::Frame)
+    ) {
         bail!(graph, "tile filter produced no output frame");
     }
 
     // ── Step 4: encode the tile frame as PNG ──────────────────────────────────
-    let encode_result =
-        encode_frame_as_png(tile_frame, output, cols, rows, frame_width, frame_height);
+    let encode_result = encode_frame_as_png(
+        tile_frame.as_mut_ptr(),
+        output,
+        cols,
+        rows,
+        frame_width,
+        frame_height,
+    );
 
-    // Cleanup filter graph and frame regardless of encode result.
-    let mut f = tile_frame;
-    av_frame_free(std::ptr::addr_of_mut!(f));
+    // Cleanup filter graph; `tile_frame` drops at end of scope.
     let mut g = graph;
     avfilter_graph_free(std::ptr::addr_of_mut!(g));
 
@@ -331,23 +331,15 @@ unsafe fn encode_frame_as_png(
     // We unconditionally convert to rgb24 to avoid EINVAL from avcodec_open2.
 
     let needs_conversion = src_pix_fmt != AVPixelFormat_AV_PIX_FMT_RGB24;
-    let converted_frame: *mut ff_sys::AVFrame = if needs_conversion {
-        let cf = av_frame_alloc();
-        if cf.is_null() {
-            return Err(PreviewImageError::Ffmpeg {
-                code: 0,
-                message: "av_frame_alloc failed for rgb24 conversion frame".to_string(),
-            });
-        }
-        (*cf).width = width;
-        (*cf).height = height;
-        (*cf).format = AVPixelFormat_AV_PIX_FMT_RGB24;
-        let ret = av_frame_get_buffer(cf, 0);
-        if ret < 0 {
-            let mut f = cf;
-            av_frame_free(std::ptr::addr_of_mut!(f));
-            return Err(PreviewImageError::from_ffmpeg_error(ret));
-        }
+    // Holds the owned rgb24 conversion frame (if any) alive until encoding finishes.
+    let mut cf_owned: Option<ff_sys::Frame> = if needs_conversion {
+        let mut cf =
+            ff_sys::Frame::new().map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
+        cf.set_width(width);
+        cf.set_height(height);
+        cf.set_format(AVPixelFormat_AV_PIX_FMT_RGB24);
+        cf.get_buffer(0)
+            .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         // SAFETY: src_pix_fmt and AVPixelFormat_AV_PIX_FMT_RGB24 are valid;
         // frame and cf buffers are allocated and large enough.
         let mut sws_ctx = ff_sys::ScaleContext::new(
@@ -359,38 +351,32 @@ unsafe fn encode_frame_as_png(
             AVPixelFormat_AV_PIX_FMT_RGB24,
             ff_sys::swscale::scale_flags::BILINEAR,
         )
-        .map_err(|e| {
-            let mut f = cf;
-            av_frame_free(std::ptr::addr_of_mut!(f));
-            PreviewImageError::from_ffmpeg_error(e.code())
-        })?;
-        let scale_ret = sws_ctx.scale(
-            (*frame).data.as_ptr().cast::<*const u8>(),
-            (*frame).linesize.as_ptr(),
-            0,
-            height,
-            (*cf).data.as_mut_ptr().cast_const(),
-            (*cf).linesize.as_mut_ptr(),
-        );
-        // sws_ctx drops at the end of this scope, freeing the context.
-        if let Err(e) = scale_ret {
-            let mut f = cf;
-            av_frame_free(std::ptr::addr_of_mut!(f));
-            return Err(PreviewImageError::from_ffmpeg_error(e.code()));
-        }
-        cf
+        .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
+        let cf_ptr = cf.as_mut_ptr();
+        // sws_ctx drops at the end of this scope, freeing the context;
+        // `cf` drops on any `?` above/below, freeing the conversion frame.
+        sws_ctx
+            .scale(
+                (*frame).data.as_ptr().cast::<*const u8>(),
+                (*frame).linesize.as_ptr(),
+                0,
+                height,
+                (*cf_ptr).data.as_mut_ptr().cast_const(),
+                (*cf_ptr).linesize.as_mut_ptr(),
+            )
+            .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
+        Some(cf)
     } else {
-        frame
+        None
     };
 
-    let encode_result = encode_frame_as_png_inner(converted_frame, output, width, height);
+    let converted_frame: *mut ff_sys::AVFrame = match cf_owned.as_mut() {
+        Some(cf) => cf.as_mut_ptr(),
+        None => frame,
+    };
 
-    if needs_conversion {
-        let mut f = converted_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
-    }
-
-    encode_result
+    // `cf_owned` (if any) drops at end of scope, freeing the conversion frame.
+    encode_frame_as_png_inner(converted_frame, output, width, height)
 }
 
 /// Encodes a rgb24 `*mut AVFrame` as a PNG file at `output`.
@@ -501,8 +487,7 @@ unsafe fn encode_frame_as_png_inner(
     }
 
     // ── Allocate packet ───────────────────────────────────────────────────────
-    let packet = av_packet_alloc();
-    if packet.is_null() {
+    let Ok(mut packet) = ff_sys::Packet::new() else {
         av_write_trailer(fmt_ctx);
         avformat::close_output(&raw mut (*fmt_ctx).pb);
         drop(codec_ctx);
@@ -511,7 +496,7 @@ unsafe fn encode_frame_as_png_inner(
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Encode: send frame → flush → drain packets ────────────────────────────
     (*frame).pts = 0;
@@ -520,17 +505,17 @@ unsafe fn encode_frame_as_png_inner(
         codec_ctx
             .send_frame(frame)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(&mut codec_ctx, fmt_ctx, packet, false)?;
+        drain_packets(&mut codec_ctx, fmt_ctx, packet.as_mut_ptr(), false)?;
         codec_ctx
             .send_frame(ptr::null())
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(&mut codec_ctx, fmt_ctx, packet, true)?;
+        drain_packets(&mut codec_ctx, fmt_ctx, packet.as_mut_ptr(), true)?;
         Ok(())
     })();
 
     av_write_trailer(fmt_ctx);
     avformat::close_output(&raw mut (*fmt_ctx).pb);
-    av_packet_free(&mut { packet });
+    // `packet` drops at end of scope, freeing it.
     drop(codec_ctx);
     avformat_free_context(fmt_ctx);
 
@@ -845,23 +830,19 @@ unsafe fn generate_palette_unsafe(
     }
 
     // Drain until we get the palette frame (palettegen emits one frame on EOF).
-    let mut palette_frame: *mut ff_sys::AVFrame = ptr::null_mut();
+    let mut palette_frame: Option<ff_sys::Frame> = None;
     loop {
-        let candidate = av_frame_alloc();
-        if candidate.is_null() {
+        let Ok(mut candidate) = ff_sys::Frame::new() else {
             break;
-        }
-        let ret = av_buffersink_get_frame(sink_ctx, candidate);
-        if ret >= 0 {
-            // Free any previous candidate; keep this one.
-            if !palette_frame.is_null() {
-                let mut prev = palette_frame;
-                av_frame_free(std::ptr::addr_of_mut!(prev));
-            }
-            palette_frame = candidate;
+        };
+        if matches!(
+            ff_sys::buffersink_get_frame(sink_ctx, &mut candidate),
+            Ok(ff_sys::BufferSinkOutcome::Frame)
+        ) {
+            // Keep this candidate; reassigning drops (frees) any previous one.
+            palette_frame = Some(candidate);
         } else {
-            let mut c = candidate;
-            av_frame_free(std::ptr::addr_of_mut!(c));
+            // `candidate` drops here, freeing it.
             break;
         }
     }
@@ -869,17 +850,14 @@ unsafe fn generate_palette_unsafe(
     let mut g = graph;
     avfilter_graph_free(std::ptr::addr_of_mut!(g));
 
-    if palette_frame.is_null() {
+    let Some(mut palette_frame) = palette_frame else {
         return Err(PreviewImageError::OperationFailed {
             reason: "palettegen produced no palette frame".to_string(),
         });
-    }
+    };
 
-    // Save the palette frame to disk as PNG.
-    let encode_result = encode_frame_as_png(palette_frame, palette_path, 0, 0, 0, 0);
-    let mut f = palette_frame;
-    av_frame_free(std::ptr::addr_of_mut!(f));
-    encode_result
+    // Save the palette frame to disk as PNG; `palette_frame` drops at end of scope.
+    encode_frame_as_png(palette_frame.as_mut_ptr(), palette_path, 0, 0, 0, 0)
 }
 
 /// Pass 2: composes the GIF from the video + palette and encodes it.
@@ -1186,8 +1164,7 @@ unsafe fn encode_gif_unsafe(
     };
 
     // Pull a first frame to discover width/height/pix_fmt from the filter output.
-    let first_frame = av_frame_alloc();
-    if first_frame.is_null() {
+    let Ok(mut first_frame) = ff_sys::Frame::new() else {
         drop(codec_ctx);
         avformat_free_context(fmt_ctx);
         let mut g = graph;
@@ -1196,23 +1173,25 @@ unsafe fn encode_gif_unsafe(
             code: 0,
             message: "av_frame_alloc failed".to_string(),
         });
-    }
-    let ret = av_buffersink_get_frame(sink_ctx, first_frame);
-    if ret < 0 {
-        let mut f = first_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
+    };
+    // `first_frame` drops on any early return below, freeing it (its ref-counted
+    // buffer outlives the filter graph, so graph-then-frame teardown is sound).
+    let outcome = ff_sys::buffersink_get_frame(sink_ctx, &mut first_frame);
+    if !matches!(&outcome, Ok(ff_sys::BufferSinkOutcome::Frame)) {
         drop(codec_ctx);
         avformat_free_context(fmt_ctx);
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(PreviewImageError::OperationFailed {
-            reason: format!("no frames from GIF filter graph code={ret}"),
-        });
+        let reason = match outcome {
+            Err(e) => format!("no frames from GIF filter graph code={}", e.code()),
+            _ => "no frames from GIF filter graph".to_string(),
+        };
+        return Err(PreviewImageError::OperationFailed { reason });
     }
 
-    let out_width = (*first_frame).width;
-    let out_height = (*first_frame).height;
-    let out_pix_fmt = (*first_frame).format;
+    let out_width = first_frame.width();
+    let out_height = first_frame.height();
+    let out_pix_fmt = first_frame.format();
 
     // Configure GIF encoder.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1235,8 +1214,6 @@ unsafe fn encode_gif_unsafe(
     );
 
     if let Err(e) = codec_ctx.open(codec, ptr::null_mut()) {
-        let mut f = first_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
         drop(codec_ctx);
         avformat_free_context(fmt_ctx);
         let mut g = graph;
@@ -1257,8 +1234,6 @@ unsafe fn encode_gif_unsafe(
     let io_ctx = match avformat::open_output(output, avformat::avio_flags::WRITE) {
         Ok(ctx) => ctx,
         Err(e) => {
-            let mut f = first_frame;
-            av_frame_free(std::ptr::addr_of_mut!(f));
             drop(codec_ctx);
             avformat_free_context(fmt_ctx);
             let mut g = graph;
@@ -1271,8 +1246,6 @@ unsafe fn encode_gif_unsafe(
     let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
     if ret < 0 {
         avformat::close_output(&raw mut (*fmt_ctx).pb);
-        let mut f = first_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
         drop(codec_ctx);
         avformat_free_context(fmt_ctx);
         let mut g = graph;
@@ -1280,12 +1253,9 @@ unsafe fn encode_gif_unsafe(
         return Err(PreviewImageError::from_ffmpeg_error(ret));
     }
 
-    let packet = av_packet_alloc();
-    if packet.is_null() {
+    let Ok(mut packet) = ff_sys::Packet::new() else {
         av_write_trailer(fmt_ctx);
         avformat::close_output(&raw mut (*fmt_ctx).pb);
-        let mut f = first_frame;
-        av_frame_free(std::ptr::addr_of_mut!(f));
         drop(codec_ctx);
         avformat_free_context(fmt_ctx);
         let mut g = graph;
@@ -1294,56 +1264,52 @@ unsafe fn encode_gif_unsafe(
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Encode all frames ─────────────────────────────────────────────────────
     let encode_result = (|| -> Result<(), PreviewImageError> {
         let mut frame_counter: i64 = 0;
 
         // Encode the first frame we already pulled.
-        (*first_frame).pts = frame_counter;
+        first_frame.set_pts(frame_counter);
         frame_counter += 1;
         codec_ctx
-            .send_frame(first_frame)
+            .send_frame(first_frame.as_ptr())
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(&mut codec_ctx, fmt_ctx, packet, false)?;
+        drain_packets(&mut codec_ctx, fmt_ctx, packet.as_mut_ptr(), false)?;
 
         // Pull and encode remaining frames.
         loop {
-            let frame = av_frame_alloc();
-            if frame.is_null() {
+            let Ok(mut frame) = ff_sys::Frame::new() else {
+                break;
+            };
+            if !matches!(
+                ff_sys::buffersink_get_frame(sink_ctx, &mut frame),
+                Ok(ff_sys::BufferSinkOutcome::Frame)
+            ) {
+                // `frame` drops here, freeing it.
                 break;
             }
-            let ret = av_buffersink_get_frame(sink_ctx, frame);
-            if ret < 0 {
-                let mut f = frame;
-                av_frame_free(std::ptr::addr_of_mut!(f));
-                break;
-            }
-            (*frame).pts = frame_counter;
+            frame.set_pts(frame_counter);
             frame_counter += 1;
-            let send_result = codec_ctx
-                .send_frame(frame)
-                .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()));
-            let mut f = frame;
-            av_frame_free(std::ptr::addr_of_mut!(f));
-            send_result?;
-            drain_packets(&mut codec_ctx, fmt_ctx, packet, false)?;
+            // `frame` drops at end of iteration (or on the `?` below), freeing it.
+            codec_ctx
+                .send_frame(frame.as_ptr())
+                .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
+            drain_packets(&mut codec_ctx, fmt_ctx, packet.as_mut_ptr(), false)?;
         }
 
         // Flush encoder.
         codec_ctx
             .send_frame(ptr::null())
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(&mut codec_ctx, fmt_ctx, packet, true)?;
+        drain_packets(&mut codec_ctx, fmt_ctx, packet.as_mut_ptr(), true)?;
         Ok(())
     })();
 
     av_write_trailer(fmt_ctx);
     avformat::close_output(&raw mut (*fmt_ctx).pb);
-    av_packet_free(&mut { packet });
-    let mut f = first_frame;
-    av_frame_free(std::ptr::addr_of_mut!(f));
+    // `packet` and `first_frame` drop at end of scope, freeing them.
     drop(codec_ctx);
     avformat_free_context(fmt_ctx);
     let mut g = graph;
