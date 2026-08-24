@@ -197,18 +197,16 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
     // vidstabdetect writes the .trf file incrementally as each frame passes
     // through it.  We discard the frame data — only the side effect matters.
     loop {
-        let raw_frame = ff_sys::av_frame_alloc();
-        if raw_frame.is_null() {
+        let Ok(mut frame) = ff_sys::Frame::new() else {
             break;
-        }
-        // SAFETY: sink_ctx is a valid buffersink context; raw_frame is a
-        // freshly allocated AVFrame owned by this scope.
-        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
-        let mut ptr = raw_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
-        if ret < 0 {
-            // AVERROR_EOF or AVERROR(EAGAIN): all frames processed.
-            break;
+        };
+        // SAFETY: sink_ctx is a valid buffersink context; `frame` is an owned
+        // frame. The frame data is discarded (only the .trf side effect matters);
+        // `frame` drops at the end of each iteration.
+        match ff_sys::buffersink_get_frame(sink_ctx, &mut frame) {
+            Ok(ff_sys::BufferSinkOutcome::Frame) => {}
+            // NeedMore / Drained / Err: all frames processed.
+            _ => break,
         }
     }
 
@@ -230,23 +228,27 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
 ///
 /// # Safety
 ///
-/// - `enc_ctx` must be a valid, open `AVCodecContext` after at least one
-///   `avcodec_send_frame` call.
-/// - `pkt` must be a valid, allocated `AVPacket`.
 /// - `out_ctx` must be a valid `AVFormatContext` whose header has been written.
+/// - `enc_ctx` should have had at least one `send_frame` call (functional
+///   precondition; this drains whatever the encoder has produced).
 unsafe fn drain_encoded_packets(
-    enc_ctx: *mut ff_sys::AVCodecContext,
-    pkt: *mut ff_sys::AVPacket,
+    enc_ctx: &mut ff_sys::CodecContext,
+    pkt: &mut ff_sys::Packet,
     out_ctx: *mut ff_sys::AVFormatContext,
     stream_tb: ff_sys::AVRational,
 ) {
-    while ff_sys::avcodec::receive_packet(enc_ctx, pkt).is_ok() {
+    while matches!(
+        enc_ctx.receive_packet(pkt.as_mut_ptr()),
+        Ok(ff_sys::ReceiveOutcome::Frame)
+    ) {
         // Read enc_tb at drain time — some encoders mutate time_base lazily.
-        let enc_tb = (*enc_ctx).time_base;
-        ff_sys::av_packet_rescale_ts(pkt, enc_tb, stream_tb);
-        (*pkt).stream_index = 0;
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
-        ff_sys::av_packet_unref(pkt);
+        let enc_tb = enc_ctx.time_base();
+        // The packet fields have no typed accessor; touch them through the pointer.
+        let p = pkt.as_mut_ptr();
+        ff_sys::av_packet_rescale_ts(p, enc_tb, stream_tb);
+        (*p).stream_index = 0;
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx, p);
+        pkt.unref();
         if ret < 0 {
             log::warn!(
                 "av_interleaved_write_frame failed error={}",
@@ -273,8 +275,8 @@ unsafe fn drain_encoded_packets(
 /// - `avcodec_alloc_context3()` / `avcodec_free_context()` for the encoder.
 /// - `avformat_alloc_output_context2()` / `avformat_free_context()` for the muxer.
 /// - `avio_open()` / `avio_closep()` (via wrappers) for the output file I/O.
-/// - `av_frame_alloc()` / `av_frame_free()` and `av_packet_alloc()` /
-///   `av_packet_free()` for frame and packet lifetimes.
+/// - Owned `ff_sys::Frame` / `ff_sys::Packet` manage the frame and packet
+///   lifetimes (each freed once on drop).
 pub(super) unsafe fn transform_vidstab_unsafe(
     input: &Path,
     trf_path: &Path,
@@ -481,31 +483,33 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     // ── From here manual cleanup is required (encoder + muxer are allocated) ──
 
     // Pull the first frame to discover frame dimensions.
-    let first_frame = ff_sys::av_frame_alloc();
-    if first_frame.is_null() {
+    let Ok(mut first_frame) = ff_sys::Frame::new() else {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
             code: 0,
             message: "av_frame_alloc failed".to_string(),
         });
-    }
-    let ret = ff_sys::av_buffersink_get_frame(sink_ctx, first_frame);
-    if ret < 0 {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+    };
+    // `first_frame` drops on any early return below, freeing it.
+    let outcome = ff_sys::buffersink_get_frame(sink_ctx, &mut first_frame);
+    if !matches!(&outcome, Ok(ff_sys::BufferSinkOutcome::Frame)) {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        let code = match outcome {
+            Err(e) => e.code(),
+            _ => 0,
+        };
         return Err(FilterError::Ffmpeg {
-            code: ret,
+            code,
             message: format!(
-                "first frame pull failed code={ret} message={}",
-                ff_sys::av_error_string(ret)
+                "first frame pull failed code={code} message={}",
+                ff_sys::av_error_string(code)
             ),
         });
     }
-    let frame_width = (*first_frame).width;
-    let frame_height = (*first_frame).height;
+    let frame_width = first_frame.width();
+    let frame_height = first_frame.height();
 
     // ── Find the best available H.264 encoder ─────────────────────────────────
     let enc_codec = {
@@ -528,8 +532,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         if let Some(c) = found {
             c
         } else {
-            let mut fp = first_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
             let mut g = graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
             return Err(FilterError::Ffmpeg {
@@ -544,8 +546,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     let mut enc_ctx = match ff_sys::CodecContext::new(Some(enc_codec)) {
         Ok(ctx) => ctx,
         Err(e) => {
-            let mut fp = first_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
             let mut g = graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
             return Err(FilterError::Ffmpeg {
@@ -561,8 +561,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     enc_ctx.set_time_base(filter_tb);
 
     if let Err(e) = enc_ctx.open(enc_codec, std::ptr::null_mut()) {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -580,8 +578,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         c_output.as_ptr(),
     );
     if ret < 0 || out_ctx.is_null() {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -593,8 +589,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     // ── Add video stream and copy codec parameters ────────────────────────────
     let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
     if out_stream.is_null() {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
         ff_sys::avformat_free_context(out_ctx);
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
@@ -605,8 +599,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     }
 
     if let Err(e) = enc_ctx.parameters_from_context((*out_stream).codecpar) {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
         ff_sys::avformat_free_context(out_ctx);
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
@@ -620,8 +612,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     let pb = match ff_sys::avformat::open_output(output, ff_sys::avformat::avio_flags::WRITE) {
         Ok(pb) => pb,
         Err(code) => {
-            let mut fp = first_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
             ff_sys::avformat_free_context(out_ctx);
             let mut g = graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
@@ -636,8 +626,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     // ── Write container header ────────────────────────────────────────────────
     let ret = ff_sys::avformat_write_header(out_ctx, std::ptr::null_mut());
     if ret < 0 {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
         ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
         ff_sys::avformat_free_context(out_ctx);
         let mut g = graph;
@@ -652,10 +640,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     let stream_tb = (*out_stream).time_base;
 
     // ── Allocate encode packet ────────────────────────────────────────────────
-    let mut pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
-        let mut fp = first_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         ff_sys::av_write_trailer(out_ctx);
         ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
         ff_sys::avformat_free_context(out_ctx);
@@ -665,37 +650,35 @@ pub(super) unsafe fn transform_vidstab_unsafe(
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Encode first frame ────────────────────────────────────────────────────
-    let _ = enc_ctx.send_frame(first_frame);
-    drain_encoded_packets(enc_ctx.as_mut_ptr(), pkt, out_ctx, stream_tb);
-    let mut fp = first_frame;
-    ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+    let _ = enc_ctx.send_frame(first_frame.as_ptr());
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
+    drop(first_frame);
 
     // ── Encode remaining frames from the filter graph ─────────────────────────
     loop {
-        let frame = ff_sys::av_frame_alloc();
-        if frame.is_null() {
+        let Ok(mut frame) = ff_sys::Frame::new() else {
+            break;
+        };
+        if !matches!(
+            ff_sys::buffersink_get_frame(sink_ctx, &mut frame),
+            Ok(ff_sys::BufferSinkOutcome::Frame)
+        ) {
             break;
         }
-        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, frame);
-        let mut fp = frame;
-        if ret < 0 {
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
-            break;
-        }
-        let _ = enc_ctx.send_frame(frame);
-        drain_encoded_packets(enc_ctx.as_mut_ptr(), pkt, out_ctx, stream_tb);
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        let _ = enc_ctx.send_frame(frame.as_ptr());
+        drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
+        // `frame` drops at end of iteration.
     }
 
     // ── Flush the encoder ─────────────────────────────────────────────────────
     let _ = enc_ctx.send_frame(std::ptr::null());
-    drain_encoded_packets(enc_ctx.as_mut_ptr(), pkt, out_ctx, stream_tb);
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
 
     // ── Finalize output ───────────────────────────────────────────────────────
-    ff_sys::av_packet_free(&raw mut pkt);
+    // `pkt` drops at end of scope, freeing it.
     ff_sys::av_write_trailer(out_ctx);
     ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
     ff_sys::avformat_free_context(out_ctx);

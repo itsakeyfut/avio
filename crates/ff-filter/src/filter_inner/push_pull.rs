@@ -211,29 +211,25 @@ impl FilterGraphInner {
             return Ok(None);
         };
 
-        // SAFETY: we allocate a temporary `AVFrame`, hand it to
-        // `av_buffersink_get_frame`, convert the result, then free it.
+        // SAFETY: `frame` is an owned frame handed to `buffersink_get_frame`; on a
+        // pulled frame we convert it, then `frame` drops at end of scope.
         unsafe {
-            let raw_frame = ff_sys::av_frame_alloc();
-            if raw_frame.is_null() {
+            let Ok(mut frame) = ff_sys::Frame::new() else {
                 return Err(FilterError::ProcessFailed);
-            }
+            };
 
-            let ret = ff_sys::av_buffersink_get_frame(sink_ctx.as_ptr(), raw_frame);
-
-            // EAGAIN (-11) and EOF: return `None`.
-            if ret < 0 {
-                let mut ptr = raw_frame;
-                ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            // NeedMore (EAGAIN) / Drained (EOF) / Err all return `None`, matching
+            // the prior "any negative code → None" behavior.
+            if !matches!(
+                ff_sys::buffersink_get_frame(sink_ctx.as_ptr(), &mut frame),
+                Ok(ff_sys::BufferSinkOutcome::Frame)
+            ) {
                 return Ok(None);
             }
 
-            let result = av_frame_to_video_frame(raw_frame);
-            let mut ptr = raw_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
-
-            match result {
-                Ok(frame) => Ok(Some(frame)),
+            // `frame` drops at end of scope after the conversion reads it.
+            match av_frame_to_video_frame(frame.as_ptr()) {
+                Ok(vframe) => Ok(Some(vframe)),
                 Err(()) => Err(FilterError::ProcessFailed),
             }
         }
@@ -471,28 +467,25 @@ impl FilterGraphInner {
             return Ok(None);
         };
 
-        // SAFETY: allocate, fill via `av_buffersink_get_frame`, convert, free.
+        // SAFETY: `frame` is an owned frame filled via `buffersink_get_frame`; on a
+        // pulled frame we convert it, then `frame` drops at end of scope.
         unsafe {
-            let raw_frame = ff_sys::av_frame_alloc();
-            if raw_frame.is_null() {
+            let Ok(mut frame) = ff_sys::Frame::new() else {
                 return Err(FilterError::ProcessFailed);
-            }
+            };
 
-            let ret = ff_sys::av_buffersink_get_frame(sink_ctx.as_ptr(), raw_frame);
-
-            // EAGAIN (-11) and EOF: return `None`.
-            if ret < 0 {
-                let mut ptr = raw_frame;
-                ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            // NeedMore (EAGAIN) / Drained (EOF) / Err all return `None`, matching
+            // the prior "any negative code → None" behavior.
+            if !matches!(
+                ff_sys::buffersink_get_frame(sink_ctx.as_ptr(), &mut frame),
+                Ok(ff_sys::BufferSinkOutcome::Frame)
+            ) {
                 return Ok(None);
             }
 
-            let result = av_frame_to_audio_frame(raw_frame);
-            let mut ptr = raw_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
-
-            match result {
-                Ok(frame) => Ok(Some(frame)),
+            // `frame` drops at end of scope after the conversion reads it.
+            match av_frame_to_audio_frame(frame.as_ptr()) {
+                Ok(aframe) => Ok(Some(aframe)),
                 Err(()) => Err(FilterError::ProcessFailed),
             }
         }
