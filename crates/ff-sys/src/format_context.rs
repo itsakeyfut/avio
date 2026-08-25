@@ -655,6 +655,24 @@ impl<'a> StreamRef<'a> {
         unsafe { (*self.ptr.as_ptr()).avg_frame_rate }
     }
 
+    /// Returns the stream's real base frame rate (may be `0/0` when unknown).
+    ///
+    /// This is the lowest frame rate with which all timestamps can be
+    /// represented accurately (the container's guessed constant frame rate),
+    /// distinct from [`avg_frame_rate`](Self::avg_frame_rate).
+    #[must_use]
+    pub fn r_frame_rate(&self) -> AVRational {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).r_frame_rate }
+    }
+
+    /// Returns the number of frames in the stream (0 when unknown).
+    #[must_use]
+    pub fn nb_frames(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).nb_frames }
+    }
+
     /// Returns a borrowed handle to the stream's codec parameters.
     #[must_use]
     pub fn codecpar(&self) -> CodecParameters<'a> {
