@@ -62,9 +62,10 @@ impl Frame {
     //
     // Each getter reads one plain scalar field of the frame; each setter writes
     // one. They let downstream crates configure and inspect a frame without
-    // dereferencing the raw `AVFrame` pointer. Plane data (`data` / `linesize`)
-    // is deliberately not exposed here (that would leak a raw pointer type); the
-    // swscale / swresample safe APIs handle it.
+    // dereferencing the raw `AVFrame` pointer. The plane pointer array (`data`) is
+    // deliberately not exposed here (that would leak a raw pointer type) — the
+    // swscale / swresample safe APIs consume the frames instead — but the plane
+    // strides (`linesize`, plain integers) are available via `linesize`.
 
     /// Returns the frame width in pixels (video frames).
     #[must_use]
@@ -266,6 +267,21 @@ impl Frame {
             let data = (*self.ptr.as_ptr()).data[i];
             Some(std::slice::from_raw_parts_mut(data, len))
         }
+    }
+
+    /// Returns the byte stride (`linesize[i]`) of plane `i`, or `0` when `i` is
+    /// out of range.
+    ///
+    /// For video this is the row stride; for planar audio it is the plane's byte
+    /// size. Used to copy same-format planes row by row.
+    #[must_use]
+    pub fn linesize(&self, i: usize) -> c_int {
+        if i >= AV_NUM_DATA_POINTERS as usize {
+            return 0;
+        }
+        // SAFETY: `self.ptr` is a valid owned frame; `i` is bounds-checked against
+        //         `AV_NUM_DATA_POINTERS`; `linesize` is a plain fixed-size array field.
+        unsafe { (*self.ptr.as_ptr()).linesize[i] }
     }
 
     /// Returns an immutable view of audio plane `i`, sized to the samples it
@@ -667,6 +683,22 @@ mod tests {
             frame.video_plane(0).is_none(),
             "a negative linesize must yield None"
         );
+    }
+
+    #[test]
+    fn linesize_should_read_the_stride_and_bound_check() {
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_format(crate::AVPixelFormat_AV_PIX_FMT_RGB24);
+        frame.set_width(16);
+        frame.set_height(16);
+        frame.get_buffer(0).expect("buffer alloc should succeed");
+        // RGB24 at width 16 has a positive row stride (>= 48 bytes).
+        assert!(
+            frame.linesize(0) >= 48,
+            "plane 0 should have a positive stride"
+        );
+        // Out-of-range plane index is a bounds-checked 0, not a panic / OOB read.
+        assert_eq!(frame.linesize(99), 0);
     }
 
     #[test]

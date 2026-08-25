@@ -1791,6 +1791,11 @@ impl Frame {
     }
 
     #[must_use]
+    pub fn linesize(&self, _i: usize) -> c_int {
+        0
+    }
+
+    #[must_use]
     pub fn audio_plane(&self, _i: usize) -> Option<&[u8]> {
         None
     }
@@ -1860,11 +1865,18 @@ impl Packet {
         0
     }
 
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        0
+    }
+
     pub fn set_stream_index(&mut self, _stream_index: c_int) {}
 
     pub fn set_pts(&mut self, _pts: i64) {}
 
     pub fn set_dts(&mut self, _dts: i64) {}
+
+    pub fn set_duration(&mut self, _duration: i64) {}
 
     pub fn rescale_ts(&mut self, _src_tb: AVRational, _dst_tb: AVRational) {}
 
@@ -2048,6 +2060,14 @@ impl ResampleContext {
         _in_planes: &[&[u8]],
         _in_count: c_int,
     ) -> Result<c_int, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    /// # Safety
+    /// Stub; never executed on docs.rs.
+    pub unsafe fn flush_into_frame(&mut self, _dst: &mut Frame) -> Result<c_int, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
