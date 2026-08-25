@@ -15,15 +15,45 @@ ff-filter = "0.16"
 
 ## Building a Filter Chain
 
+Filtering needs input frames, so this example decodes them with
+[`ff-decode`](https://crates.io/crates/ff-decode), runs each through the graph,
+and encodes the results with [`ff-encode`](https://crates.io/crates/ff-encode)
+(add both as dependencies to run it):
+
 ```rust
+use ff_decode::VideoDecoder;
+use ff_encode::{BitrateMode, VideoCodec, VideoEncoder};
 use ff_filter::{FilterGraph, ScaleAlgorithm};
 
-let graph = FilterGraph::builder()
-    .trim(10.0, 30.0)                           // keep seconds 10-30
-    .scale(1280, 720, ScaleAlgorithm::Fast)     // resize to 720p
-    .fade_in(0.0, 0.5)                           // 0.5-second fade in at the start
-    .fade_out(19.5, 0.5)                         // 0.5-second fade out
-    .build()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build a chain; the graph description is generated and validated internally.
+    let mut graph = FilterGraph::builder()
+        .trim(10.0, 30.0)                           // keep seconds 10-30
+        .scale(1280, 720, ScaleAlgorithm::Fast)     // resize to 720p
+        .fade_in(0.0, 0.5)                          // 0.5-second fade in at the start
+        .fade_out(19.5, 0.5)                        // 0.5-second fade out
+        .build()?;
+
+    // A decoder for the input, an encoder for the graph's 1280×720 output.
+    let mut decoder = VideoDecoder::open("input.mp4").build()?;
+    let (width, height) = graph.output_resolution().unwrap_or((1280, 720));
+    let mut encoder = VideoEncoder::create("output.mp4")
+        .video(width, height, decoder.frame_rate())
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23)) // 0-51, lower = higher quality
+        .build()?;
+
+    // Push decoded frames into input slot 0 and pull transformed frames out.
+    while let Some(input_frame) = decoder.decode_one()? {
+        graph.push_video(0, &input_frame)?;
+        while let Some(output_frame) = graph.pull_video()? {
+            encoder.push_video(&output_frame)?;
+        }
+    }
+    encoder.finish()?; // flush buffered frames and finalize the file
+
+    Ok(())
+}
 ```
 
 `build()` checks the configured steps and returns an `Err` if a value is out of range or the step set is empty. The underlying `FFmpeg` graph is constructed lazily on the first `push_video` / `push_audio` call, using the first frame's format.
@@ -70,18 +100,22 @@ chain automatically.
 
 ## Using the Filter Graph
 
-```rust
-// Push decoded frames into input slot 0 and pull transformed frames out.
-while let Some(input_frame) = decoder.decode_frame()? {
-    graph.push_video(0, &input_frame)?;
-    while let Some(output_frame) = graph.pull_video()? {
-        encoder.push_video(&output_frame)?;
-    }
-}
-```
+The single-input loop is shown in [Building a Filter Chain](#building-a-filter-chain)
+above: push each decoded frame into slot 0 with `push_video`, then drain the
+graph with `pull_video`.
 
 Multi-input filters (such as `xfade` or `overlay`) read from additional slots:
 push clip A frames to slot 0 and clip B frames to slot 1.
+
+```rust
+// `graph` built with .overlay(x, y); `frame_a` / `frame_b` are VideoFrames
+// from two decoders.
+graph.push_video(0, &frame_a)?; // main stream → slot 0
+graph.push_video(1, &frame_b)?; // overlay stream → slot 1
+while let Some(output_frame) = graph.pull_video()? {
+    // encode or display `output_frame`
+}
+```
 
 ## Error Handling
 

@@ -62,33 +62,43 @@ use std::path::Path;
 use std::time::Duration;
 use ff_preview::{DecodeBuffer, FrameResult};
 
-let mut buf = DecodeBuffer::open(Path::new("video.mp4")).build()?;
-buf.seek(Duration::from_secs(30))?;
+fn main() -> Result<(), ff_preview::PreviewError> {
+    let mut buf = DecodeBuffer::open(Path::new("video.mp4")).build()?;
+    buf.seek(Duration::from_secs(30))?;
 
-loop {
-    match buf.pop_frame() {
-        FrameResult::Frame(f) => {
-            println!("pts: {:?}", f.timestamp().as_duration());
-            break;
+    loop {
+        match buf.pop_frame() {
+            FrameResult::Frame(f) => {
+                println!("pts: {:?}", f.timestamp().as_duration());
+                break;
+            }
+            FrameResult::Seeking(_) => std::thread::sleep(Duration::from_millis(5)),
+            FrameResult::Eof => break,
         }
-        FrameResult::Seeking(_) => std::thread::sleep(Duration::from_millis(5)),
-        FrameResult::Eof => break,
     }
+
+    Ok(())
 }
 ```
 
 ### Proxy generation
 
+Requires the `proxy` feature (`--features proxy`). A file goes in, a
+lower-resolution proxy file comes out at `{output_dir}/{stem}_proxy_{res}.mp4`.
+
 ```rust
 use std::path::Path;
 use ff_preview::{ProxyGenerator, ProxyResolution};
 
-let proxy_path = ProxyGenerator::new(Path::new("original_1080p.mp4"))?
-    .resolution(ProxyResolution::Quarter)
-    .output_dir(Path::new("/tmp"))
-    .generate()?;
+fn main() -> Result<(), ff_preview::PreviewError> {
+    let proxy_path = ProxyGenerator::new(Path::new("original_1080p.mp4"))?
+        .resolution(ProxyResolution::Quarter)
+        .output_dir(&std::env::temp_dir())
+        .generate()?;
 
-println!("proxy at {}", proxy_path.display());
+    println!("proxy at {}", proxy_path.display());
+    Ok(())
+}
 ```
 
 ## Feature Flags

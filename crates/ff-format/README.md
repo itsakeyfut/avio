@@ -66,19 +66,29 @@ let meta = Hdr10Metadata {
 ## Example
 
 ```rust
-use ff_format::{Timestamp, Rational};
+use ff_format::{Rational, Timestamp};
 
-// A timestamp is a PTS value paired with a time base.
-// Here the time base is 1/1000 (milliseconds), so 2500 units = 2.5 seconds.
-let time_base = Rational::new(1, 1000);
-let ts = Timestamp::new(2500, time_base);
+fn main() {
+    // A timestamp is a PTS value paired with a time base.
+    // Here the time base is 1/1000 (milliseconds), so 2500 units = 2.5 seconds.
+    let time_base = Rational::new(1, 1000);
+    let ts = Timestamp::new(2500, time_base);
 
-// Timestamps add together (the result keeps the left operand's time base).
-let one_second = Timestamp::new(1000, time_base);
-let three_and_a_half = ts + one_second;
+    // Timestamps add together (the result keeps the left operand's time base).
+    let one_second = Timestamp::new(1000, time_base);
+    let three_and_a_half = ts + one_second;
 
-assert_eq!(ts.as_secs_f64(), 2.5);
-assert_eq!(three_and_a_half.as_secs_f64(), 3.5);
+    assert_eq!(ts.as_secs_f64(), 2.5);
+    assert_eq!(three_and_a_half.as_secs_f64(), 3.5);
+
+    // Rescale to the 90kHz time base and read back the frame index at 30 fps.
+    let rescaled = three_and_a_half.rescale(Rational::new(1, 90000));
+    println!(
+        "{three_and_a_half} = pts {} @ 90kHz, frame {}",
+        rescaled.pts(),
+        rescaled.as_frame_number(30.0)
+    );
+}
 ```
 
 ## MSRV

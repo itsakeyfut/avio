@@ -20,16 +20,27 @@ ff-format = "0.16"
 use ff_decode::VideoDecoder;
 use ff_format::PixelFormat;
 
-let mut decoder = VideoDecoder::open("video.mp4")
-    .output_format(PixelFormat::Rgba)
-    .build()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `open` returns a builder; configure it, then `build()` to get the decoder.
+    let mut decoder = VideoDecoder::open("video.mp4")
+        .output_format(PixelFormat::Rgba)
+        .build()?;
 
-while let Some(frame) = decoder.decode_one()? {
-    // frame.data()      : raw pixel bytes in RGBA order
-    // frame.width()     : frame width in pixels
-    // frame.height()    : frame height in pixels
-    // frame.timestamp() : position as Timestamp
-    process(&frame);
+    let width = decoder.width();
+    let height = decoder.height();
+    println!("{width}x{height}, duration {:?}", decoder.duration());
+
+    let mut count = 0;
+    // `decode_one` yields `Ok(None)` at end of stream.
+    while let Some(frame) = decoder.decode_one()? {
+        let ts = frame.timestamp().as_duration();   // position as a Duration
+        let pixels = frame.data();                   // raw pixel bytes in RGBA order
+        println!("frame {count} @ {ts:?}: {} bytes", pixels.len());
+        count += 1;
+    }
+
+    println!("decoded {count} frames");
+    Ok(())
 }
 ```
 
@@ -57,8 +68,9 @@ let mut decoder = AudioDecoder::open("audio.flac")
     .build()?;
 
 while let Some(frame) = decoder.decode_one()? {
-    // frame.to_f32_interleaved() : interleaved f32 samples
-    process(&frame);
+    let samples = frame.to_f32_interleaved();   // interleaved f32 samples
+    println!("{} samples", frame.sample_count());
+    // ... consume `samples` ...
 }
 ```
 
@@ -77,7 +89,7 @@ let mut decoder = VideoDecoder::open("frames/frame%04d.png")
     .build()?;
 
 while let Some(frame) = decoder.decode_one()? {
-    process(&frame);
+    println!("{}x{}", frame.width(), frame.height());
 }
 ```
 
@@ -122,7 +134,7 @@ let mut decoder = VideoDecoder::open("hdr.mkv")
     .build()?;
 ```
 
-Common 10-bit formats: `Yuv420p10le`, `Yuv422p10le`, `Yuv444p10le`, `P010Le`.
+Common 10-bit formats: `Yuv420p10le`, `Yuv422p10le`, `Yuv444p10le`, `P010le`.
 
 ## Scaled Output
 

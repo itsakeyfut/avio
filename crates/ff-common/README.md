@@ -12,13 +12,40 @@ Shared buffer-pooling abstractions for the ff-* crate family.
 
 ## Usage
 
-`ff-common` is an internal workspace crate, not intended for direct use in application code. The following example shows the `PooledBuffer::standalone` constructor, which allocates a buffer without a backing pool:
+`ff-common` is an internal workspace crate, not intended for direct use in application code. The following program shows `VecPool`, the ready-to-use pool: buffers released to it are reused by later `acquire` calls, and a `PooledBuffer` returns itself to its pool automatically when dropped.
+
+```rust
+use ff_common::{FramePool, VecPool};
+
+fn main() {
+    // A pool that retains up to 4 reusable buffers. `VecPool::new`
+    // returns an `Arc<VecPool>` so it can be shared across threads.
+    let pool = VecPool::new(4);
+    assert_eq!(pool.available(), 0); // starts empty
+
+    // Seed the pool with one buffer, then acquire it back out.
+    pool.release(vec![0u8; 2048]);
+    assert_eq!(pool.available(), 1);
+
+    {
+        // `acquire` hands back the smallest buffer that fits, resized to
+        // the requested length. When `buf` is dropped it returns to `pool`.
+        let buf = pool.acquire(1024).unwrap();
+        assert_eq!(buf.len(), 1024);
+        assert_eq!(pool.available(), 0);
+    }
+
+    // The buffer was automatically returned on drop.
+    assert_eq!(pool.available(), 1);
+    println!("pool now holds {} buffer(s)", pool.available());
+}
+```
+
+For a buffer with no backing pool, `PooledBuffer::standalone` wraps an existing `Vec<u8>`; its memory is simply freed when dropped:
 
 ```rust
 use ff_common::PooledBuffer;
 
-// Wrap a 4096-byte buffer with no pool backing.
-// Memory is freed normally when `buf` is dropped.
 let buf = PooledBuffer::standalone(vec![0u8; 4096]);
 assert_eq!(buf.len(), 4096);
 ```

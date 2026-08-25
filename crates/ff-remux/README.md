@@ -23,14 +23,18 @@ FFmpeg 7.x or 8.x development libraries must be installed on your system.
 use ff_remux::StreamCopyTrim;
 use std::time::Duration;
 
-// new(input, start, end, output)
-StreamCopyTrim::new(
-    "input.mp4",
-    Duration::from_secs(10),
-    Duration::from_secs(25),
-    "clip.mp4",
-)
-.run()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Copy the range [10s, 25s) from input.mp4 into clip.mp4 without re-encoding.
+    let start = Duration::from_secs(10);
+    let end = Duration::from_secs(25);
+
+    // new(input, start, end, output)
+    StreamCopyTrim::new("input.mp4", start, end, "clip.mp4").run()?;
+
+    let length = end - start;
+    println!("wrote clip.mp4 ({length:?})");
+    Ok(())
+}
 ```
 
 ## Audio replace / extract / add

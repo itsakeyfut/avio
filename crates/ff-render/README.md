@@ -35,16 +35,21 @@ Without `wgpu` only the CPU fallback path is available via `RenderGraph::process
 All built-in nodes implement `RenderNodeCpu`, which processes raw RGBA bytes without any GPU dependency.
 
 ```rust
-use ff_render::{RenderGraph, ColorGradeNode, BlendMode, BlendModeNode};
+use ff_render::{BlendMode, BlendModeNode, ColorGradeNode, RenderGraph};
 
-// Build a pipeline: boost brightness then multiply-blend with an overlay.
-let overlay_rgba: Vec<u8> = /* ... */ vec![0u8; 4 * 4 * 4];
-let graph = RenderGraph::new_cpu()
-    .push_cpu(ColorGradeNode::new(0.2, 1.0, 1.0, 0.0, 0.0))
-    .push_cpu(BlendModeNode::new(BlendMode::Multiply, 0.8, overlay_rgba, 4, 4));
+fn main() {
+    // Build a pipeline: boost brightness then multiply-blend with an overlay.
+    let overlay_rgba: Vec<u8> = vec![0u8; 4 * 4 * 4];
+    let graph = RenderGraph::new_cpu()
+        .push_cpu(ColorGradeNode::new(0.2, 1.0, 1.0, 0.0, 0.0))
+        .push_cpu(BlendModeNode::new(BlendMode::Multiply, 0.8, overlay_rgba, 4, 4));
 
-let input_rgba: Vec<u8> = /* decoded frame */ vec![128u8; 4 * 4 * 4];
-let output: Vec<u8> = graph.process_cpu(&input_rgba, 4, 4);
+    // A decoded 4×4 RGBA frame (mid-grey stand-in).
+    let input_rgba: Vec<u8> = vec![128u8; 4 * 4 * 4];
+    let output: Vec<u8> = graph.process_cpu(&input_rgba, 4, 4);
+
+    println!("processed {} bytes", output.len());
+}
 ```
 
 ## GPU Path (wgpu feature)
@@ -121,6 +126,10 @@ async fn compositor_example() -> Result<(), ff_render::RenderError> {
     let ctx = Arc::new(RenderContext::init().await?);
     let mut comp = Compositor::new(Arc::clone(&ctx), 1920, 1080);
 
+    // Layer frames are decoded elsewhere (e.g. via ff-decode) as `ff_format::VideoFrame`.
+    let background_frame = /* a VideoFrame */ unimplemented!();
+    let overlay_frame = /* a VideoFrame */ unimplemented!();
+
     let mut layers = vec![
         FrameLayer {
             frame:      background_frame,
@@ -170,13 +179,21 @@ async fn compositor_example() -> Result<(), ff_render::RenderError> {
 `YuvUploadNode` accepts planar YUV data directly, bypassing `sws_scale`:
 
 ```rust
-use ff_render::{RenderGraph, YuvUploadNode, YuvFormat};
+use ff_render::{RenderGraph, YuvFormat, YuvUploadNode};
 
-let mut node = YuvUploadNode::new(YuvFormat::Yuv420p, 1920, 1080);
-node.set_planes(y_plane, cb_plane, cr_plane);
+fn main() {
+    // Y at full resolution; Cb/Cr sub-sampled to half width and height (4:2:0).
+    let y_plane = vec![0u8; 1920 * 1080];
+    let cb_plane = vec![128u8; 960 * 540];
+    let cr_plane = vec![128u8; 960 * 540];
 
-let graph = RenderGraph::new_cpu().push_cpu(node);
-let rgba = graph.process_cpu(&vec![0u8; 1920 * 1080 * 4], 1920, 1080);
+    let mut node = YuvUploadNode::new(YuvFormat::Yuv420p, 1920, 1080);
+    node.set_planes(y_plane, cb_plane, cr_plane);
+
+    let graph = RenderGraph::new_cpu().push_cpu(node);
+    let rgba = graph.process_cpu(&vec![0u8; 1920 * 1080 * 4], 1920, 1080);
+    println!("produced {} rgba bytes", rgba.len());
+}
 ```
 
 Supported formats: `Yuv420p`, `Yuv422p`, `Yuv444p`.

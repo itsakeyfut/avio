@@ -23,13 +23,16 @@ deferred to `build()`, and `write()` performs the encode-and-mux.
 use ff_stream::HlsOutput;
 use std::time::Duration;
 
-HlsOutput::new("hls_output/")
-    .input("source.mp4")
-    .segment_duration(Duration::from_secs(6))
-    .keyframe_interval(48)
-    .build()?
-    .write()?;
-// Writes hls_output/playlist.m3u8 and numbered segments (segment000.ts, …).
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    HlsOutput::new("hls_output/")
+        .input("source.mp4") // any file FFmpeg can demux
+        .segment_duration(Duration::from_secs(6))
+        .keyframe_interval(48)
+        .build()?
+        .write()?;
+    // Writes hls_output/playlist.m3u8 and numbered segments (segment000.ts, …).
+    Ok(())
+}
 ```
 
 ## DASH Output
