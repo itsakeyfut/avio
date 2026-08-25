@@ -62,6 +62,26 @@ Alongside the raw bindgen output, `ff-sys` ships thin safe-wrapper modules that 
 
 These modules are public (`pub mod`) but are meant for use by the higher-level `ff-*` crates rather than for direct consumption.
 
+## Usage
+
+`ff-sys` is normally consumed transitively through the safe `ff-*` crates. A few of the thin wrappers are themselves safe, however, and can be called directly:
+
+```rust
+use ff_sys::{av_error_string, avformat, error_codes};
+
+fn main() {
+    // Convert an FFmpeg error code into a readable message.
+    let msg = av_error_string(error_codes::ENOMEM);
+    println!("ENOMEM: {msg}");
+
+    // Query the linked FFmpeg build for optional protocol support.
+    let has_srt = avformat::srt_available();
+    println!("libsrt available: {has_srt}");
+}
+```
+
+Most of the surface is raw FFI and therefore `unsafe`; the safe wrappers above and the `ff-*` crates exist so that application code never has to touch it directly.
+
 ## MSRV
 
 Rust 1.93.0 (edition 2024).

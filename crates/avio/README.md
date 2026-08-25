@@ -49,7 +49,7 @@ The **`pipeline`** feature unlocks the editing model (`Timeline` / `Clip` / `Edi
 | `encode`        | `ff-encode` + `ff-remux`, encoding and remux   | yes     |                     |
 | `hwaccel`       | hardware-accelerated encoders                  | yes     |                     |
 | `filter`        | `ff-filter`, filter graph operations           | no      |                     |
-| `pipeline`      | `ff-pipeline`, decode/filter/encode            | no      | `filter`            |
+| `pipeline`      | `ff-pipeline`, decode/filter/encode            | no      | `decode`, `encode`, `filter` |
 | `stream`        | `ff-stream`, HLS / DASH / live streaming       | no      | `pipeline`          |
 | `preview`       | `ff-preview`, real-time playback and seek      | no      |                     |
 | `preview-proxy` | proxy generation                               | no      | `preview`           |
@@ -58,7 +58,7 @@ The **`pipeline`** feature unlocks the editing model (`Timeline` / `Clip` / `Edi
 | `tokio`         | async wrappers for decode, encode, and preview | no      | `decode` + `encode` |
 | `gpl`           | GPL-licensed encoders                          | no      |                     |
 | `srt`           | SRT input/output                               | no      |                     |
-| `serde`         | `serde` derives for the model and filter types | no      |                     |
+| `serde`         | `serde` derives for the model and filter types | no      | `pipeline`          |
 
 ## Quick Start
 
@@ -67,15 +67,21 @@ The **`pipeline`** feature unlocks the editing model (`Timeline` / `Clip` / `Edi
 Place one clip on a video track, size the canvas, and render the timeline to a file.
 
 ```rust
-use avio::{Clip, Timeline, EncoderConfig};
+use avio::{Clip, EncoderConfig, Timeline};
 
-let timeline = Timeline::builder()
-    .canvas(1920, 1080)
-    .frame_rate(30.0)
-    .video_track(vec![Clip::new("input.mp4")])
-    .build()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // One clip on a video track; canvas and frame rate set explicitly.
+    let timeline = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .video_track(vec![Clip::new("input.mp4")])
+        .build()?;
 
-timeline.render("output.mp4", EncoderConfig::builder().build())?;
+    // Derive frames from the timeline (composite, encode) in one call.
+    timeline.render("output.mp4", EncoderConfig::builder().build())?;
+
+    Ok(())
+}
 ```
 
 ### Compose multiple clips and tracks

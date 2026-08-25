@@ -11,6 +11,8 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 ```toml
 [dependencies]
 ff-pipeline = "0.16"
+ff-format = "0.16"  # VideoCodec, AudioCodec
+ff-encode = "0.16"  # BitrateMode
 ```
 
 ## Building a Pipeline
@@ -20,23 +22,32 @@ use ff_pipeline::{Pipeline, EncoderConfig};
 use ff_format::{VideoCodec, AudioCodec};
 use ff_encode::BitrateMode;
 
-let config = EncoderConfig::builder()
-    .video_codec(VideoCodec::H264)
-    .audio_codec(AudioCodec::Aac)
-    .bitrate_mode(BitrateMode::Cbr(4_000_000))
-    .resolution(1280, 720)
-    .build();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Codec and quality settings for the output.
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::H264)
+        .audio_codec(AudioCodec::Aac)
+        .bitrate_mode(BitrateMode::Cbr(4_000_000))
+        .resolution(1280, 720)
+        .build();
 
-let pipeline = Pipeline::builder()
-    .input("input.mp4")
-    .output("output.mp4", config)
-    .on_progress(|p| {
-        println!("frame={} elapsed={:.1}s", p.frames_processed, p.elapsed.as_secs_f64());
-        true // return false to cancel
-    })
-    .build()?;
+    // Wire input → encode with a progress callback, then run to completion.
+    Pipeline::builder()
+        .input("input.mp4")
+        .output("output.mp4", config)
+        .on_progress(|p| {
+            println!(
+                "frame={} elapsed={:.1}s",
+                p.frames_processed,
+                p.elapsed.as_secs_f64()
+            );
+            true // return false to cancel
+        })
+        .build()?
+        .run()?;
 
-pipeline.run()?;
+    Ok(())
+}
 ```
 
 ## Configuration Validation

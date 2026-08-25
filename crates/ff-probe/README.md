@@ -18,22 +18,28 @@ ff-probe = "0.16"
 ```rust
 use ff_probe::open;
 
-fn main() -> Result<(), ff_probe::ProbeError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let info = open("video.mp4")?;
 
+    let format = info.format();
+    let duration = info.duration();
+    println!("format:   {format}");
+    println!("duration: {duration:?}");
+
     if let Some(video) = info.primary_video() {
-        println!("resolution: {}x{}", video.width(), video.height());
-        println!("frame rate: {}", video.frame_rate());
-        println!("codec:      {:?}", video.codec());
+        let (width, height, fps) = (video.width(), video.height(), video.fps());
+        let codec = video.codec();
+        println!("video:    {width}x{height} @ {fps:.2} fps");
+        println!("codec:    {codec:?}");
     }
 
     if let Some(audio) = info.primary_audio() {
-        println!("sample rate:  {} Hz", audio.sample_rate());
-        println!("channels:     {}", audio.channels());
-        println!("audio codec:  {:?}", audio.codec());
+        let (sample_rate, channels) = (audio.sample_rate(), audio.channels());
+        let codec = audio.codec();
+        println!("audio:    {sample_rate} Hz, {channels} channels");
+        println!("codec:    {codec:?}");
     }
 
-    println!("duration: {:?}", info.duration());
     Ok(())
 }
 ```

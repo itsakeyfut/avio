@@ -22,26 +22,37 @@ By default, only LGPL-compatible encoders are enabled.
 
 ## Quick Start
 
+Encoding needs frames from somewhere; the example below decodes `input.mp4`
+with [`ff-decode`](https://crates.io/crates/ff-decode) and re-encodes it as a
+video-only H.264 file. Add `ff-decode = "0.16"` to run it.
+
 ```rust
-use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode};
+use ff_decode::VideoDecoder;
+use ff_encode::{VideoEncoder, VideoCodec, BitrateMode};
 
-let mut encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 30.0)          // width, height, fps
-    .video_codec(VideoCodec::H264)
-    .bitrate_mode(BitrateMode::Cbr(4_000_000))
-    .audio(48_000, 2)                 // sample_rate, channels
-    .audio_codec(AudioCodec::Aac)
-    .audio_bitrate(192_000)
-    .build()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Open the source; the decoder reports its resolution and frame rate.
+    let mut decoder = VideoDecoder::open("input.mp4").build()?;
+    let (width, height, fps) = (decoder.width(), decoder.height(), decoder.frame_rate());
 
-for frame in &video_frames {
-    encoder.push_video(frame)?;
+    let mut encoder = VideoEncoder::create("output.mp4")
+        .video(width, height, fps)           // width, height, fps
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))  // 0-51, lower = better
+        .build()?;
+
+    while let Some(frame) = decoder.decode_one()? {
+        encoder.push_video(&frame)?;
+    }
+    encoder.finish()?; // required to finalize; Drop does not flush the muxer
+    Ok(())
 }
-for frame in &audio_frames {
-    encoder.push_audio(frame)?;
-}
-encoder.finish()?;
 ```
+
+To add an audio track, configure `.audio(sample_rate, channels)` /
+`.audio_codec(...)` and push decoded `AudioFrame`s with `encoder.push_audio(&frame)?`.
+A configured audio stream that never receives frames produces an invalid file,
+so only declare audio when you actually feed it.
 
 ## Quality Modes
 
@@ -217,9 +228,10 @@ let mut encoder = VideoEncoder::create("output.mxf")
 
 | DNxHD/HR Variant | Pixel Format | Notes |
 |---|---|---|
-| `Dnxhd115`, `Dnxhd145`, `Dnxhd220` | `yuv422p` | Fixed bitrate, 1080p only |
+| `Dnxhd115`, `Dnxhd145`, `Dnxhd220` | `yuv422p` | Fixed bitrate, 1080p/720p only |
 | `Dnxhd220x`, `DnxhrHqx` | `yuv422p10le` | 10-bit |
-| `DnxhrLb`, `DnxhrSq`, `DnxhrHq`, `DnxhrR444` | `yuv422p` | Any resolution |
+| `DnxhrLb`, `DnxhrSq`, `DnxhrHq` | `yuv422p` | Any resolution |
+| `DnxhrR444` | `yuv444p10le` | Any resolution, 4:4:4 10-bit |
 
 ## HDR Metadata
 

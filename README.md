@@ -16,32 +16,38 @@ A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of
 - **Two layers**: an opinionated editing engine on top of model-free FFmpeg primitives, so you can adopt the whole engine or depend on a single `ff-*` crate (see [Design Philosophy](#design-philosophy)).
 - **Focused**: a foundation for video delivery services and video editing applications in Rust; it does not try to cover every FFmpeg feature.
 
+Re-encode a video to H.264, reusing the source resolution and frame rate:
+
 ```rust
 use ff_probe::open;
 use ff_decode::VideoDecoder;
-use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode};
+use ff_encode::{VideoEncoder, VideoCodec, BitrateMode};
 
-// Inspect a media file
-let info = open("input.mp4")?;
-if let Some(v) = info.primary_video() {
-    println!("{}x{} @ {:.2} fps", v.width(), v.height(), v.fps());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Inspect the input and reuse its resolution and frame rate.
+    let info = open("input.mp4")?;
+    let video = info
+        .primary_video()
+        .ok_or("input.mp4 has no video stream")?;
+    let (width, height, fps) = (video.width(), video.height(), video.fps());
+    println!("{width}x{height} @ {fps:.2} fps");
+
+    // A decoder for the input, an encoder for the output.
+    let mut decoder = VideoDecoder::open("input.mp4").build()?;
+    let mut encoder = VideoEncoder::create("output.mp4")
+        .video(width, height, fps)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23)) // 0-51, lower = higher quality
+        .build()?;
+
+    // Decode every frame and re-encode it.
+    while let Some(frame) = decoder.decode_one()? {
+        encoder.push_video(&frame)?;
+    }
+    encoder.finish()?; // flush buffered frames and finalize the file
+
+    Ok(())
 }
-
-// Decode frames
-let mut decoder = VideoDecoder::open("input.mp4").build()?;
-while let Some(frame) = decoder.decode_one()? {
-    // process frame.planes() ...
-}
-
-// Re-encode
-let mut encoder = VideoEncoder::create("output.mp4")
-    .video(1920, 1080, 30.0)
-    .video_codec(VideoCodec::H264)
-    .bitrate_mode(BitrateMode::Crf(23))
-    .audio(48000, 2)
-    .audio_codec(AudioCodec::Aac)
-    .build()?;
-encoder.finish()?;
 ```
 
 ## Design Philosophy
