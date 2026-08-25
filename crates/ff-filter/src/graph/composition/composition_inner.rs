@@ -2182,30 +2182,29 @@ pub(super) unsafe fn build_audio_concat(
 
 // ── Dissolve-join graph builder ────────────────────────────────────────────────
 
-/// Probe a clip's duration in seconds using `avformat_open_input` +
-/// `avformat_find_stream_info`.  Returns `CompositionFailed` if the file
-/// cannot be opened or has an unknown duration.
+/// Probe a clip's duration in seconds via an owned `ff_sys::InputFormatContext`
+/// (open + find stream info).  Returns `CompositionFailed` if the file cannot be
+/// opened or has an unknown duration.
 pub(super) unsafe fn probe_clip_duration_sec(path: &PathBuf) -> Result<f64, FilterError> {
-    let ctx = ff_sys::avformat::open_input(path.as_ref()).map_err(|code| {
+    // The owned demux context frees itself (closing the input) on every early
+    // return below and at scope end, so no manual teardown is needed.
+    let mut ctx = ff_sys::InputFormatContext::open(path.as_ref()).map_err(|e| {
         FilterError::CompositionFailed {
             reason: format!(
-                "failed to probe clip duration code={code} path={}",
+                "failed to probe clip duration code={} path={}",
+                e.code(),
                 path.display()
             ),
         }
     })?;
 
-    if let Err(code) = ff_sys::avformat::find_stream_info(ctx) {
-        let mut p = ctx;
-        ff_sys::avformat::close_input(&raw mut p);
+    if let Err(e) = ctx.find_stream_info() {
         return Err(FilterError::CompositionFailed {
-            reason: format!("avformat_find_stream_info failed code={code}"),
+            reason: format!("avformat_find_stream_info failed code={}", e.code()),
         });
     }
 
-    let duration_val = (*ctx).duration;
-    let mut p = ctx;
-    ff_sys::avformat::close_input(&raw mut p);
+    let duration_val = ctx.duration();
 
     if duration_val <= 0 {
         return Err(FilterError::CompositionFailed {

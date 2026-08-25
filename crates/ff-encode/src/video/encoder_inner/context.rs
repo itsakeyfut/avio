@@ -592,50 +592,46 @@ impl VideoEncoderInner {
         source_stream_index: usize,
     ) {
         let path = std::path::Path::new(source_path);
-        let src_ctx = match ff_sys::avformat::open_input(path) {
+        // The owned demux context frees itself (closing the input) on every early
+        // return below and at scope end, so no manual teardown is needed.
+        let mut src_ctx = match ff_sys::InputFormatContext::open(path) {
             Ok(ctx) => ctx,
             Err(e) => {
                 log::warn!(
                     "subtitle_passthrough: failed to open source file \
                      path={source_path} error={}",
-                    ff_sys::av_error_string(e)
+                    ff_sys::av_error_string(e.code())
                 );
                 return;
             }
         };
 
-        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+        if let Err(e) = src_ctx.find_stream_info() {
             log::warn!(
                 "subtitle_passthrough: failed to find stream info \
                  path={source_path} error={}",
-                ff_sys::av_error_string(e)
+                ff_sys::av_error_string(e.code())
             );
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
-        let nb_streams = (*src_ctx).nb_streams as usize;
+        let nb_streams = src_ctx.nb_streams() as usize;
         if source_stream_index >= nb_streams {
             log::warn!(
                 "subtitle_passthrough: stream index out of range \
                  index={source_stream_index} nb_streams={nb_streams}"
             );
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
         // SAFETY: source_stream_index < nb_streams; streams is a valid array.
-        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
 
         if (*(*in_stream).codecpar).codec_type != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
             log::warn!(
                 "subtitle_passthrough: stream at index {source_stream_index} \
                  is not a subtitle stream"
             );
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -645,8 +641,6 @@ impl VideoEncoderInner {
         let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
         if out_stream.is_null() {
             log::warn!("subtitle_passthrough: avformat_new_stream failed");
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
@@ -657,16 +651,11 @@ impl VideoEncoderInner {
                 "subtitle_passthrough: avcodec_parameters_copy failed error={}",
                 ff_sys::av_error_string(ret)
             );
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return;
         }
 
         // Reset codec_tag so the muxer can pick the appropriate value for the container.
         (*(*out_stream).codecpar).codec_tag = 0;
-
-        let mut src_ctx_ptr = src_ctx;
-        ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
 
         self.subtitle_passthrough = Some((
             source_path.to_string(),
@@ -698,31 +687,31 @@ impl VideoEncoderInner {
         };
 
         let path = std::path::Path::new(&source_path);
-        let src_ctx = match ff_sys::avformat::open_input(path) {
+        // The owned demux context frees itself (closing the input) on every early
+        // return below and at scope end, so no manual teardown is needed.
+        let mut src_ctx = match ff_sys::InputFormatContext::open(path) {
             Ok(ctx) => ctx,
             Err(e) => {
                 log::warn!(
                     "subtitle_passthrough: failed to re-open source file \
                      path={source_path} error={}",
-                    ff_sys::av_error_string(e)
+                    ff_sys::av_error_string(e.code())
                 );
                 return Ok(());
             }
         };
 
-        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+        if let Err(e) = src_ctx.find_stream_info() {
             log::warn!(
                 "subtitle_passthrough: failed to find stream info on re-open \
                  path={source_path} error={}",
-                ff_sys::av_error_string(e)
+                ff_sys::av_error_string(e.code())
             );
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return Ok(());
         }
 
         // SAFETY: source_stream_index was validated in init_subtitle_passthrough.
-        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
         let in_time_base = (*in_stream).time_base;
 
         // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
@@ -732,8 +721,6 @@ impl VideoEncoderInner {
         let out_time_base = (*out_stream).time_base;
 
         let Ok(mut pkt) = ff_sys::Packet::new() else {
-            let mut src_ctx_ptr = src_ctx;
-            ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
             return Err(EncodeError::Ffmpeg {
                 code: 0,
                 message: "subtitle_passthrough: av_packet_alloc failed".to_string(),
@@ -741,13 +728,13 @@ impl VideoEncoderInner {
         };
 
         loop {
-            match ff_sys::avformat::read_frame(src_ctx, pkt.as_mut_ptr()) {
-                Err(e) if e == ff_sys::error_codes::EOF => break,
+            match src_ctx.read_frame(&mut pkt) {
+                Err(e) if e.is_eof() => break,
                 Err(e) => {
                     log::warn!(
                         "subtitle_passthrough: read_frame error, stopping \
                          path={source_path} error={}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     );
                     break;
                 }
@@ -787,10 +774,7 @@ impl VideoEncoderInner {
             pkt.unref();
         }
 
-        // `pkt` drops at end of scope, freeing it.
-        let mut src_ctx_ptr = src_ctx;
-        ff_sys::avformat::close_input(&raw mut src_ctx_ptr);
-
+        // `pkt` and the owned `src_ctx` drop at end of scope, freeing them.
         Ok(())
     }
 
