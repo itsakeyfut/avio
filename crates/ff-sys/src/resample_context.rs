@@ -197,6 +197,43 @@ impl ResampleContext {
         .map_err(AvError::new)
     }
 
+    /// Flushes the resampler's buffered samples into `dst` (a `swr_convert` with a
+    /// NULL input), returning the number of samples produced per channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if conversion fails.
+    ///
+    /// # Safety
+    ///
+    /// The NULL input needs no input buffer, but `swr_convert` still writes up to
+    /// `dst.nb_samples` samples into each output plane, a bound the slice types
+    /// cannot express. The caller must ensure `dst` is a get_buffer'd audio
+    /// [`Frame`] whose planes hold at least `dst.nb_samples` samples per channel
+    /// for the configured output format; otherwise the null output planes are an
+    /// out-of-bounds / null write.
+    pub unsafe fn flush_into_frame(&mut self, dst: &mut Frame) -> Result<c_int, AvError> {
+        let dst_ptr = dst.as_mut_ptr();
+        // SAFETY: `self.ptr` is a valid initialized context. `out_ptrs` is a local
+        //         copy of `dst`'s (get_buffer'd) output plane pointers, valid for the
+        //         duration of the call; the input is null with count 0 (the documented
+        //         flush signal), so no input buffer is read. `swr_convert` writes only
+        //         within the output planes for `out_count` samples (upheld by the
+        //         caller, see # Safety).
+        unsafe {
+            let mut out_ptrs: [*mut u8; AV_NUM_DATA_POINTERS as usize] = (*dst_ptr).data;
+            let out_count = (*dst_ptr).nb_samples;
+            crate::swresample::convert(
+                self.ptr.as_ptr(),
+                out_ptrs.as_mut_ptr(),
+                out_count,
+                std::ptr::null(),
+                0,
+            )
+        }
+        .map_err(AvError::new)
+    }
+
     /// Converts (resamples / reformats) audio samples into the output buffers.
     ///
     /// Returns the number of samples produced per channel. Passing a null `in_`

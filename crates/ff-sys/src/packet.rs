@@ -72,6 +72,13 @@ impl Packet {
         unsafe { (*self.ptr.as_ptr()).dts }
     }
 
+    /// Returns the packet's duration (in the stream's time base).
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned packet; `duration` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).duration }
+    }
+
     /// Sets the index of the stream this packet belongs to.
     pub fn set_stream_index(&mut self, stream_index: std::os::raw::c_int) {
         // SAFETY: `self.ptr` is a valid owned packet; `stream_index` is a plain field.
@@ -88,6 +95,12 @@ impl Packet {
     pub fn set_dts(&mut self, dts: i64) {
         // SAFETY: `self.ptr` is a valid owned packet; `dts` is a plain field.
         unsafe { (*self.ptr.as_ptr()).dts = dts };
+    }
+
+    /// Sets the packet's duration (in the stream's time base).
+    pub fn set_duration(&mut self, duration: i64) {
+        // SAFETY: `self.ptr` is a valid owned packet; `duration` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).duration = duration };
     }
 
     /// Rescales the packet's `pts` / `dts` / `duration` from `src_tb` to `dst_tb`.
@@ -164,9 +177,11 @@ mod tests {
         packet.set_stream_index(3);
         packet.set_pts(1_000);
         packet.set_dts(900);
+        packet.set_duration(512);
         assert_eq!(packet.stream_index(), 3);
         assert_eq!(packet.pts(), 1_000);
         assert_eq!(packet.dts(), 900);
+        assert_eq!(packet.duration(), 512);
     }
 
     #[test]
