@@ -91,20 +91,22 @@ unsafe fn write_hls_unsafe(
     ff_sys::ensure_initialized();
 
     // ── 1. Open input ─────────────────────────────────────────────────────────
-    let mut input_ctx = ff_sys::avformat::open_input(Path::new(input_path)).map_err(ffmpeg_err)?;
+    // The owned demux context frees itself (closing the input) on every early
+    // return below, so no manual teardown is needed on any path.
+    let mut input_ctx = ff_sys::InputFormatContext::open(Path::new(input_path))
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
-    ff_sys::avformat::find_stream_info(input_ctx).map_err(|e| {
-        ff_sys::avformat::close_input(&mut input_ctx);
-        ffmpeg_err(e)
-    })?;
+    input_ctx
+        .find_stream_info()
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 2. Locate video and audio streams ─────────────────────────────────────
-    let nb_streams = (*input_ctx).nb_streams as usize;
+    let nb_streams = input_ctx.nb_streams() as usize;
     let mut video_stream_idx: i32 = -1;
     let mut audio_stream_idx: i32 = -1;
 
     for i in 0..nb_streams {
-        let stream = *(*input_ctx).streams.add(i);
+        let stream = *(*input_ctx.as_ptr()).streams.add(i);
         let codec_type = (*(*stream).codecpar).codec_type;
         if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO && video_stream_idx < 0 {
             video_stream_idx = i as i32;
@@ -114,14 +116,13 @@ unsafe fn write_hls_unsafe(
     }
 
     if video_stream_idx < 0 {
-        ff_sys::avformat::close_input(&mut input_ctx);
         return Err(StreamError::InvalidConfig {
             reason: "input file contains no video stream".into(),
         });
     }
 
     // ── 3. Read video stream properties ──────────────────────────────────────
-    let video_stream = *(*input_ctx).streams.add(video_stream_idx as usize);
+    let video_stream = *(*input_ctx.as_ptr()).streams.add(video_stream_idx as usize);
     let video_codecpar = (*video_stream).codecpar;
     let enc_width = if target_width > 0 {
         target_width
@@ -133,7 +134,7 @@ unsafe fn write_hls_unsafe(
     } else {
         (*video_codecpar).height
     };
-    let video_fps = detect_fps(video_stream, input_ctx);
+    let video_fps = detect_fps(video_stream, input_ctx.as_mut_ptr());
     let fps_int = video_fps.round().max(1.0) as i32;
 
     // ── 4. Open input video decoder ────────────────────────────────────────────
@@ -146,17 +147,11 @@ unsafe fn write_hls_unsafe(
 
     vid_dec_ctx
         .parameters_to_context(video_codecpar)
-        .map_err(|e| {
-            ff_sys::avformat::close_input(&mut input_ctx);
-            ffmpeg_err(e.code())
-        })?;
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
         .open(vid_decoder, ptr::null_mut())
-        .map_err(|e| {
-            ff_sys::avformat::close_input(&mut input_ctx);
-            ffmpeg_err(e.code())
-        })?;
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 5. Open input audio decoder (optional) ────────────────────────────────
     let mut aud_dec_ctx: Option<ff_sys::CodecContext> = None;
@@ -164,7 +159,7 @@ unsafe fn write_hls_unsafe(
     let mut aud_nb_channels: i32 = 2;
 
     if audio_stream_idx >= 0 {
-        let audio_stream = *(*input_ctx).streams.add(audio_stream_idx as usize);
+        let audio_stream = *(*input_ctx.as_ptr()).streams.add(audio_stream_idx as usize);
         let audio_codecpar = (*audio_stream).codecpar;
         let aud_codec_id = (*audio_codecpar).codec_id;
 
@@ -196,18 +191,13 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 6. Allocate HLS output context ────────────────────────────────────────
-    // `out_ctx` is owned (frees on drop, closing its `pb`); `input_ctx` stays raw,
-    // so every error path below still closes the input explicitly before returning.
+    // Both `input_ctx` and `out_ctx` are owned: every early return below drops
+    // them (closing the input / the output's `pb` and freeing) with no manual
+    // teardown on any path.
     let playlist_path = format!("{output_dir}/playlist.m3u8");
 
-    let mut out_ctx = match ff_sys::OutputFormatContext::new(Some("hls"), Path::new(&playlist_path))
-    {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            ff_sys::avformat::close_input(&mut input_ctx);
-            return Err(ffmpeg_err(e.code()));
-        }
-    };
+    let mut out_ctx = ff_sys::OutputFormatContext::new(Some("hls"), Path::new(&playlist_path))
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 7. Set HLS muxer options ──────────────────────────────────────────────
     let seg_time_str = format!("{}", segment_duration_secs as u32);
@@ -262,14 +252,11 @@ unsafe fn write_hls_unsafe(
 
     // ── 8. Open H.264 video encoder ───────────────────────────────────────────
     let vid_enc_codec = crate::codec_utils::select_h264_encoder("hls").ok_or_else(|| {
-        ff_sys::avformat::close_input(&mut input_ctx);
         ffmpeg_err_msg("no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)")
     })?;
 
-    let mut vid_enc_ctx = ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| {
-        ff_sys::avformat::close_input(&mut input_ctx);
-        ffmpeg_err(e.code())
-    })?;
+    let mut vid_enc_ctx =
+        ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| ffmpeg_err(e.code()))?;
     let venc = vid_enc_ctx.as_mut_ptr();
 
     (*venc).width = enc_width;
@@ -285,19 +272,15 @@ unsafe fn write_hls_unsafe(
         2_000_000
     };
 
-    // On error the owned `vid_enc_ctx` / decoders / `out_ctx` drop; only the raw
-    // `input_ctx` needs an explicit close.
+    // On error the owned `vid_enc_ctx` / decoders / `input_ctx` / `out_ctx` all
+    // drop; no manual teardown is needed.
     vid_enc_ctx
         .open(vid_enc_codec, ptr::null_mut())
-        .map_err(|e| {
-            ff_sys::avformat::close_input(&mut input_ctx);
-            ffmpeg_err(e.code())
-        })?;
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────
     let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
     if vid_out_stream.is_null() {
-        ff_sys::avformat::close_input(&mut input_ctx);
         return Err(ffmpeg_err_msg("cannot create video output stream"));
     }
     (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
@@ -306,10 +289,7 @@ unsafe fn write_hls_unsafe(
     // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
     vid_enc_ctx
         .parameters_from_context((*vid_out_stream).codecpar)
-        .map_err(|e| {
-            ff_sys::avformat::close_input(&mut input_ctx);
-            ffmpeg_err(e.code())
-        })?;
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 10. Open AAC audio encoder and add audio stream (optional) ────────────
     let mut aud_enc_ctx: Option<ff_sys::CodecContext> = None;
@@ -371,16 +351,13 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 11. Open output file and write header ─────────────────────────────────
-    if let Err(e) = out_ctx.open_io(Path::new(&playlist_path)) {
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(e.code()));
-    }
+    out_ctx
+        .open_io(Path::new(&playlist_path))
+        .map_err(|e| ffmpeg_err(e.code()))?;
 
-    if let Err(e) = out_ctx.write_header() {
-        // The owned `out_ctx` closes `pb` and frees on drop at this return.
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(e.code()));
-    }
+    // On header-write failure the owned `out_ctx` (closing `pb`) and `input_ctx`
+    // drop at this early return.
+    out_ctx.write_header().map_err(|e| ffmpeg_err(e.code()))?;
 
     // Close pb now so the HLS muxer can rename its .tmp playlist files without
     // hitting a locked-file error on Windows.  The HLS muxer manages its own avio
@@ -413,8 +390,7 @@ unsafe fn write_hls_unsafe(
     )
     else {
         let _ = out_ctx.write_trailer();
-        // `out_ctx` frees on drop at this return (pb already closed via close_io).
-        ff_sys::avformat::close_input(&mut input_ctx);
+        // `out_ctx` and `input_ctx` free on drop at this return.
         return Err(ffmpeg_err_msg("cannot allocate frame or packet"));
     };
 
@@ -443,8 +419,8 @@ unsafe fn write_hls_unsafe(
     };
 
     loop {
-        match ff_sys::avformat::read_frame(input_ctx, pkt.as_mut_ptr()) {
-            Err(e) if e == ff_sys::error_codes::EOF => break,
+        match input_ctx.read_frame(&mut pkt) {
+            Err(e) if e.is_eof() => break,
             Err(_e) => {
                 // Non-EOF read errors: continue to try next packet
                 pkt.unref();
@@ -676,11 +652,8 @@ unsafe fn write_hls_unsafe(
     let _ = out_ctx.write_trailer();
     // pb was already closed via close_io after the header; skip double-close.
 
-    // ── Cleanup ───────────────────────────────────────────────────────────────
     // Owned frames/packet, encoder / decoder / resample / scale contexts, and the
-    // owned `out_ctx` drop on scope exit; only the raw `input_ctx` needs an
-    // explicit close.
-    ff_sys::avformat::close_input(&mut input_ctx);
+    // owned `input_ctx` / `out_ctx` all drop on scope exit; no manual teardown.
 
     log::info!(
         "hls write complete video_frames={video_frame_count} \
