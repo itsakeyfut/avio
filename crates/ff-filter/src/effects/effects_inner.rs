@@ -273,8 +273,9 @@ unsafe fn drain_encoded_packets(
 /// rules. Every allocated resource is freed on all exit paths:
 /// - `avfilter_graph_alloc()` / `avfilter_graph_free()` for the filter graph.
 /// - `avcodec_alloc_context3()` / `avcodec_free_context()` for the encoder.
-/// - `avformat_alloc_output_context2()` / `avformat_free_context()` for the muxer.
-/// - `avio_open()` / `avio_closep()` (via wrappers) for the output file I/O.
+/// - Owned `ff_sys::OutputFormatContext` for the muxer and its output file I/O
+///   (it allocates the context, opens/closes the `pb`, and frees the context
+///   once on drop).
 /// - Owned `ff_sys::Frame` / `ff_sys::Packet` manage the frame and packet
 ///   lifetimes (each freed once on drop).
 pub(super) unsafe fn transform_vidstab_unsafe(
@@ -320,12 +321,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         CString::new(format!("filename={input_str}")).map_err(|_| FilterError::Ffmpeg {
             code: 0,
             message: "input path contains null byte".to_string(),
-        })?;
-
-    let c_output =
-        CString::new(output.to_string_lossy().as_ref()).map_err(|_| FilterError::Ffmpeg {
-            code: 0,
-            message: "output path contains null byte".to_string(),
         })?;
 
     let crop_str = if opts.crop_black { "black" } else { "keep" };
@@ -569,27 +564,25 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── Allocate the output format context ────────────────────────────────────
-    let mut out_ctx: *mut ff_sys::AVFormatContext = std::ptr::null_mut();
-    let ret = ff_sys::avformat_alloc_output_context2(
-        &raw mut out_ctx,
-        std::ptr::null_mut(),
-        std::ptr::null(),
-        c_output.as_ptr(),
-    );
-    if ret < 0 || out_ctx.is_null() {
-        let mut g = graph;
-        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(FilterError::Ffmpeg {
-            code: ret,
-            message: format!("avformat_alloc_output_context2 failed code={ret}"),
-        });
-    }
+    // ── Allocate the output format context (owned) ────────────────────────────
+    // The owned context frees itself and closes its IO on drop; each early return
+    // below still frees the raw filter graph explicitly. Because the graph is raw,
+    // out_ctx operations use explicit `match`/`if let` (not `?`).
+    let mut out_ctx = match ff_sys::OutputFormatContext::new(None, output) {
+        Ok(c) => c,
+        Err(e) => {
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::Ffmpeg {
+                code: e.code(),
+                message: format!("avformat_alloc_output_context2 failed code={}", e.code()),
+            });
+        }
+    };
 
     // ── Add video stream and copy codec parameters ────────────────────────────
-    let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
+    let out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if out_stream.is_null() {
-        ff_sys::avformat_free_context(out_ctx);
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -599,7 +592,6 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     }
 
     if let Err(e) = enc_ctx.parameters_from_context((*out_stream).codecpar) {
-        ff_sys::avformat_free_context(out_ctx);
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -609,30 +601,23 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     }
 
     // ── Open the output file ──────────────────────────────────────────────────
-    let pb = match ff_sys::avformat::open_output(output, ff_sys::avformat::avio_flags::WRITE) {
-        Ok(pb) => pb,
-        Err(code) => {
-            ff_sys::avformat_free_context(out_ctx);
-            let mut g = graph;
-            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
-            return Err(FilterError::Ffmpeg {
-                code,
-                message: format!("avio_open failed code={code}"),
-            });
-        }
-    };
-    (*out_ctx).pb = pb;
-
-    // ── Write container header ────────────────────────────────────────────────
-    let ret = ff_sys::avformat_write_header(out_ctx, std::ptr::null_mut());
-    if ret < 0 {
-        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-        ff_sys::avformat_free_context(out_ctx);
+    if let Err(code) = out_ctx.open_io(output) {
+        let code = code.code();
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
-            code: ret,
-            message: format!("avformat_write_header failed code={ret}"),
+            code,
+            message: format!("avio_open failed code={code}"),
+        });
+    }
+
+    // ── Write container header ────────────────────────────────────────────────
+    if let Err(e) = out_ctx.write_header() {
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: e.code(),
+            message: format!("avformat_write_header failed code={}", e.code()),
         });
     }
 
@@ -641,9 +626,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
 
     // ── Allocate encode packet ────────────────────────────────────────────────
     let Ok(mut pkt) = ff_sys::Packet::new() else {
-        ff_sys::av_write_trailer(out_ctx);
-        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-        ff_sys::avformat_free_context(out_ctx);
+        let _ = out_ctx.write_trailer();
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -654,7 +637,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
 
     // ── Encode first frame ────────────────────────────────────────────────────
     let _ = enc_ctx.send_frame(first_frame.as_ptr());
-    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
     drop(first_frame);
 
     // ── Encode remaining frames from the filter graph ─────────────────────────
@@ -669,19 +652,19 @@ pub(super) unsafe fn transform_vidstab_unsafe(
             break;
         }
         let _ = enc_ctx.send_frame(frame.as_ptr());
-        drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
+        drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
         // `frame` drops at end of iteration.
     }
 
     // ── Flush the encoder ─────────────────────────────────────────────────────
     let _ = enc_ctx.send_frame(std::ptr::null());
-    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx, stream_tb);
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
 
     // ── Finalize output ───────────────────────────────────────────────────────
-    // `pkt` drops at end of scope, freeing it.
-    ff_sys::av_write_trailer(out_ctx);
-    ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-    ff_sys::avformat_free_context(out_ctx);
+    // `pkt` drops at end of scope, freeing it. The owned `out_ctx` closes its IO
+    // and frees itself when it drops at scope end; only the raw filter graph
+    // needs an explicit free here.
+    let _ = out_ctx.write_trailer();
 
     let mut g = graph;
     ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));

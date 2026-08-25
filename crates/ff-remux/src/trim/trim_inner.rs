@@ -53,37 +53,19 @@ unsafe fn run_trim_unsafe(
         return Err(RemuxError::from_ffmpeg_error(e));
     }
 
-    // ── Step 3: allocate output context ──────────────────────────────────────
-    let Some(output_str) = output.to_str() else {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::Ffmpeg {
-            code: 0,
-            message: "output path is not valid UTF-8".to_string(),
-        });
+    // ── Step 3: allocate output context (owned) ──────────────────────────────
+    // The owned context frees itself and closes its IO on drop, so the error
+    // paths below only need to close the raw input context. NB: because `in_ctx`
+    // is still a raw pointer, out_ctx operations use explicit `match`/`if let`
+    // (not `?`) so the manual `close_input` is never skipped.
+    let mut out_ctx = match ff_sys::OutputFormatContext::new(None, output) {
+        Ok(c) => c,
+        Err(e) => {
+            let mut p = in_ctx;
+            ff_sys::avformat::close_input(&raw mut p);
+            return Err(RemuxError::from_ffmpeg_error(e.code()));
+        }
     };
-    let Ok(c_output) = std::ffi::CString::new(output_str) else {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::Ffmpeg {
-            code: 0,
-            message: "output path contains null bytes".to_string(),
-        });
-    };
-
-    let mut out_ctx: *mut ff_sys::AVFormatContext = std::ptr::null_mut();
-    // SAFETY: c_output is a valid null-terminated C string.
-    let ret = ff_sys::avformat_alloc_output_context2(
-        &raw mut out_ctx,
-        std::ptr::null_mut(),
-        std::ptr::null(),
-        c_output.as_ptr(),
-    );
-    if ret < 0 || out_ctx.is_null() {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(ret));
-    }
 
     // ── Step 4: copy stream parameters ───────────────────────────────────────
     let nb_streams = (*in_ctx).nb_streams as usize;
@@ -91,12 +73,11 @@ unsafe fn run_trim_unsafe(
         // SAFETY: i < nb_streams, streams is a valid array of nb_streams pointers.
         let in_stream = *(*in_ctx).streams.add(i);
 
-        // SAFETY: out_ctx is non-null (avformat_alloc_output_context2 succeeded).
-        let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
+        // SAFETY: out_ctx is a valid owned mux context.
+        let out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
         if out_stream.is_null() {
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&raw mut p);
-            ff_sys::avformat_free_context(out_ctx);
             return Err(RemuxError::Ffmpeg {
                 code: 0,
                 message: "avformat_new_stream failed".to_string(),
@@ -108,7 +89,6 @@ unsafe fn run_trim_unsafe(
         if ret < 0 {
             let mut p = in_ctx;
             ff_sys::avformat::close_input(&raw mut p);
-            ff_sys::avformat_free_context(out_ctx);
             return Err(RemuxError::from_ffmpeg_error(ret));
         }
         // Clear the codec_tag so the muxer can assign the correct value.
@@ -121,34 +101,23 @@ unsafe fn run_trim_unsafe(
     if let Err(e) = ff_sys::avformat::seek_file(in_ctx, -1, i64::MIN, start_ts, start_ts, 0) {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&raw mut p);
-        ff_sys::avformat_free_context(out_ctx);
         return Err(RemuxError::from_ffmpeg_error(e));
     }
 
     // ── Step 6: open output file ──────────────────────────────────────────────
     // SAFETY: output is a valid path; avio_flags::WRITE opens for writing.
-    let pb = match ff_sys::avformat::open_output(output, ff_sys::avformat::avio_flags::WRITE) {
-        Ok(pb) => pb,
-        Err(e) => {
-            let mut p = in_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
-            ff_sys::avformat_free_context(out_ctx);
-            return Err(RemuxError::from_ffmpeg_error(e));
-        }
-    };
-    // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
-    (*out_ctx).pb = pb;
+    if let Err(e) = out_ctx.open_io(output) {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&raw mut p);
+        return Err(RemuxError::from_ffmpeg_error(e.code()));
+    }
 
     // ── Step 7: write header ──────────────────────────────────────────────────
     // SAFETY: out_ctx is fully configured with streams and pb set.
-    let ret = ff_sys::avformat_write_header(out_ctx, std::ptr::null_mut());
-    if ret < 0 {
-        // SAFETY: (*out_ctx).pb was set above and is non-null.
-        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-        ff_sys::avformat_free_context(out_ctx);
+    if let Err(e) = out_ctx.write_header() {
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(ret));
+        return Err(RemuxError::from_ffmpeg_error(e.code()));
     }
 
     log::debug!("stream copy trim header written nb_streams={nb_streams}");
@@ -157,9 +126,7 @@ unsafe fn run_trim_unsafe(
     // SAFETY: av_packet_alloc never returns null on OOM (aborts instead).
     let pkt = ff_sys::av_packet_alloc();
     if pkt.is_null() {
-        ff_sys::av_write_trailer(out_ctx);
-        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-        ff_sys::avformat_free_context(out_ctx);
+        let _ = out_ctx.write_trailer();
         let mut p = in_ctx;
         ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
@@ -208,14 +175,14 @@ unsafe fn run_trim_unsafe(
 
         // Rescale timestamps to the output stream's time base.
         // SAFETY: stream_idx < nb_streams; out_ctx is valid.
-        let out_stream = *(*out_ctx).streams.add(stream_idx);
+        let out_stream = *(*out_ctx.as_mut_ptr()).streams.add(stream_idx);
         let out_tb = (*out_stream).time_base;
         // SAFETY: pkt, in_tb, out_tb are valid plain-data values.
         ff_sys::av_packet_rescale_ts(pkt, in_tb, out_tb);
         (*pkt).stream_index = stream_idx as i32;
 
         // SAFETY: out_ctx and pkt are valid.
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
         ff_sys::av_packet_unref(pkt);
         if ret < 0 {
             loop_err = Some(RemuxError::from_ffmpeg_error(ret));
@@ -229,13 +196,11 @@ unsafe fn run_trim_unsafe(
 
     // ── Step 9: write trailer ─────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.
-    ff_sys::av_write_trailer(out_ctx);
+    let _ = out_ctx.write_trailer();
 
     // ── Step 10: cleanup ──────────────────────────────────────────────────────
-    // SAFETY: (*out_ctx).pb is non-null (opened above; still set if write_header passed).
-    ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
-    // SAFETY: out_ctx is non-null and was allocated by avformat_alloc_output_context2.
-    ff_sys::avformat_free_context(out_ctx);
+    // The owned `out_ctx` closes its IO and frees itself when it drops at the end
+    // of this scope; only the raw input context needs an explicit close here.
     // SAFETY: in_ctx is non-null (open_input succeeded).
     let mut in_ctx_ptr = in_ctx;
     ff_sys::avformat::close_input(&raw mut in_ctx_ptr);
