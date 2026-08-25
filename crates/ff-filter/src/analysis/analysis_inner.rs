@@ -664,17 +664,18 @@ pub(super) unsafe fn compute_psnr_unsafe(
 /// - All `AVFormatContext` resources are released before returning.
 /// - Only the first video stream's metadata is accessed (no data read).
 unsafe fn probe_video_frame_count(path: &Path) -> Option<i64> {
-    let mut fmt_ctx = ff_sys::avformat::open_input(path).ok()?;
+    // The owned demux context frees itself (closing the input) on drop at fn end.
+    let mut fmt_ctx = ff_sys::InputFormatContext::open(path).ok()?;
 
     // Ignore find_stream_info errors; partial info is still usable.
-    let _ = ff_sys::avformat::find_stream_info(fmt_ctx);
+    let _ = fmt_ctx.find_stream_info();
 
-    let nb_streams = (*fmt_ctx).nb_streams;
+    let nb_streams = fmt_ctx.nb_streams();
     let mut result: Option<i64> = None;
 
     for i in 0..nb_streams {
         // SAFETY: streams is a valid array of `nb_streams` pointers.
-        let stream = *(*fmt_ctx).streams.add(i as usize);
+        let stream = *(*fmt_ctx.as_ptr()).streams.add(i as usize);
         if (*(*stream).codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
             continue;
         }
@@ -697,6 +698,5 @@ unsafe fn probe_video_frame_count(path: &Path) -> Option<i64> {
         break; // Only inspect the first video stream.
     }
 
-    ff_sys::avformat::close_input(std::ptr::addr_of_mut!(fmt_ctx));
     result
 }
