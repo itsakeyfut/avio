@@ -24,8 +24,11 @@ use std::time::Duration;
 
 use crate::{
     AVChannelLayout, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVFormatContext, AVMediaType, AVRational, AVStream, AvError, Packet,
+    AVFormatContext, AVMediaType, AVRational, AVStream, AvError, Codec, CodecContext, Packet,
+    av_interleaved_write_frame as ffi_av_interleaved_write_frame, av_opt_set as ffi_av_opt_set,
+    avcodec_parameters_copy as ffi_avcodec_parameters_copy,
     avformat_close_input as ffi_avformat_close_input,
+    avformat_new_stream as ffi_avformat_new_stream,
 };
 
 /// An owned input (demux) `AVFormatContext`.
@@ -438,6 +441,158 @@ impl OutputFormatContext {
         //         null-checks `pb` and nulls it after closing.
         unsafe { crate::avformat::close_output(&mut (*self.ptr.as_ptr()).pb) };
     }
+
+    /// Returns the raw `*mut AVStream` at `idx`, or null when out of range.
+    fn stream_ptr(&self, idx: usize) -> *mut AVStream {
+        // SAFETY: `self.ptr` is a valid owned mux context. We bound-check `idx`
+        //         against `nb_streams` before indexing the `streams` array.
+        unsafe {
+            let ctx = self.ptr.as_ptr();
+            if idx >= (*ctx).nb_streams as usize {
+                std::ptr::null_mut()
+            } else {
+                *(*ctx).streams.add(idx)
+            }
+        }
+    }
+
+    /// Adds a new output stream (optionally bound to `codec`) and returns its index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the stream cannot be allocated.
+    pub fn new_stream(&mut self, codec: Option<&Codec>) -> Result<usize, AvError> {
+        let codec_ptr = codec.map_or(std::ptr::null(), Codec::as_ptr);
+        // SAFETY: `self.ptr` is a valid owned mux context; `codec_ptr` is null or a
+        //         valid `*const AVCodec` borrowed from `codec` for the call.
+        let stream = unsafe { ffi_avformat_new_stream(self.ptr.as_ptr(), codec_ptr) };
+        if stream.is_null() {
+            return Err(AvError::new(crate::error_codes::ENOMEM));
+        }
+        // The stream is appended, so its index is the new `nb_streams - 1`.
+        Ok(self.nb_streams() as usize - 1)
+    }
+
+    /// Returns the time base of output stream `idx`, or `0/0` when out of range.
+    #[must_use]
+    pub fn stream_time_base(&self, idx: usize) -> AVRational {
+        let stream = self.stream_ptr(idx);
+        if stream.is_null() {
+            AVRational { num: 0, den: 0 }
+        } else {
+            // SAFETY: `stream` is a valid non-null stream from this context.
+            unsafe { (*stream).time_base }
+        }
+    }
+
+    /// Sets the time base of output stream `idx` (no-op when out of range).
+    pub fn set_stream_time_base(&mut self, idx: usize, time_base: AVRational) {
+        let stream = self.stream_ptr(idx);
+        if !stream.is_null() {
+            // SAFETY: `stream` is a valid non-null stream from this context.
+            unsafe { (*stream).time_base = time_base };
+        }
+    }
+
+    /// Copies `ctx`'s codec parameters into output stream `idx` (encoder → stream).
+    ///
+    /// The encoder-side counterpart of [`copy_stream_params`](Self::copy_stream_params)
+    /// (which copies from another stream's parameters for stream-copy remuxing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `idx` is out of range or the copy fails.
+    pub fn apply_stream_params_from_context(
+        &mut self,
+        idx: usize,
+        ctx: &CodecContext,
+    ) -> Result<(), AvError> {
+        let stream = self.stream_ptr(idx);
+        if stream.is_null() {
+            return Err(AvError::new(crate::error_codes::EINVAL));
+        }
+        // SAFETY: `stream` is valid; its `codecpar` is allocated with it and non-null.
+        //         `parameters_from_context` copies into that codecpar.
+        unsafe {
+            let par = (*stream).codecpar;
+            ctx.parameters_from_context(par)
+        }
+    }
+
+    /// Copies `src` codec parameters into output stream `idx` (stream copy) and
+    /// clears its `codec_tag` so the muxer assigns the container's value.
+    ///
+    /// The stream-copy counterpart of
+    /// [`apply_stream_params_from_context`](Self::apply_stream_params_from_context)
+    /// (which copies from an encoder context).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `idx` is out of range or the copy fails.
+    pub fn copy_stream_params(
+        &mut self,
+        idx: usize,
+        src: CodecParameters<'_>,
+    ) -> Result<(), AvError> {
+        let stream = self.stream_ptr(idx);
+        if stream.is_null() {
+            return Err(AvError::new(crate::error_codes::EINVAL));
+        }
+        // SAFETY: `stream` is valid; `dst`/`src.as_raw()` are non-null codecpar
+        //         pointers (allocated with their streams); the copy is a deep copy.
+        unsafe {
+            let dst = (*stream).codecpar;
+            let ret = ffi_avcodec_parameters_copy(dst, src.as_raw());
+            if ret < 0 {
+                return Err(AvError::new(ret));
+            }
+            (*dst).codec_tag = 0;
+        }
+        Ok(())
+    }
+
+    /// Sets a private muxer option (`av_opt_set` on the muxer's `priv_data`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the option is unrecognised or cannot be set.
+    pub fn set_opt(&mut self, key: &CStr, value: &CStr) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned mux context. `priv_data` is the muxer's
+        //         option object, which is null for a muxer without private options;
+        //         `av_opt_set` (via `av_opt_find2`) null-checks `obj` first and then
+        //         returns `AVERROR_OPTION_NOT_FOUND` without dereferencing it, so a
+        //         null `priv_data` is a returned error, not a deref. `key`/`value`
+        //         outlive the call.
+        let ret = unsafe {
+            ffi_av_opt_set(
+                (*self.ptr.as_ptr()).priv_data,
+                key.as_ptr(),
+                value.as_ptr(),
+                0,
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Writes `pkt` to the output, interleaving it into the muxer's queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the write fails.
+    pub fn write_interleaved(&mut self, pkt: &mut Packet) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned mux context whose header was written;
+        //         `pkt` is a valid owned packet borrowed mutably for the call.
+        let ret = unsafe { ffi_av_interleaved_write_frame(self.ptr.as_ptr(), pkt.as_mut_ptr()) };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Drop for OutputFormatContext {
@@ -630,5 +785,36 @@ mod tests {
         // mp4 is a normal file muxer, not one that manages its own IO.
         assert!(!ctx.is_nofile());
         // `ctx` drops here: frees the context (its `pb` was never opened).
+    }
+
+    #[test]
+    fn output_stream_api_should_round_trip() {
+        // Exercises new_stream / stream_time_base / set_stream_time_base / set_opt.
+        // Needs a real muxer; skip gracefully if mp4 is absent (minimal FFmpeg build).
+        let Ok(mut ctx) = OutputFormatContext::new(None, Path::new("out.mp4")) else {
+            return;
+        };
+        let idx = ctx
+            .new_stream(None)
+            .expect("new_stream should allocate a stream");
+        assert_eq!(idx, 0);
+        assert_eq!(ctx.nb_streams(), 1);
+
+        ctx.set_stream_time_base(idx, AVRational { num: 1, den: 30 });
+        let tb = ctx.stream_time_base(idx);
+        assert_eq!((tb.num, tb.den), (1, 30));
+
+        // An out-of-range index is a safe no-op / zero, not a panic.
+        let oob = ctx.stream_time_base(99);
+        assert_eq!((oob.num, oob.den), (0, 0));
+
+        // An unrecognised muxer option surfaces as an error (no panic).
+        let key = std::ffi::CString::new("definitely_not_a_real_option").unwrap();
+        let value = std::ffi::CString::new("1").unwrap();
+        assert!(ctx.set_opt(&key, &value).is_err());
+
+        // The codec-parameter copy's out-of-range index guard returns Err, not a panic.
+        let cc = CodecContext::new(None).expect("codec context alloc should succeed");
+        assert!(ctx.apply_stream_params_from_context(99, &cc).is_err());
     }
 }

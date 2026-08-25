@@ -9,9 +9,9 @@
 use std::ptr::NonNull;
 
 use crate::{
-    AVPacket, AvError, av_packet_alloc as ffi_av_packet_alloc,
+    AVPacket, AVRational, AvError, av_packet_alloc as ffi_av_packet_alloc,
     av_packet_free as ffi_av_packet_free, av_packet_ref as ffi_av_packet_ref,
-    av_packet_unref as ffi_av_packet_unref,
+    av_packet_rescale_ts as ffi_av_packet_rescale_ts, av_packet_unref as ffi_av_packet_unref,
 };
 
 /// An owned `AVPacket`.
@@ -63,6 +63,38 @@ impl Packet {
     pub fn pts(&self) -> i64 {
         // SAFETY: `self.ptr` is a valid owned packet; `pts` is a plain field.
         unsafe { (*self.ptr.as_ptr()).pts }
+    }
+
+    /// Returns the decompression timestamp (in the stream's time base).
+    #[must_use]
+    pub fn dts(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned packet; `dts` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).dts }
+    }
+
+    /// Sets the index of the stream this packet belongs to.
+    pub fn set_stream_index(&mut self, stream_index: std::os::raw::c_int) {
+        // SAFETY: `self.ptr` is a valid owned packet; `stream_index` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).stream_index = stream_index };
+    }
+
+    /// Sets the presentation timestamp (in the stream's time base).
+    pub fn set_pts(&mut self, pts: i64) {
+        // SAFETY: `self.ptr` is a valid owned packet; `pts` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pts = pts };
+    }
+
+    /// Sets the decompression timestamp (in the stream's time base).
+    pub fn set_dts(&mut self, dts: i64) {
+        // SAFETY: `self.ptr` is a valid owned packet; `dts` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).dts = dts };
+    }
+
+    /// Rescales the packet's `pts` / `dts` / `duration` from `src_tb` to `dst_tb`.
+    pub fn rescale_ts(&mut self, src_tb: AVRational, dst_tb: AVRational) {
+        // SAFETY: `self.ptr` is a valid owned packet; the time bases are plain
+        //         POD values.
+        unsafe { ffi_av_packet_rescale_ts(self.ptr.as_ptr(), src_tb, dst_tb) };
     }
 
     /// Unreferences the packet's buffer, returning it to a blank state.
@@ -124,5 +156,30 @@ mod tests {
         let clone = packet.try_clone().expect("ref-count clone should succeed");
         assert!(!clone.as_ptr().is_null());
         // Both `packet` and `clone` drop independently (ref-counted), no double free.
+    }
+
+    #[test]
+    fn scalar_setters_should_round_trip() {
+        let mut packet = Packet::new().expect("packet allocation should succeed");
+        packet.set_stream_index(3);
+        packet.set_pts(1_000);
+        packet.set_dts(900);
+        assert_eq!(packet.stream_index(), 3);
+        assert_eq!(packet.pts(), 1_000);
+        assert_eq!(packet.dts(), 900);
+    }
+
+    #[test]
+    fn rescale_ts_should_scale_pts_and_dts() {
+        let mut packet = Packet::new().expect("packet allocation should succeed");
+        packet.set_pts(100);
+        packet.set_dts(100);
+        // 1/1000 -> 1/2000 doubles the timestamps.
+        packet.rescale_ts(
+            AVRational { num: 1, den: 1000 },
+            AVRational { num: 1, den: 2000 },
+        );
+        assert_eq!(packet.pts(), 200);
+        assert_eq!(packet.dts(), 200);
     }
 }

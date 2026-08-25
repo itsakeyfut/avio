@@ -605,6 +605,43 @@ impl CodecContext {
         classify_receive(result)
     }
 
+    /// Sends a frame to the encoder; `None` flushes it, entering draining.
+    ///
+    /// The safe counterpart of [`send_frame`](Self::send_frame): after sending
+    /// `None`, loop [`receive_packet_into`](Self::receive_packet_into) until it
+    /// returns [`ReceiveOutcome::Drained`] to collect the buffered packets.
+    ///
+    /// Transitional name: this is renamed to `send_frame` once the raw `unsafe`
+    /// [`send_frame`](Self::send_frame) is removed (#1506).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] on a real encode error.
+    pub fn send_frame_ref(&mut self, frame: Option<&Frame>) -> Result<(), AvError> {
+        let ptr = frame.map_or(std::ptr::null(), Frame::as_ptr);
+        // SAFETY: `ptr` is null (flush) or a valid `*const AVFrame` borrowed from
+        //         `frame` for the duration of the call; `self.ptr` is a valid context.
+        unsafe { self.send_frame(ptr) }
+    }
+
+    /// Receives an encoded packet into `pkt`, returning a typed [`ReceiveOutcome`].
+    ///
+    /// The safe counterpart of [`receive_packet`](Self::receive_packet), pairing
+    /// with [`receive_frame`](Self::receive_frame). `EAGAIN` / `EOF` are returned
+    /// as [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`], not errors.
+    ///
+    /// Transitional name: this is renamed to `receive_packet` once the raw `unsafe`
+    /// [`receive_packet`](Self::receive_packet) is removed (#1506).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] on a real encode error.
+    pub fn receive_packet_into(&mut self, pkt: &mut Packet) -> Result<ReceiveOutcome, AvError> {
+        // SAFETY: `pkt` is a valid owned packet borrowed mutably for the call;
+        //         `self.ptr` is a valid context.
+        unsafe { self.receive_packet(pkt.as_mut_ptr()) }
+    }
+
     /// Copies this context's parameters into `par` (encoder → stream codecpar).
     ///
     /// # Safety
@@ -750,6 +787,20 @@ mod tests {
         // codec being opened; reading it must not panic.
         let ctx = CodecContext::new(None).expect("alloc should succeed");
         let _ = ctx.sample_fmt();
+    }
+
+    #[test]
+    fn send_frame_ref_and_receive_packet_into_should_err_when_unopened() {
+        // On an unopened context avcodec_send_frame / avcodec_receive_packet return
+        // EINVAL via the avcodec_is_open guard (no deref); the safe wrappers must
+        // surface that as Err without panicking — for both the flush (None) and
+        // frame (Some) send paths and the receive path.
+        let mut ctx = CodecContext::new(None).expect("alloc should succeed");
+        assert!(ctx.send_frame_ref(None).is_err());
+        let frame = Frame::new().expect("frame alloc should succeed");
+        assert!(ctx.send_frame_ref(Some(&frame)).is_err());
+        let mut pkt = Packet::new().expect("packet alloc should succeed");
+        assert!(ctx.receive_packet_into(&mut pkt).is_err());
     }
 
     #[test]
