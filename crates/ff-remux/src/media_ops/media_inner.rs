@@ -35,33 +35,29 @@ unsafe fn run_audio_replacement_unsafe(
     audio_input: &Path,
     output: &Path,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open video input ──────────────────────────────────────────────
-    // SAFETY: video_input is a caller-supplied path; open_input returns Err on failure.
-    let vid_ctx =
-        ff_sys::avformat::open_input(video_input).map_err(RemuxError::from_ffmpeg_error)?;
+    // ── Step 1: open video input (owned) ──────────────────────────────────────
+    // All contexts are owned; every early return drops them (closing IO /
+    // freeing) with no manual teardown on any path.
+    let mut vid_ctx = ff_sys::InputFormatContext::open(video_input)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 2: find stream info for video input ──────────────────────────────
-    // SAFETY: vid_ctx is non-null (open_input succeeded).
-    if let Err(e) = ff_sys::avformat::find_stream_info(vid_ctx) {
-        let mut p = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(e));
-    }
+    vid_ctx
+        .find_stream_info()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 3: locate the first video stream ─────────────────────────────────
-    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
-    let nb_vid_streams = (*vid_ctx).nb_streams as usize;
+    // SAFETY: streams is a valid array of nb_streams pointers.
+    let nb_vid_streams = vid_ctx.nb_streams() as usize;
     let mut video_stream_idx: Option<usize> = None;
     for i in 0..nb_vid_streams {
-        let stream = *(*vid_ctx).streams.add(i);
+        let stream = *(*vid_ctx.as_ptr()).streams.add(i);
         if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
             video_stream_idx = Some(i);
             break;
         }
     }
     let Some(video_stream_idx) = video_stream_idx else {
-        let mut p = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no video stream found in video input path={}",
@@ -70,43 +66,27 @@ unsafe fn run_audio_replacement_unsafe(
         });
     };
 
-    // ── Step 4: open audio input ──────────────────────────────────────────────
-    // SAFETY: audio_input is a caller-supplied path; open_input returns Err on failure.
-    let aud_ctx = match ff_sys::avformat::open_input(audio_input) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            let mut p = vid_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
-            return Err(RemuxError::from_ffmpeg_error(e));
-        }
-    };
+    // ── Step 4: open audio input (owned) ──────────────────────────────────────
+    let mut aud_ctx = ff_sys::InputFormatContext::open(audio_input)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 5: find stream info for audio input ──────────────────────────────
-    // SAFETY: aud_ctx is non-null (open_input succeeded).
-    if let Err(e) = ff_sys::avformat::find_stream_info(aud_ctx) {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e));
-    }
+    aud_ctx
+        .find_stream_info()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 6: locate the first audio stream ─────────────────────────────────
-    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
-    let nb_aud_streams = (*aud_ctx).nb_streams as usize;
+    // SAFETY: streams is a valid array of nb_streams pointers.
+    let nb_aud_streams = aud_ctx.nb_streams() as usize;
     let mut audio_stream_idx: Option<usize> = None;
     for i in 0..nb_aud_streams {
-        let stream = *(*aud_ctx).streams.add(i);
+        let stream = *(*aud_ctx.as_ptr()).streams.add(i);
         if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
             audio_stream_idx = Some(i);
             break;
         }
     }
     let Some(audio_stream_idx) = audio_stream_idx else {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no audio stream found in audio input path={}",
@@ -116,30 +96,15 @@ unsafe fn run_audio_replacement_unsafe(
     };
 
     // ── Step 7: allocate output context (owned) ──────────────────────────────
-    // The owned context frees itself and closes its IO on drop; the two raw input
-    // contexts are still closed explicitly on each early return. Because they are
-    // raw, out_ctx operations use explicit `match`/`if let` (not `?`).
-    let mut out_ctx = match ff_sys::OutputFormatContext::new(None, output) {
-        Ok(c) => c,
-        Err(e) => {
-            let mut pv = vid_ctx;
-            ff_sys::avformat::close_input(&raw mut pv);
-            let mut pa = aud_ctx;
-            ff_sys::avformat::close_input(&raw mut pa);
-            return Err(RemuxError::from_ffmpeg_error(e.code()));
-        }
-    };
+    let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 8: copy video stream parameters to output ────────────────────────
     // SAFETY: video_stream_idx < nb_vid_streams; streams is a valid array.
-    let vid_in_stream = *(*vid_ctx).streams.add(video_stream_idx);
+    let vid_in_stream = *(*vid_ctx.as_ptr()).streams.add(video_stream_idx);
     // SAFETY: out_ctx is a valid owned mux context.
     let vid_out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if vid_out_stream.is_null() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for video".to_string(),
@@ -149,10 +114,6 @@ unsafe fn run_audio_replacement_unsafe(
     let ret =
         ff_sys::avcodec_parameters_copy((*vid_out_stream).codecpar, (*vid_in_stream).codecpar);
     if ret < 0 {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
@@ -160,14 +121,10 @@ unsafe fn run_audio_replacement_unsafe(
 
     // ── Step 9: copy audio stream parameters to output ────────────────────────
     // SAFETY: audio_stream_idx < nb_aud_streams; streams is a valid array.
-    let aud_in_stream = *(*aud_ctx).streams.add(audio_stream_idx);
+    let aud_in_stream = *(*aud_ctx.as_ptr()).streams.add(audio_stream_idx);
     // SAFETY: out_ctx is a valid owned mux context.
     let aud_out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if aud_out_stream.is_null() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for audio".to_string(),
@@ -177,34 +134,20 @@ unsafe fn run_audio_replacement_unsafe(
     let ret =
         ff_sys::avcodec_parameters_copy((*aud_out_stream).codecpar, (*aud_in_stream).codecpar);
     if ret < 0 {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*aud_out_stream).codecpar).codec_tag = 0;
 
     // ── Step 10: open output file ─────────────────────────────────────────────
-    // SAFETY: output is a valid path; avio_flags::WRITE opens for writing.
-    if let Err(e) = out_ctx.open_io(output) {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e.code()));
-    }
+    out_ctx
+        .open_io(output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 11: write header ─────────────────────────────────────────────────
-    // SAFETY: out_ctx is fully configured with streams and pb set.
-    if let Err(e) = out_ctx.write_header() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e.code()));
-    }
+    out_ctx
+        .write_header()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // Read time bases after avformat_write_header — the muxer may adjust them.
     // SAFETY: stream pointers remain valid for the lifetime of their parent contexts.
@@ -223,10 +166,6 @@ unsafe fn run_audio_replacement_unsafe(
     let pkt = ff_sys::av_packet_alloc();
     if pkt.is_null() {
         let _ = out_ctx.write_trailer();
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
@@ -244,7 +183,7 @@ unsafe fn run_audio_replacement_unsafe(
         // Read one packet from the video input, forwarding only the target stream.
         if !vid_eof {
             // SAFETY: vid_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(vid_ctx, pkt) {
+            match ff_sys::avformat::read_frame(vid_ctx.as_mut_ptr(), pkt) {
                 Err(e) if e == ff_sys::error_codes::EOF => {
                     vid_eof = true;
                 }
@@ -276,7 +215,7 @@ unsafe fn run_audio_replacement_unsafe(
         // Read one packet from the audio input, forwarding only the target stream.
         if !aud_eof {
             // SAFETY: aud_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(aud_ctx, pkt) {
+            match ff_sys::avformat::read_frame(aud_ctx.as_mut_ptr(), pkt) {
                 Err(e) if e == ff_sys::error_codes::EOF => {
                     aud_eof = true;
                 }
@@ -316,15 +255,8 @@ unsafe fn run_audio_replacement_unsafe(
     // SAFETY: out_ctx is valid; write_header was called successfully.
     let _ = out_ctx.write_trailer();
 
-    // ── Step 15: cleanup ──────────────────────────────────────────────────────
-    // The owned `out_ctx` closes its IO and frees itself when it drops at scope
-    // end; only the raw input contexts need explicit closing here.
-    // SAFETY: vid_ctx and aud_ctx are non-null (open_input succeeded).
-    let mut pv = vid_ctx;
-    ff_sys::avformat::close_input(&raw mut pv);
-    let mut pa = aud_ctx;
-    ff_sys::avformat::close_input(&raw mut pa);
-
+    // The owned `vid_ctx` / `aud_ctx` / `out_ctx` close their IO and free
+    // themselves when they drop at scope end; no manual teardown is needed.
     log::info!("audio replaced output={}", output.display());
 
     match loop_err {
@@ -359,34 +291,28 @@ unsafe fn run_audio_extraction_unsafe(
     output: &Path,
     requested_idx: Option<usize>,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open input ────────────────────────────────────────────────────
-    // SAFETY: input is a caller-supplied path; open_input returns Err on failure.
-    let in_ctx = ff_sys::avformat::open_input(input).map_err(RemuxError::from_ffmpeg_error)?;
+    // ── Step 1: open input (owned) ────────────────────────────────────────────
+    // The input and output contexts are owned; every early return drops them.
+    let mut in_ctx = ff_sys::InputFormatContext::open(input)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 2: find stream info ──────────────────────────────────────────────
-    // SAFETY: in_ctx is non-null (open_input succeeded).
-    if let Err(e) = ff_sys::avformat::find_stream_info(in_ctx) {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(e));
-    }
+    in_ctx
+        .find_stream_info()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 3: locate the audio stream ──────────────────────────────────────
-    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
-    let nb_streams = (*in_ctx).nb_streams as usize;
+    // SAFETY: streams is a valid array of nb_streams pointers.
+    let nb_streams = in_ctx.nb_streams() as usize;
     let audio_stream_idx = if let Some(idx) = requested_idx {
         // Validate that the requested index is actually an audio stream.
         if idx >= nb_streams {
-            let mut p = in_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
             return Err(RemuxError::OperationFailed {
                 reason: format!("stream index {idx} out of range (input has {nb_streams} streams)"),
             });
         }
-        let stream = *(*in_ctx).streams.add(idx);
+        let stream = *(*in_ctx.as_ptr()).streams.add(idx);
         if (*(*stream).codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
-            let mut p = in_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
             return Err(RemuxError::OperationFailed {
                 reason: format!("stream index {idx} is not an audio stream"),
             });
@@ -396,7 +322,7 @@ unsafe fn run_audio_extraction_unsafe(
         // Find the first audio stream.
         let mut found: Option<usize> = None;
         for i in 0..nb_streams {
-            let stream = *(*in_ctx).streams.add(i);
+            let stream = *(*in_ctx.as_ptr()).streams.add(i);
             if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
                 found = Some(i);
                 break;
@@ -405,8 +331,6 @@ unsafe fn run_audio_extraction_unsafe(
         if let Some(idx) = found {
             idx
         } else {
-            let mut p = in_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
             return Err(RemuxError::OperationFailed {
                 reason: format!("no audio stream found in input path={}", input.display()),
             });
@@ -414,26 +338,15 @@ unsafe fn run_audio_extraction_unsafe(
     };
 
     // ── Step 4: allocate output context (owned) ──────────────────────────────
-    // The owned context frees itself and closes its IO on drop; the raw input
-    // context is still closed explicitly on each early return. Because it is raw,
-    // out_ctx operations use explicit `match`/`if let` (not `?`).
-    let mut out_ctx = match ff_sys::OutputFormatContext::new(None, output) {
-        Ok(c) => c,
-        Err(e) => {
-            let mut p = in_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
-            return Err(RemuxError::from_ffmpeg_error(e.code()));
-        }
-    };
+    let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 5: copy audio stream parameters to output ────────────────────────
     // SAFETY: audio_stream_idx < nb_streams; streams is a valid array.
-    let in_stream = *(*in_ctx).streams.add(audio_stream_idx);
+    let in_stream = *(*in_ctx.as_ptr()).streams.add(audio_stream_idx);
     // SAFETY: out_ctx is a valid owned mux context.
     let out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if out_stream.is_null() {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed".to_string(),
@@ -442,36 +355,28 @@ unsafe fn run_audio_extraction_unsafe(
     // SAFETY: both codecpar pointers are non-null (created by FFmpeg).
     let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
     if ret < 0 {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*out_stream).codecpar).codec_tag = 0;
 
     // ── Step 6: open output file ──────────────────────────────────────────────
-    // SAFETY: output is a valid path; avio_flags::WRITE opens for writing.
-    if let Err(e) = out_ctx.open_io(output) {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(e.code()));
-    }
+    out_ctx
+        .open_io(output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 7: write header ──────────────────────────────────────────────────
     // A non-zero return here usually means the codec is incompatible with the
-    // chosen output container.  Wrap it as MediaOperationFailed with a clear
-    // message so callers know what went wrong.
-    // SAFETY: out_ctx is fully configured with the stream and pb set.
-    if let Err(e) = out_ctx.write_header() {
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::OperationFailed {
+    // chosen output container. Wrap it with a clear message so callers know what
+    // went wrong.
+    out_ctx
+        .write_header()
+        .map_err(|e| RemuxError::OperationFailed {
             reason: format!(
                 "codec incompatible with output container: {}",
                 ff_sys::av_error_string(e.code())
             ),
-        });
-    }
+        })?;
 
     // Read time bases after avformat_write_header — the muxer may adjust them.
     // SAFETY: stream pointers remain valid for the lifetime of their parent contexts.
@@ -489,8 +394,6 @@ unsafe fn run_audio_extraction_unsafe(
     let pkt = ff_sys::av_packet_alloc();
     if pkt.is_null() {
         let _ = out_ctx.write_trailer();
-        let mut p = in_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
@@ -501,8 +404,8 @@ unsafe fn run_audio_extraction_unsafe(
     let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
-        // SAFETY: in_ctx and pkt are valid non-null pointers.
-        match ff_sys::avformat::read_frame(in_ctx, pkt) {
+        // SAFETY: in_ctx is a valid owned demux context; pkt is a valid packet.
+        match ff_sys::avformat::read_frame(in_ctx.as_mut_ptr(), pkt) {
             Err(e) if e == ff_sys::error_codes::EOF => break 'read,
             Err(e) => {
                 loop_err = Some(RemuxError::from_ffmpeg_error(e));
@@ -540,13 +443,8 @@ unsafe fn run_audio_extraction_unsafe(
     // SAFETY: out_ctx is valid; write_header was called successfully.
     let _ = out_ctx.write_trailer();
 
-    // ── Step 11: cleanup ──────────────────────────────────────────────────────
-    // The owned `out_ctx` closes its IO and frees itself when it drops at scope
-    // end; only the raw input context needs explicit closing here.
-    // SAFETY: in_ctx is non-null (open_input succeeded).
-    let mut p = in_ctx;
-    ff_sys::avformat::close_input(&raw mut p);
-
+    // The owned `in_ctx` / `out_ctx` close their IO and free themselves when they
+    // drop at scope end; no manual teardown is needed.
     log::info!(
         "audio extracted output={} stream_index={audio_stream_idx}",
         output.display()
@@ -587,33 +485,28 @@ unsafe fn run_audio_addition_unsafe(
     output: &Path,
     loop_audio: bool,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open video input ──────────────────────────────────────────────
-    // SAFETY: video_input is a caller-supplied path; open_input returns Err on failure.
-    let vid_ctx =
-        ff_sys::avformat::open_input(video_input).map_err(RemuxError::from_ffmpeg_error)?;
+    // ── Step 1: open video input (owned) ──────────────────────────────────────
+    // All contexts are owned; every early return drops them.
+    let mut vid_ctx = ff_sys::InputFormatContext::open(video_input)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 2: find stream info for video input ──────────────────────────────
-    // SAFETY: vid_ctx is non-null (open_input succeeded).
-    if let Err(e) = ff_sys::avformat::find_stream_info(vid_ctx) {
-        let mut p = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
-        return Err(RemuxError::from_ffmpeg_error(e));
-    }
+    vid_ctx
+        .find_stream_info()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 3: locate the first video stream ─────────────────────────────────
-    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
-    let nb_vid_streams = (*vid_ctx).nb_streams as usize;
+    // SAFETY: streams is a valid array of nb_streams pointers.
+    let nb_vid_streams = vid_ctx.nb_streams() as usize;
     let mut video_stream_idx: Option<usize> = None;
     for i in 0..nb_vid_streams {
-        let stream = *(*vid_ctx).streams.add(i);
+        let stream = *(*vid_ctx.as_ptr()).streams.add(i);
         if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
             video_stream_idx = Some(i);
             break;
         }
     }
     let Some(video_stream_idx) = video_stream_idx else {
-        let mut p = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut p);
         return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no video stream found in video input path={}",
@@ -622,43 +515,27 @@ unsafe fn run_audio_addition_unsafe(
         });
     };
 
-    // ── Step 4: open audio input ──────────────────────────────────────────────
-    // SAFETY: audio_input is a caller-supplied path; open_input returns Err on failure.
-    let aud_ctx = match ff_sys::avformat::open_input(audio_input) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            let mut p = vid_ctx;
-            ff_sys::avformat::close_input(&raw mut p);
-            return Err(RemuxError::from_ffmpeg_error(e));
-        }
-    };
+    // ── Step 4: open audio input (owned) ──────────────────────────────────────
+    let mut aud_ctx = ff_sys::InputFormatContext::open(audio_input)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 5: find stream info for audio input ──────────────────────────────
-    // SAFETY: aud_ctx is non-null (open_input succeeded).
-    if let Err(e) = ff_sys::avformat::find_stream_info(aud_ctx) {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e));
-    }
+    aud_ctx
+        .find_stream_info()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 6: locate the first audio stream ─────────────────────────────────
-    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
-    let nb_aud_streams = (*aud_ctx).nb_streams as usize;
+    // SAFETY: streams is a valid array of nb_streams pointers.
+    let nb_aud_streams = aud_ctx.nb_streams() as usize;
     let mut audio_stream_idx: Option<usize> = None;
     for i in 0..nb_aud_streams {
-        let stream = *(*aud_ctx).streams.add(i);
+        let stream = *(*aud_ctx.as_ptr()).streams.add(i);
         if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
             audio_stream_idx = Some(i);
             break;
         }
     }
     let Some(audio_stream_idx) = audio_stream_idx else {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::OperationFailed {
             reason: format!(
                 "no audio stream found in audio input path={}",
@@ -670,38 +547,23 @@ unsafe fn run_audio_addition_unsafe(
     // ── Step 7: decide whether to loop the audio ──────────────────────────────
     // Loop only when requested AND audio duration < video duration.
     // Durations are in AV_TIME_BASE (microseconds); a value ≤ 0 means unknown.
-    let vid_duration_us = (*vid_ctx).duration;
-    let aud_duration_us = (*aud_ctx).duration;
+    let vid_duration_us = vid_ctx.duration();
+    let aud_duration_us = aud_ctx.duration();
     let should_loop = loop_audio
         && vid_duration_us > 0
         && aud_duration_us > 0
         && aud_duration_us < vid_duration_us;
 
     // ── Step 8: allocate output context (owned) ──────────────────────────────
-    // The owned context frees itself and closes its IO on drop; the two raw input
-    // contexts are still closed explicitly on each early return. Because they are
-    // raw, out_ctx operations use explicit `match`/`if let` (not `?`).
-    let mut out_ctx = match ff_sys::OutputFormatContext::new(None, output) {
-        Ok(c) => c,
-        Err(e) => {
-            let mut pv = vid_ctx;
-            ff_sys::avformat::close_input(&raw mut pv);
-            let mut pa = aud_ctx;
-            ff_sys::avformat::close_input(&raw mut pa);
-            return Err(RemuxError::from_ffmpeg_error(e.code()));
-        }
-    };
+    let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 9: copy video stream parameters ─────────────────────────────────
     // SAFETY: video_stream_idx < nb_vid_streams; streams is a valid array.
-    let vid_in_stream = *(*vid_ctx).streams.add(video_stream_idx);
+    let vid_in_stream = *(*vid_ctx.as_ptr()).streams.add(video_stream_idx);
     // SAFETY: out_ctx is a valid owned mux context.
     let vid_out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if vid_out_stream.is_null() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for video".to_string(),
@@ -711,10 +573,6 @@ unsafe fn run_audio_addition_unsafe(
     let ret =
         ff_sys::avcodec_parameters_copy((*vid_out_stream).codecpar, (*vid_in_stream).codecpar);
     if ret < 0 {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
@@ -722,14 +580,10 @@ unsafe fn run_audio_addition_unsafe(
 
     // ── Step 10: copy audio stream parameters ────────────────────────────────
     // SAFETY: audio_stream_idx < nb_aud_streams; streams is a valid array.
-    let aud_in_stream = *(*aud_ctx).streams.add(audio_stream_idx);
+    let aud_in_stream = *(*aud_ctx.as_ptr()).streams.add(audio_stream_idx);
     // SAFETY: out_ctx is a valid owned mux context.
     let aud_out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
     if aud_out_stream.is_null() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed for audio".to_string(),
@@ -739,34 +593,20 @@ unsafe fn run_audio_addition_unsafe(
     let ret =
         ff_sys::avcodec_parameters_copy((*aud_out_stream).codecpar, (*aud_in_stream).codecpar);
     if ret < 0 {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::from_ffmpeg_error(ret));
     }
     // Clear codec_tag so the muxer assigns the correct value for the container.
     (*(*aud_out_stream).codecpar).codec_tag = 0;
 
     // ── Step 11: open output file ─────────────────────────────────────────────
-    // SAFETY: output is a valid path; avio_flags::WRITE opens for writing.
-    if let Err(e) = out_ctx.open_io(output) {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e.code()));
-    }
+    out_ctx
+        .open_io(output)
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // ── Step 12: write header ─────────────────────────────────────────────────
-    // SAFETY: out_ctx is fully configured with streams and pb set.
-    if let Err(e) = out_ctx.write_header() {
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
-        return Err(RemuxError::from_ffmpeg_error(e.code()));
-    }
+    out_ctx
+        .write_header()
+        .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     // Read time bases after avformat_write_header — the muxer may adjust them.
     // SAFETY: stream pointers remain valid for the lifetime of their parent contexts.
@@ -793,10 +633,6 @@ unsafe fn run_audio_addition_unsafe(
     let pkt = ff_sys::av_packet_alloc();
     if pkt.is_null() {
         let _ = out_ctx.write_trailer();
-        let mut pv = vid_ctx;
-        ff_sys::avformat::close_input(&raw mut pv);
-        let mut pa = aud_ctx;
-        ff_sys::avformat::close_input(&raw mut pa);
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
@@ -816,7 +652,7 @@ unsafe fn run_audio_addition_unsafe(
         // ── video packet ──────────────────────────────────────────────────
         if !vid_eof {
             // SAFETY: vid_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(vid_ctx, pkt) {
+            match ff_sys::avformat::read_frame(vid_ctx.as_mut_ptr(), pkt) {
                 Err(e) if e == ff_sys::error_codes::EOF => {
                     vid_eof = true;
                 }
@@ -851,15 +687,14 @@ unsafe fn run_audio_addition_unsafe(
         // ── audio packet ──────────────────────────────────────────────────
         if !aud_eof {
             // SAFETY: aud_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(aud_ctx, pkt) {
+            match ff_sys::avformat::read_frame(aud_ctx.as_mut_ptr(), pkt) {
                 Err(e) if e == ff_sys::error_codes::EOF => {
                     if should_loop {
                         // Re-seek audio to the start and advance the PTS offset
                         // so that looped packets continue from where the last
                         // packet ended.
-                        // SAFETY: aud_ctx is non-null; seeking to timestamp 0.
-                        let _ = ff_sys::avformat::seek_frame(
-                            aud_ctx,
+                        // SAFETY: aud_ctx is a valid owned demux context; seeking to timestamp 0.
+                        let _ = aud_ctx.seek_frame(
                             audio_stream_idx as i32,
                             0,
                             ff_sys::avformat::seek_flags::BACKWARD,
@@ -910,15 +745,8 @@ unsafe fn run_audio_addition_unsafe(
     // SAFETY: out_ctx is valid; write_header was called successfully.
     let _ = out_ctx.write_trailer();
 
-    // ── Step 16: cleanup ──────────────────────────────────────────────────────
-    // The owned `out_ctx` closes its IO and frees itself when it drops at scope
-    // end; only the raw input contexts need explicit closing here.
-    // SAFETY: vid_ctx and aud_ctx are non-null (open_input succeeded).
-    let mut pv = vid_ctx;
-    ff_sys::avformat::close_input(&raw mut pv);
-    let mut pa = aud_ctx;
-    ff_sys::avformat::close_input(&raw mut pa);
-
+    // The owned `vid_ctx` / `aud_ctx` / `out_ctx` close their IO and free
+    // themselves when they drop at scope end; no manual teardown is needed.
     log::info!(
         "audio added output={} loop_audio={loop_audio}",
         output.display()
