@@ -28,63 +28,53 @@ mod video;
 /// `file_size` was read successfully. `probe_file` itself performs no file-system
 /// checks — it delegates those to the `FFmpeg` API.
 pub(crate) fn probe_file(path: &Path, file_size: u64) -> Result<MediaInfo, ProbeError> {
-    // Open file with FFmpeg
-    // SAFETY: We verified the file exists, and we properly close the context on all paths
-    let ctx = unsafe { ff_sys::avformat::open_input(path) }.map_err(|err_code| {
-        ProbeError::CannotOpen {
-            path: path.to_path_buf(),
-            reason: ff_sys::av_error_string(err_code),
-        }
+    // Open the file with FFmpeg. The owned context frees itself on drop, so
+    // every early return below is leak-free without an explicit close.
+    let mut ctx = ff_sys::InputFormatContext::open(path).map_err(|e| ProbeError::CannotOpen {
+        path: path.to_path_buf(),
+        reason: ff_sys::av_error_string(e.code()),
     })?;
 
-    // Find stream info - this populates codec information
-    // SAFETY: ctx is valid from open_input
-    if let Err(err_code) = unsafe { ff_sys::avformat::find_stream_info(ctx) } {
-        // SAFETY: ctx is valid
-        unsafe {
-            let mut ctx_ptr = ctx;
-            ff_sys::avformat::close_input(&raw mut ctx_ptr);
-        }
-        return Err(ProbeError::InvalidMedia {
+    // Find stream info - this populates codec information.
+    ctx.find_stream_info()
+        .map_err(|e| ProbeError::InvalidMedia {
             path: path.to_path_buf(),
-            reason: ff_sys::av_error_string(err_code),
-        });
-    }
+            reason: ff_sys::av_error_string(e.code()),
+        })?;
 
-    // Extract basic information from AVFormatContext
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let (format, format_long_name, duration) = unsafe { core::extract_format_info(ctx) };
+    // Extract basic information from AVFormatContext. The extract helpers still
+    // take a raw `*mut AVFormatContext`, so they are handed `ctx.as_mut_ptr()`.
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let (format, format_long_name, duration) =
+        unsafe { core::extract_format_info(ctx.as_mut_ptr()) };
 
     // Calculate container bitrate
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let bitrate = unsafe { core::calculate_container_bitrate(ctx, file_size, duration) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let bitrate =
+        unsafe { core::calculate_container_bitrate(ctx.as_mut_ptr(), file_size, duration) };
 
     // Extract container metadata
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let media_metadata = unsafe { metadata::extract_metadata(ctx) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let media_metadata = unsafe { metadata::extract_metadata(ctx.as_mut_ptr()) };
 
     // Extract video streams
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let video_streams = unsafe { video::extract_video_streams(ctx) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let video_streams = unsafe { video::extract_video_streams(ctx.as_mut_ptr()) };
 
     // Extract audio streams
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let audio_streams = unsafe { audio::extract_audio_streams(ctx) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let audio_streams = unsafe { audio::extract_audio_streams(ctx.as_mut_ptr()) };
 
     // Extract subtitle streams
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let subtitle_streams = unsafe { subtitle::extract_subtitle_streams(ctx) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let subtitle_streams = unsafe { subtitle::extract_subtitle_streams(ctx.as_mut_ptr()) };
 
     // Extract chapter info
-    // SAFETY: ctx is valid and find_stream_info succeeded
-    let chapter_list = unsafe { chapters::extract_chapters(ctx) };
+    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
+    let chapter_list = unsafe { chapters::extract_chapters(ctx.as_mut_ptr()) };
 
-    // Close the format context
-    // SAFETY: ctx is valid
-    unsafe {
-        let mut ctx_ptr = ctx;
-        ff_sys::avformat::close_input(&raw mut ctx_ptr);
-    }
+    // The owned `ctx` closes its input and frees itself when it drops at the end
+    // of this function; no manual close is needed.
 
     log::debug!(
         "probe complete video_streams={} audio_streams={} subtitle_streams={} chapters={}",

@@ -608,21 +608,23 @@ pub(super) unsafe fn detect_black_frames_unsafe(
 /// Enumerates all keyframe PTS values for the given stream in `path`.
 ///
 /// Processing flow:
-/// 1. `avformat_open_input` + `avformat_find_stream_info`
+/// 1. Open the input as an owned [`ff_sys::InputFormatContext`] + `find_stream_info`
 /// 2. Locate the target stream (first video stream when `stream_index` is `None`)
 /// 3. `av_read_frame` loop — no decoder is opened
 /// 4. For packets on the target stream with `AV_PKT_FLAG_KEY` set, convert PTS
 ///    to [`Duration`] using the stream's time base
-/// 5. `av_packet_unref` after each packet; `av_packet_free` + `avformat_close_input` on exit
+/// 5. `av_packet_unref` after each packet; `av_packet_free` on exit (the owned
+///    `InputFormatContext` closes its input and frees the context on drop)
 ///
 /// # Safety
 ///
 /// All raw pointer operations follow avformat ownership rules:
-/// - `avformat_open_input` returns an owned `AVFormatContext*` freed via
-///   `avformat_close_input` on every exit path.
+/// - The owned [`ff_sys::InputFormatContext`] closes its input and frees the
+///   format context exactly once on drop, on every exit path.
 /// - `av_packet_alloc` returns an owned `AVPacket*` freed via `av_packet_free`.
 /// - `av_packet_unref` is called after every successful `av_read_frame`.
-/// - Stream pointer access is guarded by bounds checks on `nb_streams`.
+/// - Stream pointer access (via `as_ptr` / `as_mut_ptr`) is guarded by bounds
+///   checks on `nb_streams`.
 pub(super) unsafe fn enumerate_keyframes_unsafe(
     path: &Path,
     stream_index: Option<usize>,
@@ -630,46 +632,43 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
     // AV_PKT_FLAG_KEY = 1 (from FFmpeg's avcodec.h; not exported by ff_sys constants).
     const AV_PKT_FLAG_KEY: i32 = 1;
 
-    // The `bail_ctx!` macro frees the format context before returning an error.
-    // It must not be used before `format_ctx` is initialised.
-    macro_rules! bail_ctx {
-        ($ctx:ident, $reason:expr) => {{
-            ff_sys::avformat::close_input(std::ptr::addr_of_mut!($ctx));
+    // `bail!` returns an `AnalysisError::Failed` with the given reason. The owned
+    // `format_ctx` frees itself on drop, so no manual close is needed.
+    macro_rules! bail {
+        ($reason:expr) => {{
             return Err(AnalysisError::Failed {
                 reason: format!("{}", $reason),
             });
         }};
     }
 
-    // 1. Open input.
+    // 1. Open input (owned; frees itself on drop, so every early return is leak-free).
     let mut format_ctx =
-        ff_sys::avformat::open_input(path).map_err(|code| AnalysisError::Failed {
-            reason: format!("avformat_open_input failed code={code}"),
+        ff_sys::InputFormatContext::open(path).map_err(|e| AnalysisError::Failed {
+            reason: format!("avformat_open_input failed code={}", e.code()),
         })?;
 
     // 2. Find stream info.
-    if let Err(code) = ff_sys::avformat::find_stream_info(format_ctx) {
-        bail_ctx!(
-            format_ctx,
-            format!("avformat_find_stream_info failed code={code}")
-        );
-    }
+    format_ctx
+        .find_stream_info()
+        .map_err(|e| AnalysisError::Failed {
+            reason: format!("avformat_find_stream_info failed code={}", e.code()),
+        })?;
 
     // 3. Locate the target stream.
-    let nb_streams = (*format_ctx).nb_streams as usize;
+    let nb_streams = format_ctx.nb_streams() as usize;
     let target_stream: usize = if let Some(idx) = stream_index {
         if idx >= nb_streams {
-            bail_ctx!(
-                format_ctx,
-                format!("stream_index {idx} out of range (file has {nb_streams} streams)")
-            );
+            bail!(format!(
+                "stream_index {idx} out of range (file has {nb_streams} streams)"
+            ));
         }
         idx
     } else {
         // Select the first video stream.
         let mut found: Option<usize> = None;
         for i in 0..nb_streams {
-            let stream = (*format_ctx).streams.add(i);
+            let stream = (*format_ctx.as_ptr()).streams.add(i);
             let codecpar = (*(*stream)).codecpar;
             if (*codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
                 found = Some(i);
@@ -679,12 +678,12 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
         if let Some(i) = found {
             i
         } else {
-            bail_ctx!(format_ctx, "no video stream found in file")
+            bail!("no video stream found in file")
         }
     };
 
     // 4. Read the stream's time base for PTS → Duration conversion.
-    let stream = (*format_ctx).streams.add(target_stream);
+    let stream = (*format_ctx.as_ptr()).streams.add(target_stream);
     let time_base = (*(*stream)).time_base;
     let tb_num = f64::from(time_base.num);
     let tb_den = f64::from(time_base.den);
@@ -692,7 +691,7 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
     // 5. Allocate a reusable packet.
     let pkt = ff_sys::av_packet_alloc();
     if pkt.is_null() {
-        bail_ctx!(format_ctx, "av_packet_alloc failed");
+        bail!("av_packet_alloc failed");
     }
 
     // 6. Read all packets; record the PTS of every keyframe on the target stream.
@@ -704,7 +703,7 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
 
     loop {
         // `av_read_frame` returns a negative code on EOF or error.
-        let ret = ff_sys::av_read_frame(format_ctx, pkt);
+        let ret = ff_sys::av_read_frame(format_ctx.as_mut_ptr(), pkt);
         if ret < 0 {
             break;
         }
@@ -727,10 +726,10 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
         ff_sys::av_packet_unref(pkt);
     }
 
-    // 7. Release resources.
+    // 7. Release the raw packet; the owned `format_ctx` closes its input and
+    //    frees itself when it drops at the end of this function.
     let mut pkt_ptr = pkt;
     ff_sys::av_packet_free(std::ptr::addr_of_mut!(pkt_ptr));
-    ff_sys::avformat::close_input(std::ptr::addr_of_mut!(format_ctx));
 
     log::debug!(
         "keyframe enumeration complete keyframes={} stream_index={target_stream}",

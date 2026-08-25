@@ -66,9 +66,9 @@ impl KeyframeEnumerator {
             });
         }
         // SAFETY: enumerate_keyframes_unsafe manages all raw pointer lifetimes:
-        // avformat_open_input / avformat_close_input own the format context;
-        // av_packet_alloc / av_packet_free own the packet; av_packet_unref is
-        // called after every av_read_frame success.
+        // the owned InputFormatContext owns and frees the format context (closing
+        // its input on drop); av_packet_alloc / av_packet_free own the packet;
+        // av_packet_unref is called after every av_read_frame success.
         unsafe { super::analysis_inner::enumerate_keyframes_unsafe(&self.input, self.stream_index) }
     }
 }
