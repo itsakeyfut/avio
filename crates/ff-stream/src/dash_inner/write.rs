@@ -4,14 +4,14 @@ use std::ffi::CString;
 use std::ptr;
 
 use ff_sys::{
-    AVFormatContext, AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
+    AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
     AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_opt_set, av_rescale_q,
-    av_write_trailer, avformat_alloc_output_context2, avformat_new_stream, avformat_write_header,
+    avformat_new_stream,
 };
 
 use crate::error::StreamError;
 
-use super::context::{RenditionState, cleanup_output_ctx};
+use super::context::RenditionState;
 use super::streams::{detect_fps, open_aac_encoder, select_h264_encoder};
 use super::{ffmpeg_err, ffmpeg_err_msg};
 
@@ -128,28 +128,26 @@ pub(super) unsafe fn write_dash_unsafe(
     }
 
     // ── 6. Allocate DASH output context ───────────────────────────────────────
+    // `out_ctx` is owned (frees on drop, closing its `pb`); `input_ctx` stays raw,
+    // so every error path below still closes the input explicitly before returning.
     let manifest_path = format!("{output_dir}/manifest.mpd");
-    let c_manifest = CString::new(manifest_path.as_str())
-        .map_err(|_| ffmpeg_err_msg("manifest path contains null byte"))?;
-    let c_dash = c"dash";
 
-    let mut out_ctx: *mut AVFormatContext = ptr::null_mut();
-    let ret = avformat_alloc_output_context2(
-        &mut out_ctx,
-        ptr::null_mut(),
-        c_dash.as_ptr(),
-        c_manifest.as_ptr(),
-    );
-    if ret < 0 || out_ctx.is_null() {
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(ret));
-    }
+    let mut out_ctx = match ff_sys::OutputFormatContext::new(
+        Some("dash"),
+        std::path::Path::new(&manifest_path),
+    ) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            ff_sys::avformat::close_input(&mut input_ctx);
+            return Err(ffmpeg_err(e.code()));
+        }
+    };
 
     // ── 7. Set DASH muxer options ──────────────────────────────────────────────
     let seg_duration_str = format!("{}", segment_duration_secs as u32);
     if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str()) {
         let ret = av_opt_set(
-            (*out_ctx).priv_data,
+            (*out_ctx.as_mut_ptr()).priv_data,
             c"seg_duration".as_ptr(),
             c_seg_dur.as_ptr(),
             0,
@@ -165,13 +163,11 @@ pub(super) unsafe fn write_dash_unsafe(
 
     // ── 8. Open H.264 video encoder ───────────────────────────────────────────
     let vid_enc_codec = select_h264_encoder().ok_or_else(|| {
-        cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
         ffmpeg_err_msg("no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)")
     })?;
 
     let mut vid_enc_ctx = ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| {
-        cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
         ffmpeg_err(e.code())
     })?;
@@ -191,26 +187,23 @@ pub(super) unsafe fn write_dash_unsafe(
     vid_enc_ctx
         .open(vid_enc_codec, ptr::null_mut())
         .map_err(|e| {
-            cleanup_output_ctx(out_ctx);
             ff_sys::avformat::close_input(&mut input_ctx);
             ffmpeg_err(e.code())
         })?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────
-    let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec.as_ptr());
+    let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
     if vid_out_stream.is_null() {
-        cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
         return Err(ffmpeg_err_msg("cannot create video output stream"));
     }
     (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
-    let vid_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+    let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
     // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
     vid_enc_ctx
         .parameters_from_context((*vid_out_stream).codecpar)
         .map_err(|e| {
-            cleanup_output_ctx(out_ctx);
             ff_sys::avformat::close_input(&mut input_ctx);
             ffmpeg_err(e.code())
         })?;
@@ -223,7 +216,7 @@ pub(super) unsafe fn write_dash_unsafe(
     if audio_stream_idx >= 0 {
         match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
             Ok(ctx) => {
-                let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
+                let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
                 if aud_out_stream.is_null() {
                     // `ctx` drops here (frees the codec context).
                     log::warn!("dash cannot create audio output stream, skipping audio");
@@ -231,7 +224,7 @@ pub(super) unsafe fn write_dash_unsafe(
                 } else {
                     (*aud_out_stream).time_base.num = 1;
                     (*aud_out_stream).time_base.den = aud_sample_rate;
-                    aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+                    aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
                     // SAFETY: aud_out_stream and ctx are valid; avcodec_open2 called.
                     if ctx
@@ -274,28 +267,21 @@ pub(super) unsafe fn write_dash_unsafe(
     }
 
     // ── 11. Open output file and write header ─────────────────────────────────
-    let pb = ff_sys::avformat::open_output(
-        std::path::Path::new(&manifest_path),
-        ff_sys::avformat::avio_flags::WRITE,
-    )
-    .map_err(|e| {
-        cleanup_output_ctx(out_ctx);
+    if let Err(e) = out_ctx.open_io(std::path::Path::new(&manifest_path)) {
         ff_sys::avformat::close_input(&mut input_ctx);
-        ffmpeg_err(e)
-    })?;
-    (*out_ctx).pb = pb;
-
-    let ret = avformat_write_header(out_ctx, ptr::null_mut());
-    if ret < 0 {
-        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-        cleanup_output_ctx(out_ctx);
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(ret));
+        return Err(ffmpeg_err(e.code()));
     }
 
-    // Close pb now so the DASH muxer can manage its own avio handles for
-    // segment files without hitting a locked-file error on Windows.
-    ff_sys::avformat::close_output(&mut (*out_ctx).pb);
+    if let Err(e) = out_ctx.write_header() {
+        // The owned `out_ctx` closes `pb` and frees on drop at this return.
+        ff_sys::avformat::close_input(&mut input_ctx);
+        return Err(ffmpeg_err(e.code()));
+    }
+
+    // Close pb now so the DASH muxer can manage its own avio handles for segment
+    // files without hitting a locked-file error on Windows. `close_io` nulls `pb`,
+    // so the later drop only frees the context.
+    out_ctx.close_io();
 
     log::info!(
         "dash output context ready width={enc_width} height={enc_height} fps={video_fps:.1} \
@@ -320,9 +306,8 @@ pub(super) unsafe fn write_dash_unsafe(
         ff_sys::Frame::new(),
     )
     else {
-        av_write_trailer(out_ctx);
-        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-        cleanup_output_ctx(out_ctx);
+        let _ = out_ctx.write_trailer();
+        // `out_ctx` frees on drop at this return (pb already closed via close_io).
         ff_sys::avformat::close_input(&mut input_ctx);
         return Err(ffmpeg_err_msg("cannot allocate frame or packet"));
     };
@@ -439,7 +424,7 @@ pub(super) unsafe fn write_dash_unsafe(
                 if scaled && vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
                     crate::codec_utils::drain_encoder(
                         vid_enc_ctx.as_mut_ptr(),
-                        out_ctx,
+                        out_ctx.as_mut_ptr(),
                         vid_out_stream_idx,
                         "dash",
                         vid_frame_period,
@@ -497,7 +482,7 @@ pub(super) unsafe fn write_dash_unsafe(
                     if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc.as_mut_ptr(),
-                            out_ctx,
+                            out_ctx.as_mut_ptr(),
                             aud_out_stream_idx,
                             "dash",
                             aud_frame_period,
@@ -518,7 +503,7 @@ pub(super) unsafe fn write_dash_unsafe(
     let _ = vid_enc_ctx.send_frame(ptr::null());
     crate::codec_utils::drain_encoder(
         vid_enc_ctx.as_mut_ptr(),
-        out_ctx,
+        out_ctx.as_mut_ptr(),
         vid_out_stream_idx,
         "dash",
         vid_frame_period,
@@ -559,7 +544,7 @@ pub(super) unsafe fn write_dash_unsafe(
                     if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc.as_mut_ptr(),
-                            out_ctx,
+                            out_ctx.as_mut_ptr(),
                             aud_out_stream_idx,
                             "dash",
                             aud_frame_period,
@@ -572,7 +557,7 @@ pub(super) unsafe fn write_dash_unsafe(
         let _ = aud_enc.send_frame(ptr::null());
         crate::codec_utils::drain_encoder(
             aud_enc.as_mut_ptr(),
-            out_ctx,
+            out_ctx.as_mut_ptr(),
             aud_out_stream_idx,
             "dash",
             aud_frame_period,
@@ -580,13 +565,13 @@ pub(super) unsafe fn write_dash_unsafe(
     }
 
     // ── 15. Finalize ──────────────────────────────────────────────────────────
-    av_write_trailer(out_ctx);
-    // pb was already closed after avformat_write_header; skip double-close.
+    let _ = out_ctx.write_trailer();
+    // pb was already closed via close_io after the header; skip double-close.
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    // Owned frames/packet and encoder / decoder / resample / scale contexts drop
-    // on scope exit; only the raw format contexts need explicit teardown.
-    cleanup_output_ctx(out_ctx);
+    // Owned frames/packet, encoder / decoder / resample / scale contexts, and the
+    // owned `out_ctx` drop on scope exit; only the raw `input_ctx` needs an
+    // explicit close.
     ff_sys::avformat::close_input(&mut input_ctx);
 
     log::info!(
@@ -707,28 +692,26 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     }
 
     // ── 6. Allocate DASH output context ───────────────────────────────────────
+    // `out_ctx` is owned (frees on drop, closing its `pb`); `input_ctx` stays raw,
+    // so every error path below still closes the input explicitly before returning.
     let manifest_path = format!("{output_dir}/manifest.mpd");
-    let c_manifest = CString::new(manifest_path.as_str())
-        .map_err(|_| ffmpeg_err_msg("manifest path contains null byte"))?;
-    let c_dash = c"dash";
 
-    let mut out_ctx: *mut AVFormatContext = ptr::null_mut();
-    let ret = avformat_alloc_output_context2(
-        &mut out_ctx,
-        ptr::null_mut(),
-        c_dash.as_ptr(),
-        c_manifest.as_ptr(),
-    );
-    if ret < 0 || out_ctx.is_null() {
-        ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(ret));
-    }
+    let mut out_ctx = match ff_sys::OutputFormatContext::new(
+        Some("dash"),
+        std::path::Path::new(&manifest_path),
+    ) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            ff_sys::avformat::close_input(&mut input_ctx);
+            return Err(ffmpeg_err(e.code()));
+        }
+    };
 
     // ── 7. Set DASH muxer options ──────────────────────────────────────────────
     let seg_duration_str = format!("{}", segment_duration_secs as u32);
     if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str()) {
         let ret = av_opt_set(
-            (*out_ctx).priv_data,
+            (*out_ctx.as_mut_ptr()).priv_data,
             c"seg_duration".as_ptr(),
             c_seg_dur.as_ptr(),
             0,
@@ -744,7 +727,6 @@ pub(super) unsafe fn write_dash_abr_unsafe(
 
     // ── 8. Select H.264 encoder (shared across all renditions) ────────────────
     let Some(vid_enc_codec) = select_h264_encoder() else {
-        cleanup_output_ctx(out_ctx);
         ff_sys::avformat::close_input(&mut input_ctx);
         return Err(ffmpeg_err_msg(
             "no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, \
@@ -762,7 +744,6 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         let mut enc_ctx = match ff_sys::CodecContext::new(Some(vid_enc_codec)) {
             Ok(ctx) => ctx,
             Err(e) => {
-                cleanup_output_ctx(out_ctx);
                 ff_sys::avformat::close_input(&mut input_ctx);
                 return Err(ffmpeg_err(e.code()));
             }
@@ -780,25 +761,22 @@ pub(super) unsafe fn write_dash_abr_unsafe(
 
         if let Err(e) = enc_ctx.open(vid_enc_codec, ptr::null_mut()) {
             // `enc_ctx` and the prior renditions drop on return.
-            cleanup_output_ctx(out_ctx);
             ff_sys::avformat::close_input(&mut input_ctx);
             return Err(ffmpeg_err(e.code()));
         }
 
-        let out_stream = avformat_new_stream(out_ctx, vid_enc_codec.as_ptr());
+        let out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
         if out_stream.is_null() {
-            cleanup_output_ctx(out_ctx);
             ff_sys::avformat::close_input(&mut input_ctx);
             return Err(ffmpeg_err_msg(
                 "cannot create video output stream for rendition",
             ));
         }
         (*out_stream).time_base = (*enc_ctx.as_ptr()).time_base;
-        let stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+        let stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
         // SAFETY: out_stream and enc_ctx are valid; avcodec_open2 has been called.
         if let Err(e) = enc_ctx.parameters_from_context((*out_stream).codecpar) {
-            cleanup_output_ctx(out_ctx);
             ff_sys::avformat::close_input(&mut input_ctx);
             return Err(ffmpeg_err(e.code()));
         }
@@ -828,7 +806,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     if audio_stream_idx >= 0 {
         match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
             Ok(ctx) => {
-                let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
+                let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
                 if aud_out_stream.is_null() {
                     // `ctx` drops here (frees the codec context).
                     log::warn!("dash abr cannot create audio output stream, skipping audio");
@@ -836,7 +814,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 } else {
                     (*aud_out_stream).time_base.num = 1;
                     (*aud_out_stream).time_base.den = aud_sample_rate;
-                    aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+                    aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
                     let enc_ptr = ctx.as_ptr();
                     if !(*aud_out_stream).codecpar.is_null() {
@@ -882,28 +860,21 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     }
 
     // ── 11. Open output file and write header ─────────────────────────────────
-    let pb = ff_sys::avformat::open_output(
-        std::path::Path::new(&manifest_path),
-        ff_sys::avformat::avio_flags::WRITE,
-    )
-    .map_err(|e| {
-        cleanup_output_ctx(out_ctx);
+    if let Err(e) = out_ctx.open_io(std::path::Path::new(&manifest_path)) {
         ff_sys::avformat::close_input(&mut input_ctx);
-        ffmpeg_err(e)
-    })?;
-    (*out_ctx).pb = pb;
+        return Err(ffmpeg_err(e.code()));
+    }
 
-    let ret = avformat_write_header(out_ctx, ptr::null_mut());
-    if ret < 0 {
-        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-        cleanup_output_ctx(out_ctx);
+    if let Err(e) = out_ctx.write_header() {
+        // The owned `out_ctx` closes `pb` and frees on drop at this return.
         ff_sys::avformat::close_input(&mut input_ctx);
-        return Err(ffmpeg_err(ret));
+        return Err(ffmpeg_err(e.code()));
     }
 
     // Close pb so the DASH muxer can manage its own avio handles for segment
-    // files without hitting a locked-file error on Windows.
-    ff_sys::avformat::close_output(&mut (*out_ctx).pb);
+    // files without hitting a locked-file error on Windows. `close_io` nulls `pb`,
+    // so the later drop only frees the context.
+    out_ctx.close_io();
 
     log::info!(
         "dash abr output ready renditions={} fps={video_fps:.1} audio={}",
@@ -928,8 +899,8 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         ff_sys::Frame::new(),
     )
     else {
-        av_write_trailer(out_ctx);
-        cleanup_output_ctx(out_ctx);
+        let _ = out_ctx.write_trailer();
+        // `out_ctx` frees on drop at this return (pb already closed via close_io).
         ff_sys::avformat::close_input(&mut input_ctx);
         return Err(ffmpeg_err_msg("cannot allocate frame or packet"));
     };
@@ -1036,7 +1007,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     if scaled && state.vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             state.vid_enc_ctx.as_mut_ptr(),
-                            out_ctx,
+                            out_ctx.as_mut_ptr(),
                             state.vid_out_stream_idx,
                             "dash",
                             vid_frame_period,
@@ -1096,7 +1067,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc.as_mut_ptr(),
-                            out_ctx,
+                            out_ctx.as_mut_ptr(),
                             aud_out_stream_idx,
                             "dash",
                             aud_frame_period,
@@ -1118,7 +1089,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         let _ = state.vid_enc_ctx.send_frame(ptr::null());
         crate::codec_utils::drain_encoder(
             state.vid_enc_ctx.as_mut_ptr(),
-            out_ctx,
+            out_ctx.as_mut_ptr(),
             state.vid_out_stream_idx,
             "dash",
             vid_frame_period,
@@ -1159,7 +1130,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc.as_mut_ptr(),
-                            out_ctx,
+                            out_ctx.as_mut_ptr(),
                             aud_out_stream_idx,
                             "dash",
                             aud_frame_period,
@@ -1172,7 +1143,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         let _ = aud_enc.send_frame(ptr::null());
         crate::codec_utils::drain_encoder(
             aud_enc.as_mut_ptr(),
-            out_ctx,
+            out_ctx.as_mut_ptr(),
             aud_out_stream_idx,
             "dash",
             aud_frame_period,
@@ -1180,13 +1151,12 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     }
 
     // ── 15. Finalize ──────────────────────────────────────────────────────────
-    av_write_trailer(out_ctx);
+    let _ = out_ctx.write_trailer();
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    // Owned frames/packet and encoder / decoder / resample / scale contexts
-    // (including every rendition in the Vec) drop on scope exit; only the raw
-    // format contexts need explicit teardown.
-    cleanup_output_ctx(out_ctx);
+    // Owned frames/packet, encoder / decoder / resample / scale contexts (including
+    // every rendition in the Vec), and the owned `out_ctx` drop on scope exit; only
+    // the raw `input_ctx` needs an explicit close.
     ff_sys::avformat::close_input(&mut input_ctx);
 
     log::info!(
