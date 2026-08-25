@@ -17,8 +17,6 @@
 #![allow(clippy::borrow_as_ptr)]
 #![allow(clippy::ref_as_ptr)]
 
-use std::ptr;
-
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
     AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat, av_rescale_q,
@@ -219,8 +217,7 @@ impl MuxerCore {
             for (plane_idx, (src_plane, &src_stride)) in
                 planes.iter().zip(strides.iter()).enumerate().take(3)
             {
-                // SAFETY: vid_enc_frame is a get_buffer'd frame; linesize is a plain field.
-                let dst_stride = (*self.vid_enc_frame.as_ptr()).linesize[plane_idx] as usize;
+                let dst_stride = self.vid_enc_frame.linesize(plane_idx) as usize;
                 let Some(dst_plane) = self.vid_enc_frame.video_plane_mut(plane_idx) else {
                     continue;
                 };
@@ -241,14 +238,13 @@ impl MuxerCore {
 
         if self
             .vid_enc_ctx
-            .send_frame(self.vid_enc_frame.as_ptr())
+            .send_frame_ref(Some(&self.vid_enc_frame))
             .is_ok()
         {
-            // SAFETY: out_ctx is valid; vid_out_stream_idx is valid.
             drain_encoder(
-                self.vid_enc_ctx.as_mut_ptr(),
-                self.out_ctx.as_mut_ptr(),
-                self.vid_out_stream_idx,
+                &mut self.vid_enc_ctx,
+                &mut self.out_ctx,
+                self.vid_out_stream_idx as usize,
                 self.log_prefix,
                 AVRational {
                     num: 1,
@@ -275,11 +271,6 @@ impl MuxerCore {
         if self.aud_enc_ctx.is_none() || self.aud_out_stream_idx < 0 {
             return; // audio not configured
         }
-
-        // Raw output-context pointer for `drain_encoder`; taking it up front frees
-        // the `&mut self.out_ctx` borrow so it does not overlap the `aud_enc_ctx`
-        // field borrow held during the drain call below.
-        let out_ctx = self.out_ctx.as_mut_ptr();
 
         let in_fmt = sample_format_to_av(frame.format());
         let in_rate = frame.sample_rate() as i32;
@@ -346,17 +337,16 @@ impl MuxerCore {
             self.aud_enc_frame.set_nb_samples(n);
             self.aud_enc_frame.set_pts(self.audio_pts);
             if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
-                && aud_ctx.send_frame(self.aud_enc_frame.as_ptr()).is_ok()
+                && aud_ctx.send_frame_ref(Some(&self.aud_enc_frame)).is_ok()
             {
                 let aud_frame_period = AVRational {
                     num: aud_ctx.frame_size(),
                     den: aud_ctx.sample_rate(),
                 };
-                // SAFETY: out_ctx is valid; aud_out_stream_idx is valid.
                 drain_encoder(
-                    aud_ctx.as_mut_ptr(),
-                    out_ctx,
-                    self.aud_out_stream_idx,
+                    aud_ctx,
+                    &mut self.out_ctx,
+                    self.aud_out_stream_idx as usize,
                     self.log_prefix,
                     aud_frame_period,
                 );
@@ -379,17 +369,12 @@ impl MuxerCore {
     /// `self` must have been initialised by the enclosing inner type's
     /// `open_unsafe`. This method must be called at most once.
     pub(crate) unsafe fn flush_and_close_unsafe(&mut self) {
-        // Raw output-context pointer for the `drain_encoder` calls below; taking
-        // it up front frees the `&mut self.out_ctx` borrow so it does not overlap
-        // the encoder-context field borrows.
-        let out_ctx = self.out_ctx.as_mut_ptr();
-
         // ── Flush video encoder ───────────────────────────────────────────────
-        let _ = self.vid_enc_ctx.send_frame(ptr::null());
+        let _ = self.vid_enc_ctx.send_frame_ref(None);
         drain_encoder(
-            self.vid_enc_ctx.as_mut_ptr(),
-            out_ctx,
-            self.vid_out_stream_idx,
+            &mut self.vid_enc_ctx,
+            &mut self.out_ctx,
+            self.vid_out_stream_idx as usize,
             self.log_prefix,
             AVRational {
                 num: 1,
@@ -410,18 +395,13 @@ impl MuxerCore {
                 }
 
                 if self.aud_enc_frame.get_buffer(0).is_ok() {
-                    let out_count = self.aud_frame_size;
-                    // Flush the resampler with a NULL input. `convert_into_frame`
-                    // models the normal-input case; the flush needs a NULL input
-                    // pointer, so the raw `convert` is used here.
+                    // Flush the resampler with a NULL input; `flush_into_frame`
+                    // writes the drained samples into the frame's `nb_samples`
+                    // (set to `aud_frame_size` above).
                     let flushed = if let Some(swr) = self.swr_ctx.as_mut() {
-                        swr.convert(
-                            (*self.aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
-                            out_count,
-                            ptr::null(),
-                            0,
-                        )
-                        .ok()
+                        // SAFETY: `aud_enc_frame` was just `get_buffer`'d, so its
+                        //         output planes are allocated for the flush.
+                        swr.flush_into_frame(&mut self.aud_enc_frame).ok()
                     } else {
                         None
                     };
@@ -431,16 +411,16 @@ impl MuxerCore {
                         self.aud_enc_frame.set_nb_samples(n);
                         self.aud_enc_frame.set_pts(self.audio_pts);
                         if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
-                            && aud_ctx.send_frame(self.aud_enc_frame.as_ptr()).is_ok()
+                            && aud_ctx.send_frame_ref(Some(&self.aud_enc_frame)).is_ok()
                         {
                             let aud_frame_period = AVRational {
                                 num: aud_ctx.frame_size(),
                                 den: aud_ctx.sample_rate(),
                             };
                             drain_encoder(
-                                aud_ctx.as_mut_ptr(),
-                                out_ctx,
-                                self.aud_out_stream_idx,
+                                aud_ctx,
+                                &mut self.out_ctx,
+                                self.aud_out_stream_idx as usize,
                                 self.log_prefix,
                                 aud_frame_period,
                             );
@@ -452,15 +432,15 @@ impl MuxerCore {
 
             // Flush the AAC encoder itself.
             if let Some(aud_ctx) = self.aud_enc_ctx.as_mut() {
-                let _ = aud_ctx.send_frame(ptr::null());
+                let _ = aud_ctx.send_frame_ref(None);
                 let aud_frame_period = AVRational {
                     num: aud_ctx.frame_size(),
                     den: aud_ctx.sample_rate(),
                 };
                 drain_encoder(
-                    aud_ctx.as_mut_ptr(),
-                    out_ctx,
-                    self.aud_out_stream_idx,
+                    aud_ctx,
+                    &mut self.out_ctx,
+                    self.aud_out_stream_idx as usize,
                     self.log_prefix,
                     aud_frame_period,
                 );

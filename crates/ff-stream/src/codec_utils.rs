@@ -12,13 +12,14 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::borrow_as_ptr)]
 #![allow(clippy::ref_as_ptr)]
 
 use ff_sys::{
-    AVCodecContext, AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE, AVRational,
-    AVSampleFormat, av_interleaved_write_frame, av_packet_rescale_ts, av_rescale_q,
+    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE, AVRational, AVSampleFormat, ReceiveOutcome,
+    av_rescale_q,
 };
 
 use ff_format::{PixelFormat, SampleFormat};
@@ -183,20 +184,17 @@ pub(crate) fn sample_format_to_av(fmt: SampleFormat) -> AVSampleFormat {
 ///   for audio).  Converted to `enc_ctx->time_base` units inside this function so
 ///   it is immune to lazy time-base mutations.
 ///
-/// # Safety
+/// # Preconditions
 ///
-/// - `enc_ctx` must be a valid, fully-opened `AVCodecContext` with at least
-///   one call to `avcodec_send_frame` preceding this call.
-/// - `out_ctx` must be a valid `AVFormatContext` whose header has been written.
-/// - `stream_idx` must be a valid index into `out_ctx`'s stream array.
-// `enc_ctx` stays a raw `*mut AVCodecContext` (issue carve-out): this helper is
-// shared by the MuxerCore/live family and the HLS/DASH transcode paths, so its
-// signature is kept stable; the internal packet is owned (`Packet`) so there is
-// no manual `av_packet_free`.
-pub(crate) unsafe fn drain_encoder(
-    enc_ctx: *mut AVCodecContext,
-    out_ctx: *mut AVFormatContext,
-    stream_idx: i32,
+/// - `enc_ctx` must be fully opened with at least one `send_frame` preceding this
+///   call, and `out_ctx`'s header must already have been written. Both are
+///   borrowed mutably, so their lifecycle stays owned by the caller.
+/// - `stream_idx` must be a valid index into `out_ctx`'s stream array (an
+///   out-of-range index yields a `0/0` time base and the write fails).
+pub(crate) fn drain_encoder(
+    enc_ctx: &mut ff_sys::CodecContext,
+    out_ctx: &mut ff_sys::OutputFormatContext,
+    stream_idx: usize,
     log_prefix: &str,
     frame_period: AVRational,
 ) {
@@ -204,46 +202,34 @@ pub(crate) unsafe fn drain_encoder(
         return;
     };
 
-    // SAFETY: out_ctx is valid and stream_idx is a valid stream index.
-    let stream_tb = (*(*(*out_ctx).streams.add(stream_idx as usize))).time_base;
-    // SAFETY: enc_ctx is a valid, open codec context.
+    let stream_tb = out_ctx.stream_time_base(stream_idx);
     // Read enc_tb HERE — some encoders (mpeg4) mutate time_base lazily on first
     // send_frame, so the value may differ from what the caller observed earlier.
-    let enc_tb = (*enc_ctx).time_base;
+    let enc_tb = enc_ctx.time_base();
 
     // Compute the correct per-frame duration in enc_tb units using the live enc_tb.
     // av_rescale_q converts 1 unit of `frame_period` (e.g. 1/fps second) into enc_tb ticks.
-    let frame_dur_enc_tb = av_rescale_q(1, frame_period, enc_tb);
+    // SAFETY: `av_rescale_q` is a pure integer rescale with no pointer arguments.
+    let frame_dur_enc_tb = unsafe { av_rescale_q(1, frame_period, enc_tb) };
 
-    loop {
-        match ff_sys::avcodec::receive_packet(enc_ctx, pkt.as_mut_ptr()) {
-            Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                break;
-            }
-            Err(_) => break,
-            Ok(()) => {}
-        }
-
-        // The packet fields have no typed accessor; touch them through the pointer.
-        let p = pkt.as_mut_ptr();
-
+    // NeedInput (EAGAIN) / Drained (EOF) / real error all end the drain.
+    while let Ok(ReceiveOutcome::Frame) = enc_ctx.receive_packet_into(&mut pkt) {
         // Always override duration with the correct per-frame value BEFORE rescaling.
         if frame_dur_enc_tb > 0 {
-            (*p).duration = frame_dur_enc_tb;
+            pkt.set_duration(frame_dur_enc_tb);
         }
 
         // Rescale pts/dts/duration from encoder time_base to stream time_base.
-        // SAFETY: p is valid; enc_tb and stream_tb are valid AVRational values.
-        av_packet_rescale_ts(p, enc_tb, stream_tb);
+        pkt.rescale_ts(enc_tb, stream_tb);
 
-        (*p).stream_index = stream_idx;
-        let ret = av_interleaved_write_frame(out_ctx, p);
+        pkt.set_stream_index(stream_idx as i32);
+        let ret = out_ctx.write_interleaved(&mut pkt);
         pkt.unref();
-        if ret < 0 {
+        if let Err(e) = ret {
             log::warn!(
                 "{log_prefix} av_interleaved_write_frame failed \
                  stream_index={stream_idx} error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
             break;
         }

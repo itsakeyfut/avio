@@ -25,9 +25,8 @@ use std::path::Path;
 use std::ptr;
 
 use ff_sys::{
-    AVFormatContext, AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
-    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_opt_set,
-    av_rescale_q, avformat_new_stream,
+    AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE, AVPixelFormat,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_rescale_q,
 };
 
 use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
@@ -106,8 +105,10 @@ unsafe fn write_hls_unsafe(
     let mut audio_stream_idx: i32 = -1;
 
     for i in 0..nb_streams {
-        let stream = *(*input_ctx.as_ptr()).streams.add(i);
-        let codec_type = (*(*stream).codecpar).codec_type;
+        let Some(stream) = input_ctx.stream(i) else {
+            continue;
+        };
+        let codec_type = stream.codecpar().codec_type();
         if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO && video_stream_idx < 0 {
             video_stream_idx = i as i32;
         } else if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO && audio_stream_idx < 0 {
@@ -122,23 +123,30 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 3. Read video stream properties ──────────────────────────────────────
-    let video_stream = *(*input_ctx.as_ptr()).streams.add(video_stream_idx as usize);
-    let video_codecpar = (*video_stream).codecpar;
+    let vid_stream = input_ctx
+        .stream(video_stream_idx as usize)
+        .ok_or_else(|| ffmpeg_err_msg("video stream not found"))?;
+    let vid_par = vid_stream.codecpar();
     let enc_width = if target_width > 0 {
         target_width
     } else {
-        (*video_codecpar).width
+        vid_par.width()
     };
     let enc_height = if target_height > 0 {
         target_height
     } else {
-        (*video_codecpar).height
+        vid_par.height()
     };
-    let video_fps = detect_fps(video_stream, input_ctx.as_mut_ptr());
+    let video_fps = detect_fps(
+        vid_stream.avg_frame_rate(),
+        vid_stream.r_frame_rate(),
+        vid_stream.nb_frames(),
+        input_ctx.duration(),
+    );
     let fps_int = video_fps.round().max(1.0) as i32;
 
     // ── 4. Open input video decoder ────────────────────────────────────────────
-    let vid_codec_id = (*video_codecpar).codec_id;
+    let vid_codec_id = vid_par.codec_id();
     let vid_decoder = ff_sys::Codec::find_decoder(vid_codec_id)
         .ok_or_else(|| ffmpeg_err_msg("no video decoder available for input stream"))?;
 
@@ -146,7 +154,7 @@ unsafe fn write_hls_unsafe(
         ff_sys::CodecContext::new(Some(vid_decoder)).map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .parameters_to_context(video_codecpar)
+        .apply_parameters(&vid_par)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
@@ -158,18 +166,20 @@ unsafe fn write_hls_unsafe(
     let mut aud_sample_rate: i32 = 44100;
     let mut aud_nb_channels: i32 = 2;
 
-    if audio_stream_idx >= 0 {
-        let audio_stream = *(*input_ctx.as_ptr()).streams.add(audio_stream_idx as usize);
-        let audio_codecpar = (*audio_stream).codecpar;
-        let aud_codec_id = (*audio_codecpar).codec_id;
+    if audio_stream_idx >= 0
+        && let Some(aud_par) = input_ctx
+            .stream(audio_stream_idx as usize)
+            .map(|s| s.codecpar())
+    {
+        let aud_codec_id = aud_par.codec_id();
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.parameters_to_context(audio_codecpar).is_ok()
+                if ctx.apply_parameters(&aud_par).is_ok()
                     && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
                 {
-                    aud_sample_rate = (*ctx.as_ptr()).sample_rate;
-                    aud_nb_channels = (*ctx.as_ptr()).ch_layout.nb_channels;
+                    aud_sample_rate = ctx.sample_rate();
+                    aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
                     log::info!(
                         "hls audio decoder opened sample_rate={aud_sample_rate} \
@@ -208,45 +218,25 @@ unsafe fn write_hls_unsafe(
         CString::new(seg_time_str.as_str()),
         CString::new(seg_filename.as_str()),
     ) {
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"hls_time".as_ptr(),
-            c_seg_time.as_ptr(),
-            0,
-        );
-        if ret < 0 {
+        if let Err(e) = out_ctx.set_opt(c"hls_time", &c_seg_time) {
             log::warn!(
                 "hls_time option not supported, using default \
                  requested={seg_time_str} error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         }
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"hls_segment_filename".as_ptr(),
-            c_seg_file.as_ptr(),
-            0,
-        );
-        if ret < 0 {
+        if let Err(e) = out_ctx.set_opt(c"hls_segment_filename", &c_seg_file) {
             log::warn!(
                 "hls_segment_filename option not supported, using default \
                  requested={seg_filename} error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         }
-        if use_fmp4 {
-            let ret = av_opt_set(
-                (*out_ctx.as_mut_ptr()).priv_data,
-                c"hls_segment_type".as_ptr(),
-                c"fmp4".as_ptr(),
-                0,
+        if use_fmp4 && let Err(e) = out_ctx.set_opt(c"hls_segment_type", c"fmp4") {
+            log::warn!(
+                "hls_segment_type fmp4 option not supported error={}",
+                ff_sys::av_error_string(e.code())
             );
-            if ret < 0 {
-                log::warn!(
-                    "hls_segment_type fmp4 option not supported error={}",
-                    ff_sys::av_error_string(ret)
-                );
-            }
         }
     }
 
@@ -257,20 +247,23 @@ unsafe fn write_hls_unsafe(
 
     let mut vid_enc_ctx =
         ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| ffmpeg_err(e.code()))?;
-    let venc = vid_enc_ctx.as_mut_ptr();
 
-    (*venc).width = enc_width;
-    (*venc).height = enc_height;
-    (*venc).time_base.num = 1;
-    (*venc).time_base.den = fps_int;
-    (*venc).framerate.num = fps_int;
-    (*venc).framerate.den = 1;
-    (*venc).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-    (*venc).bit_rate = if target_bitrate > 0 {
+    vid_enc_ctx.set_width(enc_width);
+    vid_enc_ctx.set_height(enc_height);
+    vid_enc_ctx.set_time_base(AVRational {
+        num: 1,
+        den: fps_int,
+    });
+    vid_enc_ctx.set_framerate(AVRational {
+        num: fps_int,
+        den: 1,
+    });
+    vid_enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
+    vid_enc_ctx.set_bit_rate(if target_bitrate > 0 {
         target_bitrate
     } else {
         2_000_000
-    };
+    });
 
     // On error the owned `vid_enc_ctx` / decoders / `input_ctx` / `out_ctx` all
     // drop; no manual teardown is needed.
@@ -279,16 +272,12 @@ unsafe fn write_hls_unsafe(
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────
-    let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
-    if vid_out_stream.is_null() {
-        return Err(ffmpeg_err_msg("cannot create video output stream"));
-    }
-    (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
-    let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-    // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-    vid_enc_ctx
-        .parameters_from_context((*vid_out_stream).codecpar)
+    let vid_out_stream_idx = out_ctx
+        .new_stream(Some(&vid_enc_codec))
+        .map_err(|e| ffmpeg_err(e.code()))? as i32;
+    out_ctx.set_stream_time_base(vid_out_stream_idx as usize, vid_enc_ctx.time_base());
+    out_ctx
+        .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 10. Open AAC audio encoder and add audio stream (optional) ────────────
@@ -300,19 +289,18 @@ unsafe fn write_hls_unsafe(
         match crate::codec_utils::open_aac_encoder(aud_sample_rate, aud_nb_channels, 192_000, "hls")
         {
             Ok(ctx) => {
-                let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
-                if aud_out_stream.is_null() {
-                    // `ctx` drops here (frees the codec context).
-                    log::warn!("hls cannot create audio output stream, skipping audio");
-                    audio_stream_idx = -1;
-                } else {
-                    (*aud_out_stream).time_base.num = 1;
-                    (*aud_out_stream).time_base.den = aud_sample_rate;
-                    aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-                    // SAFETY: aud_out_stream and ctx are valid; avcodec_open2 called.
-                    if ctx
-                        .parameters_from_context((*aud_out_stream).codecpar)
+                if let Ok(aud_idx) = out_ctx.new_stream(None) {
+                    let aud_idx = aud_idx as i32;
+                    aud_out_stream_idx = aud_idx;
+                    out_ctx.set_stream_time_base(
+                        aud_idx as usize,
+                        AVRational {
+                            num: 1,
+                            den: aud_sample_rate,
+                        },
+                    );
+                    if out_ctx
+                        .apply_stream_params_from_context(aud_idx as usize, &ctx)
                         .is_err()
                     {
                         log::warn!("hls audio stream codecpar copy failed");
@@ -320,15 +308,13 @@ unsafe fn write_hls_unsafe(
 
                     // Set up resampler: decoded audio → FLTP at aud_sample_rate.
                     if let Some(dec) = aud_dec_ctx.as_ref() {
-                        let enc_ptr = ctx.as_ptr();
-                        let dec_ptr = dec.as_ptr();
                         if let Ok(swr) = ff_sys::ResampleContext::new(
-                            &(*enc_ptr).ch_layout,
-                            (*enc_ptr).sample_fmt,
-                            (*enc_ptr).sample_rate,
-                            &(*dec_ptr).ch_layout,
-                            (*dec_ptr).sample_fmt,
-                            (*dec_ptr).sample_rate,
+                            ctx.ch_layout(),
+                            ctx.sample_fmt(),
+                            ctx.sample_rate(),
+                            dec.ch_layout(),
+                            dec.sample_fmt(),
+                            dec.sample_rate(),
                         ) {
                             swr_ctx = Some(swr);
                             aud_enc_ctx = Some(ctx);
@@ -341,6 +327,10 @@ unsafe fn write_hls_unsafe(
                         log::warn!("hls audio decoder missing, skipping audio");
                         audio_stream_idx = -1;
                     }
+                } else {
+                    // `ctx` drops here (frees the codec context).
+                    log::warn!("hls cannot create audio output stream, skipping audio");
+                    audio_stream_idx = -1;
                 }
             }
             Err(e) => {
@@ -368,7 +358,7 @@ unsafe fn write_hls_unsafe(
     log::info!(
         "hls output context ready width={enc_width} height={enc_height} fps={video_fps:.1} \
          bit_rate={} audio={}",
-        (*vid_enc_ctx.as_ptr()).bit_rate,
+        vid_enc_ctx.bit_rate(),
         audio_stream_idx >= 0,
     );
 
@@ -505,11 +495,11 @@ unsafe fn write_hls_unsafe(
                     false
                 };
 
-                if scaled && vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
+                if scaled && vid_enc_ctx.send_frame_ref(Some(&vid_enc_frame)).is_ok() {
                     crate::codec_utils::drain_encoder(
-                        vid_enc_ctx.as_mut_ptr(),
-                        out_ctx.as_mut_ptr(),
-                        vid_out_stream_idx,
+                        &mut vid_enc_ctx,
+                        &mut out_ctx,
+                        vid_out_stream_idx as usize,
                         "hls",
                         vid_frame_period,
                     );
@@ -563,11 +553,11 @@ unsafe fn write_hls_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "hls",
                             aud_frame_period,
                         );
@@ -584,11 +574,11 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 14. Flush encoders ────────────────────────────────────────────────────
-    let _ = vid_enc_ctx.send_frame(ptr::null());
+    let _ = vid_enc_ctx.send_frame_ref(None);
     crate::codec_utils::drain_encoder(
-        vid_enc_ctx.as_mut_ptr(),
-        out_ctx.as_mut_ptr(),
-        vid_out_stream_idx,
+        &mut vid_enc_ctx,
+        &mut out_ctx,
+        vid_out_stream_idx as usize,
         "hls",
         vid_frame_period,
     );
@@ -606,17 +596,13 @@ unsafe fn write_hls_unsafe(
             aud_enc_frame.set_nb_samples(enc_frame_size);
             let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
             if aud_enc_frame.get_buffer(0).is_ok() {
-                // Flush the resampler with a NULL input. `convert_into_frame`
-                // models the normal-input case; the flush needs a NULL input
-                // pointer, so the raw `convert` is used here.
+                // Flush the resampler with a NULL input; `flush_into_frame`
+                // drains the buffered samples into the frame's `nb_samples`
+                // (set to `enc_frame_size` above).
                 let flushed = if let Some(swr) = swr_ctx.as_mut() {
-                    swr.convert(
-                        (*aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
-                        enc_frame_size,
-                        ptr::null(),
-                        0,
-                    )
-                    .ok()
+                    // SAFETY: `aud_enc_frame` was just `get_buffer`'d, so its
+                    //         output planes are allocated for the flush.
+                    swr.flush_into_frame(&mut aud_enc_frame).ok()
                 } else {
                     None
                 };
@@ -625,11 +611,11 @@ unsafe fn write_hls_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "hls",
                             aud_frame_period,
                         );
@@ -638,11 +624,11 @@ unsafe fn write_hls_unsafe(
                 aud_enc_frame.unref();
             }
         }
-        let _ = aud_enc.send_frame(ptr::null());
+        let _ = aud_enc.send_frame_ref(None);
         crate::codec_utils::drain_encoder(
-            aud_enc.as_mut_ptr(),
-            out_ctx.as_mut_ptr(),
-            aud_out_stream_idx,
+            aud_enc,
+            &mut out_ctx,
+            aud_out_stream_idx as usize,
             "hls",
             aud_frame_period,
         );
@@ -675,7 +661,7 @@ unsafe fn write_hls_unsafe(
 /// in order and rejects values outside the sane range [1, 240] fps.
 /// Falls back to `nb_frames/duration` and finally to 25 fps.
 #[allow(clippy::cast_precision_loss)]
-unsafe fn detect_fps(stream: *mut ff_sys::AVStream, fmt_ctx: *mut AVFormatContext) -> f64 {
+fn detect_fps(avg: AVRational, rfr: AVRational, nb_frames: i64, duration: i64) -> f64 {
     const MIN_FPS: f64 = 1.0;
     const MAX_FPS: f64 = 240.0;
 
@@ -692,26 +678,55 @@ unsafe fn detect_fps(stream: *mut ff_sys::AVStream, fmt_ctx: *mut AVFormatContex
     };
 
     // 1. avg_frame_rate — reliable for most containers
-    let avg = (*stream).avg_frame_rate;
     if let Some(fps) = try_rational(avg.num, avg.den) {
         return fps;
     }
 
     // 2. r_frame_rate — constant-framerate indicator
-    let rfr = (*stream).r_frame_rate;
     if let Some(fps) = try_rational(rfr.num, rfr.den) {
         return fps;
     }
 
     // 3. Derive from nb_frames and total duration (robust for MPEG-4 Part 2)
-    let nb = (*stream).nb_frames;
-    let dur = (*fmt_ctx).duration; // in AV_TIME_BASE (1 000 000) microseconds
-    if nb > 0 && dur > 0 {
-        let fps = nb as f64 / (dur as f64 / 1_000_000.0);
+    // `duration` is in AV_TIME_BASE (1 000 000) microseconds.
+    if nb_frames > 0 && duration > 0 {
+        let fps = nb_frames as f64 / (duration as f64 / 1_000_000.0);
         if (MIN_FPS..=MAX_FPS).contains(&fps) {
             return fps;
         }
     }
 
     25.0 // sane default
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_fps;
+    use ff_sys::AVRational;
+
+    fn r(num: i32, den: i32) -> AVRational {
+        AVRational { num, den }
+    }
+
+    #[test]
+    fn detect_fps_should_prefer_avg_frame_rate() {
+        assert_eq!(detect_fps(r(30, 1), r(60, 1), 0, 0), 30.0);
+    }
+
+    #[test]
+    fn detect_fps_should_fall_back_to_r_frame_rate_when_avg_out_of_range() {
+        // avg = 1_250_000/49 ≈ 25510 fps is outside [1, 240] and is rejected.
+        assert_eq!(detect_fps(r(1_250_000, 49), r(24, 1), 0, 0), 24.0);
+    }
+
+    #[test]
+    fn detect_fps_should_derive_from_nb_frames_and_duration() {
+        // 300 frames over 10 s (10_000_000 µs) = 30 fps, distinct from the 25.0 default.
+        assert_eq!(detect_fps(r(0, 0), r(0, 0), 300, 10_000_000), 30.0);
+    }
+
+    #[test]
+    fn detect_fps_should_default_to_25_when_all_sources_unknown() {
+        assert_eq!(detect_fps(r(0, 0), r(0, 0), 0, 0), 25.0);
+    }
 }
