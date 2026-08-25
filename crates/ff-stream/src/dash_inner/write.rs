@@ -5,8 +5,7 @@ use std::ptr;
 
 use ff_sys::{
     AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_opt_set, av_rescale_q,
-    avformat_new_stream,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_rescale_q,
 };
 
 use crate::error::StreamError;
@@ -42,8 +41,10 @@ pub(super) unsafe fn write_dash_unsafe(
     let mut audio_stream_idx: i32 = -1;
 
     for i in 0..nb_streams {
-        let stream = *(*input_ctx.as_ptr()).streams.add(i);
-        let codec_type = (*(*stream).codecpar).codec_type;
+        let Some(stream) = input_ctx.stream(i) else {
+            continue;
+        };
+        let codec_type = stream.codecpar().codec_type();
         if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO && video_stream_idx < 0 {
             video_stream_idx = i as i32;
         } else if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO && audio_stream_idx < 0 {
@@ -58,18 +59,25 @@ pub(super) unsafe fn write_dash_unsafe(
     }
 
     // ── 3. Read video stream properties ──────────────────────────────────────
-    let video_stream = *(*input_ctx.as_ptr()).streams.add(video_stream_idx as usize);
-    let video_codecpar = (*video_stream).codecpar;
-    let enc_width = (*video_codecpar).width;
-    let enc_height = (*video_codecpar).height;
-    let video_fps = detect_fps(video_stream, input_ctx.as_mut_ptr());
+    let vid_stream = input_ctx
+        .stream(video_stream_idx as usize)
+        .ok_or_else(|| ffmpeg_err_msg("video stream not found"))?;
+    let vid_par = vid_stream.codecpar();
+    let enc_width = vid_par.width();
+    let enc_height = vid_par.height();
+    let video_fps = detect_fps(
+        vid_stream.avg_frame_rate(),
+        vid_stream.r_frame_rate(),
+        vid_stream.nb_frames(),
+        input_ctx.duration(),
+    );
     let fps_int = video_fps.round().max(1.0) as i32;
 
     // Compute keyframe interval from segment duration and fps
     let keyframe_interval = (segment_duration_secs * fps_int as f64).round().max(1.0) as u32;
 
     // ── 4. Open input video decoder ────────────────────────────────────────────
-    let vid_codec_id = (*video_codecpar).codec_id;
+    let vid_codec_id = vid_par.codec_id();
     let vid_decoder = ff_sys::Codec::find_decoder(vid_codec_id)
         .ok_or_else(|| ffmpeg_err_msg("no video decoder available for input stream"))?;
 
@@ -77,7 +85,7 @@ pub(super) unsafe fn write_dash_unsafe(
         ff_sys::CodecContext::new(Some(vid_decoder)).map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .parameters_to_context(video_codecpar)
+        .apply_parameters(&vid_par)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
@@ -89,18 +97,20 @@ pub(super) unsafe fn write_dash_unsafe(
     let mut aud_sample_rate: i32 = 44100;
     let mut aud_nb_channels: i32 = 2;
 
-    if audio_stream_idx >= 0 {
-        let audio_stream = *(*input_ctx.as_ptr()).streams.add(audio_stream_idx as usize);
-        let audio_codecpar = (*audio_stream).codecpar;
-        let aud_codec_id = (*audio_codecpar).codec_id;
+    if audio_stream_idx >= 0
+        && let Some(aud_par) = input_ctx
+            .stream(audio_stream_idx as usize)
+            .map(|s| s.codecpar())
+    {
+        let aud_codec_id = aud_par.codec_id();
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.parameters_to_context(audio_codecpar).is_ok()
+                if ctx.apply_parameters(&aud_par).is_ok()
                     && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
                 {
-                    aud_sample_rate = (*ctx.as_ptr()).sample_rate;
-                    aud_nb_channels = (*ctx.as_ptr()).ch_layout.nb_channels;
+                    aud_sample_rate = ctx.sample_rate();
+                    aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
                     log::info!(
                         "dash audio decoder opened sample_rate={aud_sample_rate} \
@@ -133,20 +143,14 @@ pub(super) unsafe fn write_dash_unsafe(
 
     // ── 7. Set DASH muxer options ──────────────────────────────────────────────
     let seg_duration_str = format!("{}", segment_duration_secs as u32);
-    if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str()) {
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"seg_duration".as_ptr(),
-            c_seg_dur.as_ptr(),
-            0,
+    if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str())
+        && let Err(e) = out_ctx.set_opt(c"seg_duration", &c_seg_dur)
+    {
+        log::warn!(
+            "dash seg_duration option not supported, using default \
+             requested={seg_duration_str} error={}",
+            ff_sys::av_error_string(e.code())
         );
-        if ret < 0 {
-            log::warn!(
-                "dash seg_duration option not supported, using default \
-                 requested={seg_duration_str} error={}",
-                ff_sys::av_error_string(ret)
-            );
-        }
     }
 
     // ── 8. Open H.264 video encoder ───────────────────────────────────────────
@@ -156,16 +160,19 @@ pub(super) unsafe fn write_dash_unsafe(
 
     let mut vid_enc_ctx =
         ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| ffmpeg_err(e.code()))?;
-    let venc = vid_enc_ctx.as_mut_ptr();
 
-    (*venc).width = enc_width;
-    (*venc).height = enc_height;
-    (*venc).time_base.num = 1;
-    (*venc).time_base.den = fps_int;
-    (*venc).framerate.num = fps_int;
-    (*venc).framerate.den = 1;
-    (*venc).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-    (*venc).bit_rate = 2_000_000;
+    vid_enc_ctx.set_width(enc_width);
+    vid_enc_ctx.set_height(enc_height);
+    vid_enc_ctx.set_time_base(AVRational {
+        num: 1,
+        den: fps_int,
+    });
+    vid_enc_ctx.set_framerate(AVRational {
+        num: fps_int,
+        den: 1,
+    });
+    vid_enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
+    vid_enc_ctx.set_bit_rate(2_000_000);
 
     // On error the owned `vid_enc_ctx` / decoders / `input_ctx` / `out_ctx` all
     // drop; no manual teardown is needed.
@@ -174,16 +181,12 @@ pub(super) unsafe fn write_dash_unsafe(
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────
-    let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
-    if vid_out_stream.is_null() {
-        return Err(ffmpeg_err_msg("cannot create video output stream"));
-    }
-    (*vid_out_stream).time_base = (*vid_enc_ctx.as_ptr()).time_base;
-    let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-    // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-    vid_enc_ctx
-        .parameters_from_context((*vid_out_stream).codecpar)
+    let vid_out_stream_idx = out_ctx
+        .new_stream(Some(&vid_enc_codec))
+        .map_err(|e| ffmpeg_err(e.code()))? as i32;
+    out_ctx.set_stream_time_base(vid_out_stream_idx as usize, vid_enc_ctx.time_base());
+    out_ctx
+        .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 10. Open AAC audio encoder and add audio stream (optional) ────────────
@@ -194,19 +197,18 @@ pub(super) unsafe fn write_dash_unsafe(
     if audio_stream_idx >= 0 {
         match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
             Ok(ctx) => {
-                let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
-                if aud_out_stream.is_null() {
-                    // `ctx` drops here (frees the codec context).
-                    log::warn!("dash cannot create audio output stream, skipping audio");
-                    audio_stream_idx = -1;
-                } else {
-                    (*aud_out_stream).time_base.num = 1;
-                    (*aud_out_stream).time_base.den = aud_sample_rate;
-                    aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-                    // SAFETY: aud_out_stream and ctx are valid; avcodec_open2 called.
-                    if ctx
-                        .parameters_from_context((*aud_out_stream).codecpar)
+                if let Ok(aud_idx) = out_ctx.new_stream(None) {
+                    let aud_idx = aud_idx as i32;
+                    aud_out_stream_idx = aud_idx;
+                    out_ctx.set_stream_time_base(
+                        aud_idx as usize,
+                        AVRational {
+                            num: 1,
+                            den: aud_sample_rate,
+                        },
+                    );
+                    if out_ctx
+                        .apply_stream_params_from_context(aud_idx as usize, &ctx)
                         .is_err()
                     {
                         log::warn!("dash audio stream codecpar copy failed");
@@ -214,15 +216,13 @@ pub(super) unsafe fn write_dash_unsafe(
 
                     // Set up resampler: decoded audio → FLTP at aud_sample_rate.
                     if let Some(dec) = aud_dec_ctx.as_ref() {
-                        let enc_ptr = ctx.as_ptr();
-                        let dec_ptr = dec.as_ptr();
                         if let Ok(swr) = ff_sys::ResampleContext::new(
-                            &(*enc_ptr).ch_layout,
-                            (*enc_ptr).sample_fmt,
-                            (*enc_ptr).sample_rate,
-                            &(*dec_ptr).ch_layout,
-                            (*dec_ptr).sample_fmt,
-                            (*dec_ptr).sample_rate,
+                            ctx.ch_layout(),
+                            ctx.sample_fmt(),
+                            ctx.sample_rate(),
+                            dec.ch_layout(),
+                            dec.sample_fmt(),
+                            dec.sample_rate(),
                         ) {
                             swr_ctx = Some(swr);
                             aud_enc_ctx = Some(ctx);
@@ -235,6 +235,10 @@ pub(super) unsafe fn write_dash_unsafe(
                         log::warn!("dash audio decoder missing, skipping audio");
                         audio_stream_idx = -1;
                     }
+                } else {
+                    // `ctx` drops here (frees the codec context).
+                    log::warn!("dash cannot create audio output stream, skipping audio");
+                    audio_stream_idx = -1;
                 }
             }
             Err(e) => {
@@ -396,11 +400,11 @@ pub(super) unsafe fn write_dash_unsafe(
                     false
                 };
 
-                if scaled && vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
+                if scaled && vid_enc_ctx.send_frame_ref(Some(&vid_enc_frame)).is_ok() {
                     crate::codec_utils::drain_encoder(
-                        vid_enc_ctx.as_mut_ptr(),
-                        out_ctx.as_mut_ptr(),
-                        vid_out_stream_idx,
+                        &mut vid_enc_ctx,
+                        &mut out_ctx,
+                        vid_out_stream_idx as usize,
                         "dash",
                         vid_frame_period,
                     );
@@ -454,11 +458,11 @@ pub(super) unsafe fn write_dash_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "dash",
                             aud_frame_period,
                         );
@@ -475,11 +479,11 @@ pub(super) unsafe fn write_dash_unsafe(
     }
 
     // ── 14. Flush encoders ────────────────────────────────────────────────────
-    let _ = vid_enc_ctx.send_frame(ptr::null());
+    let _ = vid_enc_ctx.send_frame_ref(None);
     crate::codec_utils::drain_encoder(
-        vid_enc_ctx.as_mut_ptr(),
-        out_ctx.as_mut_ptr(),
-        vid_out_stream_idx,
+        &mut vid_enc_ctx,
+        &mut out_ctx,
+        vid_out_stream_idx as usize,
         "dash",
         vid_frame_period,
     );
@@ -497,17 +501,13 @@ pub(super) unsafe fn write_dash_unsafe(
             aud_enc_frame.set_nb_samples(enc_frame_size);
             let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
             if aud_enc_frame.get_buffer(0).is_ok() {
-                // Flush the resampler with a NULL input. `convert_into_frame`
-                // models the normal-input case; the flush needs a NULL input
-                // pointer, so the raw `convert` is used here.
+                // Flush the resampler with a NULL input; `flush_into_frame`
+                // drains the buffered samples into the frame's `nb_samples`
+                // (set to `enc_frame_size` above).
                 let flushed = if let Some(swr) = swr_ctx.as_mut() {
-                    swr.convert(
-                        (*aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
-                        enc_frame_size,
-                        ptr::null(),
-                        0,
-                    )
-                    .ok()
+                    // SAFETY: `aud_enc_frame` was just `get_buffer`'d, so its
+                    //         output planes are allocated for the flush.
+                    swr.flush_into_frame(&mut aud_enc_frame).ok()
                 } else {
                     None
                 };
@@ -516,11 +516,11 @@ pub(super) unsafe fn write_dash_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "dash",
                             aud_frame_period,
                         );
@@ -529,11 +529,11 @@ pub(super) unsafe fn write_dash_unsafe(
                 aud_enc_frame.unref();
             }
         }
-        let _ = aud_enc.send_frame(ptr::null());
+        let _ = aud_enc.send_frame_ref(None);
         crate::codec_utils::drain_encoder(
-            aud_enc.as_mut_ptr(),
-            out_ctx.as_mut_ptr(),
-            aud_out_stream_idx,
+            aud_enc,
+            &mut out_ctx,
+            aud_out_stream_idx as usize,
             "dash",
             aud_frame_period,
         );
@@ -582,8 +582,10 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     let mut audio_stream_idx: i32 = -1;
 
     for i in 0..nb_streams {
-        let stream = *(*input_ctx.as_ptr()).streams.add(i);
-        let codec_type = (*(*stream).codecpar).codec_type;
+        let Some(stream) = input_ctx.stream(i) else {
+            continue;
+        };
+        let codec_type = stream.codecpar().codec_type();
         if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO && video_stream_idx < 0 {
             video_stream_idx = i as i32;
         } else if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO && audio_stream_idx < 0 {
@@ -598,14 +600,21 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     }
 
     // ── 3. Read video stream properties ──────────────────────────────────────
-    let video_stream = *(*input_ctx.as_ptr()).streams.add(video_stream_idx as usize);
-    let video_codecpar = (*video_stream).codecpar;
-    let video_fps = detect_fps(video_stream, input_ctx.as_mut_ptr());
+    let vid_stream = input_ctx
+        .stream(video_stream_idx as usize)
+        .ok_or_else(|| ffmpeg_err_msg("video stream not found"))?;
+    let vid_par = vid_stream.codecpar();
+    let video_fps = detect_fps(
+        vid_stream.avg_frame_rate(),
+        vid_stream.r_frame_rate(),
+        vid_stream.nb_frames(),
+        input_ctx.duration(),
+    );
     let fps_int = video_fps.round().max(1.0) as i32;
     let keyframe_interval = (segment_duration_secs * fps_int as f64).round().max(1.0) as u32;
 
     // ── 4. Open input video decoder ────────────────────────────────────────────
-    let vid_codec_id = (*video_codecpar).codec_id;
+    let vid_codec_id = vid_par.codec_id();
     let vid_decoder = ff_sys::Codec::find_decoder(vid_codec_id)
         .ok_or_else(|| ffmpeg_err_msg("no video decoder available for input stream"))?;
 
@@ -613,7 +622,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         ff_sys::CodecContext::new(Some(vid_decoder)).map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .parameters_to_context(video_codecpar)
+        .apply_parameters(&vid_par)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
@@ -625,18 +634,20 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     let mut aud_sample_rate: i32 = 44100;
     let mut aud_nb_channels: i32 = 2;
 
-    if audio_stream_idx >= 0 {
-        let audio_stream = *(*input_ctx.as_ptr()).streams.add(audio_stream_idx as usize);
-        let audio_codecpar = (*audio_stream).codecpar;
-        let aud_codec_id = (*audio_codecpar).codec_id;
+    if audio_stream_idx >= 0
+        && let Some(aud_par) = input_ctx
+            .stream(audio_stream_idx as usize)
+            .map(|s| s.codecpar())
+    {
+        let aud_codec_id = aud_par.codec_id();
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.parameters_to_context(audio_codecpar).is_ok()
+                if ctx.apply_parameters(&aud_par).is_ok()
                     && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
                 {
-                    aud_sample_rate = (*ctx.as_ptr()).sample_rate;
-                    aud_nb_channels = (*ctx.as_ptr()).ch_layout.nb_channels;
+                    aud_sample_rate = ctx.sample_rate();
+                    aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
                     log::info!(
                         "dash abr audio decoder opened sample_rate={aud_sample_rate} \
@@ -669,20 +680,14 @@ pub(super) unsafe fn write_dash_abr_unsafe(
 
     // ── 7. Set DASH muxer options ──────────────────────────────────────────────
     let seg_duration_str = format!("{}", segment_duration_secs as u32);
-    if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str()) {
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"seg_duration".as_ptr(),
-            c_seg_dur.as_ptr(),
-            0,
+    if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str())
+        && let Err(e) = out_ctx.set_opt(c"seg_duration", &c_seg_dur)
+    {
+        log::warn!(
+            "dash abr seg_duration option not supported, using default \
+             requested={seg_duration_str} error={}",
+            ff_sys::av_error_string(e.code())
         );
-        if ret < 0 {
-            log::warn!(
-                "dash abr seg_duration option not supported, using default \
-                 requested={seg_duration_str} error={}",
-                ff_sys::av_error_string(ret)
-            );
-        }
     }
 
     // ── 8. Select H.264 encoder (shared across all renditions) ────────────────
@@ -706,33 +711,29 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 return Err(ffmpeg_err(e.code()));
             }
         };
-        let ecptr = enc_ctx.as_mut_ptr();
-
-        (*ecptr).width = target_width;
-        (*ecptr).height = target_height;
-        (*ecptr).time_base.num = 1;
-        (*ecptr).time_base.den = fps_int;
-        (*ecptr).framerate.num = fps_int;
-        (*ecptr).framerate.den = 1;
-        (*ecptr).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-        (*ecptr).bit_rate = target_bitrate;
+        enc_ctx.set_width(target_width);
+        enc_ctx.set_height(target_height);
+        enc_ctx.set_time_base(AVRational {
+            num: 1,
+            den: fps_int,
+        });
+        enc_ctx.set_framerate(AVRational {
+            num: fps_int,
+            den: 1,
+        });
+        enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
+        enc_ctx.set_bit_rate(target_bitrate);
 
         if let Err(e) = enc_ctx.open(vid_enc_codec, ptr::null_mut()) {
             // `enc_ctx` and the prior renditions drop on return.
             return Err(ffmpeg_err(e.code()));
         }
 
-        let out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
-        if out_stream.is_null() {
-            return Err(ffmpeg_err_msg(
-                "cannot create video output stream for rendition",
-            ));
-        }
-        (*out_stream).time_base = (*enc_ctx.as_ptr()).time_base;
-        let stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-        // SAFETY: out_stream and enc_ctx are valid; avcodec_open2 has been called.
-        if let Err(e) = enc_ctx.parameters_from_context((*out_stream).codecpar) {
+        let stream_idx = out_ctx
+            .new_stream(Some(&vid_enc_codec))
+            .map_err(|e| ffmpeg_err(e.code()))? as i32;
+        out_ctx.set_stream_time_base(stream_idx as usize, enc_ctx.time_base());
+        if let Err(e) = out_ctx.apply_stream_params_from_context(stream_idx as usize, &enc_ctx) {
             return Err(ffmpeg_err(e.code()));
         }
 
@@ -761,38 +762,34 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     if audio_stream_idx >= 0 {
         match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
             Ok(ctx) => {
-                let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
-                if aud_out_stream.is_null() {
-                    // `ctx` drops here (frees the codec context).
-                    log::warn!("dash abr cannot create audio output stream, skipping audio");
-                    audio_stream_idx = -1;
-                } else {
-                    (*aud_out_stream).time_base.num = 1;
-                    (*aud_out_stream).time_base.den = aud_sample_rate;
-                    aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-                    let enc_ptr = ctx.as_ptr();
-                    if !(*aud_out_stream).codecpar.is_null() {
-                        (*(*aud_out_stream).codecpar).codec_id = (*enc_ptr).codec_id;
-                        (*(*aud_out_stream).codecpar).codec_type =
-                            ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO;
-                        (*(*aud_out_stream).codecpar).sample_rate = (*enc_ptr).sample_rate;
-                        (*(*aud_out_stream).codecpar).format = (*enc_ptr).sample_fmt;
-                        let _ = ff_sys::swresample::channel_layout::copy(
-                            &mut (*(*aud_out_stream).codecpar).ch_layout,
-                            &(*enc_ptr).ch_layout,
-                        );
+                if let Ok(aud_idx) = out_ctx.new_stream(None) {
+                    let aud_idx = aud_idx as i32;
+                    aud_out_stream_idx = aud_idx;
+                    out_ctx.set_stream_time_base(
+                        aud_idx as usize,
+                        AVRational {
+                            num: 1,
+                            den: aud_sample_rate,
+                        },
+                    );
+                    // Copy the full encoder parameters (codec id/type, sample
+                    // format, rate, channel layout, and the AAC extradata) into
+                    // the stream, matching the single-rendition and HLS paths.
+                    if out_ctx
+                        .apply_stream_params_from_context(aud_idx as usize, &ctx)
+                        .is_err()
+                    {
+                        log::warn!("dash abr audio stream codecpar copy failed");
                     }
 
                     if let Some(dec) = aud_dec_ctx.as_ref() {
-                        let dec_ptr = dec.as_ptr();
                         if let Ok(swr) = ff_sys::ResampleContext::new(
-                            &(*enc_ptr).ch_layout,
-                            (*enc_ptr).sample_fmt,
-                            (*enc_ptr).sample_rate,
-                            &(*dec_ptr).ch_layout,
-                            (*dec_ptr).sample_fmt,
-                            (*dec_ptr).sample_rate,
+                            ctx.ch_layout(),
+                            ctx.sample_fmt(),
+                            ctx.sample_rate(),
+                            dec.ch_layout(),
+                            dec.sample_fmt(),
+                            dec.sample_rate(),
                         ) {
                             swr_ctx = Some(swr);
                             aud_enc_ctx = Some(ctx);
@@ -805,6 +802,10 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                         log::warn!("dash abr audio decoder missing, skipping audio");
                         audio_stream_idx = -1;
                     }
+                } else {
+                    // `ctx` drops here (frees the codec context).
+                    log::warn!("dash abr cannot create audio output stream, skipping audio");
+                    audio_stream_idx = -1;
                 }
             }
             Err(e) => {
@@ -956,11 +957,16 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                         false
                     };
 
-                    if scaled && state.vid_enc_ctx.send_frame(vid_enc_frame.as_ptr()).is_ok() {
+                    if scaled
+                        && state
+                            .vid_enc_ctx
+                            .send_frame_ref(Some(&vid_enc_frame))
+                            .is_ok()
+                    {
                         crate::codec_utils::drain_encoder(
-                            state.vid_enc_ctx.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            state.vid_out_stream_idx,
+                            &mut state.vid_enc_ctx,
+                            &mut out_ctx,
+                            state.vid_out_stream_idx as usize,
                             "dash",
                             vid_frame_period,
                         );
@@ -1016,11 +1022,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "dash",
                             aud_frame_period,
                         );
@@ -1038,11 +1044,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
 
     // ── 14. Flush encoders ────────────────────────────────────────────────────
     for state in &mut rendition_states {
-        let _ = state.vid_enc_ctx.send_frame(ptr::null());
+        let _ = state.vid_enc_ctx.send_frame_ref(None);
         crate::codec_utils::drain_encoder(
-            state.vid_enc_ctx.as_mut_ptr(),
-            out_ctx.as_mut_ptr(),
-            state.vid_out_stream_idx,
+            &mut state.vid_enc_ctx,
+            &mut out_ctx,
+            state.vid_out_stream_idx as usize,
             "dash",
             vid_frame_period,
         );
@@ -1060,17 +1066,13 @@ pub(super) unsafe fn write_dash_abr_unsafe(
             aud_enc_frame.set_nb_samples(enc_frame_size);
             let _ = aud_enc_frame.set_ch_layout(aud_enc.ch_layout());
             if aud_enc_frame.get_buffer(0).is_ok() {
-                // Flush the resampler with a NULL input. `convert_into_frame`
-                // models the normal-input case; the flush needs a NULL input
-                // pointer, so the raw `convert` is used here.
+                // Flush the resampler with a NULL input; `flush_into_frame`
+                // drains the buffered samples into the frame's `nb_samples`
+                // (set to `enc_frame_size` above).
                 let flushed = if let Some(swr) = swr_ctx.as_mut() {
-                    swr.convert(
-                        (*aud_enc_frame.as_mut_ptr()).data.as_mut_ptr(),
-                        enc_frame_size,
-                        ptr::null(),
-                        0,
-                    )
-                    .ok()
+                    // SAFETY: `aud_enc_frame` was just `get_buffer`'d, so its
+                    //         output planes are allocated for the flush.
+                    swr.flush_into_frame(&mut aud_enc_frame).ok()
                 } else {
                     None
                 };
@@ -1079,11 +1081,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame(aud_enc_frame.as_ptr()).is_ok() {
+                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
-                            aud_enc.as_mut_ptr(),
-                            out_ctx.as_mut_ptr(),
-                            aud_out_stream_idx,
+                            aud_enc,
+                            &mut out_ctx,
+                            aud_out_stream_idx as usize,
                             "dash",
                             aud_frame_period,
                         );
@@ -1092,11 +1094,11 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                 aud_enc_frame.unref();
             }
         }
-        let _ = aud_enc.send_frame(ptr::null());
+        let _ = aud_enc.send_frame_ref(None);
         crate::codec_utils::drain_encoder(
-            aud_enc.as_mut_ptr(),
-            out_ctx.as_mut_ptr(),
-            aud_out_stream_idx,
+            aud_enc,
+            &mut out_ctx,
+            aud_out_stream_idx as usize,
             "dash",
             aud_frame_period,
         );

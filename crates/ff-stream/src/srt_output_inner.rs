@@ -23,7 +23,7 @@ use std::path::Path;
 use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
-use ff_sys::{AVPixelFormat_AV_PIX_FMT_YUV420P, avformat_new_stream};
+use ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
 
 use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg, open_aac_encoder};
 use crate::error::StreamError;
@@ -159,16 +159,12 @@ impl SrtInner {
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 3. Add video output stream ─────────────────────────────────────
-        let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
-        if vid_out_stream.is_null() {
-            return Err(ffmpeg_err_msg("cannot create video output stream"));
-        }
-        (*vid_out_stream).time_base = vid_enc_ctx.time_base();
-        let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-        // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-        vid_enc_ctx
-            .parameters_from_context((*vid_out_stream).codecpar)
+        let vid_out_stream_idx = out_ctx
+            .new_stream(Some(&vid_enc_codec))
+            .map_err(|e| ffmpeg_err(e.code()))? as i32;
+        out_ctx.set_stream_time_base(vid_out_stream_idx as usize, vid_enc_ctx.time_base());
+        out_ctx
+            .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 4. Open AAC audio encoder ──────────────────────────────────────
@@ -181,17 +177,16 @@ impl SrtInner {
         };
 
         // ── 5. Add audio output stream ─────────────────────────────────────
-        let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
-        if aud_out_stream.is_null() {
-            return Err(ffmpeg_err_msg("cannot create audio output stream"));
-        }
-        (*aud_out_stream).time_base.num = 1;
-        (*aud_out_stream).time_base.den = aud_sample_rate;
-        let aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-        // SAFETY: aud_out_stream and aud_enc_ctx are valid.
-        if aud_enc_ctx
-            .parameters_from_context((*aud_out_stream).codecpar)
+        let aud_out_stream_idx = out_ctx.new_stream(None).map_err(|e| ffmpeg_err(e.code()))? as i32;
+        out_ctx.set_stream_time_base(
+            aud_out_stream_idx as usize,
+            ff_sys::AVRational {
+                num: 1,
+                den: aud_sample_rate,
+            },
+        );
+        if out_ctx
+            .apply_stream_params_from_context(aud_out_stream_idx as usize, &aud_enc_ctx)
             .is_err()
         {
             log::warn!("srt audio stream codecpar copy failed");

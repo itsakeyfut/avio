@@ -22,7 +22,7 @@ use std::path::Path;
 use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
-use ff_sys::{AVPixelFormat_AV_PIX_FMT_YUV420P, av_opt_set, avformat_new_stream};
+use ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
 
 use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
 use crate::error::StreamError;
@@ -129,58 +129,34 @@ impl LiveDashInner {
         // ── 2. Set DASH muxer options ─────────────────────────────────────────
         let seg_time_str = format!("{segment_secs}");
 
-        if let Ok(c_seg_time) = CString::new(seg_time_str.as_str()) {
-            let ret = av_opt_set(
-                (*out_ctx.as_mut_ptr()).priv_data,
-                c"seg_duration".as_ptr(),
-                c_seg_time.as_ptr(),
-                0,
+        if let Ok(c_seg_time) = CString::new(seg_time_str.as_str())
+            && let Err(e) = out_ctx.set_opt(c"seg_duration", &c_seg_time)
+        {
+            log::warn!(
+                "live_dash seg_duration option not supported, using default \
+                 requested={seg_time_str} error={}",
+                ff_sys::av_error_string(e.code())
             );
-            if ret < 0 {
-                log::warn!(
-                    "live_dash seg_duration option not supported, using default \
-                     requested={seg_time_str} error={}",
-                    ff_sys::av_error_string(ret)
-                );
-            }
         }
 
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"use_template".as_ptr(),
-            c"1".as_ptr(),
-            0,
-        );
-        if ret < 0 {
+        if let Err(e) = out_ctx.set_opt(c"use_template", c"1") {
             log::warn!(
                 "live_dash use_template option not supported error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         }
 
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"use_timeline".as_ptr(),
-            c"1".as_ptr(),
-            0,
-        );
-        if ret < 0 {
+        if let Err(e) = out_ctx.set_opt(c"use_timeline", c"1") {
             log::warn!(
                 "live_dash use_timeline option not supported error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         }
 
-        let ret = av_opt_set(
-            (*out_ctx.as_mut_ptr()).priv_data,
-            c"remove_at_exit".as_ptr(),
-            c"0".as_ptr(),
-            0,
-        );
-        if ret < 0 {
+        if let Err(e) = out_ctx.set_opt(c"remove_at_exit", c"0") {
             log::warn!(
                 "live_dash remove_at_exit option not supported error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
         }
 
@@ -216,16 +192,12 @@ impl LiveDashInner {
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 4. Add video output stream ────────────────────────────────────────
-        let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
-        if vid_out_stream.is_null() {
-            return Err(ffmpeg_err_msg("cannot create video output stream"));
-        }
-        (*vid_out_stream).time_base = vid_enc_ctx.time_base();
-        let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-        // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
-        vid_enc_ctx
-            .parameters_from_context((*vid_out_stream).codecpar)
+        let vid_out_stream_idx = out_ctx
+            .new_stream(Some(&vid_enc_codec))
+            .map_err(|e| ffmpeg_err(e.code()))? as i32;
+        out_ctx.set_stream_time_base(vid_out_stream_idx as usize, vid_enc_ctx.time_base());
+        out_ctx
+            .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 5. Open AAC audio encoder and add audio stream (optional) ─────────
@@ -245,23 +217,28 @@ impl LiveDashInner {
                         1024
                     };
 
-                    let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
-                    if aud_out_stream.is_null() {
-                        // `ctx` drops here (frees the codec context).
-                        log::warn!("live_dash cannot create audio output stream, skipping audio");
-                    } else {
-                        (*aud_out_stream).time_base.num = 1;
-                        (*aud_out_stream).time_base.den = sr;
-                        aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
-
-                        // SAFETY: aud_out_stream and ctx are valid.
-                        if ctx
-                            .parameters_from_context((*aud_out_stream).codecpar)
-                            .is_err()
-                        {
-                            log::warn!("live_dash audio stream codecpar copy failed");
+                    match out_ctx.new_stream(None) {
+                        Ok(idx) => {
+                            let idx = idx as i32;
+                            aud_out_stream_idx = idx;
+                            out_ctx.set_stream_time_base(
+                                idx as usize,
+                                ff_sys::AVRational { num: 1, den: sr },
+                            );
+                            if out_ctx
+                                .apply_stream_params_from_context(idx as usize, &ctx)
+                                .is_err()
+                            {
+                                log::warn!("live_dash audio stream codecpar copy failed");
+                            }
+                            aud_enc_ctx = Some(ctx);
                         }
-                        aud_enc_ctx = Some(ctx);
+                        // `ctx` drops here (frees the codec context).
+                        Err(_) => {
+                            log::warn!(
+                                "live_dash cannot create audio output stream, skipping audio"
+                            );
+                        }
                     }
                 }
                 Err(e) => {
