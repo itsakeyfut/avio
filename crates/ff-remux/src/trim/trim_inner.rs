@@ -98,32 +98,30 @@ unsafe fn run_trim_unsafe(
     log::debug!("stream copy trim header written nb_streams={nb_streams}");
 
     // ── Step 8: packet copy loop ──────────────────────────────────────────────
-    // SAFETY: av_packet_alloc never returns null on OOM (aborts instead).
-    let pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
+    // The owned packet frees itself exactly once on drop at scope end.
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
-        // SAFETY: in_ctx is a valid owned demux context; pkt is a valid packet.
-        match ff_sys::avformat::read_frame(in_ctx.as_mut_ptr(), pkt) {
-            Err(e) if e == ff_sys::error_codes::EOF => break 'read,
+        match in_ctx.read_frame(&mut pkt) {
+            Err(e) if e.is_eof() => break 'read,
             Err(e) => {
-                loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                 break 'read;
             }
             Ok(()) => {}
         }
 
-        let stream_idx = (*pkt).stream_index as usize;
+        let stream_idx = pkt.stream_index() as usize;
         if stream_idx >= nb_streams {
-            ff_sys::av_packet_unref(pkt);
+            pkt.unref();
             continue;
         }
 
@@ -133,15 +131,17 @@ unsafe fn run_trim_unsafe(
 
         // Check whether this packet is past the end of the requested range.
         // Prefer PTS; fall back to DTS if PTS is absent.
-        let ts = if (*pkt).pts != ff_sys::AV_NOPTS_VALUE {
-            (*pkt).pts
+        // SAFETY: pkt is a valid packet; pts/dts are plain fields.
+        let p = pkt.as_ptr();
+        let ts = if (*p).pts != ff_sys::AV_NOPTS_VALUE {
+            (*p).pts
         } else {
-            (*pkt).dts
+            (*p).dts
         };
         if ts != ff_sys::AV_NOPTS_VALUE && in_tb.den != 0 {
             let ts_sec = ts as f64 * f64::from(in_tb.num) / f64::from(in_tb.den);
             if ts_sec >= end_sec {
-                ff_sys::av_packet_unref(pkt);
+                pkt.unref();
                 break 'read;
             }
         }
@@ -151,21 +151,17 @@ unsafe fn run_trim_unsafe(
         let out_stream = *(*out_ctx.as_mut_ptr()).streams.add(stream_idx);
         let out_tb = (*out_stream).time_base;
         // SAFETY: pkt, in_tb, out_tb are valid plain-data values.
-        ff_sys::av_packet_rescale_ts(pkt, in_tb, out_tb);
-        (*pkt).stream_index = stream_idx as i32;
+        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), in_tb, out_tb);
+        (*pkt.as_mut_ptr()).stream_index = stream_idx as i32;
 
         // SAFETY: out_ctx and pkt are valid.
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
-        ff_sys::av_packet_unref(pkt);
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt.as_mut_ptr());
+        pkt.unref();
         if ret < 0 {
             loop_err = Some(RemuxError::from_ffmpeg_error(ret));
             break 'read;
         }
     }
-
-    // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
-    let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(&raw mut pkt_ptr);
 
     // ── Step 9: write trailer ─────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.

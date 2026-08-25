@@ -162,15 +162,14 @@ unsafe fn run_audio_replacement_unsafe(
     );
 
     // ── Step 12: allocate packet ──────────────────────────────────────────────
-    // SAFETY: av_packet_alloc never returns null in practice (aborts on OOM).
-    let pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
+    // The owned packet frees itself exactly once on drop at scope end.
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Step 13: interleaved packet copy loop ─────────────────────────────────
     // Alternate between video and audio inputs; use av_interleaved_write_frame
@@ -182,31 +181,33 @@ unsafe fn run_audio_replacement_unsafe(
     'copy: loop {
         // Read one packet from the video input, forwarding only the target stream.
         if !vid_eof {
-            // SAFETY: vid_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(vid_ctx.as_mut_ptr(), pkt) {
-                Err(e) if e == ff_sys::error_codes::EOF => {
+            match vid_ctx.read_frame(&mut pkt) {
+                Err(e) if e.is_eof() => {
                     vid_eof = true;
                 }
                 Err(e) => {
-                    loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                    loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                     break 'copy;
                 }
                 Ok(()) => {
-                    if (*pkt).stream_index as usize == video_stream_idx {
+                    if pkt.stream_index() as usize == video_stream_idx {
                         // SAFETY: pkt, vid_in_tb, vid_out_tb are valid plain-data values.
-                        ff_sys::av_packet_rescale_ts(pkt, vid_in_tb, vid_out_tb);
-                        (*pkt).stream_index = 0;
+                        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), vid_in_tb, vid_out_tb);
+                        (*pkt.as_mut_ptr()).stream_index = 0;
                         // SAFETY: out_ctx and pkt are valid.
-                        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
+                        let ret = ff_sys::av_interleaved_write_frame(
+                            out_ctx.as_mut_ptr(),
+                            pkt.as_mut_ptr(),
+                        );
                         // av_interleaved_write_frame takes the packet's buf reference;
                         // unref to clear any remaining fields.
-                        ff_sys::av_packet_unref(pkt);
+                        pkt.unref();
                         if ret < 0 {
                             loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
-                        ff_sys::av_packet_unref(pkt);
+                        pkt.unref();
                     }
                 }
             }
@@ -214,29 +215,31 @@ unsafe fn run_audio_replacement_unsafe(
 
         // Read one packet from the audio input, forwarding only the target stream.
         if !aud_eof {
-            // SAFETY: aud_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(aud_ctx.as_mut_ptr(), pkt) {
-                Err(e) if e == ff_sys::error_codes::EOF => {
+            match aud_ctx.read_frame(&mut pkt) {
+                Err(e) if e.is_eof() => {
                     aud_eof = true;
                 }
                 Err(e) => {
-                    loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                    loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                     break 'copy;
                 }
                 Ok(()) => {
-                    if (*pkt).stream_index as usize == audio_stream_idx {
+                    if pkt.stream_index() as usize == audio_stream_idx {
                         // SAFETY: pkt, aud_in_tb, aud_out_tb are valid plain-data values.
-                        ff_sys::av_packet_rescale_ts(pkt, aud_in_tb, aud_out_tb);
-                        (*pkt).stream_index = 1;
+                        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), aud_in_tb, aud_out_tb);
+                        (*pkt.as_mut_ptr()).stream_index = 1;
                         // SAFETY: out_ctx and pkt are valid.
-                        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
-                        ff_sys::av_packet_unref(pkt);
+                        let ret = ff_sys::av_interleaved_write_frame(
+                            out_ctx.as_mut_ptr(),
+                            pkt.as_mut_ptr(),
+                        );
+                        pkt.unref();
                         if ret < 0 {
                             loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
-                        ff_sys::av_packet_unref(pkt);
+                        pkt.unref();
                     }
                 }
             }
@@ -246,10 +249,6 @@ unsafe fn run_audio_replacement_unsafe(
             break 'copy;
         }
     }
-
-    // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
-    let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(&raw mut pkt_ptr);
 
     // ── Step 14: write trailer ────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.
@@ -390,54 +389,48 @@ unsafe fn run_audio_extraction_unsafe(
     );
 
     // ── Step 8: allocate packet ───────────────────────────────────────────────
-    // SAFETY: av_packet_alloc never returns null in practice (aborts on OOM).
-    let pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
+    // The owned packet frees itself exactly once on drop at scope end.
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Step 9: packet copy loop (audio stream only) ──────────────────────────
     let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
-        // SAFETY: in_ctx is a valid owned demux context; pkt is a valid packet.
-        match ff_sys::avformat::read_frame(in_ctx.as_mut_ptr(), pkt) {
-            Err(e) if e == ff_sys::error_codes::EOF => break 'read,
+        match in_ctx.read_frame(&mut pkt) {
+            Err(e) if e.is_eof() => break 'read,
             Err(e) => {
-                loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                 break 'read;
             }
             Ok(()) => {}
         }
 
-        if (*pkt).stream_index as usize != audio_stream_idx {
+        if pkt.stream_index() as usize != audio_stream_idx {
             // Skip non-audio packets.
-            ff_sys::av_packet_unref(pkt);
+            pkt.unref();
             continue 'read;
         }
 
         // Rescale timestamps to the output stream's time base and remap index.
         // SAFETY: pkt, in_tb, out_tb are valid plain-data values.
-        ff_sys::av_packet_rescale_ts(pkt, in_tb, out_tb);
-        (*pkt).stream_index = 0;
+        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), in_tb, out_tb);
+        (*pkt.as_mut_ptr()).stream_index = 0;
 
         // SAFETY: out_ctx and pkt are valid.
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt.as_mut_ptr());
         // av_interleaved_write_frame takes the packet's buf reference; unref to clear.
-        ff_sys::av_packet_unref(pkt);
+        pkt.unref();
         if ret < 0 {
             loop_err = Some(RemuxError::from_ffmpeg_error(ret));
             break 'read;
         }
     }
-
-    // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
-    let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(&raw mut pkt_ptr);
 
     // ── Step 10: write trailer ────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.
@@ -629,15 +622,14 @@ unsafe fn run_audio_addition_unsafe(
     );
 
     // ── Step 13: allocate packet ──────────────────────────────────────────────
-    // SAFETY: av_packet_alloc never returns null in practice (aborts on OOM).
-    let pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
+    // The owned packet frees itself exactly once on drop at scope end.
+    let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
         return Err(RemuxError::Ffmpeg {
             code: 0,
             message: "av_packet_alloc failed".to_string(),
         });
-    }
+    };
 
     // ── Step 14: interleaved packet copy loop ─────────────────────────────────
     // Terminate when video is exhausted.  Audio terminates naturally (non-loop)
@@ -651,29 +643,31 @@ unsafe fn run_audio_addition_unsafe(
     'copy: loop {
         // ── video packet ──────────────────────────────────────────────────
         if !vid_eof {
-            // SAFETY: vid_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(vid_ctx.as_mut_ptr(), pkt) {
-                Err(e) if e == ff_sys::error_codes::EOF => {
+            match vid_ctx.read_frame(&mut pkt) {
+                Err(e) if e.is_eof() => {
                     vid_eof = true;
                 }
                 Err(e) => {
-                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                     break 'copy;
                 }
                 Ok(()) => {
-                    if (*pkt).stream_index as usize == video_stream_idx {
+                    if pkt.stream_index() as usize == video_stream_idx {
                         // SAFETY: pkt, vid_in_tb, vid_out_tb are valid plain-data values.
-                        ff_sys::av_packet_rescale_ts(pkt, vid_in_tb, vid_out_tb);
-                        (*pkt).stream_index = 0;
+                        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), vid_in_tb, vid_out_tb);
+                        (*pkt.as_mut_ptr()).stream_index = 0;
                         // SAFETY: out_ctx and pkt are valid.
-                        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
-                        ff_sys::av_packet_unref(pkt);
+                        let ret = ff_sys::av_interleaved_write_frame(
+                            out_ctx.as_mut_ptr(),
+                            pkt.as_mut_ptr(),
+                        );
+                        pkt.unref();
                         if ret < 0 {
                             add_loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
-                        ff_sys::av_packet_unref(pkt);
+                        pkt.unref();
                     }
                 }
             }
@@ -686,9 +680,8 @@ unsafe fn run_audio_addition_unsafe(
 
         // ── audio packet ──────────────────────────────────────────────────
         if !aud_eof {
-            // SAFETY: aud_ctx and pkt are valid non-null pointers.
-            match ff_sys::avformat::read_frame(aud_ctx.as_mut_ptr(), pkt) {
-                Err(e) if e == ff_sys::error_codes::EOF => {
+            match aud_ctx.read_frame(&mut pkt) {
+                Err(e) if e.is_eof() => {
                     if should_loop {
                         // Re-seek audio to the start and advance the PTS offset
                         // so that looped packets continue from where the last
@@ -706,40 +699,41 @@ unsafe fn run_audio_addition_unsafe(
                     }
                 }
                 Err(e) => {
-                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e));
+                    add_loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
                     break 'copy;
                 }
                 Ok(()) => {
-                    if (*pkt).stream_index as usize == audio_stream_idx {
+                    if pkt.stream_index() as usize == audio_stream_idx {
                         // Apply the cumulative loop offset before rescaling so
                         // that PTS values are monotonically increasing across loops.
-                        if (*pkt).pts != ff_sys::AV_NOPTS_VALUE {
-                            (*pkt).pts += aud_pts_offset_in_tb;
+                        // SAFETY: pkt is a valid packet; pts/dts are plain fields.
+                        let p = pkt.as_mut_ptr();
+                        if (*p).pts != ff_sys::AV_NOPTS_VALUE {
+                            (*p).pts += aud_pts_offset_in_tb;
                         }
-                        if (*pkt).dts != ff_sys::AV_NOPTS_VALUE {
-                            (*pkt).dts += aud_pts_offset_in_tb;
+                        if (*p).dts != ff_sys::AV_NOPTS_VALUE {
+                            (*p).dts += aud_pts_offset_in_tb;
                         }
                         // SAFETY: pkt, aud_in_tb, aud_out_tb are valid plain-data values.
-                        ff_sys::av_packet_rescale_ts(pkt, aud_in_tb, aud_out_tb);
-                        (*pkt).stream_index = 1;
+                        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), aud_in_tb, aud_out_tb);
+                        (*pkt.as_mut_ptr()).stream_index = 1;
                         // SAFETY: out_ctx and pkt are valid.
-                        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt);
-                        ff_sys::av_packet_unref(pkt);
+                        let ret = ff_sys::av_interleaved_write_frame(
+                            out_ctx.as_mut_ptr(),
+                            pkt.as_mut_ptr(),
+                        );
+                        pkt.unref();
                         if ret < 0 {
                             add_loop_err = Some(RemuxError::from_ffmpeg_error(ret));
                             break 'copy;
                         }
                     } else {
-                        ff_sys::av_packet_unref(pkt);
+                        pkt.unref();
                     }
                 }
             }
         }
     }
-
-    // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
-    let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(&raw mut pkt_ptr);
 
     // ── Step 15: write trailer ────────────────────────────────────────────────
     // SAFETY: out_ctx is valid; write_header was called successfully.
