@@ -1182,6 +1182,10 @@ impl CodecContext {
     pub fn set_codec_id(&mut self, _codec_id: AVCodecID) {}
     pub fn set_framerate(&mut self, _framerate: AVRational) {}
     pub fn set_bit_rate(&mut self, _bit_rate: i64) {}
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        0
+    }
     pub fn set_rc_max_rate(&mut self, _rc_max_rate: i64) {}
     pub fn set_rc_buffer_size(&mut self, _rc_buffer_size: c_int) {}
     pub fn set_color_primaries(&mut self, _color_primaries: AVColorPrimaries) {}
@@ -1632,6 +1636,16 @@ impl<'a> StreamRef<'a> {
     #[must_use]
     pub fn avg_frame_rate(&self) -> AVRational {
         AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
+    pub fn r_frame_rate(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
+    pub fn nb_frames(&self) -> i64 {
+        0
     }
 
     #[must_use]

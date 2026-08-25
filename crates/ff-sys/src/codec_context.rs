@@ -174,6 +174,13 @@ impl CodecContext {
         unsafe { (*self.ptr.as_ptr()).bit_rate = bit_rate };
     }
 
+    /// Returns the target bit rate in bits per second.
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        // SAFETY: `self.ptr` is a valid owned context; `bit_rate` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).bit_rate }
+    }
+
     /// Sets the rate-control maximum bit rate.
     pub fn set_rc_max_rate(&mut self, rc_max_rate: i64) {
         // SAFETY: `self.ptr` is a valid owned context; `rc_max_rate` is a plain field.
@@ -734,6 +741,7 @@ mod tests {
         ctx.set_flags(ctx.flags() | 0x0400);
 
         assert_eq!(ctx.codec_id(), crate::AVCodecID_AV_CODEC_ID_H264);
+        assert_eq!(ctx.bit_rate(), 2_000_000);
         assert_eq!(ctx.sample_rate(), 48_000);
         assert_eq!(ctx.flags() & 0x0400, 0x0400);
     }
