@@ -1,7 +1,7 @@
 //! Shared `FFmpeg` muxer state for all streaming outputs.
 //!
 //! [`MuxerCore`] owns the `FFmpeg` encode/mux state: the encoder contexts,
-//! resampler, scaler, and encoder frames as RAII owners, plus the raw output
+//! resampler, scaler, and encoder frames as RAII owners, plus the owned output
 //! format context (`out_ctx`). The four protocol-specific inner types
 //! (`RtmpInner`, `SrtInner`, `LiveHlsInner`, `LiveDashInner`) each hold a
 //! `MuxerCore` and delegate every method except `open_unsafe` to it.
@@ -21,8 +21,7 @@ use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat,
-    av_rescale_q, av_write_trailer, avformat_free_context,
+    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat, av_rescale_q,
 };
 
 use crate::codec_utils::{
@@ -40,10 +39,12 @@ use crate::error::StreamError;
 /// format context, encoder contexts, and streams are fully configured.
 /// Consumed by [`MuxerCore::flush_and_close_unsafe`].
 ///
-/// After `flush_and_close_unsafe` returns all pointers are zeroed; subsequent
-/// calls to any method are safe no-ops (Drop will be a no-op too).
+/// The owned `out_ctx` closes its `pb` (if still open) and frees the context on
+/// drop, so the protocol-specific teardown is expressed by *when* `pb` is closed
+/// (RTMP/SRT keep it open until drop; HLS/DASH close it right after the header
+/// via `close_io`), not by a manual free.
 pub(crate) struct MuxerCore {
-    pub(crate) out_ctx: *mut AVFormatContext,
+    pub(crate) out_ctx: ff_sys::OutputFormatContext,
     pub(crate) vid_enc_ctx: ff_sys::CodecContext,
     /// `None` when audio is not configured (optional for HLS/DASH).
     pub(crate) aud_enc_ctx: Option<ff_sys::CodecContext>,
@@ -74,13 +75,6 @@ pub(crate) struct MuxerCore {
     pub(crate) last_swr_in_channels: Option<i32>,
     /// Human-readable protocol prefix used in log messages (e.g. `"rtmp"`, `"live_hls"`).
     pub(crate) log_prefix: &'static str,
-    /// When `true`, `flush_and_close_unsafe` and `free_all` close `out_ctx.pb`
-    /// before freeing the format context.
-    ///
-    /// Set to `true` for RTMP/SRT (pb is kept open for streaming after the header
-    /// write). Set to `false` for LiveHLS/LiveDASH (pb is closed immediately after
-    /// `avformat_write_header` so the muxer can manage its own avio handles).
-    pub(crate) close_pb_after_trailer: bool,
 }
 
 // SAFETY: MuxerCore exclusively owns its FFmpeg state (RAII owners plus the raw
@@ -92,17 +86,13 @@ impl MuxerCore {
     /// Allocate encoder frames and initialise tracking state.
     ///
     /// Called by each inner `open_unsafe` after the format context, encoder
-    /// contexts, and output streams are fully configured.
-    ///
-    /// # Safety
-    ///
-    /// - `out_ctx` must be non-null and valid.
-    /// - `aud_enc_ctx` may be `None` (audio is optional for HLS/DASH outputs).
-    /// - The `vid_enc_ctx` / `aud_enc_ctx` owned contexts are moved in; on `Err`
-    ///   they drop here, so the caller must not free them.
+    /// contexts, and output streams are fully configured. The owned `out_ctx`
+    /// and the `vid_enc_ctx` / `aud_enc_ctx` contexts are moved in; on `Err`
+    /// they drop here (freeing themselves), so the caller must not free them.
+    /// `aud_enc_ctx` may be `None` (audio is optional for HLS/DASH outputs).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn new(
-        out_ctx: *mut AVFormatContext,
+    pub(crate) fn new(
+        out_ctx: ff_sys::OutputFormatContext,
         vid_enc_ctx: ff_sys::CodecContext,
         aud_enc_ctx: Option<ff_sys::CodecContext>,
         vid_out_stream_idx: i32,
@@ -113,7 +103,6 @@ impl MuxerCore {
         aud_frame_size: i32,
         aud_sample_rate: i32,
         log_prefix: &'static str,
-        close_pb_after_trailer: bool,
     ) -> Result<Self, StreamError> {
         // Owned frames: each frees exactly once on drop. On the error arm the
         // successfully-allocated one (if any) drops at the end of this statement.
@@ -146,7 +135,6 @@ impl MuxerCore {
             last_swr_in_rate: None,
             last_swr_in_channels: None,
             log_prefix,
-            close_pb_after_trailer,
         })
     }
 
@@ -259,7 +247,7 @@ impl MuxerCore {
             // SAFETY: out_ctx is valid; vid_out_stream_idx is valid.
             drain_encoder(
                 self.vid_enc_ctx.as_mut_ptr(),
-                self.out_ctx,
+                self.out_ctx.as_mut_ptr(),
                 self.vid_out_stream_idx,
                 self.log_prefix,
                 AVRational {
@@ -287,6 +275,11 @@ impl MuxerCore {
         if self.aud_enc_ctx.is_none() || self.aud_out_stream_idx < 0 {
             return; // audio not configured
         }
+
+        // Raw output-context pointer for `drain_encoder`; taking it up front frees
+        // the `&mut self.out_ctx` borrow so it does not overlap the `aud_enc_ctx`
+        // field borrow held during the drain call below.
+        let out_ctx = self.out_ctx.as_mut_ptr();
 
         let in_fmt = sample_format_to_av(frame.format());
         let in_rate = frame.sample_rate() as i32;
@@ -362,7 +355,7 @@ impl MuxerCore {
                 // SAFETY: out_ctx is valid; aud_out_stream_idx is valid.
                 drain_encoder(
                     aud_ctx.as_mut_ptr(),
-                    self.out_ctx,
+                    out_ctx,
                     self.aud_out_stream_idx,
                     self.log_prefix,
                     aud_frame_period,
@@ -374,25 +367,28 @@ impl MuxerCore {
         self.aud_enc_frame.unref();
     }
 
-    /// Flush both encoders, write the container trailer, and release all resources.
+    /// Flush both encoders and write the container trailer.
     ///
-    /// For RTMP/SRT (`close_pb_after_trailer = true`) the persistent network
-    /// connection (`out_ctx.pb`) is closed after `av_write_trailer`.
-    /// For HLS/DASH (`close_pb_after_trailer = false`) `pb` was already closed
-    /// after the header write, so this is skipped.
-    ///
-    /// All pointers are zeroed after this call so that [`Drop`] is a no-op.
+    /// The persistent connection (`out_ctx.pb`) is *not* closed here: for RTMP/SRT
+    /// it stays open until [`Drop`] closes it; for HLS/DASH it was already closed
+    /// after the header write (`close_io`). Freeing the context also happens on
+    /// drop, so this method only finalises the stream.
     ///
     /// # Safety
     ///
     /// `self` must have been initialised by the enclosing inner type's
     /// `open_unsafe`. This method must be called at most once.
     pub(crate) unsafe fn flush_and_close_unsafe(&mut self) {
+        // Raw output-context pointer for the `drain_encoder` calls below; taking
+        // it up front frees the `&mut self.out_ctx` borrow so it does not overlap
+        // the encoder-context field borrows.
+        let out_ctx = self.out_ctx.as_mut_ptr();
+
         // ── Flush video encoder ───────────────────────────────────────────────
         let _ = self.vid_enc_ctx.send_frame(ptr::null());
         drain_encoder(
             self.vid_enc_ctx.as_mut_ptr(),
-            self.out_ctx,
+            out_ctx,
             self.vid_out_stream_idx,
             self.log_prefix,
             AVRational {
@@ -443,7 +439,7 @@ impl MuxerCore {
                             };
                             drain_encoder(
                                 aud_ctx.as_mut_ptr(),
-                                self.out_ctx,
+                                out_ctx,
                                 self.aud_out_stream_idx,
                                 self.log_prefix,
                                 aud_frame_period,
@@ -463,7 +459,7 @@ impl MuxerCore {
                 };
                 drain_encoder(
                     aud_ctx.as_mut_ptr(),
-                    self.out_ctx,
+                    out_ctx,
                     self.aud_out_stream_idx,
                     self.log_prefix,
                     aud_frame_period,
@@ -472,20 +468,11 @@ impl MuxerCore {
         }
 
         // ── Write trailer ─────────────────────────────────────────────────────
-        av_write_trailer(self.out_ctx);
-
-        // For RTMP/SRT the connection (pb) was kept open throughout the session
-        // and must be closed now. For HLS/DASH pb was already closed after the
-        // header write, so closing it here would be a double-close.
-        if self.close_pb_after_trailer && !(*self.out_ctx).pb.is_null() {
-            ff_sys::avformat::close_output(&mut (*self.out_ctx).pb);
-        }
+        // The owned `out_ctx` closes its `pb` (if still open, i.e. RTMP/SRT) and
+        // frees the context on drop, so no manual close/free is needed here.
+        let _ = self.out_ctx.write_trailer();
 
         log::info!("{} output finished", self.log_prefix);
-
-        // Free the raw out_ctx and null it so Drop does not double-free; the owned
-        // frames/contexts drop with the struct.
-        self.free_all();
     }
 
     /// Set the PTS on `vid_enc_frame` from `video_frame_count` and `fps_int`.
@@ -503,49 +490,5 @@ impl MuxerCore {
             self.vid_enc_ctx.time_base(),
         );
         self.vid_enc_frame.set_pts(pts);
-    }
-
-    /// Release the raw output format context and drop the optional owned contexts.
-    ///
-    /// The owned encoder frames / codec / resampler / scaler contexts free on their
-    /// own `Drop`; this only needs to close `out_ctx.pb` (RTMP/SRT) and free the raw
-    /// `out_ctx`, nulling it so a second call (from `Drop`) is a no-op.
-    ///
-    /// For RTMP/SRT (`close_pb_after_trailer = true`) closes `out_ctx.pb`
-    /// before freeing `out_ctx` — handles the abnormal Drop path where
-    /// `flush_and_close_unsafe` was never called.
-    ///
-    /// # Safety
-    ///
-    /// Must only be called when no other reference to `out_ctx` exists.
-    unsafe fn free_all(&mut self) {
-        // Owned scale / resample / audio-codec contexts drop when set to `None`;
-        // a second call re-`None`s them, so this is idempotent. The `vid_enc_ctx`
-        // field is not an `Option` — it drops exactly once when the struct drops.
-        self.sws_ctx = None;
-        self.swr_ctx = None;
-        // `vid_enc_frame` / `aud_enc_frame` are owned `Frame`s: they free exactly
-        // once when the struct drops, so there is nothing to free here.
-        self.aud_enc_ctx = None;
-        if !self.out_ctx.is_null() {
-            // For RTMP/SRT: close pb if still open (Drop path where
-            // flush_and_close_unsafe was not called).
-            if self.close_pb_after_trailer && !(*self.out_ctx).pb.is_null() {
-                ff_sys::avformat::close_output(&mut (*self.out_ctx).pb);
-            }
-            avformat_free_context(self.out_ctx);
-            self.out_ctx = ptr::null_mut();
-        }
-    }
-}
-
-impl Drop for MuxerCore {
-    fn drop(&mut self) {
-        // SAFETY: free_all checks each pointer for null before freeing.
-        // flush_and_close_unsafe already zeroed all pointers on the success path,
-        // so this is a safe no-op in the normal case.
-        unsafe {
-            self.free_all();
-        }
     }
 }

@@ -22,10 +22,7 @@ use std::path::Path;
 use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
-use ff_sys::{
-    AVPixelFormat_AV_PIX_FMT_YUV420P, av_opt_set, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header,
-};
+use ff_sys::{AVPixelFormat_AV_PIX_FMT_YUV420P, av_opt_set, avformat_new_stream};
 
 use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
 use crate::error::StreamError;
@@ -130,19 +127,11 @@ impl LiveHlsInner {
 
         // ── 1. Allocate HLS output context ────────────────────────────────────
         let playlist_path = format!("{output_dir}/index.m3u8");
-        let c_playlist = CString::new(playlist_path.as_str())
-            .map_err(|_| ffmpeg_err_msg("playlist path contains null byte"))?;
 
-        let mut out_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
-        let ret = avformat_alloc_output_context2(
-            &mut out_ctx,
-            ptr::null_mut(),
-            c"hls".as_ptr(),
-            c_playlist.as_ptr(),
-        );
-        if ret < 0 || out_ctx.is_null() {
-            return Err(ffmpeg_err(ret));
-        }
+        // The owned context frees itself on every early return below, so no manual
+        // teardown is needed on error paths.
+        let mut out_ctx = ff_sys::OutputFormatContext::new(Some("hls"), Path::new(&playlist_path))
+            .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 2. Set HLS muxer options ──────────────────────────────────────────
         let seg_time_str = format!("{segment_secs}");
@@ -157,7 +146,7 @@ impl LiveHlsInner {
             CString::new(seg_filename.as_str()),
         ) {
             let ret = av_opt_set(
-                (*out_ctx).priv_data,
+                (*out_ctx.as_mut_ptr()).priv_data,
                 c"hls_time".as_ptr(),
                 c_seg_time.as_ptr(),
                 0,
@@ -170,7 +159,7 @@ impl LiveHlsInner {
                 );
             }
             let ret = av_opt_set(
-                (*out_ctx).priv_data,
+                (*out_ctx.as_mut_ptr()).priv_data,
                 c"hls_list_size".as_ptr(),
                 c_list_size.as_ptr(),
                 0,
@@ -183,7 +172,7 @@ impl LiveHlsInner {
                 );
             }
             let ret = av_opt_set(
-                (*out_ctx).priv_data,
+                (*out_ctx.as_mut_ptr()).priv_data,
                 c"hls_flags".as_ptr(),
                 c"delete_segments".as_ptr(),
                 0,
@@ -195,7 +184,7 @@ impl LiveHlsInner {
                 );
             }
             let ret = av_opt_set(
-                (*out_ctx).priv_data,
+                (*out_ctx.as_mut_ptr()).priv_data,
                 c"hls_segment_filename".as_ptr(),
                 c_seg_file.as_ptr(),
                 0,
@@ -209,7 +198,7 @@ impl LiveHlsInner {
             }
             if use_fmp4 {
                 let ret = av_opt_set(
-                    (*out_ctx).priv_data,
+                    (*out_ctx.as_mut_ptr()).priv_data,
                     c"hls_segment_type".as_ptr(),
                     c"fmp4".as_ptr(),
                     0,
@@ -226,17 +215,14 @@ impl LiveHlsInner {
         // ── 3. Open H.264 video encoder ───────────────────────────────────────
         let vid_enc_codec =
             crate::codec_utils::select_h264_encoder("live_hls").ok_or_else(|| {
-                avformat_free_context(out_ctx);
                 ffmpeg_err_msg(
                     "no H.264 encoder available \
                      (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)",
                 )
             })?;
 
-        let mut vid_enc_ctx = ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| {
-            avformat_free_context(out_ctx);
-            ffmpeg_err(e.code())
-        })?;
+        let mut vid_enc_ctx =
+            ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| ffmpeg_err(e.code()))?;
         vid_enc_ctx.set_width(enc_width);
         vid_enc_ctx.set_height(enc_height);
         vid_enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
@@ -251,31 +237,24 @@ impl LiveHlsInner {
         vid_enc_ctx.set_gop_size(fps_int * segment_secs as i32);
         vid_enc_ctx.set_bit_rate(video_bitrate as i64);
 
-        // On open failure `vid_enc_ctx` drops (frees the codec context); only the
-        // raw format context needs an explicit free.
+        // On open failure `vid_enc_ctx` drops (frees the codec context); the owned
+        // `out_ctx` frees on the `?` early return.
         vid_enc_ctx
             .open(vid_enc_codec, ptr::null_mut())
-            .map_err(|e| {
-                avformat_free_context(out_ctx);
-                ffmpeg_err(e.code())
-            })?;
+            .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 4. Add video output stream ────────────────────────────────────────
-        let vid_out_stream = avformat_new_stream(out_ctx, vid_enc_codec.as_ptr());
+        let vid_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), vid_enc_codec.as_ptr());
         if vid_out_stream.is_null() {
-            avformat_free_context(out_ctx);
             return Err(ffmpeg_err_msg("cannot create video output stream"));
         }
         (*vid_out_stream).time_base = vid_enc_ctx.time_base();
-        let vid_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+        let vid_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
         // SAFETY: vid_out_stream and vid_enc_ctx are valid; avcodec_open2 has been called.
         vid_enc_ctx
             .parameters_from_context((*vid_out_stream).codecpar)
-            .map_err(|e| {
-                avformat_free_context(out_ctx);
-                ffmpeg_err(e.code())
-            })?;
+            .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 5. Open AAC audio encoder and add audio stream (optional) ─────────
         let mut aud_enc_ctx: Option<ff_sys::CodecContext> = None;
@@ -294,14 +273,14 @@ impl LiveHlsInner {
                         1024
                     };
 
-                    let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
+                    let aud_out_stream = avformat_new_stream(out_ctx.as_mut_ptr(), ptr::null());
                     if aud_out_stream.is_null() {
                         // `ctx` drops here (frees the codec context).
                         log::warn!("live_hls cannot create audio output stream, skipping audio");
                     } else {
                         (*aud_out_stream).time_base.num = 1;
                         (*aud_out_stream).time_base.den = sr;
-                        aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+                        aud_out_stream_idx = (out_ctx.nb_streams() - 1) as i32;
 
                         // SAFETY: aud_out_stream and ctx are valid.
                         if ctx
@@ -320,26 +299,18 @@ impl LiveHlsInner {
         }
 
         // ── 6. Open output file and write header ──────────────────────────────
-        let pb = ff_sys::avformat::open_output(
-            Path::new(&playlist_path),
-            ff_sys::avformat::avio_flags::WRITE,
-        )
-        .map_err(|e| {
-            avformat_free_context(out_ctx);
-            ffmpeg_err(e)
-        })?;
-        (*out_ctx).pb = pb;
+        out_ctx
+            .open_io(Path::new(&playlist_path))
+            .map_err(|e| ffmpeg_err(e.code()))?;
 
-        let ret = avformat_write_header(out_ctx, ptr::null_mut());
-        if ret < 0 {
-            ff_sys::avformat::close_output(&mut (*out_ctx).pb);
-            avformat_free_context(out_ctx);
-            return Err(ffmpeg_err(ret));
-        }
+        // On header-write failure the owned `out_ctx` drops here, closing `pb` and
+        // freeing the context.
+        out_ctx.write_header().map_err(|e| ffmpeg_err(e.code()))?;
 
         // Close pb so the HLS muxer can rename its .tmp playlist files without
-        // hitting a locked-file error on Windows.
-        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
+        // hitting a locked-file error on Windows. `close_io` nulls `pb`, so the
+        // later drop only frees the context.
+        out_ctx.close_io();
 
         log::info!(
             "live_hls output opened \
@@ -362,13 +333,7 @@ impl LiveHlsInner {
             aud_frame_size,
             aud_sample_rate,
             "live_hls",
-            false, // close_pb_after_trailer: pb already closed after header write
-        )
-        .inspect_err(|_| {
-            // `vid_enc_ctx` / `aud_enc_ctx` were moved in and drop inside `new` on
-            // error; only the raw format context needs an explicit free.
-            avformat_free_context(out_ctx);
-        })?;
+        )?;
 
         Ok(Self { core })
     }
