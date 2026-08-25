@@ -1333,6 +1333,21 @@ impl CodecContext {
         Err(crate::AvError::new(-1))
     }
 
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn send_frame_ref(&mut self, _frame: Option<&Frame>) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn receive_packet_into(
+        &mut self,
+        _pkt: &mut Packet,
+    ) -> Result<ReceiveOutcome, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
     /// # Safety
     /// Stub; never executed on docs.rs.
     pub unsafe fn parameters_from_context(
@@ -1537,6 +1552,55 @@ impl OutputFormatContext {
     }
 
     pub fn close_io(&mut self) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new_stream(&mut self, _codec: Option<&Codec>) -> Result<usize, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub fn stream_time_base(&self, _idx: usize) -> AVRational {
+        AVRational { num: 0, den: 0 }
+    }
+
+    pub fn set_stream_time_base(&mut self, _idx: usize, _time_base: AVRational) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn apply_stream_params_from_context(
+        &mut self,
+        _idx: usize,
+        _ctx: &CodecContext,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn copy_stream_params(
+        &mut self,
+        _idx: usize,
+        _src: CodecParameters<'_>,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_opt(
+        &mut self,
+        _key: &std::ffi::CStr,
+        _value: &std::ffi::CStr,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn write_interleaved(&mut self, _pkt: &mut Packet) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
 }
 
 impl Drop for OutputFormatContext {
@@ -1790,6 +1854,19 @@ impl Packet {
     pub fn pts(&self) -> i64 {
         0
     }
+
+    #[must_use]
+    pub fn dts(&self) -> i64 {
+        0
+    }
+
+    pub fn set_stream_index(&mut self, _stream_index: c_int) {}
+
+    pub fn set_pts(&mut self, _pts: i64) {}
+
+    pub fn set_dts(&mut self, _dts: i64) {}
+
+    pub fn rescale_ts(&mut self, _src_tb: AVRational, _dst_tb: AVRational) {}
 
     pub fn unref(&mut self) {}
 
