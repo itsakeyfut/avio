@@ -1884,6 +1884,11 @@ impl Frame {
     }
     pub fn set_format(&mut self, _format: c_int) {}
     pub fn set_pict_type(&mut self, _pict_type: AVPictureType) {}
+
+    #[must_use]
+    pub fn pict_type(&self) -> AVPictureType {
+        0
+    }
     #[must_use]
     pub fn pts(&self) -> i64 {
         0
