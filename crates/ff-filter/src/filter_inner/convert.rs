@@ -233,49 +233,30 @@ pub(super) unsafe fn copy_video_planes_to_av(src: &VideoFrame, dst: *mut AVFrame
     }
 }
 
-/// Source pointer for row `y` of a plane, per `FFmpeg`'s `av_image_copy`
-/// invariant `row_y = data + y * linesize`.
-///
-/// The signed step is correct for both positive (top-down) and negative
-/// (bottom-up, e.g. from `vflip`) `linesize`, so the plane is never vertically
-/// flipped (issue #1306). Casting `linesize` to `usize` first would both wrap a
-/// negative value to a huge stride and reverse row order.
-///
-/// # Safety
-///
-/// `data` must be non-null and point to a plane whose row `y` is in bounds.
-unsafe fn plane_row_ptr(data: *const u8, linesize: c_int, y: usize) -> *const u8 {
-    data.offset(y as isize * linesize as isize)
-}
-
 /// Build a [`VideoFrame`] by copying data out of an `AVFrame`.
 ///
 /// # Safety
 ///
 /// `raw_frame` must point to a valid, populated `AVFrame`.
-pub(super) unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Result<VideoFrame, ()> {
-    let width = (*raw_frame).width as u32;
-    let height = (*raw_frame).height as u32;
-    let format = av_to_pixel_format((*raw_frame).format);
-    let pts_raw = (*raw_frame).pts;
+pub(super) unsafe fn av_frame_to_video_frame(frame: &ff_sys::Frame) -> Result<VideoFrame, ()> {
+    let width = frame.width() as u32;
+    let height = frame.height() as u32;
+    let format = av_to_pixel_format(frame.format());
+    let pts_raw = frame.pts();
     if pts_raw == ff_sys::AV_NOPTS_VALUE {
         log::warn!("pts invalid in output video frame from filter graph");
     }
     let timestamp = video_ticks_to_timestamp(pts_raw);
     // AV_PICTURE_TYPE_I = 1: I-frame (key frame).  `key_frame` was removed
     // from AVFrame in FFmpeg 6; use `pict_type` instead.
-    let key_frame = (*raw_frame).pict_type == 1;
+    let key_frame = frame.pict_type() == ff_sys::AVPictureType_AV_PICTURE_TYPE_I;
 
     let num_planes = format.num_planes();
     let mut planes: Vec<PooledBuffer> = Vec::with_capacity(num_planes);
     let mut strides: Vec<usize> = Vec::with_capacity(num_planes);
 
     for i in 0..num_planes {
-        let src_ptr = (*raw_frame).data[i];
-        if src_ptr.is_null() {
-            return Err(());
-        }
-        let linesize_raw = (*raw_frame).linesize[i];
+        let linesize_raw = frame.linesize(i);
         let stride = linesize_raw.unsigned_abs() as usize;
         let rows = plane_height(format, i, height as usize);
 
@@ -287,7 +268,7 @@ pub(super) unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Resul
         // last row within bounds. `stride` is preserved so downstream stride math is
         // unchanged; inter-row padding is left zeroed (never read).
         let row_bytes = {
-            let n = ff_sys::av_image_get_linesize((*raw_frame).format, width as i32, i as i32);
+            let n = ff_sys::av_image_get_linesize(frame.format(), width as i32, i as i32);
             if n > 0 {
                 (n as usize).min(stride)
             } else {
@@ -295,18 +276,16 @@ pub(super) unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Resul
             }
         };
         let mut buf = vec![0u8; stride * rows];
-        for row in 0..rows {
-            // SAFETY: `plane_row_ptr` returns `src_ptr + row * linesize_raw`. A
-            // negative linesize (bottom-up scan order, e.g. from `vflip`) steps to
-            // lower addresses, matching FFmpeg's `av_image_copy` invariant so rows
-            // are copied top-down and never vertically flipped (issue #1306). Each
-            // source row has at least `row_bytes` valid bytes; the dst slice is
-            // inside `buf`.
-            std::ptr::copy_nonoverlapping(
-                plane_row_ptr(src_ptr, linesize_raw, row),
-                buf.as_mut_ptr().add(row * stride),
-                row_bytes,
-            );
+        // `copy_plane_rows` honors the signed linesize: a negative one (bottom-up
+        // scan, e.g. from `vflip`) is copied top-down, never vertically flipped
+        // (RK-008 / #1306). A null plane yields `None`, which we map to `Err`.
+        // SAFETY: `rows` / `row_bytes` stay within plane `i` (derived from the
+        //         frame's own format and dimensions) and `buf` holds `stride * rows`.
+        if frame
+            .copy_plane_rows(i, &mut buf, stride, rows, row_bytes)
+            .is_none()
+        {
+            return Err(());
         }
 
         planes.push(PooledBuffer::standalone(buf));
@@ -337,17 +316,13 @@ pub(super) unsafe fn copy_audio_planes_to_av(src: &AudioFrame, dst: *mut AVFrame
     }
 }
 
-/// Build an [`AudioFrame`] by copying data out of an `AVFrame`.
-///
-/// # Safety
-///
-/// `raw_frame` must point to a valid, populated `AVFrame`.
-pub(super) unsafe fn av_frame_to_audio_frame(raw_frame: *const AVFrame) -> Result<AudioFrame, ()> {
-    let samples = (*raw_frame).nb_samples as usize;
-    let channels = (*raw_frame).ch_layout.nb_channels as u32;
-    let sample_rate = (*raw_frame).sample_rate as u32;
-    let format = av_to_sample_format((*raw_frame).format);
-    let pts_raw = (*raw_frame).pts;
+/// Build an [`AudioFrame`] by copying data out of a decoded [`ff_sys::Frame`].
+pub(super) fn av_frame_to_audio_frame(frame: &ff_sys::Frame) -> Result<AudioFrame, ()> {
+    let samples = frame.nb_samples() as usize;
+    let channels = frame.channels() as u32;
+    let sample_rate = frame.sample_rate() as u32;
+    let format = av_to_sample_format(frame.format());
+    let pts_raw = frame.pts();
     if pts_raw == ff_sys::AV_NOPTS_VALUE {
         log::warn!("pts invalid in output audio frame from filter graph sample_rate={sample_rate}");
     }
@@ -362,15 +337,15 @@ pub(super) unsafe fn av_frame_to_audio_frame(raw_frame: *const AVFrame) -> Resul
     let mut planes: Vec<Vec<u8>> = Vec::with_capacity(num_planes);
 
     for i in 0..num_planes {
-        let src_ptr = (*raw_frame).data[i];
-        if src_ptr.is_null() {
-            return Err(());
-        }
         let byte_count = samples * bytes_per_sample;
-        // SAFETY: `av_buffersink_get_frame` guarantees at least
-        // `nb_samples * bytes_per_sample` bytes per plane pointer.
-        let data = std::slice::from_raw_parts(src_ptr, byte_count).to_vec();
-        planes.push(data);
+        // `audio_plane` returns `None` for a null/absent plane, which maps to
+        // `Err`. Copy only the frame's sample bytes (`byte_count`), matching the
+        // previous behavior.
+        let plane = frame
+            .audio_plane(i)
+            .and_then(|p| p.get(..byte_count))
+            .ok_or(())?;
+        planes.push(plane.to_vec());
     }
 
     AudioFrame::new(planes, samples, channels, sample_rate, format, timestamp).map_err(|_| ())
@@ -383,43 +358,8 @@ mod tests {
     use super::*;
     use ff_format::time::Rational;
 
-    // ── plane_row_ptr (issue #1306: no vertical flip on negative linesize) ─────
-
-    /// Positive linesize walks rows top-down: row `y` is at `data + y*linesize`.
-    #[test]
-    fn plane_row_ptr_positive_linesize_should_walk_rows_top_down() {
-        let mem = [10u8, 20, 30];
-        let data = mem.as_ptr();
-        // SAFETY: rows 0..3 map to offsets 0,1,2 — all in bounds of `mem`.
-        let got: Vec<u8> = (0..3)
-            .map(|y| unsafe { *plane_row_ptr(data, 1, y) })
-            .collect();
-        assert_eq!(got, [10, 20, 30]);
-    }
-
-    /// Negative linesize (bottom-up, e.g. `vflip`): `data` points at the top row,
-    /// which sits at the highest address. Correct top-down order is
-    /// `mem[2], mem[1], mem[0]` == `[30, 20, 10]`, NOT the flipped `[10, 20, 30]`.
-    #[test]
-    fn plane_row_ptr_negative_linesize_should_not_flip_rows() {
-        let mem = [10u8, 20, 30];
-        // SAFETY: index 2 is the last element of `mem`.
-        let data = unsafe { mem.as_ptr().add(2) };
-        // SAFETY: rows 0..3 map to offsets 0,-1,-2 — all in bounds of `mem`.
-        let got: Vec<u8> = (0..3)
-            .map(|y| unsafe { *plane_row_ptr(data, -1, y) })
-            .collect();
-        assert_eq!(got, [30, 20, 10]);
-    }
-
-    /// Row 0 is the base pointer regardless of the linesize sign.
-    #[test]
-    fn plane_row_ptr_row_zero_should_return_base() {
-        let mem = [7u8; 4];
-        let data = mem.as_ptr();
-        // SAFETY: y=0 yields a zero offset.
-        assert_eq!(unsafe { plane_row_ptr(data, -13, 0) }, data);
-    }
+    // Negative-linesize (RK-008 / #1306) plane copying now lives in
+    // `ff_sys::Frame::copy_plane_rows`, which carries its own regression test.
 
     // ── PTS helpers ───────────────────────────────────────────────────────────
 

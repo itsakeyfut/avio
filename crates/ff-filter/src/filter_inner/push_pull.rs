@@ -228,7 +228,7 @@ impl FilterGraphInner {
             }
 
             // `frame` drops at end of scope after the conversion reads it.
-            match av_frame_to_video_frame(frame.as_ptr()) {
+            match av_frame_to_video_frame(&frame) {
                 Ok(vframe) => Ok(Some(vframe)),
                 Err(()) => Err(FilterError::ProcessFailed),
             }
@@ -484,7 +484,7 @@ impl FilterGraphInner {
             }
 
             // `frame` drops at end of scope after the conversion reads it.
-            match av_frame_to_audio_frame(frame.as_ptr()) {
+            match av_frame_to_audio_frame(&frame) {
                 Ok(aframe) => Ok(Some(aframe)),
                 Err(()) => Err(FilterError::ProcessFailed),
             }
