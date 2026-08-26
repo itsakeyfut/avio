@@ -1027,6 +1027,22 @@ pub mod swresample {
         pub unsafe fn size(_fifo: *mut AVAudioFifo) -> c_int {
             0
         }
+
+        pub unsafe fn write_frame(
+            _fifo: *mut AVAudioFifo,
+            _src: &super::super::Frame,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
+
+        pub unsafe fn read_frame(
+            _fifo: *mut AVAudioFifo,
+            _dst: &mut super::super::Frame,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
     }
 
     pub mod sample_format {
@@ -1605,6 +1621,29 @@ impl OutputFormatContext {
     pub fn write_interleaved(&mut self, _pkt: &mut Packet) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_metadata(&mut self, _key: &str, _value: &str) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn add_attachment_stream(
+        &mut self,
+        _data: &[u8],
+        _mime_type: &str,
+        _filename: &str,
+    ) -> Result<usize, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_chapters(&mut self, _chapters: &[ChapterSpec<'_>]) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
 }
 
 impl Drop for OutputFormatContext {
@@ -1613,6 +1652,14 @@ impl Drop for OutputFormatContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for OutputFormatContext {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterSpec<'a> {
+    pub id: i64,
+    pub start_us: i64,
+    pub end_us: i64,
+    pub title: Option<&'a str>,
+}
 
 // ── Borrowed stream / params stubs (mirror crate::format_context) ─────────────
 
@@ -1809,6 +1856,20 @@ impl Frame {
         0
     }
 
+    /// # Safety
+    ///
+    /// Docs.rs stub; never called.
+    pub unsafe fn copy_plane_rows(
+        &self,
+        _i: usize,
+        _dst: &mut [u8],
+        _dst_stride: usize,
+        _rows: usize,
+        _row_bytes: usize,
+    ) -> Option<()> {
+        None
+    }
+
     #[must_use]
     pub fn audio_plane(&self, _i: usize) -> Option<&[u8]> {
         None
@@ -1880,6 +1941,16 @@ impl Packet {
     }
 
     #[must_use]
+    pub fn size(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn flags(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
     pub fn duration(&self) -> i64 {
         0
     }
@@ -1893,6 +1964,14 @@ impl Packet {
     pub fn set_duration(&mut self, _duration: i64) {}
 
     pub fn rescale_ts(&mut self, _src_tb: AVRational, _dst_tb: AVRational) {}
+
+    pub fn new_side_data(
+        &mut self,
+        _kind: AVPacketSideDataType,
+        _size: usize,
+    ) -> Option<&mut [u8]> {
+        None
+    }
 
     pub fn unref(&mut self) {}
 

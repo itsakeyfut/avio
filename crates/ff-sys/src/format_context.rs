@@ -11,9 +11,10 @@
 //! muxing context, opens/closes its IO (`pb`), writes the header/trailer, and
 //! frees the context exactly once on drop (closing a caller-opened `pb`),
 //! replacing the manual `avformat_alloc_output_context2` + `avio_open` +
-//! `avformat_free_context` teardown. Like `InputFormatContext`, it exposes a
-//! transitional `as_mut_ptr` for the write path (stream creation, packet
-//! writing) not yet wrapped.
+//! `avformat_free_context` teardown. The write path (stream creation, packet
+//! writing, metadata / attachments / chapters) is exposed through safe methods;
+//! a transitional `as_mut_ptr` remains for the few sites not yet wrapped and is
+//! removed once the safe layer is sealed.
 
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
@@ -23,10 +24,12 @@ use std::ptr::NonNull;
 use std::time::Duration;
 
 use crate::{
-    AVChannelLayout, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVFormatContext, AVMediaType, AVRational, AVStream, AvError, Codec, CodecContext, Packet,
-    av_interleaved_write_frame as ffi_av_interleaved_write_frame, av_opt_set as ffi_av_opt_set,
-    avcodec_parameters_copy as ffi_avcodec_parameters_copy,
+    AV_INPUT_BUFFER_PADDING_SIZE, AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecID,
+    AVCodecID_AV_CODEC_ID_BIN_DATA, AVCodecParameters, AVColorPrimaries, AVColorRange,
+    AVColorSpace, AVDictionary, AVFormatContext, AVMediaType, AVMediaType_AVMEDIA_TYPE_ATTACHMENT,
+    AVRational, AVStream, AvError, Codec, CodecContext, Packet, av_dict_set as ffi_av_dict_set,
+    av_interleaved_write_frame as ffi_av_interleaved_write_frame, av_mallocz as ffi_av_mallocz,
+    av_opt_set as ffi_av_opt_set, avcodec_parameters_copy as ffi_avcodec_parameters_copy,
     avformat_close_input as ffi_avformat_close_input,
     avformat_new_stream as ffi_avformat_new_stream,
 };
@@ -593,6 +596,178 @@ impl OutputFormatContext {
             Ok(())
         }
     }
+
+    /// Sets a container-level metadata entry (`av_dict_set` on the muxer's
+    /// `metadata` dictionary). Call before writing the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if `key` / `value` contain a NUL byte or the set fails.
+    pub fn set_metadata(&mut self, key: &str, value: &str) -> Result<(), AvError> {
+        let key_c = CString::new(key).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        let value_c = CString::new(value).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        // SAFETY: `self.ptr` is a valid owned mux context; `av_dict_set` copies
+        //         both strings into the context's `metadata` dictionary.
+        let ret = unsafe {
+            ffi_av_dict_set(
+                &raw mut (*self.ptr.as_ptr()).metadata,
+                key_c.as_ptr(),
+                value_c.as_ptr(),
+                0,
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Adds a binary attachment stream (`AVMEDIA_TYPE_ATTACHMENT` /
+    /// `AV_CODEC_ID_BIN_DATA`), storing `data` in the stream's `extradata` and
+    /// recording `filename` / `mime_type` in its metadata. Returns the new
+    /// stream's index. Call before writing the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the stream or its `extradata` cannot be
+    /// allocated, or `filename` / `mime_type` contain a NUL byte.
+    pub fn add_attachment_stream(
+        &mut self,
+        data: &[u8],
+        mime_type: &str,
+        filename: &str,
+    ) -> Result<usize, AvError> {
+        // Reject attachments too large for `extradata_size` (a `c_int`) before
+        // allocating anything, so the field never wraps to a negative value.
+        let extradata_size =
+            c_int::try_from(data.len()).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        let filename_c =
+            CString::new(filename).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        let mime_c =
+            CString::new(mime_type).map_err(|_| AvError::new(crate::error_codes::EINVAL))?;
+        // SAFETY: `self.ptr` is a valid owned mux context. A null codec lets the
+        //         muxer pick a default; the returned stream and its `codecpar`
+        //         are owned by the context. `extradata` is `av_mallocz`'d (owned
+        //         by the codecpar, freed with it) with the required trailing
+        //         padding, and `data` is copied into its leading bytes.
+        unsafe {
+            let stream = ffi_avformat_new_stream(self.ptr.as_ptr(), std::ptr::null());
+            if stream.is_null() {
+                return Err(AvError::new(crate::error_codes::ENOMEM));
+            }
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_ATTACHMENT;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_BIN_DATA;
+
+            let alloc_size = data.len() + AV_INPUT_BUFFER_PADDING_SIZE as usize;
+            let extradata = ffi_av_mallocz(alloc_size).cast::<u8>();
+            if extradata.is_null() {
+                return Err(AvError::new(crate::error_codes::ENOMEM));
+            }
+            std::ptr::copy_nonoverlapping(data.as_ptr(), extradata, data.len());
+            (*codecpar).extradata = extradata;
+            (*codecpar).extradata_size = extradata_size;
+
+            ffi_av_dict_set(
+                &raw mut (*stream).metadata,
+                c"filename".as_ptr(),
+                filename_c.as_ptr(),
+                0,
+            );
+            ffi_av_dict_set(
+                &raw mut (*stream).metadata,
+                c"mimetype".as_ptr(),
+                mime_c.as_ptr(),
+                0,
+            );
+        }
+        Ok(self.nb_streams() as usize - 1)
+    }
+
+    /// Sets the container's chapters, allocating the `AVChapter` array with
+    /// FFmpeg's allocator (owned by the context, freed on drop). Chapter times
+    /// are in microseconds (`AV_TIME_BASE` units). Call before writing the header.
+    ///
+    /// Per-chapter allocation / NUL-byte-title failures are logged and skipped;
+    /// the array is compacted so it holds exactly `nb_chapters` entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the top-level chapter array cannot be allocated.
+    pub fn set_chapters(&mut self, chapters: &[ChapterSpec<'_>]) -> Result<(), AvError> {
+        if chapters.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: `self.ptr` is a valid owned mux context. The chapter pointer
+        //         array and each `AVChapter` are `av_mallocz`'d (owned by the
+        //         context, freed by `avformat_free_context` on drop). We write
+        //         each successful chapter at the running `nb_chapters` index so
+        //         the array is compact (no null gaps).
+        unsafe {
+            let ctx = self.ptr.as_ptr();
+            let arr = ffi_av_mallocz(std::mem::size_of::<*mut AVChapter>() * chapters.len())
+                .cast::<*mut AVChapter>();
+            if arr.is_null() {
+                return Err(AvError::new(crate::error_codes::ENOMEM));
+            }
+            (*ctx).chapters = arr;
+            (*ctx).nb_chapters = 0;
+
+            for spec in chapters {
+                let chap = ffi_av_mallocz(std::mem::size_of::<AVChapter>()).cast::<AVChapter>();
+                if chap.is_null() {
+                    log::warn!(
+                        "av_mallocz failed for AVChapter, skipping chapter id={}",
+                        spec.id
+                    );
+                    continue;
+                }
+                (*chap).id = spec.id;
+                (*chap).time_base = AVRational {
+                    num: 1,
+                    den: AV_TIME_BASE as c_int,
+                };
+                (*chap).start = spec.start_us;
+                (*chap).end = spec.end_us;
+                (*chap).metadata = std::ptr::null_mut::<AVDictionary>();
+
+                if let Some(title) = spec.title {
+                    if let Ok(title_c) = CString::new(title) {
+                        ffi_av_dict_set(
+                            &raw mut (*chap).metadata,
+                            c"title".as_ptr(),
+                            title_c.as_ptr(),
+                            0,
+                        );
+                    } else {
+                        log::warn!(
+                            "chapter title contains a NUL byte, skipping title id={}",
+                            spec.id
+                        );
+                    }
+                }
+                *arr.add((*ctx).nb_chapters as usize) = chap;
+                (*ctx).nb_chapters += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A chapter to write into an [`OutputFormatContext`] via
+/// [`set_chapters`](OutputFormatContext::set_chapters). Times are in
+/// microseconds (`AV_TIME_BASE` units).
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterSpec<'a> {
+    /// Chapter id.
+    pub id: i64,
+    /// Start time in microseconds.
+    pub start_us: i64,
+    /// End time in microseconds.
+    pub end_us: i64,
+    /// Optional chapter title.
+    pub title: Option<&'a str>,
 }
 
 impl Drop for OutputFormatContext {
@@ -834,5 +1009,45 @@ mod tests {
         // The codec-parameter copy's out-of-range index guard returns Err, not a panic.
         let cc = CodecContext::new(None).expect("codec context alloc should succeed");
         assert!(ctx.apply_stream_params_from_context(99, &cc).is_err());
+    }
+
+    #[test]
+    fn metadata_attachment_and_chapters_should_apply() {
+        // Exercises set_metadata / add_attachment_stream / set_chapters. These set
+        // context/stream fields (no header write), so any file muxer works; skip
+        // gracefully if mp4 is absent from a minimal FFmpeg build.
+        let Ok(mut ctx) = OutputFormatContext::new(None, Path::new("out.mp4")) else {
+            return;
+        };
+
+        ctx.set_metadata("title", "test")
+            .expect("set_metadata should succeed");
+        // A NUL byte in the key is rejected without panicking.
+        assert!(ctx.set_metadata("k\0", "v").is_err());
+
+        let idx = ctx
+            .add_attachment_stream(b"font-bytes", "application/x-font", "font.ttf")
+            .expect("add_attachment_stream should allocate a stream");
+        assert_eq!(ctx.nb_streams(), idx as u32 + 1);
+        // A NUL byte in the filename is rejected without panicking.
+        assert!(ctx.add_attachment_stream(b"x", "m", "f\0").is_err());
+
+        // Empty chapters is a no-op Ok; a non-empty set allocates and compacts.
+        ctx.set_chapters(&[]).expect("empty chapters is Ok");
+        ctx.set_chapters(&[
+            ChapterSpec {
+                id: 0,
+                start_us: 0,
+                end_us: 1_000_000,
+                title: Some("Intro"),
+            },
+            ChapterSpec {
+                id: 1,
+                start_us: 1_000_000,
+                end_us: 2_000_000,
+                title: None,
+            },
+        ])
+        .expect("set_chapters should allocate");
     }
 }

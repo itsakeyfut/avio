@@ -12,8 +12,8 @@
 
 use super::color::{pixel_format_to_av, sample_format_to_av};
 use super::{
-    AVChannelLayout, AVCodecContext, AVPixelFormat, AudioFrame, EncodeError, VideoEncoderInner,
-    VideoFrame, av_interleaved_write_frame, swresample,
+    AVChannelLayout, AVPixelFormat, AudioFrame, EncodeError, VideoEncoderInner, VideoFrame,
+    swresample,
 };
 
 /// Maximum number of planes in AVFrame data/linesize arrays.
@@ -42,7 +42,7 @@ impl VideoEncoderInner {
         })?;
 
         loop {
-            match codec_ctx.receive_packet(packet.as_mut_ptr()) {
+            match codec_ctx.receive_packet_into(&mut packet) {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Discard — do not write to the format context.
                     packet.unref();
@@ -84,17 +84,18 @@ impl VideoEncoderInner {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `codec_ctx` is a valid, open `AVCodecContext`; its
-    /// fields are read through the raw pointer. `dst` is a safe owned frame.
+    /// `dst` is a safe owned frame; the target format scalars come from the
+    /// caller's open codec context via the safe accessors.
     pub(super) unsafe fn convert_video_frame(
         &mut self,
         src: &VideoFrame,
         dst: &mut ff_sys::Frame,
-        codec_ctx: *mut AVCodecContext,
+        target_fmt: ff_sys::AVPixelFormat,
+        target_width: std::os::raw::c_int,
+        target_height: std::os::raw::c_int,
     ) -> Result<(), EncodeError> {
-        let target_fmt = (*codec_ctx).pix_fmt;
-        let target_width = (*codec_ctx).width as u32;
-        let target_height = (*codec_ctx).height as u32;
+        let target_width = target_width as u32;
+        let target_height = target_height as u32;
 
         let src_fmt = pixel_format_to_av(src.format());
         let src_width = src.width();
@@ -173,8 +174,7 @@ impl VideoEncoderInner {
 
             let plane_data = plane.data();
             // The destination stride is the frame's own linesize for plane i.
-            // SAFETY: `dst` is a valid get_buffer'd frame; `linesize` is a plain field.
-            let dst_stride = (*dst.as_ptr()).linesize[i] as usize;
+            let dst_stride = dst.linesize(i) as usize;
             // `video_plane_mut` yields `None` for an absent plane (null data),
             // matching the previous null-plane break; it self-sizes to the plane's
             // `linesize * plane_height`, superseding the removed `get_plane_height`.
@@ -265,7 +265,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .receive_packet(packet.as_mut_ptr());
+                .receive_packet_into(&mut packet);
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -285,29 +285,25 @@ impl VideoEncoderInner {
                 }
             }
 
-            // Set stream index and, for keyframes, attach HDR10 side data. These
-            // packet fields have no typed accessor, so they are read/written
-            // through the packet pointer.
-            let pkt = packet.as_mut_ptr();
-            (*pkt).stream_index = self.video_stream_index;
+            // Set stream index and, for keyframes, attach HDR10 side data.
+            packet.set_stream_index(self.video_stream_index);
 
             if let Some(ref meta) = self.hdr10_metadata {
                 const AV_PKT_FLAG_KEY: i32 = 1;
-                if (*pkt).flags & AV_PKT_FLAG_KEY != 0 {
-                    self.attach_hdr10_side_data(pkt, meta);
+                if packet.flags() & AV_PKT_FLAG_KEY != 0 {
+                    self.attach_hdr10_side_data(&mut packet, meta);
                 }
             }
 
             // Write packet
-            let write_ret = av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), pkt);
-            if write_ret < 0 {
+            if let Err(e) = self.format_ctx.write_interleaved(&mut packet) {
                 packet.unref();
                 return Err(EncodeError::MuxingFailed {
-                    reason: ff_sys::av_error_string(write_ret),
+                    reason: ff_sys::av_error_string(e.code()),
                 });
             }
 
-            self.bytes_written += (*pkt).size as u64;
+            self.bytes_written += packet.size() as u64;
 
             packet.unref();
         }
@@ -321,17 +317,16 @@ impl VideoEncoderInner {
         src: &AudioFrame,
         dst: &mut ff_sys::Frame,
     ) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .audio_codec_ctx
-            .as_ref()
-            .ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Audio codec not initialized".to_string(),
-            })?
-            .as_ptr();
+        let codec_ctx =
+            self.audio_codec_ctx
+                .as_ref()
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?;
 
-        let target_sample_rate = (*codec_ctx).sample_rate;
-        let target_format = (*codec_ctx).sample_fmt;
-        let target_ch_layout = &(*codec_ctx).ch_layout;
+        let target_sample_rate = codec_ctx.sample_rate();
+        let target_format = codec_ctx.sample_fmt();
+        let target_ch_layout = codec_ctx.ch_layout();
 
         // Check if we need to resample
         let src_sample_rate = src.sample_rate() as i32;
@@ -370,22 +365,12 @@ impl VideoEncoderInner {
                 src.samples() as i32,
             );
 
-            // Set frame properties. These audio scalar fields have no typed
-            // setter, so they are written through the frame pointer.
-            // SAFETY: `dst` is a valid owned frame; these are plain fields.
-            {
-                let p = dst.as_mut_ptr();
-                (*p).format = target_format;
-                (*p).sample_rate = target_sample_rate;
-                (*p).nb_samples = out_samples;
-            }
-
-            // Copy target channel layout
-            swresample::channel_layout::copy(
-                &raw mut (*dst.as_mut_ptr()).ch_layout,
-                target_ch_layout,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            // Set frame properties from the encoder's target audio format.
+            dst.set_format(target_format);
+            dst.set_sample_rate(target_sample_rate);
+            dst.set_nb_samples(out_samples);
+            dst.set_ch_layout(target_ch_layout)
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
             // Allocate frame buffer
             dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
@@ -414,25 +399,14 @@ impl VideoEncoderInner {
                 .convert_into_frame(dst, &in_planes, src.samples() as i32)
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-            // SAFETY: `dst` is a valid owned frame; `nb_samples` is a plain field.
-            (*dst.as_mut_ptr()).nb_samples = samples_out;
+            dst.set_nb_samples(samples_out);
         } else {
-            // No resampling needed, direct copy. These audio scalar fields have no
-            // typed setter, so they are written through the frame pointer.
-            // SAFETY: `dst` is a valid owned frame; these are plain fields.
-            {
-                let p = dst.as_mut_ptr();
-                (*p).format = src_format;
-                (*p).sample_rate = src_sample_rate;
-                (*p).nb_samples = src.samples() as i32;
-            }
-
-            // Copy channel layout
-            swresample::channel_layout::copy(
-                &raw mut (*dst.as_mut_ptr()).ch_layout,
-                &raw const src_ch_layout,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            // No resampling needed, direct copy from the source's audio format.
+            dst.set_format(src_format);
+            dst.set_sample_rate(src_sample_rate);
+            dst.set_nb_samples(src.samples() as i32);
+            dst.set_ch_layout(&src_ch_layout)
+                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
             // Allocate frame buffer
             dst.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
@@ -481,7 +455,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Audio codec not initialized".to_string(),
                 })?
-                .receive_packet(packet.as_mut_ptr());
+                .receive_packet_into(&mut packet);
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -501,21 +475,18 @@ impl VideoEncoderInner {
                 }
             }
 
-            // Set stream index. This packet field has no typed accessor, so it is
-            // written through the packet pointer.
-            (*packet.as_mut_ptr()).stream_index = self.audio_stream_index;
+            // Set stream index.
+            packet.set_stream_index(self.audio_stream_index);
 
             // Write packet
-            let write_ret =
-                av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), packet.as_mut_ptr());
-            if write_ret < 0 {
+            if let Err(e) = self.format_ctx.write_interleaved(&mut packet) {
                 packet.unref();
                 return Err(EncodeError::MuxingFailed {
-                    reason: ff_sys::av_error_string(write_ret),
+                    reason: ff_sys::av_error_string(e.code()),
                 });
             }
 
-            self.bytes_written += (*packet.as_ptr()).size as u64;
+            self.bytes_written += packet.size() as u64;
 
             packet.unref();
         }

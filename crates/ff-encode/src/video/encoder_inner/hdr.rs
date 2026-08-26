@@ -11,9 +11,8 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    AVPacket, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, VideoEncoderInner,
-    av_packet_new_side_data,
 };
 
 /// FFmpeg `AVContentLightMetadata` — matches the C struct layout.
@@ -56,83 +55,79 @@ impl VideoEncoderInner {
     /// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` to `pkt`.  Called from
     /// `receive_packets` for every keyframe when `hdr10_metadata` is set.
     ///
-    /// # Safety
-    ///
-    /// `pkt` must be a valid, non-null pointer to an allocated `AVPacket`.
-    pub(super) unsafe fn attach_hdr10_side_data(
+    pub(super) fn attach_hdr10_side_data(
         &self,
-        pkt: *mut AVPacket,
+        pkt: &mut ff_sys::Packet,
         meta: &ff_format::Hdr10Metadata,
     ) {
         // ── Content light level (MaxCLL / MaxFALL) ──────────────────────────
-        let cll_ptr = av_packet_new_side_data(
-            pkt,
+        match pkt.new_side_data(
             AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
             std::mem::size_of::<AvContentLightMetadata>(),
-        );
-        if cll_ptr.is_null() {
-            log::warn!(
+        ) {
+            None => log::warn!(
                 "hdr10 side_data allocation failed, skipping MaxCLL/MaxFALL type=content_light_level"
-            );
-        } else {
-            // SAFETY: av_packet_new_side_data returns memory allocated for exactly
-            // sizeof(AvContentLightMetadata) bytes with alignment suitable for the
-            // data type. We use ptr::write to avoid creating a reference to
-            // potentially-unaligned memory (ptr::write handles any alignment).
-            let cll_value = AvContentLightMetadata {
-                max_cll: u32::from(meta.max_cll),
-                max_fall: u32::from(meta.max_fall),
-            };
-            // SAFETY: write_unaligned does not require the pointer to be aligned;
-            // it copies bytes. FFmpeg's av_packet_new_side_data returns
-            // malloc-aligned memory in practice, but write_unaligned is correct
-            // regardless of alignment.
-            std::ptr::write_unaligned(cll_ptr.cast::<AvContentLightMetadata>(), cll_value);
+            ),
+            Some(buf) => {
+                let cll_value = AvContentLightMetadata {
+                    max_cll: u32::from(meta.max_cll),
+                    max_fall: u32::from(meta.max_fall),
+                };
+                // SAFETY: `buf` is exactly sizeof(AvContentLightMetadata) writable
+                //         bytes; write_unaligned copies the struct with no
+                //         alignment requirement.
+                unsafe {
+                    std::ptr::write_unaligned(
+                        buf.as_mut_ptr().cast::<AvContentLightMetadata>(),
+                        cll_value,
+                    );
+                }
+            }
         }
 
         // ── Mastering display colour volume ─────────────────────────────────
-        let md_ptr = av_packet_new_side_data(
-            pkt,
+        match pkt.new_side_data(
             AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
             std::mem::size_of::<AvMasteringDisplayMetadata>(),
-        );
-        if md_ptr.is_null() {
-            log::warn!(
+        ) {
+            None => log::warn!(
                 "hdr10 side_data allocation failed, skipping mastering display type=mastering_display_metadata"
-            );
-        } else {
-            let d = &meta.mastering_display;
-            let r = |n: u16| ff_sys::AVRational {
-                num: i32::from(n),
-                den: 50000,
-            };
-            let lum = |n: u32| ff_sys::AVRational {
-                num: i32::try_from(n).unwrap_or(i32::MAX),
-                den: 10000,
-            };
-            // SAFETY: av_packet_new_side_data returns memory allocated for exactly
-            // sizeof(AvMasteringDisplayMetadata) bytes. We use ptr::write to safely
-            // write the struct without creating a potentially-unaligned reference.
-            let md_value = AvMasteringDisplayMetadata {
-                // Chromaticity coordinates: denominator = 50000 (CIE 1931 xy).
-                // Order: [R, G, B][x, y]
-                display_primaries: [
-                    [r(d.red_x), r(d.red_y)],
-                    [r(d.green_x), r(d.green_y)],
-                    [r(d.blue_x), r(d.blue_y)],
-                ],
-                white_point: [r(d.white_x), r(d.white_y)],
-                // Luminance: denominator = 10000.
-                min_luminance: lum(d.min_luminance),
-                max_luminance: lum(d.max_luminance),
-                has_primaries: 1,
-                has_luminance: 1,
-            };
-            // SAFETY: write_unaligned does not require the pointer to be aligned;
-            // it copies bytes. FFmpeg's av_packet_new_side_data returns
-            // malloc-aligned memory in practice, but write_unaligned is correct
-            // regardless of alignment.
-            std::ptr::write_unaligned(md_ptr.cast::<AvMasteringDisplayMetadata>(), md_value);
+            ),
+            Some(buf) => {
+                let d = &meta.mastering_display;
+                let r = |n: u16| ff_sys::AVRational {
+                    num: i32::from(n),
+                    den: 50000,
+                };
+                let lum = |n: u32| ff_sys::AVRational {
+                    num: i32::try_from(n).unwrap_or(i32::MAX),
+                    den: 10000,
+                };
+                let md_value = AvMasteringDisplayMetadata {
+                    // Chromaticity coordinates: denominator = 50000 (CIE 1931 xy).
+                    // Order: [R, G, B][x, y]
+                    display_primaries: [
+                        [r(d.red_x), r(d.red_y)],
+                        [r(d.green_x), r(d.green_y)],
+                        [r(d.blue_x), r(d.blue_y)],
+                    ],
+                    white_point: [r(d.white_x), r(d.white_y)],
+                    // Luminance: denominator = 10000.
+                    min_luminance: lum(d.min_luminance),
+                    max_luminance: lum(d.max_luminance),
+                    has_primaries: 1,
+                    has_luminance: 1,
+                };
+                // SAFETY: `buf` is exactly sizeof(AvMasteringDisplayMetadata)
+                //         writable bytes; write_unaligned copies the struct with
+                //         no alignment requirement.
+                unsafe {
+                    std::ptr::write_unaligned(
+                        buf.as_mut_ptr().cast::<AvMasteringDisplayMetadata>(),
+                        md_value,
+                    );
+                }
+            }
         }
     }
 }

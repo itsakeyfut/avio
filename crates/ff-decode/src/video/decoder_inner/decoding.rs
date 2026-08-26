@@ -1,8 +1,7 @@
 use super::{
-    AVFrame, Arc, DecodeError, Duration, Frame, OutputScale, PixelFormat, PooledBuffer, Rational,
-    Timestamp, VideoDecoderInner, VideoFrame,
+    Arc, DecodeError, Duration, Frame, OutputScale, PixelFormat, PooledBuffer, Rational, Timestamp,
+    VideoDecoderInner, VideoFrame,
 };
-use crate::shared::plane_inner::plane_row_ptr;
 
 impl VideoDecoderInner {
     /// Decodes the next video frame.
@@ -218,9 +217,9 @@ impl VideoDecoderInner {
 
     /// Converts an owned [`Frame`] to a [`VideoFrame`].
     ///
-    /// Scalar fields are read through the frame's accessors; only the plane data
-    /// copy in [`extract_planes_and_strides`](Self::extract_planes_and_strides)
-    /// still touches the raw `AVFrame` pointer (no safe plane accessor by design).
+    /// Scalar fields are read through the frame's accessors; the plane data copy
+    /// in [`extract_planes_and_strides`](Self::extract_planes_and_strides) reads
+    /// each plane through [`Frame::copy_plane_rows`].
     ///
     /// # Safety
     ///
@@ -251,11 +250,10 @@ impl VideoDecoderInner {
             Timestamp::default()
         };
 
-        // Convert frame to planes and strides. The plane data is read via the raw
-        // AVFrame pointer inside `extract_planes_and_strides`.
+        // Convert frame to planes and strides.
         // SAFETY: `format` is derived from `frame.format()`, so it matches the frame.
         let (planes, strides) =
-            unsafe { self.extract_planes_and_strides(frame.as_ptr(), width, height, format)? };
+            unsafe { self.extract_planes_and_strides(frame, width, height, format)? };
 
         VideoFrame::new(planes, strides, width, height, format, timestamp, false).map_err(|e| {
             DecodeError::Ffmpeg {
@@ -288,10 +286,16 @@ impl VideoDecoderInner {
         PooledBuffer::standalone(vec![0u8; size])
     }
 
-    /// Extracts planes and strides from an AVFrame.
+    /// Extracts planes and strides from a decoded frame.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `format` and `width` / `height` match the frame's
+    /// real pixel format and dimensions; the per-plane [`Frame::copy_plane_rows`]
+    /// copies below trust that geometry.
     unsafe fn extract_planes_and_strides(
         &self,
-        frame: *const AVFrame,
+        frame: &Frame,
         width: u32,
         height: u32,
         format: PixelFormat,
@@ -300,218 +304,157 @@ impl VideoDecoderInner {
         const BYTES_PER_PIXEL_RGBA: usize = 4;
         const BYTES_PER_PIXEL_RGB24: usize = 3;
 
-        // SAFETY: Caller ensures frame is valid and format matches actual frame format
-        unsafe {
-            let mut planes = Vec::new();
-            let mut strides = Vec::new();
+        let missing_plane = |plane: usize| DecodeError::Ffmpeg {
+            code: 0,
+            message: format!("decoded frame plane {plane} is missing or null"),
+        };
 
-            #[allow(clippy::match_same_arms)]
-            match format {
-                PixelFormat::Rgba | PixelFormat::Bgra | PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
-                    // Packed formats - single plane
-                    let src = (*frame).data[0];
-                    let src_linesize = (*frame).linesize[0];
-                    let bytes_per_pixel = if matches!(format, PixelFormat::Rgba | PixelFormat::Bgra)
-                    {
-                        BYTES_PER_PIXEL_RGBA
-                    } else {
-                        BYTES_PER_PIXEL_RGB24
-                    };
-                    let row_size = (width as usize) * bytes_per_pixel;
-                    let buffer_size = row_size * height as usize;
-                    let mut plane_data = self.allocate_buffer(buffer_size);
+        let mut planes = Vec::new();
+        let mut strides = Vec::new();
 
-                    for y in 0..height as usize {
-                        let dst_offset = y * row_size;
-                        let src_ptr = plane_row_ptr(src, src_linesize, y);
-                        let plane_slice = plane_data.as_mut();
-                        // SAFETY: We copy exactly `row_size` bytes per row. The source pointer
-                        // is valid (from FFmpeg frame data), destination has sufficient capacity
-                        // (allocated with height * row_size), and ranges don't overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            plane_slice[dst_offset..].as_mut_ptr(),
-                            row_size,
-                        );
+        #[allow(clippy::match_same_arms)]
+        match format {
+            PixelFormat::Rgba | PixelFormat::Bgra | PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
+                // Packed formats - single plane
+                let bytes_per_pixel = if matches!(format, PixelFormat::Rgba | PixelFormat::Bgra) {
+                    BYTES_PER_PIXEL_RGBA
+                } else {
+                    BYTES_PER_PIXEL_RGB24
+                };
+                let row_size = (width as usize) * bytes_per_pixel;
+                let mut plane_data = self.allocate_buffer(row_size * height as usize);
+                // SAFETY: `row_size` / `height` match the frame's packed format, and
+                //         `plane_data` holds `row_size * height` bytes.
+                unsafe {
+                    frame.copy_plane_rows(
+                        0,
+                        plane_data.as_mut(),
+                        row_size,
+                        height as usize,
+                        row_size,
+                    )
+                }
+                .ok_or_else(|| missing_plane(0))?;
+                planes.push(plane_data);
+                strides.push(row_size);
+            }
+            PixelFormat::Yuv420p | PixelFormat::Yuv422p | PixelFormat::Yuv444p => {
+                // Planar YUV formats
+                let (chroma_width, chroma_height) = match format {
+                    PixelFormat::Yuv420p => (width / 2, height / 2),
+                    PixelFormat::Yuv422p => (width / 2, height),
+                    PixelFormat::Yuv444p => (width, height),
+                    _ => unreachable!(),
+                };
+
+                // Y plane
+                let y_stride = width as usize;
+                let mut y_data = self.allocate_buffer(y_stride * height as usize);
+                // SAFETY: `y_stride` / `height` match the luma plane; `y_data` fits it.
+                unsafe {
+                    frame.copy_plane_rows(0, y_data.as_mut(), y_stride, height as usize, y_stride)
+                }
+                .ok_or_else(|| missing_plane(0))?;
+                planes.push(y_data);
+                strides.push(y_stride);
+
+                // U / V chroma planes
+                let chroma_stride = chroma_width as usize;
+                for plane_idx in 1..=2 {
+                    let mut chroma_data =
+                        self.allocate_buffer(chroma_stride * chroma_height as usize);
+                    // SAFETY: `chroma_stride` / `chroma_height` match plane `plane_idx`;
+                    //         `chroma_data` fits it.
+                    unsafe {
+                        frame.copy_plane_rows(
+                            plane_idx,
+                            chroma_data.as_mut(),
+                            chroma_stride,
+                            chroma_height as usize,
+                            chroma_stride,
+                        )
                     }
+                    .ok_or_else(|| missing_plane(plane_idx))?;
+                    planes.push(chroma_data);
+                    strides.push(chroma_stride);
+                }
+            }
+            PixelFormat::Gray8 => {
+                // Single plane grayscale
+                let stride = width as usize;
+                let mut plane_data = self.allocate_buffer(stride * height as usize);
+                // SAFETY: `stride` / `height` match the grayscale plane; `plane_data` fits it.
+                unsafe {
+                    frame.copy_plane_rows(0, plane_data.as_mut(), stride, height as usize, stride)
+                }
+                .ok_or_else(|| missing_plane(0))?;
+                planes.push(plane_data);
+                strides.push(stride);
+            }
+            PixelFormat::Nv12 | PixelFormat::Nv21 => {
+                // Semi-planar formats
+                let uv_height = height / 2;
 
+                // Y plane
+                let y_stride = width as usize;
+                let mut y_data = self.allocate_buffer(y_stride * height as usize);
+                // SAFETY: `y_stride` / `height` match the luma plane; `y_data` fits it.
+                unsafe {
+                    frame.copy_plane_rows(0, y_data.as_mut(), y_stride, height as usize, y_stride)
+                }
+                .ok_or_else(|| missing_plane(0))?;
+                planes.push(y_data);
+                strides.push(y_stride);
+
+                // Interleaved UV plane
+                let uv_stride = width as usize;
+                let mut uv_data = self.allocate_buffer(uv_stride * uv_height as usize);
+                // SAFETY: `uv_stride` / `uv_height` match the interleaved chroma plane;
+                //         `uv_data` fits it.
+                unsafe {
+                    frame.copy_plane_rows(
+                        1,
+                        uv_data.as_mut(),
+                        uv_stride,
+                        uv_height as usize,
+                        uv_stride,
+                    )
+                }
+                .ok_or_else(|| missing_plane(1))?;
+                planes.push(uv_data);
+                strides.push(uv_stride);
+            }
+            PixelFormat::Gbrpf32le => {
+                // Planar GBR float: 3 full-resolution planes, 4 bytes per sample (f32)
+                const BYTES_PER_SAMPLE: usize = 4;
+                let row_size = width as usize * BYTES_PER_SAMPLE;
+
+                for plane_idx in 0..3usize {
+                    let mut plane_data = self.allocate_buffer(row_size * height as usize);
+                    // SAFETY: `row_size` / `height` match this full-resolution float
+                    //         plane; `plane_data` fits it.
+                    unsafe {
+                        frame.copy_plane_rows(
+                            plane_idx,
+                            plane_data.as_mut(),
+                            row_size,
+                            height as usize,
+                            row_size,
+                        )
+                    }
+                    .ok_or_else(|| missing_plane(plane_idx))?;
                     planes.push(plane_data);
                     strides.push(row_size);
                 }
-                PixelFormat::Yuv420p | PixelFormat::Yuv422p | PixelFormat::Yuv444p => {
-                    // Planar YUV formats
-                    let (chroma_width, chroma_height) = match format {
-                        PixelFormat::Yuv420p => (width / 2, height / 2),
-                        PixelFormat::Yuv422p => (width / 2, height),
-                        PixelFormat::Yuv444p => (width, height),
-                        _ => unreachable!(),
-                    };
-
-                    // Y plane
-                    let y_stride = width as usize;
-                    let y_size = y_stride * height as usize;
-                    let mut y_data = self.allocate_buffer(y_size);
-                    let y_src = (*frame).data[0];
-                    let y_src_linesize = (*frame).linesize[0];
-                    for y in 0..height as usize {
-                        let dst_offset = y * y_stride;
-                        let src_ptr = plane_row_ptr(y_src, y_src_linesize, y);
-                        let y_slice = y_data.as_mut();
-                        // SAFETY: Copying Y plane row-by-row. Source is valid FFmpeg data,
-                        // destination has sufficient capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            y_slice[dst_offset..].as_mut_ptr(),
-                            width as usize,
-                        );
-                    }
-                    planes.push(y_data);
-                    strides.push(y_stride);
-
-                    // U plane
-                    let u_stride = chroma_width as usize;
-                    let u_size = u_stride * chroma_height as usize;
-                    let mut u_data = self.allocate_buffer(u_size);
-                    let u_src = (*frame).data[1];
-                    let u_src_linesize = (*frame).linesize[1];
-                    for y in 0..chroma_height as usize {
-                        let dst_offset = y * u_stride;
-                        let src_ptr = plane_row_ptr(u_src, u_src_linesize, y);
-                        let u_slice = u_data.as_mut();
-                        // SAFETY: Copying U (chroma) plane row-by-row. Valid source,
-                        // sufficient destination capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            u_slice[dst_offset..].as_mut_ptr(),
-                            chroma_width as usize,
-                        );
-                    }
-                    planes.push(u_data);
-                    strides.push(u_stride);
-
-                    // V plane
-                    let v_stride = chroma_width as usize;
-                    let v_size = v_stride * chroma_height as usize;
-                    let mut v_data = self.allocate_buffer(v_size);
-                    let v_src = (*frame).data[2];
-                    let v_src_linesize = (*frame).linesize[2];
-                    for y in 0..chroma_height as usize {
-                        let dst_offset = y * v_stride;
-                        let src_ptr = plane_row_ptr(v_src, v_src_linesize, y);
-                        let v_slice = v_data.as_mut();
-                        // SAFETY: Copying V (chroma) plane row-by-row. Valid source,
-                        // sufficient destination capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            v_slice[dst_offset..].as_mut_ptr(),
-                            chroma_width as usize,
-                        );
-                    }
-                    planes.push(v_data);
-                    strides.push(v_stride);
-                }
-                PixelFormat::Gray8 => {
-                    // Single plane grayscale
-                    let stride = width as usize;
-                    let mut plane_data = self.allocate_buffer(stride * height as usize);
-                    let src = (*frame).data[0];
-                    let src_linesize = (*frame).linesize[0];
-
-                    for y in 0..height as usize {
-                        let dst_offset = y * stride;
-                        let src_ptr = plane_row_ptr(src, src_linesize, y);
-                        let plane_slice = plane_data.as_mut();
-                        // SAFETY: Copying grayscale plane row-by-row. Valid source,
-                        // sufficient destination capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            plane_slice[dst_offset..].as_mut_ptr(),
-                            width as usize,
-                        );
-                    }
-
-                    planes.push(plane_data);
-                    strides.push(stride);
-                }
-                PixelFormat::Nv12 | PixelFormat::Nv21 => {
-                    // Semi-planar formats
-                    let uv_height = height / 2;
-
-                    // Y plane
-                    let y_stride = width as usize;
-                    let mut y_data = self.allocate_buffer(y_stride * height as usize);
-                    let y_src = (*frame).data[0];
-                    let y_src_linesize = (*frame).linesize[0];
-                    for y in 0..height as usize {
-                        let dst_offset = y * y_stride;
-                        let src_ptr = plane_row_ptr(y_src, y_src_linesize, y);
-                        let y_slice = y_data.as_mut();
-                        // SAFETY: Copying Y plane (semi-planar) row-by-row. Valid source,
-                        // sufficient destination capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            y_slice[dst_offset..].as_mut_ptr(),
-                            width as usize,
-                        );
-                    }
-                    planes.push(y_data);
-                    strides.push(y_stride);
-
-                    // UV plane
-                    let uv_stride = width as usize;
-                    let mut uv_data = self.allocate_buffer(uv_stride * uv_height as usize);
-                    let uv_src = (*frame).data[1];
-                    let uv_src_linesize = (*frame).linesize[1];
-                    for y in 0..uv_height as usize {
-                        let dst_offset = y * uv_stride;
-                        let src_ptr = plane_row_ptr(uv_src, uv_src_linesize, y);
-                        let uv_slice = uv_data.as_mut();
-                        // SAFETY: Copying interleaved UV plane (semi-planar) row-by-row.
-                        // Valid source, sufficient destination capacity, no overlap.
-                        std::ptr::copy_nonoverlapping(
-                            src_ptr,
-                            uv_slice[dst_offset..].as_mut_ptr(),
-                            width as usize,
-                        );
-                    }
-                    planes.push(uv_data);
-                    strides.push(uv_stride);
-                }
-                PixelFormat::Gbrpf32le => {
-                    // Planar GBR float: 3 full-resolution planes, 4 bytes per sample (f32)
-                    const BYTES_PER_SAMPLE: usize = 4;
-                    let row_size = width as usize * BYTES_PER_SAMPLE;
-                    let size = row_size * height as usize;
-
-                    for plane_idx in 0..3usize {
-                        let src = (*frame).data[plane_idx];
-                        let src_linesize = (*frame).linesize[plane_idx];
-                        let mut plane_data = self.allocate_buffer(size);
-                        for y in 0..height as usize {
-                            let dst_offset = y * row_size;
-                            let src_ptr = plane_row_ptr(src, src_linesize, y);
-                            let dst_slice = plane_data.as_mut();
-                            // SAFETY: Copying one row of a planar float plane. Source is valid
-                            // FFmpeg frame data, destination has sufficient capacity, no overlap.
-                            std::ptr::copy_nonoverlapping(
-                                src_ptr,
-                                dst_slice[dst_offset..].as_mut_ptr(),
-                                row_size,
-                            );
-                        }
-                        planes.push(plane_data);
-                        strides.push(row_size);
-                    }
-                }
-                _ => {
-                    return Err(DecodeError::Ffmpeg {
-                        code: 0,
-                        message: format!("Unsupported pixel format: {format:?}"),
-                    });
-                }
             }
-
-            Ok((planes, strides))
+            _ => {
+                return Err(DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Unsupported pixel format: {format:?}"),
+                });
+            }
         }
+
+        Ok((planes, strides))
     }
 }

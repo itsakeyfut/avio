@@ -128,10 +128,9 @@ impl VideoEncoderInner {
             .open_io(&output_path)
             .map_err(|_| EncodeError::CannotCreateFile { path: output_path })?;
 
-        let fmt = self.format_ctx.as_mut_ptr();
-        Self::apply_movflags(fmt, config.container);
-        Self::apply_metadata(fmt, &config.metadata);
-        Self::apply_chapters(fmt, &config.chapters);
+        Self::apply_movflags(&mut self.format_ctx, config.container);
+        Self::apply_metadata(&mut self.format_ctx, &config.metadata);
+        Self::apply_chapters(&mut self.format_ctx, &config.chapters);
         self.format_ctx
             .write_header()
             .map_err(|e| EncodeError::Ffmpeg {
@@ -386,8 +385,7 @@ impl VideoEncoderInner {
             if plane_idx >= 3 || plane_data.is_empty() {
                 break;
             }
-            // SAFETY: `av_frame` is a valid get_buffer'd frame; `linesize` is a plain field.
-            let dst_stride = (*av_frame.as_ptr()).linesize[plane_idx] as usize;
+            let dst_stride = av_frame.linesize(plane_idx) as usize;
             let Some(dst_plane) = av_frame.video_plane_mut(plane_idx) else {
                 break;
             };
@@ -413,7 +411,7 @@ impl VideoEncoderInner {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Video codec not initialized".to_string(),
             })?
-            .send_frame(av_frame.as_ptr())
+            .send_frame_ref(Some(&av_frame))
             .map_err(|e| EncodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(

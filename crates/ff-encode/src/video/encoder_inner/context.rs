@@ -17,43 +17,21 @@ use super::color::{
 use super::options::audio_codec_to_id;
 use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
-    AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
-    AudioCodec, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame, av_mallocz,
-    avformat_new_stream, ptr,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P, AudioCodec, EncodeError,
+    VideoCodec, VideoEncoderInner, ptr,
 };
 
 impl VideoEncoderInner {
-    /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
-    ///
-    /// # Safety
-    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
-    /// Must be called before `avformat_write_header`.
-    pub(super) unsafe fn apply_metadata(
-        format_ctx: *mut ff_sys::AVFormatContext,
+    /// Set each container metadata entry before `avformat_write_header`.
+    pub(super) fn apply_metadata(
+        format_ctx: &mut ff_sys::OutputFormatContext,
         metadata: &[(String, String)],
     ) {
         for (key, value) in metadata {
-            let Ok(c_key) = std::ffi::CString::new(key.as_str()) else {
-                log::warn!("metadata key contains null byte, skipping key={key}");
-                continue;
-            };
-            let Ok(c_value) = std::ffi::CString::new(value.as_str()) else {
-                log::warn!("metadata value contains null byte, skipping key={key}");
-                continue;
-            };
-            // SAFETY: format_ctx is valid and non-null. c_key/c_value are valid
-            // CStrings covering this call. av_dict_set copies both strings.
-            let ret = ff_sys::av_dict_set(
-                &raw mut (*format_ctx).metadata,
-                c_key.as_ptr(),
-                c_value.as_ptr(),
-                0,
-            );
-            if ret < 0 {
+            if let Err(e) = format_ctx.set_metadata(key, value) {
                 log::warn!(
-                    "av_dict_set failed for metadata entry, skipping \
-                     key={key} error={}",
-                    ff_sys::av_error_string(ret)
+                    "metadata entry skipped key={key} error={}",
+                    ff_sys::av_error_string(e.code())
                 );
             }
         }
@@ -66,104 +44,43 @@ impl VideoEncoderInner {
     /// on the format context's `priv_data`. This enables CMAF-compatible
     /// fragmented output required for HLS fMP4 segments and MPEG-DASH.
     ///
-    /// # Safety
-    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`
-    /// whose `priv_data` is non-null. Must be called before `avformat_write_header`.
-    pub(super) unsafe fn apply_movflags(
-        format_ctx: *mut ff_sys::AVFormatContext,
+    pub(super) fn apply_movflags(
+        format_ctx: &mut ff_sys::OutputFormatContext,
         container: Option<crate::OutputContainer>,
     ) {
-        if container.is_some_and(|c| c.is_fragmented()) {
-            // SAFETY: format_ctx and priv_data are non-null; string literals are
-            // static and NUL-terminated. av_opt_set does not retain the pointers.
-            let ret = ff_sys::av_opt_set(
-                (*format_ctx).priv_data,
-                c"movflags".as_ptr(),
-                c"+frag_keyframe+empty_moov+default_base_moof".as_ptr(),
-                0,
+        if container.is_some_and(|c| c.is_fragmented())
+            && let Err(e) =
+                format_ctx.set_opt(c"movflags", c"+frag_keyframe+empty_moov+default_base_moof")
+        {
+            log::warn!(
+                "av_opt_set movflags failed for fMP4 container error={}",
+                ff_sys::av_error_string(e.code())
             );
-            if ret < 0 {
-                log::warn!(
-                    "av_opt_set movflags failed for fMP4 container error={}",
-                    ff_sys::av_error_string(ret)
-                );
-            }
         }
     }
 
-    /// Allocate `AVChapter` entries on the format context before `avformat_write_header`.
-    ///
-    /// # Safety
-    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
-    /// Must be called before `avformat_write_header`.
-    pub(super) unsafe fn apply_chapters(
-        format_ctx: *mut ff_sys::AVFormatContext,
+    /// Set the container chapters before `avformat_write_header`.
+    pub(super) fn apply_chapters(
+        format_ctx: &mut ff_sys::OutputFormatContext,
         chapters: &[ff_format::chapter::ChapterInfo],
     ) {
         if chapters.is_empty() {
             return;
         }
-        let n = chapters.len();
-        // SAFETY: allocating an array of n pointers for the chapters field.
-        let chapters_arr =
-            av_mallocz(std::mem::size_of::<*mut AVChapter>() * n) as *mut *mut AVChapter;
-        if chapters_arr.is_null() {
-            log::warn!("av_mallocz failed for chapters array, skipping chapters");
-            return;
-        }
-        (*format_ctx).chapters = chapters_arr;
-        (*format_ctx).nb_chapters = 0;
-
-        for (i, chapter) in chapters.iter().enumerate() {
-            // SAFETY: allocating a zeroed AVChapter struct.
-            let chap = av_mallocz(std::mem::size_of::<AVChapter>()) as *mut AVChapter;
-            if chap.is_null() {
-                log::warn!(
-                    "av_mallocz failed for AVChapter, skipping chapter id={}",
-                    chapter.id()
-                );
-                continue;
-            }
-            // SAFETY: chap is freshly allocated, non-null, and zeroed.
-            (*chap).id = chapter.id();
-            (*chap).time_base = ff_sys::AVRational {
-                num: 1,
-                den: AV_TIME_BASE as i32,
-            };
-            (*chap).start = chapter.start().as_micros() as i64;
-            (*chap).end = chapter.end().as_micros() as i64;
-            (*chap).metadata = std::ptr::null_mut();
-
-            if let Some(title) = chapter.title() {
-                let Ok(c_title) = std::ffi::CString::new(title) else {
-                    log::warn!(
-                        "chapter title contains null byte, skipping title id={}",
-                        chapter.id()
-                    );
-                    // SAFETY: chapters_arr is valid with capacity n.
-                    *chapters_arr.add(i) = chap;
-                    (*format_ctx).nb_chapters += 1;
-                    continue;
-                };
-                // SAFETY: chap->metadata is null; av_dict_set allocates and copies.
-                let ret = ff_sys::av_dict_set(
-                    &raw mut (*chap).metadata,
-                    b"title\0".as_ptr() as *const _,
-                    c_title.as_ptr(),
-                    0,
-                );
-                if ret < 0 {
-                    log::warn!(
-                        "av_dict_set failed for chapter title, skipping title \
-                         id={} error={}",
-                        chapter.id(),
-                        ff_sys::av_error_string(ret)
-                    );
-                }
-            }
-            // SAFETY: i < n so the write is in bounds.
-            *chapters_arr.add(i) = chap;
-            (*format_ctx).nb_chapters += 1;
+        let specs: Vec<ff_sys::ChapterSpec> = chapters
+            .iter()
+            .map(|c| ff_sys::ChapterSpec {
+                id: c.id(),
+                start_us: c.start().as_micros() as i64,
+                end_us: c.end().as_micros() as i64,
+                title: c.title(),
+            })
+            .collect();
+        if let Err(e) = format_ctx.set_chapters(&specs) {
+            log::warn!(
+                "set_chapters failed, skipping chapters error={}",
+                ff_sys::av_error_string(e.code())
+            );
         }
     }
 
@@ -308,28 +225,21 @@ impl VideoEncoderInner {
              pix_fmt={actual_pix_fmt}"
         );
 
-        // Create stream
-        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
-        if stream.is_null() {
-            // The owned codec_ctx frees itself on return.
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot create stream".to_string(),
-            });
-        }
+        // Create stream. The owned codec_ctx frees itself if this returns.
+        let stream_idx = self
+            .format_ctx
+            .new_stream(Some(&selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        (*stream).time_base = codec_ctx.time_base();
+        self.format_ctx
+            .set_stream_time_base(stream_idx, codec_ctx.time_base());
 
-        // Copy codec parameters to stream
-        if !(*stream).codecpar.is_null() {
-            (*(*stream).codecpar).codec_id = codec_ctx.codec_id();
-            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-            (*(*stream).codecpar).width = codec_ctx.width();
-            (*(*stream).codecpar).height = codec_ctx.height();
-            (*(*stream).codecpar).format = codec_ctx.pix_fmt();
-        }
+        // Copy all codec parameters (including extradata) to the stream.
+        self.format_ctx
+            .apply_stream_params_from_context(stream_idx, &codec_ctx)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        self.video_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
+        self.video_stream_index = stream_idx as i32;
 
         // In two-pass mode the pass-1 context is stored separately; the real
         // (pass-2) video_codec_ctx is initialised later in run_pass2().
@@ -423,17 +333,14 @@ impl VideoEncoderInner {
             .open(selected_codec, ptr::null_mut())
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // Create stream
-        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
-        if stream.is_null() {
-            // The owned codec_ctx frees itself on return.
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot create stream".to_string(),
-            });
-        }
+        // Create stream. The owned codec_ctx frees itself if this returns.
+        let stream_idx = self
+            .format_ctx
+            .new_stream(Some(&selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        (*stream).time_base = codec_ctx.time_base();
+        self.format_ctx
+            .set_stream_time_base(stream_idx, codec_ctx.time_base());
 
         // Copy all codec parameters to the stream — including extradata (e.g. AAC
         // AudioSpecificConfig) that is only available after avcodec_open2.
@@ -441,18 +348,16 @@ impl VideoEncoderInner {
         // ensures extradata, frame_size, channel layout, and codec_tag are all
         // propagated correctly so container muxers and hardware decoders can
         // identify and decode the stream.
-        if !(*stream).codecpar.is_null() {
-            codec_ctx
-                .parameters_from_context((*stream).codecpar)
-                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
-        }
+        self.format_ctx
+            .apply_stream_params_from_context(stream_idx, &codec_ctx)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Read the FIFO parameters before moving the owned context into `self`.
         let frame_size = codec_ctx.frame_size();
         let fifo_sample_fmt = codec_ctx.sample_fmt();
         let fifo_nb_channels = codec_ctx.channels();
 
-        self.audio_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
+        self.audio_stream_index = stream_idx as i32;
         self.audio_codec_ctx = Some(codec_ctx);
 
         // Allocate sample FIFO for codecs that require a fixed frame_size (AAC, FLAC, ALAC …).
@@ -509,69 +414,21 @@ impl VideoEncoderInner {
     ///
     /// Failures per entry are non-fatal: a warning is logged and the entry is
     /// skipped so the rest of encoding can continue.
-    ///
-    /// # Safety
-    ///
-    /// `self.format_ctx` must be a valid, non-null `AVFormatContext` pointer.
-    /// Must be called before `avformat_write_header`.
-    pub(super) unsafe fn init_attachments(&mut self, attachments: &[(Vec<u8>, String, String)]) {
+    pub(super) fn init_attachments(&mut self, attachments: &[(Vec<u8>, String, String)]) {
         for (data, mime_type, filename) in attachments {
-            // Create a new stream for the attachment.
-            // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
-            let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
-            if out_stream.is_null() {
-                log::warn!("attachment: avformat_new_stream failed, skipping filename={filename}");
-                continue;
+            match self
+                .format_ctx
+                .add_attachment_stream(data, mime_type, filename)
+            {
+                Ok(_) => log::info!(
+                    "attachment: registered filename={filename} mime={mime_type} size={}",
+                    data.len()
+                ),
+                Err(e) => log::warn!(
+                    "attachment: registration failed, skipping filename={filename} error={}",
+                    ff_sys::av_error_string(e.code())
+                ),
             }
-
-            let codecpar = (*out_stream).codecpar;
-            (*codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_ATTACHMENT;
-            (*codecpar).codec_id = ff_sys::AVCodecID_AV_CODEC_ID_BIN_DATA;
-
-            // Allocate extradata with FFmpeg's allocator so it can be freed by
-            // avcodec_parameters_free. The padding bytes are zeroed by av_mallocz.
-            let alloc_size = data.len() + ff_sys::AV_INPUT_BUFFER_PADDING_SIZE as usize;
-            let extradata = ff_sys::av_mallocz(alloc_size) as *mut u8;
-            if extradata.is_null() {
-                log::warn!(
-                    "attachment: av_mallocz failed for extradata, skipping filename={filename}"
-                );
-                continue;
-            }
-            // SAFETY: extradata has at least `data.len()` bytes; data slice is valid.
-            std::ptr::copy_nonoverlapping(data.as_ptr(), extradata, data.len());
-            (*codecpar).extradata = extradata;
-            (*codecpar).extradata_size = data.len() as i32;
-
-            // Set stream metadata so the muxer records the filename and MIME type.
-            let Ok(c_filename) = std::ffi::CString::new(filename.as_str()) else {
-                log::warn!("attachment: filename contains null byte, skipping filename={filename}");
-                continue;
-            };
-            let Ok(c_mime) = std::ffi::CString::new(mime_type.as_str()) else {
-                log::warn!(
-                    "attachment: mime_type contains null byte, skipping filename={filename}"
-                );
-                continue;
-            };
-            // SAFETY: out_stream->metadata pointer is valid (initialized by avformat_new_stream).
-            ff_sys::av_dict_set(
-                &raw mut (*out_stream).metadata,
-                b"filename\0".as_ptr() as *const i8,
-                c_filename.as_ptr(),
-                0,
-            );
-            ff_sys::av_dict_set(
-                &raw mut (*out_stream).metadata,
-                b"mimetype\0".as_ptr() as *const i8,
-                c_mime.as_ptr(),
-                0,
-            );
-
-            log::info!(
-                "attachment: registered filename={filename} mime={mime_type} size={}",
-                data.len()
-            );
         }
     }
 
@@ -624,10 +481,11 @@ impl VideoEncoderInner {
             return;
         }
 
-        // SAFETY: source_stream_index < nb_streams; streams is a valid array.
-        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
+        let Some(in_stream) = src_ctx.stream(source_stream_index) else {
+            return;
+        };
 
-        if (*(*in_stream).codecpar).codec_type != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
+        if in_stream.codecpar().codec_type() != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
             log::warn!(
                 "subtitle_passthrough: stream at index {source_stream_index} \
                  is not a subtitle stream"
@@ -637,25 +495,24 @@ impl VideoEncoderInner {
 
         // Record the output stream index before adding the new stream.
         let out_stream_index = self.format_ctx.nb_streams() as i32;
-        // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
-        let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
-        if out_stream.is_null() {
+        // A null codec means the muxer selects a default for the copied stream.
+        let Ok(new_idx) = self.format_ctx.new_stream(None) else {
             log::warn!("subtitle_passthrough: avformat_new_stream failed");
             return;
-        }
+        };
 
-        // SAFETY: out_stream and in_stream->codecpar are valid non-null pointers.
-        let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
-        if ret < 0 {
+        // Copy the source codec parameters into the new stream (also clears
+        // codec_tag so the muxer picks the container's value).
+        if let Err(e) = self
+            .format_ctx
+            .copy_stream_params(new_idx, in_stream.codecpar())
+        {
             log::warn!(
                 "subtitle_passthrough: avcodec_parameters_copy failed error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
             return;
         }
-
-        // Reset codec_tag so the muxer can pick the appropriate value for the container.
-        (*(*out_stream).codecpar).codec_tag = 0;
 
         self.subtitle_passthrough = Some((
             source_path.to_string(),
@@ -710,15 +567,13 @@ impl VideoEncoderInner {
             return Ok(());
         }
 
-        // SAFETY: source_stream_index was validated in init_subtitle_passthrough.
-        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
-        let in_time_base = (*in_stream).time_base;
+        // source_stream_index was validated in init_subtitle_passthrough.
+        let Some(in_time_base) = src_ctx.stream(source_stream_index).map(|s| s.time_base()) else {
+            return Ok(());
+        };
 
-        // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
-        let out_stream = *(*self.format_ctx.as_mut_ptr())
-            .streams
-            .add(out_stream_index as usize);
-        let out_time_base = (*out_stream).time_base;
+        // out_stream_index was set by new_stream when the output stream was added.
+        let out_time_base = self.format_ctx.stream_time_base(out_stream_index as usize);
 
         let Ok(mut pkt) = ff_sys::Packet::new() else {
             return Err(EncodeError::Ffmpeg {
@@ -741,34 +596,28 @@ impl VideoEncoderInner {
                 Ok(()) => {}
             }
 
-            // This is a demux-input packet; its fields have no typed accessor and
-            // are read/written through the packet pointer.
-            let p = pkt.as_mut_ptr();
-
             // Skip packets from other streams.
-            if (*p).stream_index != source_stream_index as i32 {
+            if pkt.stream_index() != source_stream_index as i32 {
                 pkt.unref();
                 continue;
             }
 
             // Rescale timestamps from the source stream's time base to the output stream's.
-            // SAFETY: pkt is valid; time bases are plain value types.
-            ff_sys::av_packet_rescale_ts(p, in_time_base, out_time_base);
-            (*p).stream_index = out_stream_index;
+            pkt.rescale_ts(in_time_base, out_time_base);
+            pkt.set_stream_index(out_stream_index);
 
             // SRT/subtitle packets typically carry only PTS (DTS is AV_NOPTS_VALUE).
             // The matroska muxer requires a valid DTS for av_interleaved_write_frame;
             // mirror PTS → DTS when DTS is absent so packets are not silently dropped.
-            if (*p).dts == i64::MIN {
-                (*p).dts = (*p).pts;
+            if pkt.dts() == i64::MIN {
+                pkt.set_dts(pkt.pts());
             }
 
-            let write_ret = av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), p);
-            if write_ret < 0 {
+            if let Err(e) = self.format_ctx.write_interleaved(&mut pkt) {
                 log::warn!(
                     "subtitle_passthrough: av_interleaved_write_frame failed \
                      error={}",
-                    ff_sys::av_error_string(write_ret)
+                    ff_sys::av_error_string(e.code())
                 );
             }
             pkt.unref();
