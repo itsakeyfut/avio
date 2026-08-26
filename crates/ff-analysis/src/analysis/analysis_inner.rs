@@ -668,9 +668,10 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
         // Select the first video stream.
         let mut found: Option<usize> = None;
         for i in 0..nb_streams {
-            let stream = (*format_ctx.as_ptr()).streams.add(i);
-            let codecpar = (*(*stream)).codecpar;
-            if (*codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
+            let Some(stream) = format_ctx.stream(i) else {
+                continue;
+            };
+            if stream.codecpar().codec_type() == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
                 found = Some(i);
                 break;
             }
@@ -683,16 +684,16 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
     };
 
     // 4. Read the stream's time base for PTS → Duration conversion.
-    let stream = (*format_ctx.as_ptr()).streams.add(target_stream);
-    let time_base = (*(*stream)).time_base;
+    let time_base = format_ctx
+        .stream(target_stream)
+        .map_or(ff_sys::AVRational { num: 0, den: 1 }, |s| s.time_base());
     let tb_num = f64::from(time_base.num);
     let tb_den = f64::from(time_base.den);
 
     // 5. Allocate a reusable packet.
-    let pkt = ff_sys::av_packet_alloc();
-    if pkt.is_null() {
-        bail!("av_packet_alloc failed");
-    }
+    let mut pkt = ff_sys::Packet::new().map_err(|e| AnalysisError::Failed {
+        reason: format!("av_packet_alloc failed code={}", e.code()),
+    })?;
 
     // 6. Read all packets; record the PTS of every keyframe on the target stream.
     // Stream indices in AVPacket are i32; the cast is bounded by nb_streams which
@@ -702,18 +703,17 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
     let mut timestamps: Vec<Duration> = Vec::new();
 
     loop {
-        // `av_read_frame` returns a negative code on EOF or error.
-        let ret = ff_sys::av_read_frame(format_ctx.as_mut_ptr(), pkt);
-        if ret < 0 {
+        // `read_frame` returns Err on EOF or a real error; either ends the loop.
+        if format_ctx.read_frame(&mut pkt).is_err() {
             break;
         }
 
-        if (*pkt).stream_index == target_i32 && (*pkt).flags & AV_PKT_FLAG_KEY != 0 {
+        if pkt.stream_index() == target_i32 && pkt.flags() & AV_PKT_FLAG_KEY != 0 {
             // Prefer PTS; fall back to DTS for streams that only write DTS on packets.
-            let pts = if (*pkt).pts == ff_sys::AV_NOPTS_VALUE {
-                (*pkt).dts
+            let pts = if pkt.pts() == ff_sys::AV_NOPTS_VALUE {
+                pkt.dts()
             } else {
-                (*pkt).pts
+                pkt.pts()
             };
             if pts != ff_sys::AV_NOPTS_VALUE && tb_den > 0.0 {
                 let secs = pts as f64 * tb_num / tb_den;
@@ -723,13 +723,11 @@ pub(super) unsafe fn enumerate_keyframes_unsafe(
             }
         }
 
-        ff_sys::av_packet_unref(pkt);
+        pkt.unref();
     }
 
-    // 7. Release the raw packet; the owned `format_ctx` closes its input and
-    //    frees itself when it drops at the end of this function.
-    let mut pkt_ptr = pkt;
-    ff_sys::av_packet_free(std::ptr::addr_of_mut!(pkt_ptr));
+    // The owned `pkt` frees itself on drop; the owned `format_ctx` closes its
+    // input and frees itself when it drops at the end of this function.
 
     log::debug!(
         "keyframe enumeration complete keyframes={} stream_index={target_stream}",
