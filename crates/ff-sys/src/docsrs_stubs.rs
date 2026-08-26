@@ -1361,6 +1361,15 @@ impl CodecContext {
 
     /// # Errors
     /// Stub; never executed on docs.rs.
+    pub fn set_hw_device_ctx(
+        &mut self,
+        _device: &HwDeviceContext,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
     pub fn receive_packet_into(
         &mut self,
         _pkt: &mut Packet,
@@ -1454,6 +1463,30 @@ impl InputFormatContext {
     #[must_use]
     pub fn iformat_name(&self) -> Option<String> {
         None
+    }
+
+    #[must_use]
+    pub fn iformat_long_name(&self) -> Option<String> {
+        None
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
+    #[must_use]
+    pub fn nb_chapters(&self) -> u32 {
+        0
+    }
+
+    #[must_use]
+    pub fn chapter(&self, _index: usize) -> Option<ChapterRef<'_>> {
+        None
+    }
+
+    pub fn chapters(&self) -> impl Iterator<Item = ChapterRef<'_>> + '_ {
+        std::iter::empty()
     }
 
     #[must_use]
@@ -1705,6 +1738,21 @@ impl<'a> StreamRef<'a> {
             }
         }
     }
+
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn disposition(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1758,6 +1806,49 @@ impl CodecParameters<'_> {
     pub fn ch_layout(&self) -> AVChannelLayout {
         AVChannelLayout::default()
     }
+
+    #[must_use]
+    pub fn format(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterRef<'a> {
+    _ptr: std::ptr::NonNull<AVChapter>,
+    _marker: std::marker::PhantomData<&'a InputFormatContext>,
+}
+
+impl ChapterRef<'_> {
+    #[must_use]
+    pub fn id(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
+    pub fn start(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn end(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
 }
 
 // ── Owned Frame / Packet / Codec stubs (mirror crate::{frame,packet,codec}) ───
@@ -1802,6 +1893,11 @@ impl Frame {
     }
     pub fn set_format(&mut self, _format: c_int) {}
     pub fn set_pict_type(&mut self, _pict_type: AVPictureType) {}
+
+    #[must_use]
+    pub fn pict_type(&self) -> AVPictureType {
+        0
+    }
     #[must_use]
     pub fn pts(&self) -> i64 {
         0
@@ -1888,6 +1984,16 @@ impl Frame {
     }
 
     pub fn move_ref(&mut self, _src: &mut Frame) {}
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn hwframe_transfer_data(
+        &mut self,
+        _src: &Frame,
+        _flags: c_int,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
 
     /// # Errors
     /// Stub; never executed on docs.rs.
@@ -2015,6 +2121,30 @@ impl Codec {
         self._ptr.as_ptr()
     }
 }
+
+// ── RAII owner stub (mirrors crate::hwdevice::HwDeviceContext) ────────────────
+// Under DOCS_RS the real `hwdevice` module is cfg'd out; this shape-compatible
+// stub keeps `ff_sys::HwDeviceContext` available for docs.rs.
+
+#[derive(Debug)]
+pub struct HwDeviceContext {
+    _ptr: std::ptr::NonNull<AVBufferRef>,
+}
+
+impl HwDeviceContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new(_device_type: AVHWDeviceType) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for HwDeviceContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for HwDeviceContext {}
 
 // ── RAII owner stub (mirrors crate::scale_context::ScaleContext) ──────────────
 // Under DOCS_RS the real `scale_context` module is cfg'd out; this

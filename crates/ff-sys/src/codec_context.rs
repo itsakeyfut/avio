@@ -14,8 +14,8 @@ use std::ptr::{self, NonNull};
 use crate::{
     AVCodecContext, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVColorTransferCharacteristic, AVDictionary, AVFrame, AVPacket, AVPixelFormat, AVRational,
-    AVSampleFormat, AvError, Codec, CodecParameters, Frame, Packet,
-    avcodec_free_context as ffi_avcodec_free_context,
+    AVSampleFormat, AvError, Codec, CodecParameters, Frame, HwDeviceContext, Packet,
+    av_buffer_replace as ffi_av_buffer_replace, avcodec_free_context as ffi_avcodec_free_context,
 };
 
 /// The outcome of a [`CodecContext::receive_frame`] call.
@@ -629,6 +629,35 @@ impl CodecContext {
         // SAFETY: `ptr` is null (flush) or a valid `*const AVFrame` borrowed from
         //         `frame` for the duration of the call; `self.ptr` is a valid context.
         unsafe { self.send_frame(ptr) }
+    }
+
+    /// Attaches a hardware device context to this codec context (for hardware
+    /// decoding / encoding), taking its own reference to `device`.
+    ///
+    /// Must be called before [`open_codec`](Self::open_codec); the codec reads
+    /// `hw_device_ctx` while opening. Any previously attached device reference is
+    /// released. `device` keeps its reference (both are freed independently: this
+    /// context's when it is freed, `device`'s when it drops).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if a new reference cannot be allocated.
+    pub fn set_hw_device_ctx(&mut self, device: &HwDeviceContext) -> Result<(), AvError> {
+        // SAFETY: `self.ptr` is a valid owned codec context; `hw_device_ctx` is a
+        //         plain `*mut AVBufferRef` field. `av_buffer_replace` unreferences
+        //         any prior value and stores a new reference to `device` (which
+        //         stays valid: it is borrowed for the call and owns its own ref).
+        let ret = unsafe {
+            ffi_av_buffer_replace(
+                std::ptr::addr_of_mut!((*self.ptr.as_ptr()).hw_device_ctx),
+                device.as_raw(),
+            )
+        };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
     }
 
     /// Receives an encoded packet into `pkt`, returning a typed [`ReceiveOutcome`].

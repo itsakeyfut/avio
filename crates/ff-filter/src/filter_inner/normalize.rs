@@ -293,24 +293,22 @@ pub(super) unsafe fn run_volume_graph(
     // Signal EOF
     ff_sys::av_buffersrc_close(src_ctx, ff_sys::AV_NOPTS_VALUE, 0u32);
 
-    // Drain all corrected output frames
+    // Drain all corrected output frames. The owned frame frees itself each
+    // iteration; NeedMore / Drained / Err all end the drain.
     let mut output = Vec::new();
     loop {
-        let raw_frame = ff_sys::av_frame_alloc();
-        if raw_frame.is_null() {
+        let Ok(mut frame) = ff_sys::Frame::new() else {
+            break;
+        };
+        if !matches!(
+            ff_sys::buffersink_get_frame(sink_ctx, &mut frame),
+            Ok(ff_sys::BufferSinkOutcome::Frame)
+        ) {
             break;
         }
-        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
-        if ret < 0 {
-            let mut ptr = raw_frame;
-            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
-            break;
-        }
-        if let Ok(af) = convert::av_frame_to_audio_frame(raw_frame) {
+        if let Ok(af) = convert::av_frame_to_audio_frame(&frame) {
             output.push(af);
         }
-        let mut ptr = raw_frame;
-        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
     }
 
     Ok(output)

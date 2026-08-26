@@ -63,6 +63,8 @@ mod format_context;
 #[cfg(not(docsrs))]
 mod frame;
 #[cfg(not(docsrs))]
+mod hwdevice;
+#[cfg(not(docsrs))]
 mod packet;
 #[cfg(not(docsrs))]
 mod resample_context;
@@ -81,10 +83,12 @@ pub use constants::{AV_NOPTS_VALUE, AVFMT_NOFILE, AVFMT_TS_DISCONT, BUFFERSRC_FL
 pub use error::AvError;
 #[cfg(not(docsrs))]
 pub use format_context::{
-    ChapterSpec, CodecParameters, InputFormatContext, OutputFormatContext, StreamRef,
+    ChapterRef, ChapterSpec, CodecParameters, InputFormatContext, OutputFormatContext, StreamRef,
 };
 #[cfg(not(docsrs))]
 pub use frame::Frame;
+#[cfg(not(docsrs))]
+pub use hwdevice::HwDeviceContext;
 #[cfg(not(docsrs))]
 pub use packet::Packet;
 #[cfg(not(docsrs))]

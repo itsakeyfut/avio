@@ -659,34 +659,27 @@ pub(super) unsafe fn compute_psnr_unsafe(
 /// `duration × r_frame_rate`.  Returns `None` when the file cannot be opened,
 /// no video stream is found, or the duration is unknown.
 ///
-/// # Safety
-///
-/// - All `AVFormatContext` resources are released before returning.
-/// - Only the first video stream's metadata is accessed (no data read).
-unsafe fn probe_video_frame_count(path: &Path) -> Option<i64> {
+fn probe_video_frame_count(path: &Path) -> Option<i64> {
     // The owned demux context frees itself (closing the input) on drop at fn end.
     let mut fmt_ctx = ff_sys::InputFormatContext::open(path).ok()?;
 
     // Ignore find_stream_info errors; partial info is still usable.
     let _ = fmt_ctx.find_stream_info();
 
-    let nb_streams = fmt_ctx.nb_streams();
     let mut result: Option<i64> = None;
 
-    for i in 0..nb_streams {
-        // SAFETY: streams is a valid array of `nb_streams` pointers.
-        let stream = *(*fmt_ctx.as_ptr()).streams.add(i as usize);
-        if (*(*stream).codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
+    for stream in fmt_ctx.streams() {
+        if stream.codecpar().codec_type() != ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO {
             continue;
         }
 
-        if (*stream).nb_frames > 0 {
-            result = Some((*stream).nb_frames);
+        if stream.nb_frames() > 0 {
+            result = Some(stream.nb_frames());
         } else {
             // Fall back to duration × frame_rate.
-            let dur = (*stream).duration;
-            let tb = (*stream).time_base;
-            let fps = (*stream).r_frame_rate;
+            let dur = stream.duration();
+            let tb = stream.time_base();
+            let fps = stream.r_frame_rate();
 
             #[allow(clippy::cast_precision_loss)]
             if dur != ff_sys::AV_NOPTS_VALUE && tb.den > 0 && fps.den > 0 {

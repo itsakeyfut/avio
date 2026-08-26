@@ -18,7 +18,8 @@ use crate::{
     AV_NUM_DATA_POINTERS, AVFrame, AVRational, AvError, av_frame_alloc as ffi_av_frame_alloc,
     av_frame_free as ffi_av_frame_free, av_frame_get_buffer as ffi_av_frame_get_buffer,
     av_frame_move_ref as ffi_av_frame_move_ref, av_frame_ref as ffi_av_frame_ref,
-    av_frame_unref as ffi_av_frame_unref, av_pix_fmt_desc_get as ffi_av_pix_fmt_desc_get,
+    av_frame_unref as ffi_av_frame_unref, av_hwframe_transfer_data as ffi_av_hwframe_transfer_data,
+    av_pix_fmt_desc_get as ffi_av_pix_fmt_desc_get,
 };
 
 /// An owned `AVFrame`.
@@ -110,6 +111,14 @@ impl Frame {
     pub fn set_pict_type(&mut self, pict_type: crate::AVPictureType) {
         // SAFETY: `self.ptr` is a valid owned frame; `pict_type` is a plain field.
         unsafe { (*self.ptr.as_ptr()).pict_type = pict_type };
+    }
+
+    /// Returns the picture type (`AV_PICTURE_TYPE_I` marks a keyframe). Used to
+    /// derive `key_frame` after `key_frame` was removed from `AVFrame` in FFmpeg 6.
+    #[must_use]
+    pub fn pict_type(&self) -> crate::AVPictureType {
+        // SAFETY: `self.ptr` is a valid owned frame; `pict_type` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).pict_type }
     }
 
     /// Returns the presentation timestamp (in the frame's time base).
@@ -472,6 +481,34 @@ impl Frame {
         unsafe { ffi_av_frame_move_ref(self.ptr.as_ptr(), src.ptr.as_ptr()) };
     }
 
+    /// Transfers data between `self` (destination) and a hardware frame `src`
+    /// (`av_hwframe_transfer_data`): copies `src`'s GPU-side data into `self`'s
+    /// CPU-side buffers (or vice versa), allocating `self`'s buffers as needed.
+    ///
+    /// This is safe because both frames are valid owned `AVFrame`s and the
+    /// `&mut self` / `&src` borrows preclude aliasing. When `src` is not actually
+    /// a hardware frame (no `hw_frames_ctx`), FFmpeg returns `AVERROR(EINVAL)`
+    /// rather than dereferencing anything invalid — a functional error, not UB
+    /// (RK-017); a safe caller cannot construct a frame with a bogus non-null
+    /// `hw_frames_ctx`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the transfer fails (including `EINVAL` when
+    /// neither frame carries a hardware frames context).
+    pub fn hwframe_transfer_data(&mut self, src: &Frame, flags: c_int) -> Result<(), AvError> {
+        // SAFETY: `self` and `src` are valid owned frames (`&mut self` / `&src`
+        //         guarantee they are distinct); `av_hwframe_transfer_data` reads
+        //         `src` and writes `self`, guarding invalid inputs with `EINVAL`.
+        let ret =
+            unsafe { ffi_av_hwframe_transfer_data(self.ptr.as_ptr(), src.ptr.as_ptr(), flags) };
+        if ret < 0 {
+            Err(AvError::new(ret))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Makes a ref-counted copy of this frame (`av_frame_ref`), sharing the
     /// underlying buffers rather than deep-copying.
     ///
@@ -542,14 +579,27 @@ mod tests {
     }
 
     #[test]
+    fn hwframe_transfer_data_should_error_for_non_hardware_frames() {
+        // Two plain software frames carry no `hw_frames_ctx`, so FFmpeg's
+        // `av_hwframe_transfer_data` returns an error (EINVAL) rather than
+        // transferring. This exercises the safe wrapper's error conversion with no
+        // GPU, confirming a non-hardware `src` is a functional error (not UB): the
+        // basis for `hwframe_transfer_data` being a safe `fn` (RK-017).
+        let src = Frame::new().expect("frame allocation should succeed");
+        let mut dst = Frame::new().expect("frame allocation should succeed");
+        assert!(
+            dst.hwframe_transfer_data(&src, 0).is_err(),
+            "transferring between two software frames must return Err, not panic"
+        );
+    }
+
+    #[test]
     fn set_pict_type_should_round_trip() {
         let mut frame = Frame::new().expect("frame allocation should succeed");
         frame.set_pict_type(crate::AVPictureType_AV_PICTURE_TYPE_I);
-        // SAFETY: `frame` is a valid owned frame; `pict_type` is a plain field.
-        assert_eq!(
-            unsafe { (*frame.as_ptr()).pict_type },
-            crate::AVPictureType_AV_PICTURE_TYPE_I
-        );
+        // The getter reads back what the setter wrote (a fresh frame defaults to
+        // AV_PICTURE_TYPE_NONE).
+        assert_eq!(frame.pict_type(), crate::AVPictureType_AV_PICTURE_TYPE_I);
     }
 
     #[test]

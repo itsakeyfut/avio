@@ -224,35 +224,30 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
 // ── Pass 2 — transform ────────────────────────────────────────────────────────
 
 /// Drain all available encoded packets from `enc_ctx` into `out_ctx`, rescaling
-/// timestamps from `enc_tb` to the output stream's time base.
+/// timestamps from the encoder's time base to the output stream's time base.
 ///
-/// # Safety
-///
-/// - `out_ctx` must be a valid `AVFormatContext` whose header has been written.
-/// - `enc_ctx` should have had at least one `send_frame` call (functional
-///   precondition; this drains whatever the encoder has produced).
-unsafe fn drain_encoded_packets(
+/// `out_ctx`'s header must have been written; `enc_ctx` should have had at least
+/// one `send_frame` call (this drains whatever the encoder has produced).
+fn drain_encoded_packets(
     enc_ctx: &mut ff_sys::CodecContext,
     pkt: &mut ff_sys::Packet,
-    out_ctx: *mut ff_sys::AVFormatContext,
+    out_ctx: &mut ff_sys::OutputFormatContext,
     stream_tb: ff_sys::AVRational,
 ) {
     while matches!(
-        enc_ctx.receive_packet(pkt.as_mut_ptr()),
+        enc_ctx.receive_packet_into(pkt),
         Ok(ff_sys::ReceiveOutcome::Frame)
     ) {
         // Read enc_tb at drain time — some encoders mutate time_base lazily.
         let enc_tb = enc_ctx.time_base();
-        // The packet fields have no typed accessor; touch them through the pointer.
-        let p = pkt.as_mut_ptr();
-        ff_sys::av_packet_rescale_ts(p, enc_tb, stream_tb);
-        (*p).stream_index = 0;
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx, p);
+        pkt.rescale_ts(enc_tb, stream_tb);
+        pkt.set_stream_index(0);
+        let write_res = out_ctx.write_interleaved(pkt);
         pkt.unref();
-        if ret < 0 {
+        if let Err(e) = write_res {
             log::warn!(
                 "av_interleaved_write_frame failed error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
             break;
         }
@@ -581,17 +576,16 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     };
 
     // ── Add video stream and copy codec parameters ────────────────────────────
-    let out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
-    if out_stream.is_null() {
+    let Ok(out_idx) = out_ctx.new_stream(None) else {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
             code: 0,
             message: "avformat_new_stream failed".to_string(),
         });
-    }
+    };
 
-    if let Err(e) = enc_ctx.parameters_from_context((*out_stream).codecpar) {
+    if let Err(e) = out_ctx.apply_stream_params_from_context(out_idx, &enc_ctx) {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {
@@ -622,7 +616,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     }
 
     // Read stream time base AFTER write_header — the muxer may adjust it.
-    let stream_tb = (*out_stream).time_base;
+    let stream_tb = out_ctx.stream_time_base(out_idx);
 
     // ── Allocate encode packet ────────────────────────────────────────────────
     let Ok(mut pkt) = ff_sys::Packet::new() else {
@@ -636,8 +630,8 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     };
 
     // ── Encode first frame ────────────────────────────────────────────────────
-    let _ = enc_ctx.send_frame(first_frame.as_ptr());
-    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
+    let _ = enc_ctx.send_frame_ref(Some(&first_frame));
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
     drop(first_frame);
 
     // ── Encode remaining frames from the filter graph ─────────────────────────
@@ -651,14 +645,14 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         ) {
             break;
         }
-        let _ = enc_ctx.send_frame(frame.as_ptr());
-        drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
+        let _ = enc_ctx.send_frame_ref(Some(&frame));
+        drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
         // `frame` drops at end of iteration.
     }
 
     // ── Flush the encoder ─────────────────────────────────────────────────────
-    let _ = enc_ctx.send_frame(std::ptr::null());
-    drain_encoded_packets(&mut enc_ctx, &mut pkt, out_ctx.as_mut_ptr(), stream_tb);
+    let _ = enc_ctx.send_frame_ref(None);
+    drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
 
     // ── Finalize output ───────────────────────────────────────────────────────
     // `pkt` drops at end of scope, freeing it. The owned `out_ctx` closes its IO

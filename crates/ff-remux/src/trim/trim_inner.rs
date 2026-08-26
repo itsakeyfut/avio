@@ -1,9 +1,7 @@
-//! Unsafe FFmpeg calls for stream-copy trimming.
+//! Stream-copy trimming via FFmpeg's muxer/demuxer, using ff-sys safe accessors.
 
-#![allow(unsafe_code)]
-#![allow(unsafe_op_in_unsafe_fn)]
 // FFmpeg-boundary lints: intentional narrowing/sign casts at the C ABI and
-// acronym-heavy FFmpeg doc terms concentrate in this isolated FFI module.
+// acronym-heavy FFmpeg doc terms concentrate in this module.
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
@@ -19,22 +17,10 @@ const AV_TIME_BASE: i64 = 1_000_000;
 
 /// Execute stream-copy trim via FFmpeg's muxer/demuxer.
 ///
-/// # Safety
-///
-/// All FFmpeg pointer invariants are maintained internally.  The function is
-/// safe to call from safe Rust — the public `StreamCopyTrimmer::run` wraps it.
+/// The bitstream is stream-copied (no decode/encode cycle). All FFmpeg access
+/// goes through owned ff-sys types and their safe accessors, so both contexts
+/// free themselves on every exit path.
 pub(crate) fn run_trim(
-    input: &Path,
-    output: &Path,
-    start_sec: f64,
-    end_sec: f64,
-) -> Result<(), RemuxError> {
-    // SAFETY: All pointers are validated (null-checked) before use; resources
-    //         are freed on every exit path.
-    unsafe { run_trim_unsafe(input, output, start_sec, end_sec) }
-}
-
-unsafe fn run_trim_unsafe(
     input: &Path,
     output: &Path,
     start_sec: f64,
@@ -58,25 +44,20 @@ unsafe fn run_trim_unsafe(
     // ── Step 4: copy stream parameters ───────────────────────────────────────
     let nb_streams = in_ctx.nb_streams() as usize;
     for i in 0..nb_streams {
-        // SAFETY: i < nb_streams; streams is a valid array of nb_streams pointers.
-        let in_stream = *(*in_ctx.as_ptr()).streams.add(i);
-
-        // SAFETY: out_ctx is a valid owned mux context.
-        let out_stream = ff_sys::avformat_new_stream(out_ctx.as_mut_ptr(), std::ptr::null());
-        if out_stream.is_null() {
-            return Err(RemuxError::Ffmpeg {
-                code: 0,
-                message: "avformat_new_stream failed".to_string(),
+        let Some(in_stream) = in_ctx.stream(i) else {
+            return Err(RemuxError::OperationFailed {
+                reason: format!("input stream {i} is missing"),
             });
-        }
-
-        // SAFETY: both codecpar pointers are non-null (created by FFmpeg).
-        let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
-        if ret < 0 {
-            return Err(RemuxError::from_ffmpeg_error(ret));
-        }
-        // Clear the codec_tag so the muxer can assign the correct value.
-        (*(*out_stream).codecpar).codec_tag = 0;
+        };
+        let out_idx = out_ctx.new_stream(None).map_err(|_| RemuxError::Ffmpeg {
+            code: 0,
+            message: "avformat_new_stream failed".to_string(),
+        })?;
+        // copy_stream_params deep-copies the parameters and clears codec_tag so
+        // the muxer assigns the correct value for the container.
+        out_ctx
+            .copy_stream_params(out_idx, in_stream.codecpar())
+            .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
     }
 
     // ── Step 5: seek to start ─────────────────────────────────────────────────
@@ -125,18 +106,18 @@ unsafe fn run_trim_unsafe(
             continue;
         }
 
-        // SAFETY: stream_idx < nb_streams; streams arrays are valid.
-        let in_stream = *(*in_ctx.as_ptr()).streams.add(stream_idx);
-        let in_tb = (*in_stream).time_base;
+        let Some(in_stream) = in_ctx.stream(stream_idx) else {
+            pkt.unref();
+            continue;
+        };
+        let in_tb = in_stream.time_base();
 
         // Check whether this packet is past the end of the requested range.
         // Prefer PTS; fall back to DTS if PTS is absent.
-        // SAFETY: pkt is a valid packet; pts/dts are plain fields.
-        let p = pkt.as_ptr();
-        let ts = if (*p).pts != ff_sys::AV_NOPTS_VALUE {
-            (*p).pts
+        let ts = if pkt.pts() != ff_sys::AV_NOPTS_VALUE {
+            pkt.pts()
         } else {
-            (*p).dts
+            pkt.dts()
         };
         if ts != ff_sys::AV_NOPTS_VALUE && in_tb.den != 0 {
             let ts_sec = ts as f64 * f64::from(in_tb.num) / f64::from(in_tb.den);
@@ -147,24 +128,20 @@ unsafe fn run_trim_unsafe(
         }
 
         // Rescale timestamps to the output stream's time base.
-        // SAFETY: stream_idx < nb_streams; out_ctx is valid.
-        let out_stream = *(*out_ctx.as_mut_ptr()).streams.add(stream_idx);
-        let out_tb = (*out_stream).time_base;
-        // SAFETY: pkt, in_tb, out_tb are valid plain-data values.
-        ff_sys::av_packet_rescale_ts(pkt.as_mut_ptr(), in_tb, out_tb);
-        (*pkt.as_mut_ptr()).stream_index = stream_idx as i32;
+        let out_tb = out_ctx.stream_time_base(stream_idx);
+        pkt.rescale_ts(in_tb, out_tb);
+        pkt.set_stream_index(stream_idx as i32);
 
-        // SAFETY: out_ctx and pkt are valid.
-        let ret = ff_sys::av_interleaved_write_frame(out_ctx.as_mut_ptr(), pkt.as_mut_ptr());
+        let write_res = out_ctx.write_interleaved(&mut pkt);
+        // av_interleaved_write_frame takes the packet's buf reference; unref to clear.
         pkt.unref();
-        if ret < 0 {
-            loop_err = Some(RemuxError::from_ffmpeg_error(ret));
+        if let Err(e) = write_res {
+            loop_err = Some(RemuxError::from_ffmpeg_error(e.code()));
             break 'read;
         }
     }
 
     // ── Step 9: write trailer ─────────────────────────────────────────────────
-    // SAFETY: out_ctx is valid; write_header was called successfully.
     let _ = out_ctx.write_trailer();
 
     // The owned `in_ctx` / `out_ctx` close their IO and free themselves when they

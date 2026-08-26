@@ -24,7 +24,6 @@
 
 use std::ffi::CStr;
 use std::path::Path;
-use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,8 +36,8 @@ use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
-    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext,
+    AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace, AVHWDeviceType,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, HwDeviceContext, InputFormatContext,
     Packet,
 };
 
@@ -94,8 +93,11 @@ pub(crate) struct VideoDecoderInner {
     pub(super) thumbnail_sws_ctx: Option<ff_sys::ScaleContext>,
     /// Last thumbnail dimensions (for cache invalidation)
     pub(super) thumbnail_cache_key: Option<(u32, u32, u32, u32, AVPixelFormat)>,
-    /// Hardware device context (if hardware acceleration is active)
-    pub(super) hw_device_ctx: Option<*mut AVBufferRef>,
+    /// Owned hardware device reference kept alive for as long as the codec
+    /// context uses it. Held only for its `Drop` (the codec keeps its own
+    /// reference), so it is never read after construction.
+    #[expect(dead_code, reason = "RAII drop-guard: released when the decoder drops")]
+    pub(super) hw_device_ctx: Option<HwDeviceContext>,
     /// Active hardware acceleration mode
     pub(super) active_hw_accel: HardwareAccel,
     /// Optional frame pool for memory reuse
@@ -245,31 +247,25 @@ impl VideoDecoderInner {
             codec_ctx.set_thread_count(thread_count as i32);
         }
 
-        // Initialize hardware acceleration if requested. The hw device / frames
-        // wiring stays on the raw `AVCodecContext` pointer (retained for the ff-sys
-        // RAII follow-up, which adds a dedicated hw-accel API).
-        // SAFETY: codec_ctx is valid and not yet opened
+        // Initialize hardware acceleration if requested. The owned
+        // `HwDeviceContext` (when Some) holds our reference to the hw device; the
+        // codec context takes its own via `set_hw_device_ctx`, so both are freed
+        // independently on drop.
         let (hw_device_ctx, active_hw_accel) =
-            unsafe { Self::init_hardware_accel(codec_ctx.as_mut_ptr(), hardware_accel)? };
+            Self::init_hardware_accel(&mut codec_ctx, hardware_accel)?;
 
-        // Open the codec
-        codec_ctx.open_codec(codec).map_err(|e| {
-            // If codec opening failed, we still own our reference to hw_device_ctx
-            // but it will be cleaned up when codec_ctx is freed (which happens
-            // when codec_ctx is dropped)
-            // Our reference in hw_device_ctx will be cleaned up here
-            if let Some(hw_ctx) = hw_device_ctx {
-                // SAFETY: hw_ctx is a valid buffer reference we own.
-                unsafe { ff_sys::av_buffer_unref(&mut (hw_ctx as *mut _)) };
-            }
-            DecodeError::Ffmpeg {
+        // Open the codec. On failure, `hw_device_ctx` (owned) drops with the rest
+        // of this constructor's locals, releasing our reference; `codec_ctx` drops
+        // too, releasing its own — no manual cleanup needed.
+        codec_ctx
+            .open_codec(codec)
+            .map_err(|e| DecodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
                     "Failed to open codec: {}",
                     ff_sys::av_error_string(e.code())
                 ),
-            }
-        })?;
+            })?;
 
         // Extract stream and container information through the borrowed
         // stream / codec-context accessors.
@@ -332,24 +328,11 @@ impl VideoDecoderInner {
     }
 }
 
-impl Drop for VideoDecoderInner {
-    fn drop(&mut self) {
-        // The `sws_ctx` and `thumbnail_sws_ctx` (owned `ScaleContext`) free
-        // themselves when this struct drops.
-
-        // Free hardware device context if allocated
-        if let Some(hw_ctx) = self.hw_device_ctx {
-            // SAFETY: hw_ctx is valid and owned by this instance
-            unsafe {
-                ff_sys::av_buffer_unref(&mut (hw_ctx as *mut _));
-            }
-        }
-
-        // The owned `frame` (Frame) and `packet` (Packet) free themselves when
-        // this struct drops. The `format_ctx` (InputFormatContext) drops
-        // automatically after this Drop body, closing the demux context last.
-    }
-}
+// No manual `Drop` is needed: every field owns its FFmpeg resource and frees
+// itself when the struct drops (fields drop in declaration order). The hw device
+// reference (`HwDeviceContext`) is reference-counted and the `CodecContext` holds
+// its own reference, so the order in which the two release relative to each other
+// does not matter.
 
 // SAFETY: VideoDecoderInner manages FFmpeg contexts which are thread-safe when not shared.
 // We don't expose mutable access across threads, so Send is safe.

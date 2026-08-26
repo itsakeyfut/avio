@@ -1,7 +1,10 @@
-//! Unsafe `FFmpeg` calls for media file probing.
+//! Media file probing.
 //!
-//! All `unsafe` blocks in `ff-probe` are concentrated here. The only public
-//! symbol is [`probe_file`], which is called exclusively by [`super::builder::open`]
+//! [`probe_file`] builds a [`MediaInfo`] from an owned `ff_sys::InputFormatContext`
+//! through the crate's safe accessors, so it holds no `unsafe` itself. The only
+//! `unsafe` left in `ff-probe` is confined to two child helpers: the channel-mask
+//! union read in [`audio`] and the `avcodec_get_name` call in [`video`]. It is the
+//! sole public symbol here and is called exclusively by [`super::builder::open`]
 //! after all safe preconditions (file exists, file size readable) are satisfied.
 
 #![allow(unsafe_code)]
@@ -16,7 +19,6 @@ mod audio;
 mod chapters;
 mod core;
 mod mapping;
-mod metadata;
 mod subtitle;
 mod video;
 
@@ -42,36 +44,26 @@ pub(crate) fn probe_file(path: &Path, file_size: u64) -> Result<MediaInfo, Probe
             reason: ff_sys::av_error_string(e.code()),
         })?;
 
-    // Extract basic information from AVFormatContext. The extract helpers still
-    // take a raw `*mut AVFormatContext`, so they are handed `ctx.as_mut_ptr()`.
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let (format, format_long_name, duration) =
-        unsafe { core::extract_format_info(ctx.as_mut_ptr()) };
+    // Extract basic information through the owned context's safe accessors.
+    let (format, format_long_name, duration) = core::extract_format_info(&ctx);
 
     // Calculate container bitrate
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let bitrate =
-        unsafe { core::calculate_container_bitrate(ctx.as_mut_ptr(), file_size, duration) };
+    let bitrate = core::calculate_container_bitrate(&ctx, file_size, duration);
 
     // Extract container metadata
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let media_metadata = unsafe { metadata::extract_metadata(ctx.as_mut_ptr()) };
+    let media_metadata = ctx.metadata();
 
     // Extract video streams
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let video_streams = unsafe { video::extract_video_streams(ctx.as_mut_ptr()) };
+    let video_streams = video::extract_video_streams(&ctx);
 
     // Extract audio streams
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let audio_streams = unsafe { audio::extract_audio_streams(ctx.as_mut_ptr()) };
+    let audio_streams = audio::extract_audio_streams(&ctx);
 
     // Extract subtitle streams
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let subtitle_streams = unsafe { subtitle::extract_subtitle_streams(ctx.as_mut_ptr()) };
+    let subtitle_streams = subtitle::extract_subtitle_streams(&ctx);
 
     // Extract chapter info
-    // SAFETY: ctx is a valid owned demux context; find_stream_info succeeded.
-    let chapter_list = unsafe { chapters::extract_chapters(ctx.as_mut_ptr()) };
+    let chapter_list = chapters::extract_chapters(&ctx);
 
     // The owned `ctx` closes its input and frees itself when it drops at the end
     // of this function; no manual close is needed.
