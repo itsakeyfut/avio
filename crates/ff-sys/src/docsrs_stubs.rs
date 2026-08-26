@@ -1361,6 +1361,15 @@ impl CodecContext {
 
     /// # Errors
     /// Stub; never executed on docs.rs.
+    pub fn set_hw_device_ctx(
+        &mut self,
+        _device: &HwDeviceContext,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
     pub fn receive_packet_into(
         &mut self,
         _pkt: &mut Packet,
@@ -1978,6 +1987,16 @@ impl Frame {
 
     /// # Errors
     /// Stub; never executed on docs.rs.
+    pub fn hwframe_transfer_data(
+        &mut self,
+        _src: &Frame,
+        _flags: c_int,
+    ) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
     pub fn try_clone(&self) -> Result<Self, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
@@ -2102,6 +2121,30 @@ impl Codec {
         self._ptr.as_ptr()
     }
 }
+
+// ── RAII owner stub (mirrors crate::hwdevice::HwDeviceContext) ────────────────
+// Under DOCS_RS the real `hwdevice` module is cfg'd out; this shape-compatible
+// stub keeps `ff_sys::HwDeviceContext` available for docs.rs.
+
+#[derive(Debug)]
+pub struct HwDeviceContext {
+    _ptr: std::ptr::NonNull<AVBufferRef>,
+}
+
+impl HwDeviceContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn new(_device_type: AVHWDeviceType) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for HwDeviceContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for HwDeviceContext {}
 
 // ── RAII owner stub (mirrors crate::scale_context::ScaleContext) ──────────────
 // Under DOCS_RS the real `scale_context` module is cfg'd out; this
