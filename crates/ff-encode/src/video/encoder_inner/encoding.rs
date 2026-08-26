@@ -291,11 +291,7 @@ impl VideoEncoderInner {
             if let Some(ref meta) = self.hdr10_metadata {
                 const AV_PKT_FLAG_KEY: i32 = 1;
                 if packet.flags() & AV_PKT_FLAG_KEY != 0 {
-                    // NOTE(#1555): `attach_hdr10_side_data` still takes a raw
-                    // `*mut AVPacket` (it needs a Packet side-data API). Keep the
-                    // raw pointer for this one call until that API lands.
-                    let pkt = packet.as_mut_ptr();
-                    self.attach_hdr10_side_data(pkt, meta);
+                    self.attach_hdr10_side_data(&mut packet, meta);
                 }
             }
 

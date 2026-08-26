@@ -9,9 +9,10 @@
 use std::ptr::NonNull;
 
 use crate::{
-    AVPacket, AVRational, AvError, av_packet_alloc as ffi_av_packet_alloc,
-    av_packet_free as ffi_av_packet_free, av_packet_ref as ffi_av_packet_ref,
-    av_packet_rescale_ts as ffi_av_packet_rescale_ts, av_packet_unref as ffi_av_packet_unref,
+    AVPacket, AVPacketSideDataType, AVRational, AvError, av_packet_alloc as ffi_av_packet_alloc,
+    av_packet_free as ffi_av_packet_free, av_packet_new_side_data as ffi_av_packet_new_side_data,
+    av_packet_ref as ffi_av_packet_ref, av_packet_rescale_ts as ffi_av_packet_rescale_ts,
+    av_packet_unref as ffi_av_packet_unref,
 };
 
 /// An owned `AVPacket`.
@@ -117,6 +118,24 @@ impl Packet {
         unsafe { (*self.ptr.as_ptr()).duration = duration };
     }
 
+    /// Allocates `size` bytes of side data of the given `kind` on this packet
+    /// and returns a mutable slice over it, or `None` on allocation failure.
+    ///
+    /// The side data is owned by the packet and freed with it. The caller
+    /// writes the payload (e.g. an HDR metadata struct) into the returned slice.
+    pub fn new_side_data(&mut self, kind: AVPacketSideDataType, size: usize) -> Option<&mut [u8]> {
+        // SAFETY: `self.ptr` is a valid owned packet; `av_packet_new_side_data`
+        //         allocates `size` bytes (or returns null on OOM) attached to it.
+        let ptr = unsafe { ffi_av_packet_new_side_data(self.ptr.as_ptr(), kind, size) };
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: `ptr` is non-null and points to `size` writable bytes owned
+            //         by the packet's side-data buffer.
+            Some(unsafe { std::slice::from_raw_parts_mut(ptr, size) })
+        }
+    }
+
     /// Rescales the packet's `pts` / `dts` / `duration` from `src_tb` to `dst_tb`.
     pub fn rescale_ts(&mut self, src_tb: AVRational, dst_tb: AVRational) {
         // SAFETY: `self.ptr` is a valid owned packet; the time bases are plain
@@ -205,6 +224,20 @@ mod tests {
         // those plain fields (there is no public setter for either).
         assert_eq!(packet.size(), 0);
         assert_eq!(packet.flags(), 0);
+    }
+
+    #[test]
+    fn new_side_data_should_return_a_writable_slice() {
+        let mut packet = Packet::new().expect("packet allocation should succeed");
+        let buf = packet
+            .new_side_data(
+                crate::AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+                8,
+            )
+            .expect("side data allocation should succeed");
+        assert_eq!(buf.len(), 8);
+        // The returned slice is writable and owned by the packet (freed on drop).
+        buf.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
