@@ -1027,6 +1027,22 @@ pub mod swresample {
         pub unsafe fn size(_fifo: *mut AVAudioFifo) -> c_int {
             0
         }
+
+        pub unsafe fn write_frame(
+            _fifo: *mut AVAudioFifo,
+            _src: &super::super::Frame,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
+
+        pub unsafe fn read_frame(
+            _fifo: *mut AVAudioFifo,
+            _dst: &mut super::super::Frame,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
     }
 
     pub mod sample_format {
@@ -1876,6 +1892,16 @@ impl Packet {
 
     #[must_use]
     pub fn dts(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn size(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn flags(&self) -> c_int {
         0
     }
 

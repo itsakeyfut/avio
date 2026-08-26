@@ -79,6 +79,20 @@ impl Packet {
         unsafe { (*self.ptr.as_ptr()).duration }
     }
 
+    /// Returns the packet's payload size in bytes.
+    #[must_use]
+    pub fn size(&self) -> std::os::raw::c_int {
+        // SAFETY: `self.ptr` is a valid owned packet; `size` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).size }
+    }
+
+    /// Returns the packet's flags (a bitmask of `AV_PKT_FLAG_*`).
+    #[must_use]
+    pub fn flags(&self) -> std::os::raw::c_int {
+        // SAFETY: `self.ptr` is a valid owned packet; `flags` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).flags }
+    }
+
     /// Sets the index of the stream this packet belongs to.
     pub fn set_stream_index(&mut self, stream_index: std::os::raw::c_int) {
         // SAFETY: `self.ptr` is a valid owned packet; `stream_index` is a plain field.
@@ -182,6 +196,15 @@ mod tests {
         assert_eq!(packet.pts(), 1_000);
         assert_eq!(packet.dts(), 900);
         assert_eq!(packet.duration(), 512);
+    }
+
+    #[test]
+    fn size_and_flags_should_read_defaults() {
+        let packet = Packet::new().expect("packet allocation should succeed");
+        // A fresh packet carries no payload and no flags; the accessors read
+        // those plain fields (there is no public setter for either).
+        assert_eq!(packet.size(), 0);
+        assert_eq!(packet.flags(), 0);
     }
 
     #[test]
