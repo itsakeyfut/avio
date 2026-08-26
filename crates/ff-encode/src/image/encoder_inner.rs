@@ -35,8 +35,7 @@ use ff_sys::{
     AVCodecID, AVCodecID_AV_CODEC_ID_BMP, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_PNG,
     AVCodecID_AV_CODEC_ID_TIFF, AVCodecID_AV_CODEC_ID_WEBP, AVColorRange_AVCOL_RANGE_JPEG,
     AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, OutputFormatContext, av_interleaved_write_frame,
-    avformat_new_stream, swscale,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, OutputFormatContext, swscale,
 };
 
 use crate::EncodeError;
@@ -144,13 +143,10 @@ impl ImageEncoderInner {
         };
 
         // ── Step 2: Video stream ──────────────────────────────────────────────
-        let stream = avformat_new_stream(inner.format_ctx.as_mut_ptr(), ptr::null());
-        if stream.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot create output stream".to_string(),
-            });
-        }
+        let stream_idx = inner
+            .format_ctx
+            .new_stream(None)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 3: Configure codec context ──────────────────────────────────
         inner.codec_ctx.set_width(dst_width as i32);
@@ -179,13 +175,10 @@ impl ImageEncoderInner {
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 5: Copy parameters to stream ─────────────────────────────────
-        // SAFETY: stream is non-null (checked above); codec_ctx is open.
-        let par = (*stream).codecpar;
-        (*par).codec_id = codec_id;
-        (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-        (*par).width = inner.codec_ctx.width();
-        (*par).height = inner.codec_ctx.height();
-        (*par).format = pix_fmt;
+        inner
+            .format_ctx
+            .apply_stream_params_from_context(stream_idx, &inner.codec_ctx)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 8: Open output file ──────────────────────────────────────────
         inner
@@ -272,9 +265,7 @@ impl ImageEncoderInner {
                 let src_stride = src.strides()[i];
                 let plane_data = plane.data();
                 // The destination stride is the frame's own linesize for plane i.
-                // SAFETY: `dst_frame` is a valid get_buffer'd frame; `linesize` is
-                //         a plain field.
-                let dst_stride = (*self.dst_frame.as_ptr()).linesize[i] as usize;
+                let dst_stride = self.dst_frame.linesize(i) as usize;
                 // `video_plane_mut` yields `None` for an absent plane (null data),
                 // matching the previous null-plane break.
                 let Some(dst_plane) = self.dst_frame.video_plane_mut(i) else {
@@ -301,7 +292,7 @@ impl ImageEncoderInner {
 
         // ── Send frame → encoder ──────────────────────────────────────────────
         self.codec_ctx
-            .send_frame(self.dst_frame.as_ptr())
+            .send_frame_ref(Some(&self.dst_frame))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Receive packets ───────────────────────────────────────────────────
@@ -309,7 +300,7 @@ impl ImageEncoderInner {
 
         // ── Flush encoder ─────────────────────────────────────────────────────
         self.codec_ctx
-            .send_frame(ptr::null())
+            .send_frame_ref(None)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Drain remaining packets ───────────────────────────────────────────
@@ -336,20 +327,15 @@ impl ImageEncoderInner {
         loop {
             match self
                 .codec_ctx
-                .receive_packet(self.packet.as_mut_ptr())
+                .receive_packet_into(&mut self.packet)
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?
             {
                 ff_sys::ReceiveOutcome::Frame => {
-                    // SAFETY: `packet` is a valid owned packet; `stream_index` is a
-                    //         plain field.
-                    (*self.packet.as_mut_ptr()).stream_index = 0;
-                    let ret = av_interleaved_write_frame(
-                        self.format_ctx.as_mut_ptr(),
-                        self.packet.as_mut_ptr(),
-                    );
+                    self.packet.set_stream_index(0);
+                    let ret = self.format_ctx.write_interleaved(&mut self.packet);
                     self.packet.unref();
-                    if ret < 0 {
-                        return Err(EncodeError::from_ffmpeg_error(ret));
+                    if let Err(e) = ret {
+                        return Err(EncodeError::from_ffmpeg_error(e.code()));
                     }
                 }
                 ff_sys::ReceiveOutcome::Drained => break,

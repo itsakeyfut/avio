@@ -25,10 +25,9 @@ use std::time::Duration;
 
 use ff_sys::{
     AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVRational, OutputFormatContext, av_interleaved_write_frame, av_opt_set, av_packet_unref,
-    avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
-    avfilter_graph_create_filter, avfilter_graph_free, avfilter_link, avformat,
-    avformat_new_stream,
+    AVRational, OutputFormatContext, avfilter_get_by_name, avfilter_graph_alloc,
+    avfilter_graph_config, avfilter_graph_create_filter, avfilter_graph_free, avfilter_link,
+    avformat,
 };
 
 use crate::PreviewImageError;
@@ -282,7 +281,7 @@ unsafe fn generate_sprite_sheet_unsafe(
 
     // ── Step 4: encode the tile frame as PNG ──────────────────────────────────
     let encode_result = encode_frame_as_png(
-        tile_frame.as_mut_ptr(),
+        &mut tile_frame,
         output,
         cols,
         rows,
@@ -304,14 +303,14 @@ unsafe fn generate_sprite_sheet_unsafe(
     Ok(())
 }
 
-/// Encodes a raw `*mut AVFrame` as a PNG file at `output`.
+/// Encodes an owned [`ff_sys::Frame`] as a PNG file at `output`.
 ///
 /// # Safety
 ///
-/// `frame` must be a valid, non-null frame produced by the tile filter.
+/// `frame` must be a valid frame produced by the tile filter.
 /// All allocations are freed on every exit path.
 unsafe fn encode_frame_as_png(
-    frame: *mut ff_sys::AVFrame,
+    frame: &mut ff_sys::Frame,
     output: &Path,
     cols: u32,
     rows: u32,
@@ -320,9 +319,9 @@ unsafe fn encode_frame_as_png(
 ) -> Result<(), PreviewImageError> {
     let _ = (cols, rows, frame_width, frame_height); // used via frame dimensions
 
-    let width = (*frame).width;
-    let height = (*frame).height;
-    let src_pix_fmt = (*frame).format;
+    let width = frame.width();
+    let height = frame.height();
+    let src_pix_fmt = frame.format();
 
     // ── Convert to rgb24 if the frame pixel format is not PNG-compatible ──────
     // PNG encoder only accepts: rgb24, rgba, rgb48be, rgba64be, pal8, gray, …
@@ -339,8 +338,7 @@ unsafe fn encode_frame_as_png(
         cf.set_format(AVPixelFormat_AV_PIX_FMT_RGB24);
         cf.get_buffer(0)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        // SAFETY: src_pix_fmt and AVPixelFormat_AV_PIX_FMT_RGB24 are valid;
-        // frame and cf buffers are allocated and large enough.
+        // `sws_ctx` and `cf` drop on any `?` below, freeing their resources.
         let mut sws_ctx = ff_sys::ScaleContext::new(
             width,
             height,
@@ -351,26 +349,16 @@ unsafe fn encode_frame_as_png(
             ff_sys::swscale::scale_flags::BILINEAR,
         )
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        let cf_ptr = cf.as_mut_ptr();
-        // sws_ctx drops at the end of this scope, freeing the context;
-        // `cf` drops on any `?` above/below, freeing the conversion frame.
         sws_ctx
-            .scale(
-                (*frame).data.as_ptr().cast::<*const u8>(),
-                (*frame).linesize.as_ptr(),
-                0,
-                height,
-                (*cf_ptr).data.as_mut_ptr().cast_const(),
-                (*cf_ptr).linesize.as_mut_ptr(),
-            )
+            .scale_frames(frame, &mut cf)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         Some(cf)
     } else {
         None
     };
 
-    let converted_frame: *mut ff_sys::AVFrame = match cf_owned.as_mut() {
-        Some(cf) => cf.as_mut_ptr(),
+    let converted_frame: &mut ff_sys::Frame = match cf_owned.as_mut() {
+        Some(cf) => cf,
         None => frame,
     };
 
@@ -385,7 +373,7 @@ unsafe fn encode_frame_as_png(
 /// `frame` must be a valid, non-null rgb24 frame with matching `width`/`height`.
 /// All allocations are freed on every exit path.
 unsafe fn encode_frame_as_png_inner(
-    frame: *mut ff_sys::AVFrame,
+    frame: &mut ff_sys::Frame,
     output: &Path,
     width: i32,
     height: i32,
@@ -402,13 +390,9 @@ unsafe fn encode_frame_as_png_inner(
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
     // ── Create video stream ───────────────────────────────────────────────────
-    let stream = avformat_new_stream(fmt_ctx.as_mut_ptr(), ptr::null());
-    if stream.is_null() {
-        return Err(PreviewImageError::Ffmpeg {
-            code: 0,
-            message: "avformat_new_stream failed".to_string(),
-        });
-    }
+    let stream_idx = fmt_ctx
+        .new_stream(None)
+        .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
     // ── Find and open PNG encoder ─────────────────────────────────────────────
     let Some(codec) = ff_sys::Codec::find_encoder(AVCodecID_AV_CODEC_ID_PNG) else {
@@ -429,14 +413,11 @@ unsafe fn encode_frame_as_png_inner(
         .open(codec, ptr::null_mut())
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    // Copy codec parameters to stream.
-    // SAFETY: stream and codec_ctx are non-null.
-    let par = (*stream).codecpar;
-    (*par).codec_id = AVCodecID_AV_CODEC_ID_PNG;
-    (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-    (*par).width = width;
-    (*par).height = height;
-    (*par).format = pix_fmt;
+    // Copy codec parameters to stream (includes width/height/format from the
+    // opened PNG encoder context).
+    fmt_ctx
+        .apply_stream_params_from_context(stream_idx, &codec_ctx)
+        .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
     // ── Open output IO and write header ───────────────────────────────────────
     fmt_ctx
@@ -456,27 +437,17 @@ unsafe fn encode_frame_as_png_inner(
     };
 
     // ── Encode: send frame → flush → drain packets ────────────────────────────
-    (*frame).pts = 0;
+    frame.set_pts(0);
 
     let encode_result = (|| -> Result<(), PreviewImageError> {
         codec_ctx
-            .send_frame(frame)
+            .send_frame_ref(Some(&*frame))
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(
-            &mut codec_ctx,
-            fmt_ctx.as_mut_ptr(),
-            packet.as_mut_ptr(),
-            false,
-        )?;
+        drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
         codec_ctx
-            .send_frame(ptr::null())
+            .send_frame_ref(None)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(
-            &mut codec_ctx,
-            fmt_ctx.as_mut_ptr(),
-            packet.as_mut_ptr(),
-            true,
-        )?;
+        drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, true)?;
         Ok(())
     })();
 
@@ -495,24 +466,24 @@ unsafe fn encode_frame_as_png_inner(
 ///
 /// # Safety
 ///
-/// `codec_ctx`, `fmt_ctx`, and `packet` must all be valid non-null pointers.
+/// `codec_ctx`, `fmt_ctx`, and `packet` must all be valid.
 unsafe fn drain_packets(
     codec_ctx: &mut ff_sys::CodecContext,
-    fmt_ctx: *mut ff_sys::AVFormatContext,
-    packet: *mut ff_sys::AVPacket,
+    fmt_ctx: &mut ff_sys::OutputFormatContext,
+    packet: &mut ff_sys::Packet,
     until_eof: bool,
 ) -> Result<(), PreviewImageError> {
     loop {
         match codec_ctx
-            .receive_packet(packet)
+            .receive_packet_into(packet)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?
         {
             ff_sys::ReceiveOutcome::Frame => {
-                (*packet).stream_index = 0;
-                let ret = av_interleaved_write_frame(fmt_ctx, packet);
-                av_packet_unref(packet);
-                if ret < 0 {
-                    return Err(PreviewImageError::from_ffmpeg_error(ret));
+                packet.set_stream_index(0);
+                let ret = fmt_ctx.write_interleaved(packet);
+                packet.unref();
+                if let Err(e) = ret {
+                    return Err(PreviewImageError::from_ffmpeg_error(e.code()));
                 }
             }
             ff_sys::ReceiveOutcome::Drained => break,
@@ -823,7 +794,7 @@ unsafe fn generate_palette_unsafe(
     };
 
     // Save the palette frame to disk as PNG; `palette_frame` drops at end of scope.
-    encode_frame_as_png(palette_frame.as_mut_ptr(), palette_path, 0, 0, 0, 0)
+    encode_frame_as_png(&mut palette_frame, palette_path, 0, 0, 0, 0)
 }
 
 /// Pass 2: composes the GIF from the video + palette and encodes it.
@@ -1082,15 +1053,14 @@ unsafe fn encode_gif_unsafe(
         }
     };
 
-    let stream = avformat_new_stream(fmt_ctx.as_mut_ptr(), ptr::null());
-    if stream.is_null() {
-        let mut g = graph;
-        avfilter_graph_free(std::ptr::addr_of_mut!(g));
-        return Err(PreviewImageError::Ffmpeg {
-            code: 0,
-            message: "avformat_new_stream failed".to_string(),
-        });
-    }
+    let stream_idx = match fmt_ctx.new_stream(None) {
+        Ok(idx) => idx,
+        Err(e) => {
+            let mut g = graph;
+            avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(PreviewImageError::from_ffmpeg_error(e.code()));
+        }
+    };
 
     let Some(codec) = ff_sys::Codec::find_encoder(AVCodecID_AV_CODEC_ID_GIF) else {
         let mut g = graph;
@@ -1146,14 +1116,8 @@ unsafe fn encode_gif_unsafe(
     });
     codec_ctx.set_pix_fmt(out_pix_fmt);
 
-    // Set GIF to loop infinitely (option "loop" = 0).
-    // SAFETY: priv_data is valid after alloc_context3; av_opt_set handles unknown options gracefully.
-    let _ = av_opt_set(
-        (*codec_ctx.as_mut_ptr()).priv_data.cast(),
-        c"loop".as_ptr(),
-        c"0".as_ptr(),
-        0,
-    );
+    // Set GIF to loop infinitely (option "loop" = 0); unknown options are ignored.
+    let _ = codec_ctx.set_opt("loop", "0");
 
     if let Err(e) = codec_ctx.open(codec, ptr::null_mut()) {
         let mut g = graph;
@@ -1161,14 +1125,13 @@ unsafe fn encode_gif_unsafe(
         return Err(PreviewImageError::from_ffmpeg_error(e.code()));
     }
 
-    // Copy codec parameters to stream.
-    // SAFETY: stream, codec_ctx, codecpar are non-null.
-    let par = (*stream).codecpar;
-    (*par).codec_id = AVCodecID_AV_CODEC_ID_GIF;
-    (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-    (*par).width = out_width;
-    (*par).height = out_height;
-    (*par).format = out_pix_fmt;
+    // Copy codec parameters to stream (width/height/format from the opened
+    // GIF encoder context).
+    if let Err(e) = fmt_ctx.apply_stream_params_from_context(stream_idx, &codec_ctx) {
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(PreviewImageError::from_ffmpeg_error(e.code()));
+    }
 
     // Open output IO and write header.
     if let Err(e) = fmt_ctx.open_io(output) {
@@ -1200,14 +1163,9 @@ unsafe fn encode_gif_unsafe(
         first_frame.set_pts(frame_counter);
         frame_counter += 1;
         codec_ctx
-            .send_frame(first_frame.as_ptr())
+            .send_frame_ref(Some(&first_frame))
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(
-            &mut codec_ctx,
-            fmt_ctx.as_mut_ptr(),
-            packet.as_mut_ptr(),
-            false,
-        )?;
+        drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
 
         // Pull and encode remaining frames.
         loop {
@@ -1225,26 +1183,16 @@ unsafe fn encode_gif_unsafe(
             frame_counter += 1;
             // `frame` drops at end of iteration (or on the `?` below), freeing it.
             codec_ctx
-                .send_frame(frame.as_ptr())
+                .send_frame_ref(Some(&frame))
                 .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-            drain_packets(
-                &mut codec_ctx,
-                fmt_ctx.as_mut_ptr(),
-                packet.as_mut_ptr(),
-                false,
-            )?;
+            drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
         }
 
         // Flush encoder.
         codec_ctx
-            .send_frame(ptr::null())
+            .send_frame_ref(None)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
-        drain_packets(
-            &mut codec_ctx,
-            fmt_ctx.as_mut_ptr(),
-            packet.as_mut_ptr(),
-            true,
-        )?;
+        drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, true)?;
         Ok(())
     })();
 
