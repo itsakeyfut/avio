@@ -28,20 +28,19 @@ pub(super) use two_pass::TwoPassFrame;
 use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AV_TIME_BASE, AVAudioFifo, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID,
-    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC,
-    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS,
-    AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG,
-    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
-    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
-    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AV_TIME_BASE, AVAudioFifo, AVChannelLayout, AVChapter, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1,
+    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
+    AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264,
+    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3,
+    AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE,
+    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
+    AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
+    AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
+    AVPacket, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, av_interleaved_write_frame, av_mallocz,
-    av_packet_new_side_data, avcodec, avformat_new_stream, swresample,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, av_mallocz, av_packet_new_side_data,
+    avcodec, avformat_new_stream, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -293,13 +292,16 @@ impl VideoEncoderInner {
         unsafe {
             // ── Two-pass path ────────────────────────────────────────────────────
             if self.two_pass {
-                let pass1_ctx = self
-                    .pass1_codec_ctx
-                    .as_mut()
-                    .ok_or_else(|| EncodeError::InvalidConfig {
-                        reason: "Pass-1 codec context not initialized".to_string(),
-                    })?
-                    .as_mut_ptr();
+                // Read the pass-1 codec's target format up front (Copy scalars) so
+                // the `&mut self` convert call does not alias the codec context.
+                let (pass1_fmt, pass1_width, pass1_height) = {
+                    let cc = self.pass1_codec_ctx.as_ref().ok_or_else(|| {
+                        EncodeError::InvalidConfig {
+                            reason: "Pass-1 codec context not initialized".to_string(),
+                        }
+                    })?;
+                    (cc.pix_fmt(), cc.width(), cc.height())
+                };
 
                 // Convert the incoming frame to YUV420P (the pass-1 codec's format).
                 let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
@@ -307,13 +309,19 @@ impl VideoEncoderInner {
                     message: "Cannot allocate frame".to_string(),
                 })?;
 
-                self.convert_video_frame(frame, &mut av_frame, pass1_ctx)?;
+                self.convert_video_frame(
+                    frame,
+                    &mut av_frame,
+                    pass1_fmt,
+                    pass1_width,
+                    pass1_height,
+                )?;
 
                 // Buffer the converted YUV420P data for pass-2 replay. `video_plane`
                 // self-sizes each plane (Y full height, U/V by chroma subsampling)
                 // and yields `None` (→ empty Vec) for an absent plane.
-                let width = (*pass1_ctx).width as u32;
-                let height = (*pass1_ctx).height as u32;
+                let width = pass1_width as u32;
+                let height = pass1_height as u32;
 
                 let planes: Vec<Vec<u8>> = (0..3)
                     .map(|i| {
@@ -324,9 +332,7 @@ impl VideoEncoderInner {
                     })
                     .collect();
 
-                let strides: Vec<usize> = (0..3)
-                    .map(|i| (*av_frame.as_ptr()).linesize[i] as usize)
-                    .collect();
+                let strides: Vec<usize> = (0..3).map(|i| av_frame.linesize(i) as usize).collect();
 
                 self.buffered_frames.push(TwoPassFrame {
                     planes,
@@ -345,7 +351,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Pass-1 codec context not initialized".to_string(),
                     })?
-                    .send_frame(av_frame.as_ptr())
+                    .send_frame_ref(Some(&av_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -365,13 +371,17 @@ impl VideoEncoderInner {
             }
 
             // ── Single-pass path ─────────────────────────────────────────────────
-            let codec_ctx = self
-                .video_codec_ctx
-                .as_mut()
-                .ok_or_else(|| EncodeError::InvalidConfig {
-                    reason: "Video codec not initialized".to_string(),
-                })?
-                .as_mut_ptr();
+            // Read the codec's target format up front (Copy scalars) so the
+            // `&mut self` convert call does not alias the codec context.
+            let (target_fmt, target_width, target_height) = {
+                let cc =
+                    self.video_codec_ctx
+                        .as_ref()
+                        .ok_or_else(|| EncodeError::InvalidConfig {
+                            reason: "Video codec not initialized".to_string(),
+                        })?;
+                (cc.pix_fmt(), cc.width(), cc.height())
+            };
 
             // Allocate AVFrame
             let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
@@ -380,7 +390,13 @@ impl VideoEncoderInner {
             })?;
 
             // Convert VideoFrame to AVFrame
-            self.convert_video_frame(frame, &mut av_frame, codec_ctx)?;
+            self.convert_video_frame(
+                frame,
+                &mut av_frame,
+                target_fmt,
+                target_width,
+                target_height,
+            )?;
 
             // Set frame properties.
             // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
@@ -392,7 +408,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .send_frame(av_frame.as_ptr())
+                .send_frame_ref(Some(&av_frame))
                 .map_err(|e| EncodeError::Ffmpeg {
                     code: e.code(),
                     message: format!(
@@ -420,15 +436,15 @@ impl VideoEncoderInner {
     pub(super) fn push_audio_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
         // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
         unsafe {
-            let codec_ctx = self
-                .audio_codec_ctx
-                .as_mut()
-                .ok_or_else(|| EncodeError::InvalidConfig {
-                    reason: "Audio codec not initialized".to_string(),
-                })?
-                .as_mut_ptr();
-
-            let frame_size = (*codec_ctx).frame_size;
+            let (frame_size, sample_fmt, sample_rate) = {
+                let cc =
+                    self.audio_codec_ctx
+                        .as_ref()
+                        .ok_or_else(|| EncodeError::InvalidConfig {
+                            reason: "Audio codec not initialized".to_string(),
+                        })?;
+                (cc.frame_size(), cc.sample_fmt(), cc.sample_rate())
+            };
 
             // Allocate and convert incoming frame.
             let mut av_frame = ff_sys::Frame::new().map_err(|_| EncodeError::Ffmpeg {
@@ -445,7 +461,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame(av_frame.as_ptr())
+                    .send_frame_ref(Some(&av_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -465,13 +481,9 @@ impl VideoEncoderInner {
 
             // Write converted samples into the FIFO, then let `av_frame` drop.
             {
-                let nb_samples = (*av_frame.as_ptr()).nb_samples;
-                ff_sys::swresample::audio_fifo::write(
-                    fifo,
-                    (*av_frame.as_ptr()).data.as_ptr() as *const *mut _,
-                    nb_samples,
-                )
-                .map_err(EncodeError::from_ffmpeg_error)?;
+                let nb_samples = av_frame.nb_samples();
+                ff_sys::swresample::audio_fifo::write_frame(fifo, &av_frame, nb_samples)
+                    .map_err(EncodeError::from_ffmpeg_error)?;
             }
             drop(av_frame);
 
@@ -481,19 +493,19 @@ impl VideoEncoderInner {
                     code: 0,
                     message: "Cannot allocate audio frame".to_string(),
                 })?;
-                // These audio scalar fields have no typed setter, so they are
-                // written through the frame pointer.
+                out_frame.set_nb_samples(frame_size);
+                out_frame.set_format(sample_fmt);
+                out_frame.set_sample_rate(sample_rate);
                 {
-                    let p = out_frame.as_mut_ptr();
-                    (*p).nb_samples = frame_size;
-                    (*p).format = (*codec_ctx).sample_fmt;
-                    (*p).sample_rate = (*codec_ctx).sample_rate;
+                    let cc = self.audio_codec_ctx.as_ref().ok_or_else(|| {
+                        EncodeError::InvalidConfig {
+                            reason: "Audio codec not initialized".to_string(),
+                        }
+                    })?;
+                    out_frame
+                        .set_ch_layout(cc.ch_layout())
+                        .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 }
-                swresample::channel_layout::copy(
-                    &raw mut (*out_frame.as_mut_ptr()).ch_layout,
-                    &raw const (*codec_ctx).ch_layout,
-                )
-                .map_err(EncodeError::from_ffmpeg_error)?;
 
                 out_frame.get_buffer(0).map_err(|e| EncodeError::Ffmpeg {
                     code: e.code(),
@@ -503,12 +515,8 @@ impl VideoEncoderInner {
                     ),
                 })?;
 
-                ff_sys::swresample::audio_fifo::read(
-                    fifo,
-                    (*out_frame.as_mut_ptr()).data.as_mut_ptr().cast(),
-                    frame_size,
-                )
-                .map_err(EncodeError::from_ffmpeg_error)?;
+                ff_sys::swresample::audio_fifo::read_frame(fifo, &mut out_frame, frame_size)
+                    .map_err(EncodeError::from_ffmpeg_error)?;
 
                 out_frame.set_pts(self.audio_sample_count as i64);
                 self.audio_codec_ctx
@@ -516,7 +524,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame(out_frame.as_ptr())
+                    .send_frame_ref(Some(&out_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -549,7 +557,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Video codec not initialized".to_string(),
                     })?
-                    .send_frame(ptr::null())
+                    .send_frame_ref(None)
                     .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_packets()?;
             }
@@ -560,33 +568,28 @@ impl VideoEncoderInner {
             if let Some(fifo) = self.audio_fifo
                 && self.audio_codec_ctx.is_some()
             {
-                let codec_ctx = self
-                    .audio_codec_ctx
-                    .as_mut()
-                    .ok_or_else(|| EncodeError::InvalidConfig {
-                        reason: "Audio codec not initialized".to_string(),
-                    })?
-                    .as_mut_ptr();
+                let (aud_sample_fmt, aud_sample_rate) = {
+                    let cc = self.audio_codec_ctx.as_ref().ok_or_else(|| {
+                        EncodeError::InvalidConfig {
+                            reason: "Audio codec not initialized".to_string(),
+                        }
+                    })?;
+                    (cc.sample_fmt(), cc.sample_rate())
+                };
                 let remaining = ff_sys::swresample::audio_fifo::size(fifo);
                 if remaining > 0
                     && let Ok(mut out_frame) = ff_sys::Frame::new()
                 {
-                    // These audio scalar fields have no typed setter, so they are
-                    // written through the frame pointer.
-                    {
-                        let p = out_frame.as_mut_ptr();
-                        (*p).nb_samples = remaining;
-                        (*p).format = (*codec_ctx).sample_fmt;
-                        (*p).sample_rate = (*codec_ctx).sample_rate;
+                    out_frame.set_nb_samples(remaining);
+                    out_frame.set_format(aud_sample_fmt);
+                    out_frame.set_sample_rate(aud_sample_rate);
+                    if let Some(cc) = self.audio_codec_ctx.as_ref() {
+                        let _ = out_frame.set_ch_layout(cc.ch_layout());
                     }
-                    let _ = swresample::channel_layout::copy(
-                        &raw mut (*out_frame.as_mut_ptr()).ch_layout,
-                        &raw const (*codec_ctx).ch_layout,
-                    );
                     if out_frame.get_buffer(0).is_ok() {
-                        let _ = ff_sys::swresample::audio_fifo::read(
+                        let _ = ff_sys::swresample::audio_fifo::read_frame(
                             fifo,
-                            (*out_frame.as_mut_ptr()).data.as_mut_ptr().cast(),
+                            &mut out_frame,
                             remaining,
                         );
                         out_frame.set_pts(self.audio_sample_count as i64);
@@ -596,7 +599,7 @@ impl VideoEncoderInner {
                             .ok_or_else(|| EncodeError::InvalidConfig {
                                 reason: "Audio codec not initialized".to_string(),
                             })?
-                            .send_frame(out_frame.as_ptr());
+                            .send_frame_ref(Some(&out_frame));
                         let _ = self.receive_audio_packets();
                         self.audio_sample_count += remaining as u64;
                     }
@@ -612,7 +615,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame(ptr::null())
+                    .send_frame_ref(None)
                     .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_audio_packets()?;
             }

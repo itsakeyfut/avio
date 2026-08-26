@@ -386,8 +386,7 @@ impl VideoEncoderInner {
             if plane_idx >= 3 || plane_data.is_empty() {
                 break;
             }
-            // SAFETY: `av_frame` is a valid get_buffer'd frame; `linesize` is a plain field.
-            let dst_stride = (*av_frame.as_ptr()).linesize[plane_idx] as usize;
+            let dst_stride = av_frame.linesize(plane_idx) as usize;
             let Some(dst_plane) = av_frame.video_plane_mut(plane_idx) else {
                 break;
             };
@@ -413,7 +412,7 @@ impl VideoEncoderInner {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Video codec not initialized".to_string(),
             })?
-            .send_frame(av_frame.as_ptr())
+            .send_frame_ref(Some(&av_frame))
             .map_err(|e| EncodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(

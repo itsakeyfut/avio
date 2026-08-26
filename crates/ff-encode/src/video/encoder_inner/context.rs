@@ -18,8 +18,7 @@ use super::options::audio_codec_to_id;
 use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
-    AudioCodec, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame, av_mallocz,
-    avformat_new_stream, ptr,
+    AudioCodec, EncodeError, VideoCodec, VideoEncoderInner, av_mallocz, avformat_new_stream, ptr,
 };
 
 impl VideoEncoderInner {
@@ -308,28 +307,21 @@ impl VideoEncoderInner {
              pix_fmt={actual_pix_fmt}"
         );
 
-        // Create stream
-        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
-        if stream.is_null() {
-            // The owned codec_ctx frees itself on return.
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot create stream".to_string(),
-            });
-        }
+        // Create stream. The owned codec_ctx frees itself if this returns.
+        let stream_idx = self
+            .format_ctx
+            .new_stream(Some(&selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        (*stream).time_base = codec_ctx.time_base();
+        self.format_ctx
+            .set_stream_time_base(stream_idx, codec_ctx.time_base());
 
-        // Copy codec parameters to stream
-        if !(*stream).codecpar.is_null() {
-            (*(*stream).codecpar).codec_id = codec_ctx.codec_id();
-            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-            (*(*stream).codecpar).width = codec_ctx.width();
-            (*(*stream).codecpar).height = codec_ctx.height();
-            (*(*stream).codecpar).format = codec_ctx.pix_fmt();
-        }
+        // Copy all codec parameters (including extradata) to the stream.
+        self.format_ctx
+            .apply_stream_params_from_context(stream_idx, &codec_ctx)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        self.video_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
+        self.video_stream_index = stream_idx as i32;
 
         // In two-pass mode the pass-1 context is stored separately; the real
         // (pass-2) video_codec_ctx is initialised later in run_pass2().
@@ -423,17 +415,14 @@ impl VideoEncoderInner {
             .open(selected_codec, ptr::null_mut())
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // Create stream
-        let stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), codec_ptr);
-        if stream.is_null() {
-            // The owned codec_ctx frees itself on return.
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot create stream".to_string(),
-            });
-        }
+        // Create stream. The owned codec_ctx frees itself if this returns.
+        let stream_idx = self
+            .format_ctx
+            .new_stream(Some(&selected_codec))
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        (*stream).time_base = codec_ctx.time_base();
+        self.format_ctx
+            .set_stream_time_base(stream_idx, codec_ctx.time_base());
 
         // Copy all codec parameters to the stream — including extradata (e.g. AAC
         // AudioSpecificConfig) that is only available after avcodec_open2.
@@ -441,18 +430,16 @@ impl VideoEncoderInner {
         // ensures extradata, frame_size, channel layout, and codec_tag are all
         // propagated correctly so container muxers and hardware decoders can
         // identify and decode the stream.
-        if !(*stream).codecpar.is_null() {
-            codec_ctx
-                .parameters_from_context((*stream).codecpar)
-                .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
-        }
+        self.format_ctx
+            .apply_stream_params_from_context(stream_idx, &codec_ctx)
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Read the FIFO parameters before moving the owned context into `self`.
         let frame_size = codec_ctx.frame_size();
         let fifo_sample_fmt = codec_ctx.sample_fmt();
         let fifo_nb_channels = codec_ctx.channels();
 
-        self.audio_stream_index = (self.format_ctx.nb_streams() - 1) as i32;
+        self.audio_stream_index = stream_idx as i32;
         self.audio_codec_ctx = Some(codec_ctx);
 
         // Allocate sample FIFO for codecs that require a fixed frame_size (AAC, FLAC, ALAC …).
@@ -624,10 +611,11 @@ impl VideoEncoderInner {
             return;
         }
 
-        // SAFETY: source_stream_index < nb_streams; streams is a valid array.
-        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
+        let Some(in_stream) = src_ctx.stream(source_stream_index) else {
+            return;
+        };
 
-        if (*(*in_stream).codecpar).codec_type != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
+        if in_stream.codecpar().codec_type() != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
             log::warn!(
                 "subtitle_passthrough: stream at index {source_stream_index} \
                  is not a subtitle stream"
@@ -637,25 +625,24 @@ impl VideoEncoderInner {
 
         // Record the output stream index before adding the new stream.
         let out_stream_index = self.format_ctx.nb_streams() as i32;
-        // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
-        let out_stream = avformat_new_stream(self.format_ctx.as_mut_ptr(), std::ptr::null());
-        if out_stream.is_null() {
+        // A null codec means the muxer selects a default for the copied stream.
+        let Ok(new_idx) = self.format_ctx.new_stream(None) else {
             log::warn!("subtitle_passthrough: avformat_new_stream failed");
             return;
-        }
+        };
 
-        // SAFETY: out_stream and in_stream->codecpar are valid non-null pointers.
-        let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
-        if ret < 0 {
+        // Copy the source codec parameters into the new stream (also clears
+        // codec_tag so the muxer picks the container's value).
+        if let Err(e) = self
+            .format_ctx
+            .copy_stream_params(new_idx, in_stream.codecpar())
+        {
             log::warn!(
                 "subtitle_passthrough: avcodec_parameters_copy failed error={}",
-                ff_sys::av_error_string(ret)
+                ff_sys::av_error_string(e.code())
             );
             return;
         }
-
-        // Reset codec_tag so the muxer can pick the appropriate value for the container.
-        (*(*out_stream).codecpar).codec_tag = 0;
 
         self.subtitle_passthrough = Some((
             source_path.to_string(),
@@ -710,15 +697,13 @@ impl VideoEncoderInner {
             return Ok(());
         }
 
-        // SAFETY: source_stream_index was validated in init_subtitle_passthrough.
-        let in_stream = *(*src_ctx.as_ptr()).streams.add(source_stream_index);
-        let in_time_base = (*in_stream).time_base;
+        // source_stream_index was validated in init_subtitle_passthrough.
+        let Some(in_time_base) = src_ctx.stream(source_stream_index).map(|s| s.time_base()) else {
+            return Ok(());
+        };
 
-        // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
-        let out_stream = *(*self.format_ctx.as_mut_ptr())
-            .streams
-            .add(out_stream_index as usize);
-        let out_time_base = (*out_stream).time_base;
+        // out_stream_index was set by new_stream when the output stream was added.
+        let out_time_base = self.format_ctx.stream_time_base(out_stream_index as usize);
 
         let Ok(mut pkt) = ff_sys::Packet::new() else {
             return Err(EncodeError::Ffmpeg {
@@ -741,34 +726,28 @@ impl VideoEncoderInner {
                 Ok(()) => {}
             }
 
-            // This is a demux-input packet; its fields have no typed accessor and
-            // are read/written through the packet pointer.
-            let p = pkt.as_mut_ptr();
-
             // Skip packets from other streams.
-            if (*p).stream_index != source_stream_index as i32 {
+            if pkt.stream_index() != source_stream_index as i32 {
                 pkt.unref();
                 continue;
             }
 
             // Rescale timestamps from the source stream's time base to the output stream's.
-            // SAFETY: pkt is valid; time bases are plain value types.
-            ff_sys::av_packet_rescale_ts(p, in_time_base, out_time_base);
-            (*p).stream_index = out_stream_index;
+            pkt.rescale_ts(in_time_base, out_time_base);
+            pkt.set_stream_index(out_stream_index);
 
             // SRT/subtitle packets typically carry only PTS (DTS is AV_NOPTS_VALUE).
             // The matroska muxer requires a valid DTS for av_interleaved_write_frame;
             // mirror PTS → DTS when DTS is absent so packets are not silently dropped.
-            if (*p).dts == i64::MIN {
-                (*p).dts = (*p).pts;
+            if pkt.dts() == i64::MIN {
+                pkt.set_dts(pkt.pts());
             }
 
-            let write_ret = av_interleaved_write_frame(self.format_ctx.as_mut_ptr(), p);
-            if write_ret < 0 {
+            if let Err(e) = self.format_ctx.write_interleaved(&mut pkt) {
                 log::warn!(
                     "subtitle_passthrough: av_interleaved_write_frame failed \
                      error={}",
-                    ff_sys::av_error_string(write_ret)
+                    ff_sys::av_error_string(e.code())
                 );
             }
             pkt.unref();
