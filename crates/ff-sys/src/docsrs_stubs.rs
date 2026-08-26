@@ -1621,6 +1621,29 @@ impl OutputFormatContext {
     pub fn write_interleaved(&mut self, _pkt: &mut Packet) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_metadata(&mut self, _key: &str, _value: &str) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn add_attachment_stream(
+        &mut self,
+        _data: &[u8],
+        _mime_type: &str,
+        _filename: &str,
+    ) -> Result<usize, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_chapters(&mut self, _chapters: &[ChapterSpec<'_>]) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
 }
 
 impl Drop for OutputFormatContext {
@@ -1629,6 +1652,14 @@ impl Drop for OutputFormatContext {
 
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for OutputFormatContext {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterSpec<'a> {
+    pub id: i64,
+    pub start_us: i64,
+    pub end_us: i64,
+    pub title: Option<&'a str>,
+}
 
 // ── Borrowed stream / params stubs (mirror crate::format_context) ─────────────
 
@@ -1919,6 +1950,14 @@ impl Packet {
     pub fn set_duration(&mut self, _duration: i64) {}
 
     pub fn rescale_ts(&mut self, _src_tb: AVRational, _dst_tb: AVRational) {}
+
+    pub fn new_side_data(
+        &mut self,
+        _kind: AVPacketSideDataType,
+        _size: usize,
+    ) -> Option<&mut [u8]> {
+        None
+    }
 
     pub fn unref(&mut self) {}
 

@@ -28,19 +28,18 @@ pub(super) use two_pass::TwoPassFrame;
 use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AV_TIME_BASE, AVAudioFifo, AVChannelLayout, AVChapter, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
-    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1,
-    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
-    AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3,
-    AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE,
-    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
-    AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
-    AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
-    AVPacket, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVAudioFifo, AVChannelLayout, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
+    AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD,
+    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
+    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
+    AVCodecID_AV_CODEC_ID_VP9, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
+    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, av_mallocz, av_packet_new_side_data,
-    avcodec, avformat_new_stream, swresample,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, avcodec, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -262,10 +261,9 @@ impl VideoEncoderInner {
                     })?;
                 }
 
-                let fmt = encoder.format_ctx.as_mut_ptr();
-                Self::apply_movflags(fmt, config.container);
-                Self::apply_metadata(fmt, &config.metadata);
-                Self::apply_chapters(fmt, &config.chapters);
+                Self::apply_movflags(&mut encoder.format_ctx, config.container);
+                Self::apply_metadata(&mut encoder.format_ctx, &config.metadata);
+                Self::apply_chapters(&mut encoder.format_ctx, &config.chapters);
                 encoder
                     .format_ctx
                     .write_header()

@@ -128,10 +128,9 @@ impl VideoEncoderInner {
             .open_io(&output_path)
             .map_err(|_| EncodeError::CannotCreateFile { path: output_path })?;
 
-        let fmt = self.format_ctx.as_mut_ptr();
-        Self::apply_movflags(fmt, config.container);
-        Self::apply_metadata(fmt, &config.metadata);
-        Self::apply_chapters(fmt, &config.chapters);
+        Self::apply_movflags(&mut self.format_ctx, config.container);
+        Self::apply_metadata(&mut self.format_ctx, &config.metadata);
+        Self::apply_chapters(&mut self.format_ctx, &config.chapters);
         self.format_ctx
             .write_header()
             .map_err(|e| EncodeError::Ffmpeg {
