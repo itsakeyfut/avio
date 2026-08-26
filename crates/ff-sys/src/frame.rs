@@ -284,6 +284,64 @@ impl Frame {
         unsafe { (*self.ptr.as_ptr()).linesize[i] }
     }
 
+    /// Copies `rows` rows of `row_bytes` bytes each from video plane `i` into
+    /// `dst`, placing consecutive source rows `dst_stride` bytes apart in `dst`.
+    ///
+    /// FFmpeg's signed `linesize` is honored: a **negative** stride (bottom-up
+    /// frames, e.g. some hardware decoders) is copied top-down correctly, because
+    /// the source of row `y` is `data[i] + y * linesize[i]` for either scan
+    /// direction. Casting the stride to `usize` first would both wrap a negative
+    /// value into a huge stride (out-of-bounds read) and reverse the row order
+    /// (a vertical flip); the signed offset here avoids both (issue #1174).
+    ///
+    /// Returns `None` when `i` is out of range or `data[i]` is null; otherwise
+    /// performs the copy and returns `Some(())`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure plane `i` actually holds at least `rows` rows of
+    /// `row_bytes` readable bytes at stride `linesize(i)` (i.e. `rows` /
+    /// `row_bytes` match the frame's real format and dimensions), and that `dst`
+    /// is large enough for `dst_stride * (rows - 1) + row_bytes` bytes. Wrong
+    /// geometry reads or writes out of bounds.
+    pub unsafe fn copy_plane_rows(
+        &self,
+        i: usize,
+        dst: &mut [u8],
+        dst_stride: usize,
+        rows: usize,
+        row_bytes: usize,
+    ) -> Option<()> {
+        if i >= AV_NUM_DATA_POINTERS as usize {
+            return None;
+        }
+        // SAFETY: `self.ptr` is a valid owned frame; `data` / `linesize` are plain
+        //         fixed-size array fields read at the bounds-checked index `i`.
+        let (src, linesize) = unsafe {
+            let p = self.ptr.as_ptr();
+            ((*p).data[i], (*p).linesize[i])
+        };
+        if src.is_null() {
+            return None;
+        }
+        for y in 0..rows {
+            // SAFETY: the signed offset `y * linesize` yields the start of row `y`
+            //         for both scan directions (issue #1174); the caller guarantees
+            //         row `y` holds `row_bytes` readable bytes and `dst` has room for
+            //         `dst_stride * y + row_bytes`, so both ranges stay in bounds and
+            //         do not overlap.
+            unsafe {
+                let src_row = src.offset(y as isize * linesize as isize);
+                std::ptr::copy_nonoverlapping(
+                    src_row,
+                    dst[y * dst_stride..].as_mut_ptr(),
+                    row_bytes,
+                );
+            }
+        }
+        Some(())
+    }
+
     /// Returns an immutable view of audio plane `i`, sized to the samples it
     /// holds (one plane per channel for planar formats, a single interleaved
     /// plane 0 for packed formats).
@@ -699,6 +757,83 @@ mod tests {
         );
         // Out-of-range plane index is a bounds-checked 0, not a panic / OOB read.
         assert_eq!(frame.linesize(99), 0);
+    }
+
+    #[test]
+    fn copy_plane_rows_should_copy_packed_rows_honoring_source_stride() {
+        // A get_buffer'd RGB24 plane's stride (linesize[0]) is padded up for
+        // alignment, so it is >= the packed row width. copy_plane_rows must read
+        // each row at the source stride yet write them back-to-back at dst_stride.
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        frame.set_format(crate::AVPixelFormat_AV_PIX_FMT_RGB24);
+        frame.set_width(4);
+        frame.set_height(3);
+        frame.get_buffer(0).expect("buffer alloc should succeed");
+
+        let stride = frame.linesize(0) as usize;
+        let row_bytes = 4 * 3; // width * 3 bytes per pixel
+        let rows = 3;
+        {
+            let plane = frame.video_plane_mut(0).expect("plane 0 exists");
+            for y in 0..rows {
+                for x in 0..row_bytes {
+                    plane[y * stride + x] = (y * 16 + x) as u8;
+                }
+            }
+        }
+
+        let mut dst = vec![0u8; row_bytes * rows];
+        // SAFETY: `rows` / `row_bytes` match the get_buffer'd RGB24 frame and `dst`
+        //         holds `row_bytes * rows` bytes.
+        unsafe {
+            frame
+                .copy_plane_rows(0, &mut dst, row_bytes, rows, row_bytes)
+                .expect("copy should succeed for a valid plane");
+        }
+        for y in 0..rows {
+            for x in 0..row_bytes {
+                assert_eq!(dst[y * row_bytes + x], (y * 16 + x) as u8);
+            }
+        }
+    }
+
+    #[test]
+    fn copy_plane_rows_should_copy_top_down_on_negative_linesize() {
+        // RK-008 / #1174: FFmpeg signals bottom-up scan order with a negative
+        // linesize, with `data` pointing at the top row (the highest address).
+        // copy_plane_rows must walk rows via the signed stride so the copy stays
+        // top-down instead of vertically flipping.
+        // 3 rows of 2 bytes laid out bottom-up: memory is [40,41, 30,31, 20,21],
+        // so the top row is the last pair.
+        let mut mem: [u8; 6] = [40, 41, 30, 31, 20, 21];
+        let mut frame = Frame::new().expect("frame allocation should succeed");
+        // SAFETY: point plane 0 at the top row (highest address) with a negative
+        //         stride. The frame has no owned buffer (`buf[]` is null), so Drop
+        //         frees only the frame struct and never touches `mem`.
+        unsafe {
+            let p = frame.as_mut_ptr();
+            (*p).data[0] = mem.as_mut_ptr().add(4); // top row = [20, 21]
+            (*p).linesize[0] = -2;
+        }
+
+        let mut dst = [0u8; 6];
+        // SAFETY: 3 rows of 2 bytes each live in `mem`; `dst` holds 6 bytes.
+        unsafe {
+            frame
+                .copy_plane_rows(0, &mut dst, 2, 3, 2)
+                .expect("copy should succeed");
+        }
+        // Correct top-down order is [20,21, 30,31, 40,41], not a flipped copy.
+        assert_eq!(dst, [20, 21, 30, 31, 40, 41]);
+    }
+
+    #[test]
+    fn copy_plane_rows_should_return_none_for_out_of_range_plane() {
+        let frame = Frame::new().expect("frame allocation should succeed");
+        let mut dst = [0u8; 4];
+        // SAFETY: index 99 is out of range, so no plane is read; `dst` is unused.
+        let outcome = unsafe { frame.copy_plane_rows(99, &mut dst, 2, 2, 2) };
+        assert!(outcome.is_none(), "out-of-range plane index yields None");
     }
 
     #[test]

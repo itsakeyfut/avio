@@ -37,7 +37,7 @@ use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
-    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace, AVFrame,
+    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext,
     Packet,
 };
