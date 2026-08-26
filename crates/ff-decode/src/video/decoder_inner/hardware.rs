@@ -1,7 +1,6 @@
-use super::{
-    AVBufferRef, AVCodecContext, AVHWDeviceType, AVPixelFormat, DecodeError, HardwareAccel,
-    VideoDecoderInner, ptr,
-};
+use ff_sys::{CodecContext, HwDeviceContext};
+
+use super::{AVHWDeviceType, AVPixelFormat, DecodeError, HardwareAccel, VideoDecoderInner};
 
 impl VideoDecoderInner {
     /// Maps our `HardwareAccel` enum to the corresponding FFmpeg `AVHWDeviceType`.
@@ -42,25 +41,26 @@ impl VideoDecoderInner {
     ///
     /// # Returns
     ///
-    /// Returns `Ok((hw_device_ctx, active_accel))` if hardware acceleration was initialized,
-    /// or `Ok((None, HardwareAccel::None))` if software decoding should be used.
+    /// Returns `Ok((Some(device), active_accel))` if hardware acceleration was
+    /// initialized (the owned [`HwDeviceContext`] must be kept alive as long as
+    /// the codec context uses it), or `Ok((None, HardwareAccel::None))` if
+    /// software decoding should be used.
     ///
     /// # Errors
     ///
     /// Returns an error only if a specific hardware accelerator was requested but failed to initialize.
-    pub(super) unsafe fn init_hardware_accel(
-        codec_ctx: *mut AVCodecContext,
+    pub(super) fn init_hardware_accel(
+        codec_ctx: &mut CodecContext,
         accel: HardwareAccel,
-    ) -> Result<(Option<*mut AVBufferRef>, HardwareAccel), DecodeError> {
+    ) -> Result<(Option<HwDeviceContext>, HardwareAccel), DecodeError> {
         match accel {
             HardwareAccel::Auto => {
                 // Try hardware accelerators in priority order
                 for &hw_type in Self::hw_accel_auto_priority() {
-                    // SAFETY: Caller ensures codec_ctx is valid and not yet configured with hardware
-                    match unsafe { Self::try_init_hw_device(codec_ctx, hw_type) } {
-                        Ok((Some(ctx), active)) => {
+                    match Self::try_init_hw_device(codec_ctx, hw_type) {
+                        Ok((Some(device), active)) => {
                             log::info!("hwaccel selected backend={}", active.name());
-                            return Ok((Some(ctx), active));
+                            return Ok((Some(device), active));
                         }
                         _ => {
                             log::debug!(
@@ -79,61 +79,33 @@ impl VideoDecoderInner {
             }
             _ => {
                 // Specific hardware accelerator requested
-                // SAFETY: Caller ensures codec_ctx is valid and not yet configured with hardware
-                unsafe { Self::try_init_hw_device(codec_ctx, accel) }
+                Self::try_init_hw_device(codec_ctx, accel)
             }
         }
     }
 
-    /// Tries to initialize a specific hardware device.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `codec_ctx` is valid and not yet configured with a hardware device.
-    unsafe fn try_init_hw_device(
-        codec_ctx: *mut AVCodecContext,
+    /// Tries to initialize a specific hardware device and attach it to `codec_ctx`.
+    fn try_init_hw_device(
+        codec_ctx: &mut CodecContext,
         accel: HardwareAccel,
-    ) -> Result<(Option<*mut AVBufferRef>, HardwareAccel), DecodeError> {
+    ) -> Result<(Option<HwDeviceContext>, HardwareAccel), DecodeError> {
         // Get the FFmpeg device type
         let Some(device_type) = Self::hw_accel_to_device_type(accel) else {
             return Ok((None, HardwareAccel::None));
         };
 
-        // Create hardware device context
-        // SAFETY: FFmpeg is initialized, device_type is valid
-        let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
-        let ret = unsafe {
-            ff_sys::av_hwdevice_ctx_create(
-                ptr::addr_of_mut!(hw_device_ctx),
-                device_type,
-                ptr::null(),     // device: null for default device
-                ptr::null_mut(), // opts: null for default options
-                0,               // flags: currently unused by FFmpeg
-            )
-        };
+        // Create the hardware device context (owned; freed on drop). Failure here
+        // means the backend is unavailable on this system.
+        let device = HwDeviceContext::new(device_type)
+            .map_err(|_| DecodeError::HwAccelUnavailable { accel })?;
 
-        if ret < 0 {
-            // Hardware device creation failed
-            return Err(DecodeError::HwAccelUnavailable { accel });
-        }
+        // Attach it to the codec context, which takes its own reference. `device`
+        // keeps ours for the caller to hold alongside the decoder.
+        codec_ctx
+            .set_hw_device_ctx(&device)
+            .map_err(|_| DecodeError::HwAccelUnavailable { accel })?;
 
-        // Assign hardware device context to codec context
-        // We transfer ownership of the reference to codec_ctx
-        // SAFETY: codec_ctx and hw_device_ctx are valid
-        unsafe {
-            (*codec_ctx).hw_device_ctx = hw_device_ctx;
-        }
-
-        // We keep our own reference for cleanup in Drop
-        // SAFETY: hw_device_ctx is valid
-        let our_ref = unsafe { ff_sys::av_buffer_ref(hw_device_ctx) };
-        if our_ref.is_null() {
-            // Failed to create our reference
-            // codec_ctx still owns the original, so we don't need to clean it up here
-            return Err(DecodeError::HwAccelUnavailable { accel });
-        }
-
-        Ok((Some(our_ref), accel))
+        Ok((Some(device), accel))
     }
 
     /// Returns the currently active hardware acceleration mode.
@@ -164,11 +136,7 @@ impl VideoDecoderInner {
     ///
     /// If `self.frame` is a hardware frame, creates a new software frame
     /// and transfers the data from GPU to CPU memory.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `self.frame` contains a valid decoded frame.
-    pub(super) unsafe fn transfer_hardware_frame_if_needed(&mut self) -> Result<(), DecodeError> {
+    pub(super) fn transfer_hardware_frame_if_needed(&mut self) -> Result<(), DecodeError> {
         let frame_format = self.frame.format();
 
         if !Self::is_hardware_format(frame_format) {
@@ -185,28 +153,16 @@ impl VideoDecoderInner {
             ),
         })?;
 
-        // Transfer data from the hardware frame to the software frame. This FFI
-        // call takes raw `AVFrame` pointers; a safe hw-frame-transfer wrapper is
-        // retained for the ff-sys RAII follow-up (the hw-accel API surface).
-        // SAFETY: self.frame and sw_frame are valid owned frames.
-        let ret = unsafe {
-            ff_sys::av_hwframe_transfer_data(
-                sw_frame.as_mut_ptr(),
-                self.frame.as_ptr(),
-                0, // flags: currently unused
-            )
-        };
-
-        if ret < 0 {
-            // Transfer failed; sw_frame frees itself on return.
-            return Err(DecodeError::Ffmpeg {
-                code: ret,
+        // Transfer GPU-side data from the hardware frame into the software frame.
+        sw_frame
+            .hwframe_transfer_data(&self.frame, 0)
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: e.code(),
                 message: format!(
                     "Failed to transfer hardware frame to CPU memory: {}",
-                    ff_sys::av_error_string(ret)
+                    ff_sys::av_error_string(e.code())
                 ),
-            });
-        }
+            })?;
 
         // Copy metadata (pts, duration, etc.) from hardware frame to software frame
         sw_frame.set_pts(self.frame.pts());
