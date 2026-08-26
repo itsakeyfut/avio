@@ -146,50 +146,43 @@ unsafe fn create_channel_layout(channels: u32) -> ff_sys::AVChannelLayout {
 
 // ── Frame-to-AudioFrame conversion ───────────────────────────────────────────
 
-/// Extracts raw sample bytes from an `AVFrame` into per-channel plane buffers.
-///
-/// # Safety
-///
-/// Caller must ensure `format` matches the actual frame format.
-pub(crate) unsafe fn extract_planes(
+/// Extracts raw sample bytes from a decoded audio [`Frame`] into per-channel
+/// plane buffers, read through the frame's safe [`Frame::audio_plane`] accessor.
+pub(crate) fn extract_planes(
     frame: &Frame,
     nb_samples: usize,
     channels: u32,
     format: SampleFormat,
 ) -> Result<Vec<Vec<u8>>, DecodeError> {
-    // Plane data (`data[i]`) has no safe accessor by design, so it is read through
-    // the frame's raw pointer here; every other field goes through an accessor.
-    let frame_ptr = frame.as_ptr();
-    // SAFETY: `frame` is a valid owned frame and `format` matches its actual
-    //         sample format, so the plane pointers are valid for `plane_size` bytes.
-    unsafe {
-        let mut planes = Vec::new();
-        let bytes_per_sample = format.bytes_per_sample();
+    let missing_plane = |plane: usize| DecodeError::Ffmpeg {
+        code: 0,
+        message: format!("decoded audio frame plane {plane} is missing or unusable"),
+    };
 
-        if format.is_planar() {
-            // Planar: one plane per channel
-            for ch in 0..channels as usize {
-                let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, 1)?;
-                let mut plane_data = vec![0u8; plane_size];
+    let mut planes = Vec::new();
+    let bytes_per_sample = format.bytes_per_sample();
 
-                let src_ptr = (*frame_ptr).data[ch];
-                std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
-
-                planes.push(plane_data);
-            }
-        } else {
-            // Packed: single plane with interleaved samples
-            let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, channels as usize)?;
-            let mut plane_data = vec![0u8; plane_size];
-
-            let src_ptr = (*frame_ptr).data[0];
-            std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
-
-            planes.push(plane_data);
+    if format.is_planar() {
+        // Planar: one plane per channel.
+        for ch in 0..channels as usize {
+            let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, 1)?;
+            let plane = frame
+                .audio_plane(ch)
+                .and_then(|p| p.get(..plane_size))
+                .ok_or_else(|| missing_plane(ch))?;
+            planes.push(plane.to_vec());
         }
-
-        Ok(planes)
+    } else {
+        // Packed: a single interleaved plane 0.
+        let plane_size = checked_buffer_size(nb_samples, bytes_per_sample, channels as usize)?;
+        let plane = frame
+            .audio_plane(0)
+            .and_then(|p| p.get(..plane_size))
+            .ok_or_else(|| missing_plane(0))?;
+        planes.push(plane.to_vec());
     }
+
+    Ok(planes)
 }
 
 /// Converts an `AVFrame` to an `AudioFrame` without any resampling or format
@@ -226,9 +219,8 @@ pub(crate) unsafe fn av_frame_to_audio_frame(
         Timestamp::invalid()
     };
 
-    // Convert frame to planes
-    // SAFETY: `format` was derived from `frame.format()`, so it matches the frame.
-    let planes = unsafe { extract_planes(frame, nb_samples, channels, format)? };
+    // Convert frame to planes.
+    let planes = extract_planes(frame, nb_samples, channels, format)?;
 
     AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(|e| {
         DecodeError::Ffmpeg {

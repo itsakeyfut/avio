@@ -1856,6 +1856,20 @@ impl Frame {
         0
     }
 
+    /// # Safety
+    ///
+    /// Docs.rs stub; never called.
+    pub unsafe fn copy_plane_rows(
+        &self,
+        _i: usize,
+        _dst: &mut [u8],
+        _dst_stride: usize,
+        _rows: usize,
+        _row_bytes: usize,
+    ) -> Option<()> {
+        None
+    }
+
     #[must_use]
     pub fn audio_plane(&self, _i: usize) -> Option<&[u8]> {
         None

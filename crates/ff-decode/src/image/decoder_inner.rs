@@ -20,18 +20,15 @@
 
 use std::ffi::CStr;
 use std::path::Path;
-use std::ptr;
 
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, PooledBuffer, VideoFrame};
 use ff_sys::{
-    AVCodecID, AVFrame, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext,
-    Packet,
+    AVCodecID, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat, Frame, InputFormatContext, Packet,
 };
 
 use crate::error::DecodeError;
 use crate::shared::guards_inner::open_input_ctx;
-use crate::shared::plane_inner::plane_row_ptr;
 
 // ── ImageDecoderInner ─────────────────────────────────────────────────────────
 
@@ -298,9 +295,9 @@ impl ImageDecoderInner {
 
     /// Converts a decoded owned [`Frame`] to a [`VideoFrame`].
     ///
-    /// Scalar fields are read through accessors; only the plane data copy in
-    /// [`extract_planes_and_strides`](Self::extract_planes_and_strides) touches the
-    /// raw `AVFrame` pointer (no safe plane accessor by design).
+    /// Scalar fields are read through accessors; the plane data copy in
+    /// [`extract_planes_and_strides`](Self::extract_planes_and_strides) reads each
+    /// plane through [`Frame::copy_plane_rows`].
     ///
     /// # Safety
     ///
@@ -329,7 +326,7 @@ impl ImageDecoderInner {
 
         // SAFETY: `format` is derived from `frame.format()`, so it matches the frame.
         let (planes, strides) =
-            unsafe { Self::extract_planes_and_strides(frame.as_ptr(), width, height, format)? };
+            unsafe { Self::extract_planes_and_strides(frame, width, height, format)? };
 
         // Images are always key frames.
         VideoFrame::new(planes, strides, width, height, format, timestamp, true).map_err(|e| {
@@ -340,202 +337,135 @@ impl ImageDecoderInner {
         })
     }
 
-    /// Extracts pixel data from an `AVFrame` into [`PooledBuffer`] planes.
+    /// Extracts pixel data from a decoded [`Frame`] into [`PooledBuffer`] planes.
     ///
     /// Copies data row-by-row to strip any FFmpeg padding from line strides.
     ///
     /// # Safety
     ///
-    /// `frame` must be a valid, fully decoded `AVFrame` with `format` matching
-    /// the actual pixel format of the frame.
+    /// `frame` must be a valid, fully decoded frame with `format` matching the
+    /// actual pixel format of the frame.
     unsafe fn extract_planes_and_strides(
-        frame: *const AVFrame,
+        frame: &Frame,
         width: u32,
         height: u32,
         format: PixelFormat,
     ) -> Result<(Vec<PooledBuffer>, Vec<usize>), DecodeError> {
-        // SAFETY: Caller ensures frame is valid and format matches.
-        unsafe {
-            let w = width as usize;
-            let h = height as usize;
-            let mut planes: Vec<PooledBuffer> = Vec::new();
-            let mut strides: Vec<usize> = Vec::new();
+        let w = width as usize;
+        let h = height as usize;
+        let mut planes: Vec<PooledBuffer> = Vec::new();
+        let mut strides: Vec<usize> = Vec::new();
 
-            match format {
-                PixelFormat::Rgba | PixelFormat::Bgra => {
-                    let bytes_per_pixel = 4_usize;
-                    let row_w = w * bytes_per_pixel;
-                    let mut buf = vec![0u8; row_w * h];
-                    let src = (*frame).data[0];
-                    if src.is_null() {
-                        return Err(DecodeError::Ffmpeg {
-                            code: 0,
-                            message: "Null plane data for packed format".to_string(),
-                        });
-                    }
-                    let src_linesize = (*frame).linesize[0];
-                    for row in 0..h {
-                        ptr::copy_nonoverlapping(
-                            plane_row_ptr(src, src_linesize, row),
-                            buf[row * row_w..].as_mut_ptr(),
-                            row_w,
-                        );
-                    }
-                    planes.push(PooledBuffer::standalone(buf));
-                    strides.push(row_w);
-                }
-                PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
-                    let bytes_per_pixel = 3_usize;
-                    let row_w = w * bytes_per_pixel;
-                    let mut buf = vec![0u8; row_w * h];
-                    let src = (*frame).data[0];
-                    if src.is_null() {
-                        return Err(DecodeError::Ffmpeg {
-                            code: 0,
-                            message: "Null plane data for packed format".to_string(),
-                        });
-                    }
-                    let src_linesize = (*frame).linesize[0];
-                    for row in 0..h {
-                        ptr::copy_nonoverlapping(
-                            plane_row_ptr(src, src_linesize, row),
-                            buf[row * row_w..].as_mut_ptr(),
-                            row_w,
-                        );
-                    }
-                    planes.push(PooledBuffer::standalone(buf));
-                    strides.push(row_w);
-                }
-                PixelFormat::Gray8 => {
-                    let mut buf = vec![0u8; w * h];
-                    let src = (*frame).data[0];
-                    if src.is_null() {
-                        return Err(DecodeError::Ffmpeg {
-                            code: 0,
-                            message: "Null plane data for Gray8".to_string(),
-                        });
-                    }
-                    let src_linesize = (*frame).linesize[0];
-                    for row in 0..h {
-                        ptr::copy_nonoverlapping(
-                            plane_row_ptr(src, src_linesize, row),
-                            buf[row * w..].as_mut_ptr(),
-                            w,
-                        );
-                    }
-                    planes.push(PooledBuffer::standalone(buf));
-                    strides.push(w);
-                }
-                PixelFormat::Yuv420p | PixelFormat::Nv12 | PixelFormat::Nv21 => {
-                    // Y plane (full size).
-                    let mut y_buf = vec![0u8; w * h];
-                    let y_src = (*frame).data[0];
-                    if y_src.is_null() {
-                        return Err(DecodeError::Ffmpeg {
-                            code: 0,
-                            message: "Null Y plane".to_string(),
-                        });
-                    }
-                    let y_src_linesize = (*frame).linesize[0];
-                    for row in 0..h {
-                        ptr::copy_nonoverlapping(
-                            plane_row_ptr(y_src, y_src_linesize, row),
-                            y_buf[row * w..].as_mut_ptr(),
-                            w,
-                        );
-                    }
-                    planes.push(PooledBuffer::standalone(y_buf));
-                    strides.push(w);
+        // Copies plane `i` (`rows` x `row_bytes`, packed into `buf` at `row_bytes`
+        // stride) and returns `true` when the plane was present. A `false` result
+        // (null / absent plane) leaves `buf` zero-filled — the caller decides
+        // whether that is an error (a required plane) or acceptable (a chroma
+        // plane).
+        // SAFETY: the caller (this `unsafe fn`) guarantees `format` and the
+        //         per-plane geometry match the frame, so `copy_plane_rows` reads
+        //         within each plane and writes within `buf`.
+        let copy_plane = |i: usize, buf: &mut [u8], rows: usize, row_bytes: usize| unsafe {
+            frame
+                .copy_plane_rows(i, buf, row_bytes, rows, row_bytes)
+                .is_some()
+        };
 
-                    if matches!(format, PixelFormat::Nv12 | PixelFormat::Nv21) {
-                        // Interleaved UV plane (half height).
-                        let uv_h = h / 2;
-                        let mut uv_buf = vec![0u8; w * uv_h];
-                        let uv_src = (*frame).data[1];
-                        if !uv_src.is_null() {
-                            let uv_src_linesize = (*frame).linesize[1];
-                            for row in 0..uv_h {
-                                ptr::copy_nonoverlapping(
-                                    plane_row_ptr(uv_src, uv_src_linesize, row),
-                                    uv_buf[row * w..].as_mut_ptr(),
-                                    w,
-                                );
-                            }
-                        }
-                        planes.push(PooledBuffer::standalone(uv_buf));
-                        strides.push(w);
-                    } else {
-                        // YUV 4:2:0 — separate U and V planes (half width, half height).
-                        let uv_w = w / 2;
-                        let uv_h = h / 2;
-                        for plane_idx in 1..=2usize {
-                            let mut uv_buf = vec![0u8; uv_w * uv_h];
-                            let uv_src = (*frame).data[plane_idx];
-                            if !uv_src.is_null() {
-                                let uv_src_linesize = (*frame).linesize[plane_idx];
-                                for row in 0..uv_h {
-                                    ptr::copy_nonoverlapping(
-                                        plane_row_ptr(uv_src, uv_src_linesize, row),
-                                        uv_buf[row * uv_w..].as_mut_ptr(),
-                                        uv_w,
-                                    );
-                                }
-                            }
-                            planes.push(PooledBuffer::standalone(uv_buf));
-                            strides.push(uv_w);
-                        }
-                    }
-                }
-                PixelFormat::Yuv422p => {
-                    // Y plane (full size), U and V planes (half width, full height).
-                    let uv_w = w / 2;
-                    let plane_dims = [(w, h), (uv_w, h), (uv_w, h)];
-                    for (plane_idx, (pw, ph)) in plane_dims.iter().enumerate() {
-                        let mut buf = vec![0u8; pw * ph];
-                        let src = (*frame).data[plane_idx];
-                        if !src.is_null() {
-                            let src_linesize = (*frame).linesize[plane_idx];
-                            for row in 0..*ph {
-                                ptr::copy_nonoverlapping(
-                                    plane_row_ptr(src, src_linesize, row),
-                                    buf[row * pw..].as_mut_ptr(),
-                                    *pw,
-                                );
-                            }
-                        }
-                        planes.push(PooledBuffer::standalone(buf));
-                        strides.push(*pw);
-                    }
-                }
-                PixelFormat::Yuv444p => {
-                    // All three planes are full size.
-                    for plane_idx in 0..3usize {
-                        let mut buf = vec![0u8; w * h];
-                        let src = (*frame).data[plane_idx];
-                        if !src.is_null() {
-                            let src_linesize = (*frame).linesize[plane_idx];
-                            for row in 0..h {
-                                ptr::copy_nonoverlapping(
-                                    plane_row_ptr(src, src_linesize, row),
-                                    buf[row * w..].as_mut_ptr(),
-                                    w,
-                                );
-                            }
-                        }
-                        planes.push(PooledBuffer::standalone(buf));
-                        strides.push(w);
-                    }
-                }
-                _ => {
+        match format {
+            PixelFormat::Rgba | PixelFormat::Bgra => {
+                let row_w = w * 4;
+                let mut buf = vec![0u8; row_w * h];
+                if !copy_plane(0, &mut buf, h, row_w) {
                     return Err(DecodeError::Ffmpeg {
                         code: 0,
-                        message: format!("Unsupported pixel format for image decoding: {format:?}"),
+                        message: "Null plane data for packed format".to_string(),
                     });
                 }
+                planes.push(PooledBuffer::standalone(buf));
+                strides.push(row_w);
             }
+            PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
+                let row_w = w * 3;
+                let mut buf = vec![0u8; row_w * h];
+                if !copy_plane(0, &mut buf, h, row_w) {
+                    return Err(DecodeError::Ffmpeg {
+                        code: 0,
+                        message: "Null plane data for packed format".to_string(),
+                    });
+                }
+                planes.push(PooledBuffer::standalone(buf));
+                strides.push(row_w);
+            }
+            PixelFormat::Gray8 => {
+                let mut buf = vec![0u8; w * h];
+                if !copy_plane(0, &mut buf, h, w) {
+                    return Err(DecodeError::Ffmpeg {
+                        code: 0,
+                        message: "Null plane data for Gray8".to_string(),
+                    });
+                }
+                planes.push(PooledBuffer::standalone(buf));
+                strides.push(w);
+            }
+            PixelFormat::Yuv420p | PixelFormat::Nv12 | PixelFormat::Nv21 => {
+                // Y plane (full size).
+                let mut y_buf = vec![0u8; w * h];
+                if !copy_plane(0, &mut y_buf, h, w) {
+                    return Err(DecodeError::Ffmpeg {
+                        code: 0,
+                        message: "Null Y plane".to_string(),
+                    });
+                }
+                planes.push(PooledBuffer::standalone(y_buf));
+                strides.push(w);
 
-            Ok((planes, strides))
+                if matches!(format, PixelFormat::Nv12 | PixelFormat::Nv21) {
+                    // Interleaved UV plane (half height); a null plane stays zeroed.
+                    let uv_h = h / 2;
+                    let mut uv_buf = vec![0u8; w * uv_h];
+                    copy_plane(1, &mut uv_buf, uv_h, w);
+                    planes.push(PooledBuffer::standalone(uv_buf));
+                    strides.push(w);
+                } else {
+                    // YUV 4:2:0 — separate U and V planes (half width, half height).
+                    let uv_w = w / 2;
+                    let uv_h = h / 2;
+                    for plane_idx in 1..=2usize {
+                        let mut uv_buf = vec![0u8; uv_w * uv_h];
+                        copy_plane(plane_idx, &mut uv_buf, uv_h, uv_w);
+                        planes.push(PooledBuffer::standalone(uv_buf));
+                        strides.push(uv_w);
+                    }
+                }
+            }
+            PixelFormat::Yuv422p => {
+                // Y plane (full size), U and V planes (half width, full height).
+                let uv_w = w / 2;
+                let plane_dims = [(w, h), (uv_w, h), (uv_w, h)];
+                for (plane_idx, (pw, ph)) in plane_dims.iter().enumerate() {
+                    let mut buf = vec![0u8; pw * ph];
+                    copy_plane(plane_idx, &mut buf, *ph, *pw);
+                    planes.push(PooledBuffer::standalone(buf));
+                    strides.push(*pw);
+                }
+            }
+            PixelFormat::Yuv444p => {
+                // All three planes are full size.
+                for plane_idx in 0..3usize {
+                    let mut buf = vec![0u8; w * h];
+                    copy_plane(plane_idx, &mut buf, h, w);
+                    planes.push(PooledBuffer::standalone(buf));
+                    strides.push(w);
+                }
+            }
+            _ => {
+                return Err(DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Unsupported pixel format for image decoding: {format:?}"),
+                });
+            }
         }
+
+        Ok((planes, strides))
     }
 }
 
