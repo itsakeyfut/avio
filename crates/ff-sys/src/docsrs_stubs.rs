@@ -1457,6 +1457,30 @@ impl InputFormatContext {
     }
 
     #[must_use]
+    pub fn iformat_long_name(&self) -> Option<String> {
+        None
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
+    #[must_use]
+    pub fn nb_chapters(&self) -> u32 {
+        0
+    }
+
+    #[must_use]
+    pub fn chapter(&self, _index: usize) -> Option<ChapterRef<'_>> {
+        None
+    }
+
+    pub fn chapters(&self) -> impl Iterator<Item = ChapterRef<'_>> + '_ {
+        std::iter::empty()
+    }
+
+    #[must_use]
     pub fn stream(&self, _index: usize) -> Option<StreamRef<'_>> {
         None
     }
@@ -1705,6 +1729,21 @@ impl<'a> StreamRef<'a> {
             }
         }
     }
+
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn disposition(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1757,6 +1796,49 @@ impl CodecParameters<'_> {
     #[must_use]
     pub fn ch_layout(&self) -> AVChannelLayout {
         AVChannelLayout::default()
+    }
+
+    #[must_use]
+    pub fn format(&self) -> c_int {
+        0
+    }
+
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterRef<'a> {
+    _ptr: std::ptr::NonNull<AVChapter>,
+    _marker: std::marker::PhantomData<&'a InputFormatContext>,
+}
+
+impl ChapterRef<'_> {
+    #[must_use]
+    pub fn id(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    #[must_use]
+    pub fn start(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn end(&self) -> i64 {
+        0
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
     }
 }
 

@@ -81,7 +81,7 @@ pub use constants::{AV_NOPTS_VALUE, AVFMT_NOFILE, AVFMT_TS_DISCONT, BUFFERSRC_FL
 pub use error::AvError;
 #[cfg(not(docsrs))]
 pub use format_context::{
-    ChapterSpec, CodecParameters, InputFormatContext, OutputFormatContext, StreamRef,
+    ChapterRef, ChapterSpec, CodecParameters, InputFormatContext, OutputFormatContext, StreamRef,
 };
 #[cfg(not(docsrs))]
 pub use frame::Frame;

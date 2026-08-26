@@ -189,8 +189,7 @@ pub(super) fn map_subtitle_codec(codec_id: ff_sys::AVCodecID) -> SubtitleCodec {
         ff_sys::AVCodecID_AV_CODEC_ID_HDMV_PGS_SUBTITLE => SubtitleCodec::Hdmv,
         ff_sys::AVCodecID_AV_CODEC_ID_WEBVTT => SubtitleCodec::Webvtt,
         _ => {
-            // SAFETY: avcodec_get_name is safe for any codec ID
-            let name = unsafe { super::video::extract_codec_name(codec_id) };
+            let name = super::video::extract_codec_name(codec_id);
             log::warn!("unknown subtitle codec codec_id={codec_id}");
             SubtitleCodec::Other(name)
         }

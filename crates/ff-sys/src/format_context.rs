@@ -16,6 +16,7 @@
 //! a transitional `as_mut_ptr` remains for the few sites not yet wrapped and is
 //! removed once the safe layer is sealed.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::c_int;
@@ -24,15 +25,61 @@ use std::ptr::NonNull;
 use std::time::Duration;
 
 use crate::{
-    AV_INPUT_BUFFER_PADDING_SIZE, AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecID,
-    AVCodecID_AV_CODEC_ID_BIN_DATA, AVCodecParameters, AVColorPrimaries, AVColorRange,
-    AVColorSpace, AVDictionary, AVFormatContext, AVMediaType, AVMediaType_AVMEDIA_TYPE_ATTACHMENT,
-    AVRational, AVStream, AvError, Codec, CodecContext, Packet, av_dict_set as ffi_av_dict_set,
+    AV_DICT_IGNORE_SUFFIX, AV_INPUT_BUFFER_PADDING_SIZE, AV_TIME_BASE, AVChannelLayout, AVChapter,
+    AVCodecID, AVCodecID_AV_CODEC_ID_BIN_DATA, AVCodecParameters, AVColorPrimaries, AVColorRange,
+    AVColorSpace, AVDictionary, AVDictionaryEntry, AVFormatContext, AVMediaType,
+    AVMediaType_AVMEDIA_TYPE_ATTACHMENT, AVRational, AVStream, AvError, Codec, CodecContext,
+    Packet, av_dict_get as ffi_av_dict_get, av_dict_set as ffi_av_dict_set,
     av_interleaved_write_frame as ffi_av_interleaved_write_frame, av_mallocz as ffi_av_mallocz,
     av_opt_set as ffi_av_opt_set, avcodec_parameters_copy as ffi_avcodec_parameters_copy,
     avformat_close_input as ffi_avformat_close_input,
     avformat_new_stream as ffi_avformat_new_stream,
 };
+
+/// Collects every entry of an `AVDictionary` into a map.
+///
+/// Returns an empty map when `dict` is null. Keys and values are decoded lossily
+/// from their C strings. Shared by the container / stream / chapter metadata
+/// accessors so the raw `av_dict_get` iteration stays inside this crate.
+///
+/// # Safety
+///
+/// `dict` must be null or a valid `AVDictionary` borrowed for the duration of the
+/// call.
+unsafe fn read_dict(dict: *const AVDictionary) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if dict.is_null() {
+        return map;
+    }
+    // An empty key with AV_DICT_IGNORE_SUFFIX walks every entry when each call is
+    // seeded with the previously returned entry.
+    let flags = AV_DICT_IGNORE_SUFFIX.cast_signed();
+    let mut entry: *const AVDictionaryEntry = std::ptr::null();
+    loop {
+        // SAFETY: `dict` is a valid dictionary; `av_dict_get` returns the entry
+        //         after `entry` (or null at the end). The empty key is a valid C
+        //         string.
+        entry = unsafe { ffi_av_dict_get(dict, c"".as_ptr(), entry, flags) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: a non-null entry exposes valid `key` / `value` pointers.
+        let (key_ptr, value_ptr) = unsafe { ((*entry).key, (*entry).value) };
+        if key_ptr.is_null() || value_ptr.is_null() {
+            continue;
+        }
+        // SAFETY: both pointers are non-null, NUL-terminated C strings owned by
+        //         the dictionary and valid for this borrow.
+        let key = unsafe { CStr::from_ptr(key_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        let value = unsafe { CStr::from_ptr(value_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        map.insert(key, value);
+    }
+    map
+}
 
 /// An owned input (demux) `AVFormatContext`.
 ///
@@ -168,6 +215,66 @@ impl InputFormatContext {
             }
             Some(CStr::from_ptr(name).to_string_lossy().into_owned())
         }
+    }
+
+    /// Returns the input format's long, human-readable name (for example
+    /// `"QuickTime / MOV"`), or `None` when the format or its long name is unset.
+    #[must_use]
+    pub fn iformat_long_name(&self) -> Option<String> {
+        // SAFETY: `self.ptr` is a valid owned demux context. `iformat` is set for
+        //         every successfully opened input, but we null-check both it and
+        //         its `long_name` pointer defensively before reading the C string.
+        unsafe {
+            let iformat = (*self.ptr.as_ptr()).iformat;
+            if iformat.is_null() {
+                return None;
+            }
+            let long_name = (*iformat).long_name;
+            if long_name.is_null() {
+                return None;
+            }
+            Some(CStr::from_ptr(long_name).to_string_lossy().into_owned())
+        }
+    }
+
+    /// Returns the container-level metadata as a key/value map (empty when the
+    /// container carries none).
+    #[must_use]
+    pub fn metadata(&self) -> HashMap<String, String> {
+        // SAFETY: `self.ptr` is a valid owned demux context; `metadata` is a plain
+        //         field (null when absent) and `read_dict` handles null.
+        unsafe { read_dict((*self.ptr.as_ptr()).metadata) }
+    }
+
+    /// Returns the number of chapters in the container.
+    #[must_use]
+    pub fn nb_chapters(&self) -> u32 {
+        // SAFETY: `self.ptr` is a valid owned demux context; `nb_chapters` is a plain field.
+        unsafe { (*self.ptr.as_ptr()).nb_chapters }
+    }
+
+    /// Returns a borrowed handle to chapter `index`, or `None` when out of range.
+    #[must_use]
+    pub fn chapter(&self, index: usize) -> Option<ChapterRef<'_>> {
+        // SAFETY: `self.ptr` is a valid owned demux context. We bound-check `index`
+        //         against `nb_chapters` before indexing the `chapters` array, and
+        //         the entries are valid chapter pointers set by FFmpeg on open.
+        unsafe {
+            let ctx = self.ptr.as_ptr();
+            if index >= (*ctx).nb_chapters as usize {
+                return None;
+            }
+            let chapter_ptr = *(*ctx).chapters.add(index);
+            NonNull::new(chapter_ptr).map(|ptr| ChapterRef {
+                ptr,
+                _marker: PhantomData,
+            })
+        }
+    }
+
+    /// Iterates the container's chapters as borrowed handles.
+    pub fn chapters(&self) -> impl Iterator<Item = ChapterRef<'_>> + '_ {
+        (0..self.nb_chapters() as usize).filter_map(move |i| self.chapter(i))
     }
 
     /// Returns a borrowed handle to stream `index`, or `None` when out of range.
@@ -861,6 +968,30 @@ impl<'a> StreamRef<'a> {
             }
         }
     }
+
+    /// Returns the stream's duration in its own time base, or a non-positive
+    /// value (`AV_NOPTS_VALUE` or 0) when unknown.
+    #[must_use]
+    pub fn duration(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).duration }
+    }
+
+    /// Returns the stream's disposition flags (a bitmask of `AV_DISPOSITION_*`).
+    #[must_use]
+    pub fn disposition(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows a valid stream from a live format context.
+        unsafe { (*self.ptr.as_ptr()).disposition }
+    }
+
+    /// Returns the stream-level metadata as a key/value map (empty when the
+    /// stream carries none). Used to read tags such as `language` and `title`.
+    #[must_use]
+    pub fn metadata(&self) -> HashMap<String, String> {
+        // SAFETY: `self.ptr` borrows a valid stream; `metadata` is a plain field
+        //         (null when absent) and `read_dict` handles null.
+        unsafe { read_dict((*self.ptr.as_ptr()).metadata) }
+    }
 }
 
 /// A borrowed handle to an `AVCodecParameters` owned by a stream.
@@ -939,9 +1070,74 @@ impl CodecParameters<'_> {
         unsafe { (*self.ptr.as_ptr()).ch_layout }
     }
 
+    /// Returns the raw pixel/sample format value (`AVPixelFormat` for video,
+    /// `AVSampleFormat` for audio), or `-1` when unset.
+    #[must_use]
+    pub fn format(&self) -> c_int {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).format }
+    }
+
+    /// Returns the stream's bit rate in bits per second (0 when unknown).
+    #[must_use]
+    pub fn bit_rate(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows valid codec parameters from a live stream.
+        unsafe { (*self.ptr.as_ptr()).bit_rate }
+    }
+
     /// Returns the underlying raw pointer for FFI calls within the crate.
     pub(crate) fn as_raw(&self) -> *const AVCodecParameters {
         self.ptr.as_ptr()
+    }
+}
+
+/// A borrowed handle to an `AVChapter` owned by an [`InputFormatContext`].
+///
+/// Mirrors [`StreamRef`] / [`CodecParameters`]: the raw chapter pointer is not
+/// part of the public API; the scalar fields ff-probe reads are exposed as safe
+/// accessors, and per-chapter tags are read through [`metadata`](Self::metadata).
+#[derive(Clone, Copy, Debug)]
+pub struct ChapterRef<'a> {
+    ptr: NonNull<AVChapter>,
+    _marker: PhantomData<&'a InputFormatContext>,
+}
+
+impl ChapterRef<'_> {
+    /// Returns the chapter's unique id.
+    #[must_use]
+    pub fn id(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows a valid chapter from a live format context.
+        unsafe { (*self.ptr.as_ptr()).id }
+    }
+
+    /// Returns the chapter's time base (used to interpret `start` / `end`).
+    #[must_use]
+    pub fn time_base(&self) -> AVRational {
+        // SAFETY: `self.ptr` borrows a valid chapter from a live format context.
+        unsafe { (*self.ptr.as_ptr()).time_base }
+    }
+
+    /// Returns the chapter's start time in its own [`time_base`](Self::time_base).
+    #[must_use]
+    pub fn start(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows a valid chapter from a live format context.
+        unsafe { (*self.ptr.as_ptr()).start }
+    }
+
+    /// Returns the chapter's end time in its own [`time_base`](Self::time_base).
+    #[must_use]
+    pub fn end(&self) -> i64 {
+        // SAFETY: `self.ptr` borrows a valid chapter from a live format context.
+        unsafe { (*self.ptr.as_ptr()).end }
+    }
+
+    /// Returns the chapter-level metadata as a key/value map (empty when the
+    /// chapter carries none). Used to read tags such as `title`.
+    #[must_use]
+    pub fn metadata(&self) -> HashMap<String, String> {
+        // SAFETY: `self.ptr` borrows a valid chapter; `metadata` is a plain field
+        //         (null when absent) and `read_dict` handles null.
+        unsafe { read_dict((*self.ptr.as_ptr()).metadata) }
     }
 }
 
@@ -955,6 +1151,36 @@ mod tests {
         // context (the error path returns before any owned value is built).
         let result = InputFormatContext::open(Path::new("/nonexistent/path/to/file.mp4"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_dict_should_collect_all_entries() {
+        // Build a small dictionary with av_dict_set, read it back through the
+        // shared helper, then free it. Deterministic and file-independent.
+        let mut dict: *mut AVDictionary = std::ptr::null_mut();
+        // SAFETY: `dict` starts null; `av_dict_set` allocates/extends it. The keys
+        //         and values are valid NUL-terminated C strings.
+        unsafe {
+            ffi_av_dict_set(&mut dict, c"title".as_ptr(), c"Example".as_ptr(), 0);
+            ffi_av_dict_set(&mut dict, c"language".as_ptr(), c"eng".as_ptr(), 0);
+        }
+        // SAFETY: `dict` is a valid dictionary built just above.
+        let map = unsafe { read_dict(dict) };
+        // SAFETY: frees the dictionary allocated above and nulls our pointer.
+        unsafe { crate::av_dict_free(&mut dict) };
+
+        assert_eq!(map.get("title").map(String::as_str), Some("Example"));
+        assert_eq!(map.get("language").map(String::as_str), Some("eng"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn read_dict_should_return_empty_for_null() {
+        // A null dictionary (a container / stream / chapter with no tags) yields
+        // an empty map rather than dereferencing null.
+        // SAFETY: a null dictionary pointer is explicitly allowed by `read_dict`.
+        let map = unsafe { read_dict(std::ptr::null()) };
+        assert!(map.is_empty());
     }
 
     #[test]
