@@ -353,10 +353,10 @@ unsafe fn convert_with_swr(
         // SAFETY: dst_ch_layout / src_ch_layout are valid for this call.
         let result = unsafe {
             ff_sys::ResampleContext::new(
-                &raw const dst_ch_layout,
+                &dst_ch_layout,
                 dst_format,
                 dst_sample_rate as i32,
-                &raw const src_ch_layout,
+                &src_ch_layout,
                 src_format,
                 src_sample_rate as i32,
             )

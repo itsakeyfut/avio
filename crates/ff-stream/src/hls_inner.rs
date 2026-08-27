@@ -22,7 +22,6 @@
 
 use std::ffi::CString;
 use std::path::Path;
-use std::ptr;
 
 use ff_sys::{
     AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE, AVPixelFormat,
@@ -158,7 +157,7 @@ unsafe fn write_hls_unsafe(
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .open(vid_decoder, ptr::null_mut())
+        .open_codec(vid_decoder)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 5. Open input audio decoder (optional) ────────────────────────────────
@@ -175,9 +174,7 @@ unsafe fn write_hls_unsafe(
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.apply_parameters(&aud_par).is_ok()
-                    && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
-                {
+                if ctx.apply_parameters(&aud_par).is_ok() && ctx.open_codec(aud_decoder).is_ok() {
                     aud_sample_rate = ctx.sample_rate();
                     aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
@@ -268,7 +265,7 @@ unsafe fn write_hls_unsafe(
     // On error the owned `vid_enc_ctx` / decoders / `input_ctx` / `out_ctx` all
     // drop; no manual teardown is needed.
     vid_enc_ctx
-        .open(vid_enc_codec, ptr::null_mut())
+        .open_codec(vid_enc_codec)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────

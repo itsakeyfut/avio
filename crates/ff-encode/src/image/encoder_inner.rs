@@ -28,7 +28,6 @@
 #![allow(clippy::unused_self)]
 
 use std::path::Path;
-use std::ptr;
 
 use ff_format::{PixelFormat, VideoFrame};
 use ff_sys::{
@@ -171,7 +170,7 @@ impl ImageEncoderInner {
         // ── Step 4: Open codec ────────────────────────────────────────────────
         inner
             .codec_ctx
-            .open(codec, ptr::null_mut())
+            .open_codec(codec)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Step 5: Copy parameters to stream ─────────────────────────────────

@@ -20,7 +20,6 @@
 #![allow(clippy::too_many_lines)]
 
 use std::path::Path;
-use std::ptr;
 
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
@@ -155,7 +154,7 @@ impl SrtInner {
         // On open failure `vid_enc_ctx` drops (frees the codec context); the owned
         // `out_ctx` frees on the `?` early return.
         vid_enc_ctx
-            .open(vid_enc_codec, ptr::null_mut())
+            .open_codec(vid_enc_codec)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // ── 3. Add video output stream ─────────────────────────────────────

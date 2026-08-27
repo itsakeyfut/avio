@@ -24,11 +24,7 @@ fn is_libx264_available() -> bool {
     if !cfg!(feature = "gpl") {
         return false;
     }
-    let name = b"libx264\0";
-    // SAFETY: `name` is a valid null-terminated C string with static lifetime.
-    // The pointer is never stored beyond this call; FFmpeg does not take
-    // ownership of the name buffer.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("libx264").is_some()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

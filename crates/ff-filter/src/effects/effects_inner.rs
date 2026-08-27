@@ -550,7 +550,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     enc_ctx.set_pix_fmt(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P);
     enc_ctx.set_time_base(filter_tb);
 
-    if let Err(e) = enc_ctx.open(enc_codec, std::ptr::null_mut()) {
+    if let Err(e) = enc_ctx.open_codec(enc_codec) {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(FilterError::Ffmpeg {

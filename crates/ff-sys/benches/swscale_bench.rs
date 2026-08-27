@@ -6,8 +6,69 @@ use std::hint::black_box;
 use std::os::raw::c_int;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use ff_sys::swscale::{get_context, scale, scale_flags};
-use ff_sys::{AVPixelFormat_AV_PIX_FMT_RGB24, AVPixelFormat_AV_PIX_FMT_RGBA};
+use ff_sys::swscale::scale_flags;
+use ff_sys::{
+    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_RGB24, AVPixelFormat_AV_PIX_FMT_RGBA, SwsContext,
+};
+
+// The hand-written `swscale::get_context` / `scale` wrappers are sealed
+// (`pub(crate)`), so this raw-FFI microbenchmark calls the bindgen entry points
+// directly through these thin shims, keeping the benchmark bodies unchanged.
+
+/// # Safety
+/// The pixel-format/dimension arguments must be valid for `sws_getContext`.
+unsafe fn get_context(
+    src_w: c_int,
+    src_h: c_int,
+    src_fmt: AVPixelFormat,
+    dst_w: c_int,
+    dst_h: c_int,
+    dst_fmt: AVPixelFormat,
+    flags: c_int,
+) -> Result<*mut SwsContext, c_int> {
+    // SAFETY: null src/dst filters and param are accepted by `sws_getContext`.
+    let ctx = unsafe {
+        ff_sys::sws_getContext(
+            src_w,
+            src_h,
+            src_fmt,
+            dst_w,
+            dst_h,
+            dst_fmt,
+            flags,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    if ctx.is_null() { Err(-1) } else { Ok(ctx) }
+}
+
+/// # Safety
+/// `ctx` and the plane/stride arrays must be valid for the configured formats.
+unsafe fn scale(
+    ctx: *mut SwsContext,
+    src: *const *const u8,
+    src_stride: *const c_int,
+    src_slice_y: c_int,
+    src_slice_h: c_int,
+    dst: *const *mut u8,
+    dst_stride: *const c_int,
+) -> Result<c_int, c_int> {
+    // SAFETY: the caller upholds the context and plane/stride arrays.
+    let ret = unsafe {
+        ff_sys::sws_scale(
+            ctx,
+            src,
+            src_stride,
+            src_slice_y,
+            src_slice_h,
+            dst,
+            dst_stride,
+        )
+    };
+    if ret < 0 { Err(ret) } else { Ok(ret) }
+}
 
 /// Load test image from assets directory.
 /// Returns (width, height, RGBA pixel data).

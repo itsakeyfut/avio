@@ -3,8 +3,8 @@
 //! [`CodecContext`] allocates a codec context and frees it exactly once on drop,
 //! replacing the manual `avcodec::alloc_context3` + `avcodec::free_context` pair.
 //! Its fallible methods return [`AvError`]. Packet / frame arguments are the owned
-//! [`Packet`] / [`Frame`] types, so `send_packet` / `receive_frame` are safe;
-//! `open` (raw options dictionary), `parameters_to_context` (raw parameters), and
+//! [`Packet`] / [`Frame`] types, so `send_packet` / `receive_frame` are safe, and
+//! `open_codec` / `apply_parameters` cover opening and parameter copies; only
 //! `send_eof` / `flush_buffers` (opened-context precondition) remain `unsafe`.
 
 use std::ffi::{CStr, CString};
@@ -13,9 +13,9 @@ use std::ptr::{self, NonNull};
 
 use crate::{
     AVCodecContext, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVColorTransferCharacteristic, AVDictionary, AVPixelFormat, AVRational, AVSampleFormat,
-    AvError, Codec, CodecParameters, Frame, HwDeviceContext, Packet,
-    av_buffer_replace as ffi_av_buffer_replace, avcodec_free_context as ffi_avcodec_free_context,
+    AVColorTransferCharacteristic, AVPixelFormat, AVRational, AVSampleFormat, AvError, Codec,
+    CodecParameters, Frame, HwDeviceContext, Packet, av_buffer_replace as ffi_av_buffer_replace,
+    avcodec_free_context as ffi_avcodec_free_context,
 };
 
 /// The outcome of a [`CodecContext::receive_frame`] call.
@@ -472,12 +472,11 @@ impl CodecContext {
         }
     }
 
-    /// Copies the parameters of `params` into the context (safe wrapper).
+    /// Copies the parameters of `params` into the context.
     ///
-    /// This is the borrowed-handle counterpart of the raw
-    /// [`parameters_to_context`](Self::parameters_to_context); it takes a
-    /// [`CodecParameters`] borrowed from an [`InputFormatContext`](crate::InputFormatContext)
-    /// stream, so no raw pointer is exposed.
+    /// Takes a [`CodecParameters`] borrowed from an
+    /// [`InputFormatContext`](crate::InputFormatContext) stream, so no raw pointer
+    /// is exposed.
     ///
     /// # Errors
     ///
@@ -489,24 +488,10 @@ impl CodecContext {
             .map_err(AvError::new)
     }
 
-    /// Copies stream parameters into the context.
+    /// Opens the context with `codec` using default options.
     ///
-    /// # Safety
-    ///
-    /// `par` must be a valid `*const AVCodecParameters`.
-    pub unsafe fn parameters_to_context(
-        &mut self,
-        par: *const AVCodecParameters,
-    ) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid owned context; the caller upholds `par`.
-        unsafe { crate::avcodec::parameters_to_context(self.ptr.as_ptr(), par) }
-            .map_err(AvError::new)
-    }
-
-    /// Opens the context with `codec` using default options (safe wrapper).
-    ///
-    /// This is the safe counterpart of the raw [`open`](Self::open); it always
-    /// passes a null options dictionary, which every ff-decode call site uses.
+    /// Always passes a null options dictionary, which every consumer call site
+    /// uses.
     ///
     /// # Errors
     ///
@@ -518,19 +503,22 @@ impl CodecContext {
             .map_err(AvError::new)
     }
 
-    /// Opens the context with `codec` and optional dictionary `options`.
+    /// Copies raw stream parameters into the context.
+    ///
+    /// Test-only: the safe [`apply_parameters`](Self::apply_parameters) covers
+    /// every non-test caller; this raw variant is retained for ff-sys's own
+    /// raw-FFI decode test helper in `swresample`.
     ///
     /// # Safety
     ///
-    /// `options` must be null or a valid `*mut *mut AVDictionary`.
-    pub unsafe fn open(
+    /// `par` must be a valid `*const AVCodecParameters`.
+    #[cfg(test)]
+    pub(crate) unsafe fn parameters_to_context(
         &mut self,
-        codec: Codec,
-        options: *mut *mut AVDictionary,
+        par: *const AVCodecParameters,
     ) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid owned context and `codec` is a valid static
-        //         codec; the caller upholds `options`.
-        unsafe { crate::avcodec::open2(self.ptr.as_ptr(), codec.as_ptr(), options) }
+        // SAFETY: `self.ptr` is a valid owned context; the caller upholds `par`.
+        unsafe { crate::avcodec::parameters_to_context(self.ptr.as_ptr(), par) }
             .map_err(AvError::new)
     }
 
@@ -554,7 +542,7 @@ impl CodecContext {
     ///
     /// # Safety
     ///
-    /// The context must have been opened via [`open`](Self::open) first.
+    /// The context must have been opened via [`open_codec`](Self::open_codec) first.
     pub unsafe fn send_eof(&mut self) -> Result<(), AvError> {
         // SAFETY: the caller guarantees the context is opened; a null packet is
         //         the documented end-of-stream signal for `avcodec_send_packet`.
@@ -583,7 +571,7 @@ impl CodecContext {
     ///
     /// # Safety
     ///
-    /// The context must have been opened via [`open`](Self::open) first:
+    /// The context must have been opened via [`open_codec`](Self::open_codec) first:
     /// `avcodec_flush_buffers` reads codec-internal state that `avcodec_open2`
     /// allocates, so calling it on an unopened context is undefined behaviour.
     pub unsafe fn flush_buffers(&mut self) {
@@ -659,7 +647,7 @@ impl CodecContext {
     /// # Safety
     ///
     /// `par` must be a valid `*mut AVCodecParameters`.
-    pub unsafe fn parameters_from_context(
+    pub(crate) unsafe fn parameters_from_context(
         &self,
         par: *mut AVCodecParameters,
     ) -> Result<(), AvError> {

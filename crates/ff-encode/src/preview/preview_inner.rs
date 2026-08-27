@@ -25,31 +25,23 @@ use std::time::Duration;
 
 use ff_sys::{
     AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVRational, OutputFormatContext, avfilter_get_by_name, avfilter_graph_alloc,
-    avfilter_graph_config, avfilter_graph_create_filter, avfilter_graph_free, avfilter_link,
-    avformat,
+    AVRational, InputFormatContext, OutputFormatContext, avfilter_get_by_name,
+    avfilter_graph_alloc, avfilter_graph_config, avfilter_graph_create_filter, avfilter_graph_free,
+    avfilter_link,
 };
 
 use crate::PreviewImageError;
 
 /// Probes the video at `path` and returns its duration in seconds.
-///
-/// # Safety
-///
-/// All FFmpeg pointers are null-checked and freed on every exit path.
-unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, PreviewImageError> {
-    let fmt_ctx = avformat::open_input(path).map_err(PreviewImageError::from_ffmpeg_error)?;
+fn probe_video_duration_secs(path: &Path) -> Result<f64, PreviewImageError> {
+    let mut fmt_ctx = InputFormatContext::open(path)
+        .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
+    fmt_ctx
+        .find_stream_info()
+        .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    if let Err(e) = avformat::find_stream_info(fmt_ctx) {
-        let mut p = fmt_ctx;
-        avformat::close_input(&raw mut p);
-        return Err(PreviewImageError::from_ffmpeg_error(e));
-    }
-
-    // SAFETY: fmt_ctx is non-null (open_input succeeded).
-    let duration_av = (*fmt_ctx).duration;
-    let mut p = fmt_ctx;
-    avformat::close_input(&raw mut p);
+    let duration_av = fmt_ctx.duration();
+    // `fmt_ctx` drops here, closing the input.
 
     if duration_av <= 0 {
         return Err(PreviewImageError::OperationFailed {
@@ -410,7 +402,7 @@ unsafe fn encode_frame_as_png_inner(
     codec_ctx.set_pix_fmt(pix_fmt);
 
     codec_ctx
-        .open(codec, ptr::null_mut())
+        .open_codec(codec)
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
     // Copy codec parameters to stream (includes width/height/format from the
@@ -1119,7 +1111,7 @@ unsafe fn encode_gif_unsafe(
     // Set GIF to loop infinitely (option "loop" = 0); unknown options are ignored.
     let _ = codec_ctx.set_opt("loop", "0");
 
-    if let Err(e) = codec_ctx.open(codec, ptr::null_mut()) {
+    if let Err(e) = codec_ctx.open_codec(codec) {
         let mut g = graph;
         avfilter_graph_free(std::ptr::addr_of_mut!(g));
         return Err(PreviewImageError::from_ffmpeg_error(e.code()));

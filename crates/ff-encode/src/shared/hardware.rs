@@ -1,6 +1,5 @@
 //! Hardware encoder definitions.
 
-use std::ffi::CString;
 use std::sync::OnceLock;
 
 /// Hardware encoder type.
@@ -130,15 +129,8 @@ impl HardwareEncoder {
 ///
 /// Returns `true` if the encoder is available, `false` otherwise.
 fn is_encoder_available(name: &str) -> bool {
-    unsafe {
-        ff_sys::ensure_initialized();
-
-        let Ok(c_name) = CString::new(name) else {
-            return false;
-        };
-
-        ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr()).is_some()
-    }
+    ff_sys::ensure_initialized();
+    ff_sys::Codec::find_encoder_by_name(name).is_some()
 }
 
 #[cfg(test)]

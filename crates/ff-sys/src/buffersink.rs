@@ -35,6 +35,9 @@ pub enum BufferSinkOutcome {
 /// # Safety
 ///
 /// `sink` must be a valid `*mut AVFilterContext` for a buffersink filter.
+// seal-allow-raw: the filter graph (AVFilterContext / buffersrc / buffersink) is
+// not yet a sealed owned type, so this drain wrapper still takes a raw sink
+// pointer. Tracked with the broader filter-graph RAII work, separate from #1506.
 pub unsafe fn buffersink_get_frame(
     sink: *mut AVFilterContext,
     dst: &mut Frame,

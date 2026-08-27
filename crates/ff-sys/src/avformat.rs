@@ -18,11 +18,14 @@ use std::time::Duration;
 
 use crate::{
     AVFormatContext, AVIOContext, AVPacket, av_read_frame as ffi_av_read_frame,
-    av_seek_frame as ffi_av_seek_frame, av_write_frame as ffi_av_write_frame,
-    avformat_close_input as ffi_avformat_close_input,
-    avformat_find_stream_info as ffi_avformat_find_stream_info,
+    av_seek_frame as ffi_av_seek_frame, avformat_find_stream_info as ffi_avformat_find_stream_info,
     avformat_open_input as ffi_avformat_open_input, avformat_seek_file as ffi_avformat_seek_file,
     ensure_initialized,
+};
+// Only the test-only `close_input` / `write_frame` wrappers use these bindings.
+#[cfg(test)]
+use crate::{
+    av_write_frame as ffi_av_write_frame, avformat_close_input as ffi_avformat_close_input,
 };
 
 // FFmpeg I/O functions (declared here as they may not be in bindgen output)
@@ -131,7 +134,7 @@ pub mod seek_flags {
 /// - The path contains invalid UTF-8 or null bytes
 /// - The file cannot be opened
 /// - The file format is not recognized
-pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
+pub(crate) unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
     ensure_initialized();
 
     // Convert path to C string
@@ -167,7 +170,7 @@ pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
 /// `avformat_open_input`. Both keys are freed via `av_dict_free` regardless of
 /// whether the open succeeds.
 ///
-/// The returned pointer must be freed using [`close_input()`].
+/// The returned pointer must be freed using `close_input()`.
 ///
 /// # Errors
 ///
@@ -177,7 +180,7 @@ pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
 /// # Safety
 ///
 /// The caller must call `close_input()` on the returned context when done.
-pub unsafe fn open_input_url(
+pub(crate) unsafe fn open_input_url(
     url: &str,
     connect_timeout: Duration,
     read_timeout: Duration,
@@ -266,7 +269,7 @@ pub fn srt_available() -> bool {
 /// Open an image sequence using the `image2` demuxer.
 ///
 /// Sets `framerate` in the demuxer options so FFmpeg assigns the correct PTS
-/// to each frame. The returned pointer must be freed using [`close_input()`].
+/// to each frame. The returned pointer must be freed using `close_input()`.
 ///
 /// # Errors
 ///
@@ -276,7 +279,7 @@ pub fn srt_available() -> bool {
 /// # Safety
 ///
 /// The caller must call `close_input()` on the returned context when done.
-pub unsafe fn open_input_image_sequence(
+pub(crate) unsafe fn open_input_image_sequence(
     path: &Path,
     framerate: u32,
 ) -> Result<*mut AVFormatContext, c_int> {
@@ -355,7 +358,8 @@ pub unsafe fn open_input_image_sequence(
 /// This function safely handles:
 /// - `ctx` being null
 /// - `*ctx` being null
-pub unsafe fn close_input(ctx: *mut *mut AVFormatContext) {
+#[cfg(test)]
+pub(crate) unsafe fn close_input(ctx: *mut *mut AVFormatContext) {
     // SAFETY: The caller guarantees `ctx` is either null or a valid pointer to a
     //         context pointer allocated by `open_input`. Dereferencing `ctx` is
     //         guarded by the null check, and `avformat_close_input` tolerates a
@@ -387,7 +391,7 @@ pub unsafe fn close_input(ctx: *mut *mut AVFormatContext) {
 /// # Errors
 ///
 /// Returns a negative error code if stream information cannot be read.
-pub unsafe fn find_stream_info(ctx: *mut AVFormatContext) -> Result<(), c_int> {
+pub(crate) unsafe fn find_stream_info(ctx: *mut AVFormatContext) -> Result<(), c_int> {
     if ctx.is_null() {
         return Err(crate::error_codes::EINVAL);
     }
@@ -418,7 +422,7 @@ pub unsafe fn find_stream_info(ctx: *mut AVFormatContext) -> Result<(), c_int> {
 /// # Errors
 ///
 /// Returns a negative error code if seeking fails.
-pub unsafe fn seek_frame(
+pub(crate) unsafe fn seek_frame(
     ctx: *mut AVFormatContext,
     stream_index: c_int,
     timestamp: i64,
@@ -459,7 +463,7 @@ pub unsafe fn seek_frame(
 /// # Errors
 ///
 /// Returns a negative error code if seeking fails.
-pub unsafe fn seek_file(
+pub(crate) unsafe fn seek_file(
     ctx: *mut AVFormatContext,
     stream_index: c_int,
     min_ts: i64,
@@ -502,7 +506,10 @@ pub unsafe fn seek_file(
 /// Returns a negative error code if:
 /// - Reading fails
 /// - End of file is reached (`error_codes::EOF`)
-pub unsafe fn read_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Result<(), c_int> {
+pub(crate) unsafe fn read_frame(
+    ctx: *mut AVFormatContext,
+    pkt: *mut AVPacket,
+) -> Result<(), c_int> {
     if ctx.is_null() || pkt.is_null() {
         return Err(crate::error_codes::EINVAL);
     }
@@ -537,7 +544,11 @@ pub unsafe fn read_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Resul
 /// Returns a negative error code if:
 /// - Context or packet is null (`error_codes::EINVAL`)
 /// - Writing fails
-pub unsafe fn write_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Result<(), c_int> {
+#[cfg(test)]
+pub(crate) unsafe fn write_frame(
+    ctx: *mut AVFormatContext,
+    pkt: *mut AVPacket,
+) -> Result<(), c_int> {
     if ctx.is_null() || pkt.is_null() {
         return Err(crate::error_codes::EINVAL);
     }
@@ -590,7 +601,7 @@ pub unsafe fn write_frame(ctx: *mut AVFormatContext, pkt: *mut AVPacket) -> Resu
 ///     close_output(pb);
 /// }
 /// ```
-pub unsafe fn open_output(path: &Path, flags: c_int) -> Result<*mut AVIOContext, c_int> {
+pub(crate) unsafe fn open_output(path: &Path, flags: c_int) -> Result<*mut AVIOContext, c_int> {
     ensure_initialized();
 
     // Convert path to C string
@@ -651,7 +662,7 @@ pub unsafe fn open_output(path: &Path, flags: c_int) -> Result<*mut AVIOContext,
 ///     assert!(pb.is_null());
 /// }
 /// ```
-pub unsafe fn close_output(pb: *mut *mut AVIOContext) {
+pub(crate) unsafe fn close_output(pb: *mut *mut AVIOContext) {
     // SAFETY: The caller guarantees `pb` is either null or a valid pointer to an
     //         AVIOContext pointer from `open_output`. Dereferencing `pb` is
     //         guarded by the null check, and `avio_closep` tolerates a null `*pb`.

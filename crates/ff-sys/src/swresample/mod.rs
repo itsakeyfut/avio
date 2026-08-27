@@ -3,9 +3,15 @@
 //! This module provides thin wrapper functions around FFmpeg's libswresample API
 //! for resampling audio data and converting between sample formats and channel layouts.
 //!
-//! # Safety
+//! The public surface is pointer-free (`estimate_output_samples`, the
+//! `channel_layout` / `sample_format` submodules); the raw pointer-taking wrappers
+//! (`alloc_set_opts2` / `init` / `convert` / …) are `pub(crate)`, driven only by
+//! the owned [`ResampleContext`](crate::ResampleContext). (`audio_fifo` remains a
+//! separate, still-raw public submodule.)
 //!
-//! Callers are responsible for:
+//! # Safety (crate-internal wrappers)
+//!
+//! For the `pub(crate)` wrappers, callers are responsible for:
 //! - Ensuring pointers are valid before passing to these functions
 //! - Properly freeing resources using the corresponding free functions
 //! - Not using pointers after they have been freed
@@ -18,8 +24,9 @@ pub mod audio_fifo;
 pub mod channel_layout;
 pub mod sample_format;
 
-pub use context::{alloc, alloc_set_opts2, init, is_initialized};
-pub use convert::{convert, estimate_output_samples, get_delay};
+pub(crate) use context::{alloc_set_opts2, init};
+pub(crate) use convert::convert;
+pub use convert::estimate_output_samples;
 
 #[cfg(test)]
 mod tests {
@@ -95,9 +102,7 @@ mod tests {
             codec_ctx
                 .parameters_to_context(codecpar)
                 .map_err(|e| e.code())?;
-            codec_ctx
-                .open(codec, std::ptr::null_mut())
-                .map_err(|e| e.code())?;
+            codec_ctx.open_codec(codec).map_err(|e| e.code())?;
 
             // Allocate frame and packet. On failure the owned `codec_ctx` drops (frees).
             let frame = av_frame_alloc();

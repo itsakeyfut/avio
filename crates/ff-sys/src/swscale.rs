@@ -3,9 +3,13 @@
 //! This module provides thin wrapper functions around FFmpeg's libswscale API
 //! for scaling video frames and converting between pixel formats.
 //!
-//! # Safety
+//! The public surface is pointer-free (`scale_flags`, the `is_supported_*`
+//! queries); the raw pointer-taking wrappers (`get_context` / `scale`) are
+//! `pub(crate)`, driven only by the owned [`ScaleContext`](crate::ScaleContext).
 //!
-//! Callers are responsible for:
+//! # Safety (crate-internal wrappers)
+//!
+//! For the `pub(crate)` wrappers, callers are responsible for:
 //! - Ensuring pointers are valid before passing to these functions
 //! - Properly freeing resources using the corresponding free functions
 //! - Not using pointers after they have been freed
@@ -180,7 +184,7 @@ pub mod scale_flags {
 ///     crate::sws_freeContext(ctx);
 /// }
 /// ```
-pub unsafe fn get_context(
+pub(crate) unsafe fn get_context(
     src_w: c_int,
     src_h: c_int,
     src_fmt: AVPixelFormat,
@@ -274,7 +278,7 @@ pub unsafe fn get_context(
 ///     )?;
 /// }
 /// ```
-pub unsafe fn scale(
+pub(crate) unsafe fn scale(
     ctx: *mut SwsContext,
     src: *const *const u8,
     src_stride: *const c_int,

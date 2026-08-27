@@ -350,7 +350,7 @@ impl VideoEncoderInner {
                         target_ch_layout,
                         target_format,
                         target_sample_rate,
-                        &raw const src_ch_layout,
+                        &src_ch_layout,
                         src_format,
                         src_sample_rate,
                     )
