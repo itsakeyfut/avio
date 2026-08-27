@@ -480,7 +480,7 @@ impl VideoEncoderInner {
             {
                 let nb_samples = av_frame.nb_samples();
                 ff_sys::swresample::audio_fifo::write_frame(fifo, &av_frame, nb_samples)
-                    .map_err(EncodeError::from_ffmpeg_error)?;
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
             }
             drop(av_frame);
 
@@ -513,7 +513,7 @@ impl VideoEncoderInner {
                 })?;
 
                 ff_sys::swresample::audio_fifo::read_frame(fifo, &mut out_frame, frame_size)
-                    .map_err(EncodeError::from_ffmpeg_error)?;
+                    .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
                 out_frame.set_pts(self.audio_sample_count as i64);
                 self.audio_codec_ctx

@@ -1,7 +1,7 @@
 //! Channel layout helpers for audio configuration.
 
 use crate::{
-    AVChannelLayout, AVChannelOrder_AV_CHANNEL_ORDER_NATIVE, av_channel_layout_compare,
+    AVChannelLayout, AVChannelOrder_AV_CHANNEL_ORDER_NATIVE, AvError, av_channel_layout_compare,
     av_channel_layout_copy, av_channel_layout_default, av_channel_layout_uninit,
 };
 
@@ -51,20 +51,24 @@ pub unsafe fn uninit(ch_layout: *mut AVChannelLayout) {
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` on success, or an error code on failure.
+/// Returns `Ok(())` on success, or an [`AvError`] on failure.
 ///
 /// # Safety
 ///
 /// Both pointers must be valid.
-pub unsafe fn copy(dst: *mut AVChannelLayout, src: *const AVChannelLayout) -> Result<(), i32> {
+pub unsafe fn copy(dst: *mut AVChannelLayout, src: *const AVChannelLayout) -> Result<(), AvError> {
     if dst.is_null() || src.is_null() {
-        return Err(crate::error_codes::EINVAL);
+        return Err(AvError::new(crate::error_codes::EINVAL));
     }
 
     // SAFETY: `dst` and `src` are both non-null (checked above) and point to
     // valid channel layouts.
     let ret = unsafe { av_channel_layout_copy(dst, src) };
-    if ret < 0 { Err(ret) } else { Ok(()) }
+    if ret < 0 {
+        Err(AvError::new(ret))
+    } else {
+        Ok(())
+    }
 }
 
 /// Compare two channel layouts.

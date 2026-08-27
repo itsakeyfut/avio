@@ -8,12 +8,12 @@
 use std::ffi::c_void;
 use std::os::raw::c_int;
 
-use crate::{AVAudioFifo, AVSampleFormat};
+use crate::{AVAudioFifo, AVSampleFormat, AvError};
 
 /// Allocate an `AVAudioFifo` for the given sample format, channel count,
 /// and initial capacity (in samples).
 ///
-/// Returns `Ok(fifo)` on success, `Err(-1)` on allocation failure.
+/// Returns `Ok(fifo)` on success, or an [`AvError`] on allocation failure.
 ///
 /// # Safety
 ///
@@ -23,10 +23,14 @@ pub unsafe fn alloc(
     sample_fmt: AVSampleFormat,
     channels: c_int,
     nb_samples: c_int,
-) -> Result<*mut AVAudioFifo, c_int> {
+) -> Result<*mut AVAudioFifo, AvError> {
     // SAFETY: caller guarantees parameters are valid
     let fifo = unsafe { crate::av_audio_fifo_alloc(sample_fmt, channels, nb_samples) };
-    if fifo.is_null() { Err(-1) } else { Ok(fifo) }
+    if fifo.is_null() {
+        Err(AvError::new(-1))
+    } else {
+        Ok(fifo)
+    }
 }
 
 /// Free an `AVAudioFifo` created by [`alloc`].
@@ -54,10 +58,14 @@ pub unsafe fn write(
     fifo: *mut AVAudioFifo,
     data: *const *mut c_void,
     nb_samples: c_int,
-) -> Result<c_int, c_int> {
+) -> Result<c_int, AvError> {
     // SAFETY: caller guarantees all pointers are valid
     let ret = unsafe { crate::av_audio_fifo_write(fifo, data, nb_samples) };
-    if ret < 0 { Err(ret) } else { Ok(ret) }
+    if ret < 0 {
+        Err(AvError::new(ret))
+    } else {
+        Ok(ret)
+    }
 }
 
 /// Read up to `nb_samples` samples from the FIFO into pre-allocated
@@ -77,10 +85,14 @@ pub unsafe fn read(
     fifo: *mut AVAudioFifo,
     data: *const *mut c_void,
     nb_samples: c_int,
-) -> Result<c_int, c_int> {
+) -> Result<c_int, AvError> {
     // SAFETY: caller guarantees all pointers are valid
     let ret = unsafe { crate::av_audio_fifo_read(fifo, data, nb_samples) };
-    if ret < 0 { Err(ret) } else { Ok(ret) }
+    if ret < 0 {
+        Err(AvError::new(ret))
+    } else {
+        Ok(ret)
+    }
 }
 
 /// Return the number of samples currently stored in the FIFO.
@@ -106,7 +118,7 @@ pub unsafe fn write_frame(
     fifo: *mut AVAudioFifo,
     src: &crate::Frame,
     nb_samples: c_int,
-) -> Result<c_int, c_int> {
+) -> Result<c_int, AvError> {
     // SAFETY: `src` is a valid frame; its `data` pointer array is read (not
     //         retained), and the caller upholds `fifo` and the sample count.
     let data = unsafe { (*src.as_ptr()).data.as_ptr().cast::<*mut c_void>() };
@@ -126,7 +138,7 @@ pub unsafe fn read_frame(
     fifo: *mut AVAudioFifo,
     dst: &mut crate::Frame,
     nb_samples: c_int,
-) -> Result<c_int, c_int> {
+) -> Result<c_int, AvError> {
     // SAFETY: `dst` is a valid get_buffer'd frame; its `data` pointer array is
     //         read (not retained) while the FIFO writes into the planes it
     //         points to, and the caller upholds `fifo` and the sample count.
