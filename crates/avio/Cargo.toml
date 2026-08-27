@@ -12,14 +12,25 @@ categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding", 
 
 [features]
 default = ["probe", "decode", "encode", "analysis", "hwaccel"]
+# The editing model is now unconditional (ff-decode/encode/filter/pipeline are
+# non-optional), so `decode` / `filter` / `pipeline` no longer gate a dependency.
+# The names are retained: they still gate the not-yet-removed facade primitives in
+# lib.rs and the `required-features` of the primitive examples (#1484 retires them).
 probe    = ["dep:ff-probe"]
-decode   = ["dep:ff-decode"]
+decode   = []
+# `decode` is retained so the analysis examples that also use a facade decoder
+# (`required-features = ["analysis"]`) still activate the `decode`-gated re-exports.
 analysis = ["dep:ff-analysis", "decode"]
-encode   = ["dep:ff-encode", "dep:ff-remux", "ff-encode/preview-image"]
-filter   = ["dep:ff-filter"]
-pipeline = ["dep:ff-pipeline", "dep:thiserror", "dep:log", "decode", "encode", "filter", "ff-preview?/timeline"]
+encode   = ["dep:ff-remux", "ff-encode/preview-image"]
+filter   = []
+# `pipeline` no longer gates a dependency (ff-pipeline is non-optional). The name and
+# its decode/encode/filter implication are retained so the not-yet-migrated primitive
+# examples (`required-features = ["pipeline"]`) still activate those facade re-exports.
+pipeline = ["decode", "encode", "filter"]
 stream   = ["dep:ff-stream", "pipeline"]
-preview       = ["dep:ff-preview"]
+# `preview` supplies ff-preview's `timeline` feature: the model's `to_scene` /
+# `TimelinePlayer` (preview-gated) derive a `Scene` and hand it to `ScenePlayer`.
+preview       = ["dep:ff-preview", "ff-preview/timeline"]
 preview-proxy = ["preview", "ff-preview/proxy"]
 render        = ["dep:ff-render", "preview"]
 render-gpu    = ["render", "ff-render/wgpu"]
@@ -27,44 +38,46 @@ tokio         = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio", "ff-p
 gpl      = ["ff-encode/gpl"]
 hwaccel  = ["ff-encode/hwaccel"]
 srt      = ["ff-decode/srt", "ff-stream/srt"]
-serde    = ["pipeline", "dep:serde", "ff-filter/serde", "ff-format/serde"]
+serde    = ["dep:serde", "ff-filter/serde", "ff-format/serde"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+# Core engine: avio *is* the editing engine, so the crates its model
+# (Timeline / Clip / Editor / derive / render) needs are non-optional.
 ff-format = { workspace = true }
 ff-common = { workspace = true }
+ff-decode   = { workspace = true }
+ff-encode   = { workspace = true }
+ff-filter   = { workspace = true }
+ff-pipeline = { workspace = true }
+thiserror   = { workspace = true }
+log         = { workspace = true }
+# Opt-in capabilities (and the not-yet-removed facade primitives, see #1484).
 ff-probe    = { workspace = true, optional = true }
-ff-decode   = { workspace = true, optional = true }
 ff-analysis = { workspace = true, optional = true }
-ff-encode   = { workspace = true, optional = true }
 ff-remux    = { workspace = true, optional = true }
-ff-filter   = { workspace = true, optional = true }
-ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }
 ff-preview  = { workspace = true, optional = true }
 ff-render   = { workspace = true, optional = true }
-thiserror   = { workspace = true, optional = true }
-log         = { workspace = true, optional = true }
 serde       = { version = "1.0.228", features = ["derive"], optional = true }
 
 [[test]]
 name = "serde_persistence"
 required-features = ["serde"]
 
+# The editing model is unconditional, so its tests build by default (no feature gate).
 [[test]]
 name = "timeline_tests"
-required-features = ["pipeline"]
 
 [[test]]
 name = "composition_framerate"
-required-features = ["pipeline"]
 
 [[test]]
 name = "timeline_preview_tests"
-required-features = ["pipeline", "preview"]
+required-features = ["preview"]
 
 [[example]]
 name = "probe_info"
@@ -521,10 +534,10 @@ name = "multi_track_compose"
 path = "examples/filter/multi_track_compose.rs"
 required-features = ["filter", "pipeline", "encode"]
 
+# Engine demo — builds by default now that the model is unconditional.
 [[example]]
 name = "timeline_render"
 path = "examples/transcode/timeline_render.rs"
-required-features = ["filter", "pipeline", "encode"]
 
 [[example]]
 name = "scope_analyzer"

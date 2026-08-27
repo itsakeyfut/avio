@@ -2,7 +2,7 @@
 //! (`avio::TimelinePlayer` -> `ff_preview` runner). Relocated from `ff-preview`
 //! when the model moved into `avio` (#1329). Asset-gated (`#[ignore]`).
 
-#![cfg(all(feature = "pipeline", feature = "preview"))]
+#![cfg(feature = "preview")]
 
 use std::path::PathBuf;
 use std::thread;

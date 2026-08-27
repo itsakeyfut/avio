@@ -239,11 +239,12 @@ pub use ff_probe::{ProbeError, open};
 // Arc<dyn FramePool> when you need to pass a pool through an abstraction boundary.
 #[cfg(feature = "decode")]
 pub use ff_common::{PooledBuffer, VecPool};
+// Engine surface: `TimelineError::Decode(#[from] DecodeError)` names it — unconditional.
+pub use ff_decode::DecodeError;
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, AudioDecoderBuilder, DecodeError, FrameExtractor, FramePool, HardwareAccel,
-    ImageDecoder, ImageDecoderBuilder, SeekMode, ThumbnailSelector, VideoDecoder,
-    VideoDecoderBuilder,
+    AudioDecoder, AudioDecoderBuilder, FrameExtractor, FramePool, HardwareAccel, ImageDecoder,
+    ImageDecoderBuilder, SeekMode, ThumbnailSelector, VideoDecoder, VideoDecoderBuilder,
 };
 
 // ── analysis feature ──────────────────────────────────────────────────────────
@@ -266,14 +267,17 @@ pub use ff_analysis::{
 #[cfg(feature = "encode")]
 pub use ff_encode::{
     AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
-    AudioEncoderConfig, Av1Options, Av1Usage, BitrateMode, CRF_MAX, DnxhdOptions, DnxhdVariant,
-    EncodeError, EncodeProgress, EncodeProgressCallback, ExportPreset, FlacOptions, GifPreview,
-    H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
-    HardwareEncoder, ImageEncoder, ImageEncoderBuilder, Mp3Options, Mp3Quality, OpusApplication,
-    OpusOptions, OutputContainer, Preset, PreviewImageError, ProResOptions, ProResProfile,
-    SpriteSheet, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder,
-    VideoEncoderBuilder, VideoEncoderConfig, Vp9Options,
+    AudioEncoderConfig, Av1Options, Av1Usage, CRF_MAX, DnxhdOptions, DnxhdVariant, EncodeProgress,
+    EncodeProgressCallback, ExportPreset, FlacOptions, GifPreview, H264Options, H264Preset,
+    H264Profile, H264Tune, H265Options, H265Profile, H265Tier, HardwareEncoder, ImageEncoder,
+    ImageEncoderBuilder, Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer,
+    Preset, PreviewImageError, ProResOptions, ProResProfile, SpriteSheet, SvtAv1Options,
+    VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, VideoEncoderConfig,
+    Vp9Options,
 };
+// Engine surface: `BitrateMode` is an `EncoderConfig::builder()` setter dep and
+// `EncodeError` is named by `TimelineError::Encode(#[from] EncodeError)` — unconditional.
+pub use ff_encode::{BitrateMode, EncodeError};
 
 // media-ops + trim moved to the `ff-remux` crate; re-exported here so `avio`'s
 // surface is unchanged (enabled by the `encode` feature, which pulls `ff-remux`).
@@ -299,68 +303,59 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 // ── filter feature ────────────────────────────────────────────────────────────
 #[cfg(feature = "filter")]
 pub use ff_filter::{
-    AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
-    BlendMode, CompositeOp, CrossfadeJoiner, DrawTextOptions, Easing, EqBand, FilterError,
-    FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LavfiSource,
-    LayerSource, LensProfile, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer,
-    MultiTrackComposer, NoiseType, ProxySource, QualityMetrics, RealtimeComposer, RealtimeLayer,
-    RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, SolidSource, StabilizeOptions, Stabilizer,
-    TextSource, ToneMap, VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
+    AnalyzeOptions, AnimationEntry, AudioConcatenator, AudioTrack, CrossfadeJoiner, FilterGraph,
+    FilterGraphBuilder, Interpolation, LavfiSource, LayerSource, LensProfile, Lerp, LoudnessMeter,
+    LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType, ProxySource,
+    QualityMetrics, RealtimeComposer, SolidSource, StabilizeOptions, Stabilizer, TextSource,
+    VideoConcatenator, VideoLayer,
+};
+// Engine surface: the ff-filter authoring set the model names via Clip / FilterStep /
+// animation (Clip fields, FilterStep variant payloads, animation authoring,
+// Clip::realtime_layer[_descriptor] returns, FilterError, and the EncoderConfig HwAccel
+// setter dep) — unconditional.
+pub use ff_filter::{
+    AnimatedValue, AnimationTrack, BlendMode, CompositeOp, DrawTextOptions, Easing, EqBand,
+    FilterError, FilterStep, HwAccel, Keyframe, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
+    ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
-// ── pipeline feature ──────────────────────────────────────────────────────────
+// ── editing model (unconditional) ─────────────────────────────────────────────
 //
-// Enabling `pipeline` also enables `filter` (see Cargo.toml).
-// Progress / ProgressCallback are re-exported here as the canonical source.
-//
-// The editing model (`Timeline` / `Clip` / `render` / `TimelineError`) is defined
-// in `avio` itself — the engine owns the model. The execution pipelines stay in
-// `ff-pipeline` and are re-exported below.
-#[cfg(feature = "pipeline")]
+// The editing model (`Timeline` / `Clip` / `Editor` / `render` / `TimelineError`) is
+// defined in `avio` itself — the engine owns the model, and it is always compiled
+// (`ff-decode` / `ff-encode` / `ff-filter` / `ff-pipeline` are non-optional). The
+// standalone execution pipelines stay in `ff-pipeline`, re-exported below and still
+// gated behind the `pipeline` feature (removed in #1484).
 mod clip;
-#[cfg(feature = "pipeline")]
 mod derive;
-#[cfg(feature = "pipeline")]
 mod edit;
-#[cfg(feature = "pipeline")]
 mod editor;
-#[cfg(feature = "pipeline")]
 mod error;
-#[cfg(feature = "pipeline")]
 mod ids;
-#[cfg(feature = "pipeline")]
 mod marker;
-#[cfg(feature = "pipeline")]
 mod timeline;
-#[cfg(feature = "pipeline")]
 mod track;
-#[cfg(feature = "pipeline")]
 mod validate;
 
-#[cfg(feature = "pipeline")]
 pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};
-#[cfg(feature = "pipeline")]
 pub use edit::{ClipProperty, Command, EditError, apply};
-#[cfg(feature = "pipeline")]
 pub use editor::Editor;
-#[cfg(feature = "pipeline")]
 pub use error::TimelineError;
-#[cfg(feature = "pipeline")]
 pub use ids::{ClipId, GroupId, MarkerId, TrackId, TrackKind};
-#[cfg(feature = "pipeline")]
 pub use marker::Marker;
-#[cfg(feature = "pipeline")]
 pub use timeline::{Timeline, TimelineBuilder};
-#[cfg(feature = "pipeline")]
 pub use track::Track;
-#[cfg(feature = "pipeline")]
 pub use validate::TimelineIssue;
 
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
-    AudioPipeline, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError,
-    Progress, ProgressCallback, ThumbnailPipeline, VideoPipeline,
+    AudioPipeline, Pipeline, PipelineBuilder, PipelineError, ProgressCallback, ThumbnailPipeline,
+    VideoPipeline,
 };
+// Engine surface: `Timeline::render(config: EncoderConfig)` and
+// `render_with_progress(_, _, impl Fn(&Progress) -> bool)` name these; the builder is
+// `EncoderConfig::builder()`'s constructor — unconditional.
+pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 
 // ── stream feature ────────────────────────────────────────────────────────────
 //
@@ -399,17 +394,17 @@ pub use ff_preview::HardwareAccel;
 
 // The editing-model preview entry `TimelinePlayer` is defined in `avio` (the
 // `player` module) — it derives a `Scene` from a `Timeline` and hands it to
-// `ff-preview`'s `ScenePlayer`. `ScenePlayer` / `SceneRunner` / the `Scene`
-// types stay in `ff-preview` (model-agnostic). All require `preview` + `pipeline`;
-// the `pipeline` feature enables `ff-preview?/timeline` (see Cargo.toml).
-#[cfg(all(feature = "preview", feature = "pipeline"))]
+// `ff-preview`'s `ScenePlayer`. `ScenePlayer` / `SceneRunner` / the `Scene` types
+// stay in `ff-preview` (model-agnostic). The model is unconditional now, so these
+// require only `preview` (which supplies `ff-preview/timeline`).
+#[cfg(feature = "preview")]
 mod player;
-#[cfg(all(feature = "preview", feature = "pipeline"))]
+#[cfg(feature = "preview")]
 pub use ff_preview::{
     Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneRunner,
     SceneVideoTrack,
 };
-#[cfg(all(feature = "preview", feature = "pipeline"))]
+#[cfg(feature = "preview")]
 pub use player::TimelinePlayer;
 
 #[cfg(all(feature = "preview", feature = "tokio"))]
