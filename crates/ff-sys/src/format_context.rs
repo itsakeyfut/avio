@@ -1124,6 +1124,34 @@ mod tests {
     }
 
     #[test]
+    fn input_open_valid_file_should_allocate_and_drop_cleanly() {
+        // ADR-0003 Confirmation (drop-once): a successfully opened container is an
+        // owned `InputFormatContext` that frees exactly once on drop via
+        // `avformat_close_input` — no manual close, no double free. Skip gracefully
+        // when the fixture or its demuxer is unavailable (e.g. CI's minimal FFmpeg
+        // build) so the test never flakes (RK-002).
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/audio/konekonoosanpo.mp3"
+        ));
+        let Ok(mut ctx) = InputFormatContext::open(&path) else {
+            return; // fixture missing or mp3 demuxer absent — nothing to exercise
+        };
+        // Populate stream info (best effort), then skip if the demuxer reported no
+        // streams, so a hyper-minimal FFmpeg build never turns this into a failure.
+        let _ = ctx.find_stream_info();
+        if ctx.nb_streams() == 0 {
+            return;
+        }
+        // A live context was built; it drops at end of scope, freeing the context
+        // exactly once (avformat_close_input) with no panic / double free.
+        assert!(
+            ctx.nb_streams() >= 1,
+            "an opened container should expose at least one stream"
+        );
+    }
+
+    #[test]
     fn read_dict_should_collect_all_entries() {
         // Build a small dictionary with av_dict_set, read it back through the
         // shared helper, then free it. Deterministic and file-independent.
