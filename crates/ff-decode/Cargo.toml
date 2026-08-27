@@ -41,5 +41,18 @@ srt = []      # SRT (Secure Reliable Transport) protocol input
 name = "decode_bench"
 harness = false
 
+
+[[example]]
+name = "async_decode_audio"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_decode_image"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_decode_video"
+required-features = ["tokio"]
+
 [lints]
 workspace = true
