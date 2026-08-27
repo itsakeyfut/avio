@@ -441,11 +441,11 @@ unsafe fn encode_frame_as_png_inner(
 
     let encode_result = (|| -> Result<(), PreviewImageError> {
         codec_ctx
-            .send_frame_ref(Some(&*frame))
+            .send_frame(Some(&*frame))
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
         codec_ctx
-            .send_frame_ref(None)
+            .send_frame(None)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, true)?;
         Ok(())
@@ -475,7 +475,7 @@ unsafe fn drain_packets(
 ) -> Result<(), PreviewImageError> {
     loop {
         match codec_ctx
-            .receive_packet_into(packet)
+            .receive_packet(packet)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?
         {
             ff_sys::ReceiveOutcome::Frame => {
@@ -1163,7 +1163,7 @@ unsafe fn encode_gif_unsafe(
         first_frame.set_pts(frame_counter);
         frame_counter += 1;
         codec_ctx
-            .send_frame_ref(Some(&first_frame))
+            .send_frame(Some(&first_frame))
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
 
@@ -1183,14 +1183,14 @@ unsafe fn encode_gif_unsafe(
             frame_counter += 1;
             // `frame` drops at end of iteration (or on the `?` below), freeing it.
             codec_ctx
-                .send_frame_ref(Some(&frame))
+                .send_frame(Some(&frame))
                 .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
             drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, false)?;
         }
 
         // Flush encoder.
         codec_ctx
-            .send_frame_ref(None)
+            .send_frame(None)
             .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
         drain_packets(&mut codec_ctx, &mut fmt_ctx, &mut packet, true)?;
         Ok(())

@@ -48,14 +48,19 @@ impl Frame {
     }
 
     /// Returns the frame pointer for read-only use.
+    ///
+    /// Crate-internal: the safe swscale / swresample / codec APIs consume the
+    /// owned [`Frame`], so no public signature exposes this raw pointer.
     #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFrame {
+    pub(crate) const fn as_ptr(&self) -> *const AVFrame {
         self.ptr.as_ptr()
     }
 
     /// Returns the frame pointer for mutation and FFI calls.
+    ///
+    /// Crate-internal: see [`as_ptr`](Self::as_ptr).
     #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFrame {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut AVFrame {
         self.ptr.as_ptr()
     }
 

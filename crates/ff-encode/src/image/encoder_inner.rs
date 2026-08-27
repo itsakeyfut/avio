@@ -292,7 +292,7 @@ impl ImageEncoderInner {
 
         // ── Send frame → encoder ──────────────────────────────────────────────
         self.codec_ctx
-            .send_frame_ref(Some(&self.dst_frame))
+            .send_frame(Some(&self.dst_frame))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Receive packets ───────────────────────────────────────────────────
@@ -300,7 +300,7 @@ impl ImageEncoderInner {
 
         // ── Flush encoder ─────────────────────────────────────────────────────
         self.codec_ctx
-            .send_frame_ref(None)
+            .send_frame(None)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // ── Drain remaining packets ───────────────────────────────────────────
@@ -327,7 +327,7 @@ impl ImageEncoderInner {
         loop {
             match self
                 .codec_ctx
-                .receive_packet_into(&mut self.packet)
+                .receive_packet(&mut self.packet)
                 .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?
             {
                 ff_sys::ReceiveOutcome::Frame => {

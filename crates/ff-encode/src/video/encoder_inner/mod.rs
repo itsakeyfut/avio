@@ -349,7 +349,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Pass-1 codec context not initialized".to_string(),
                     })?
-                    .send_frame_ref(Some(&av_frame))
+                    .send_frame(Some(&av_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -406,7 +406,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .send_frame_ref(Some(&av_frame))
+                .send_frame(Some(&av_frame))
                 .map_err(|e| EncodeError::Ffmpeg {
                     code: e.code(),
                     message: format!(
@@ -459,7 +459,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(Some(&av_frame))
+                    .send_frame(Some(&av_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -522,7 +522,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(Some(&out_frame))
+                    .send_frame(Some(&out_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -555,7 +555,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Video codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(None)
+                    .send_frame(None)
                     .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_packets()?;
             }
@@ -597,7 +597,7 @@ impl VideoEncoderInner {
                             .ok_or_else(|| EncodeError::InvalidConfig {
                                 reason: "Audio codec not initialized".to_string(),
                             })?
-                            .send_frame_ref(Some(&out_frame));
+                            .send_frame(Some(&out_frame));
                         let _ = self.receive_audio_packets();
                         self.audio_sample_count += remaining as u64;
                     }
@@ -613,7 +613,7 @@ impl VideoEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(None)
+                    .send_frame(None)
                     .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_audio_packets()?;
             }

@@ -238,7 +238,7 @@ impl MuxerCore {
 
         if self
             .vid_enc_ctx
-            .send_frame_ref(Some(&self.vid_enc_frame))
+            .send_frame(Some(&self.vid_enc_frame))
             .is_ok()
         {
             drain_encoder(
@@ -337,7 +337,7 @@ impl MuxerCore {
             self.aud_enc_frame.set_nb_samples(n);
             self.aud_enc_frame.set_pts(self.audio_pts);
             if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
-                && aud_ctx.send_frame_ref(Some(&self.aud_enc_frame)).is_ok()
+                && aud_ctx.send_frame(Some(&self.aud_enc_frame)).is_ok()
             {
                 let aud_frame_period = AVRational {
                     num: aud_ctx.frame_size(),
@@ -370,7 +370,7 @@ impl MuxerCore {
     /// `open_unsafe`. This method must be called at most once.
     pub(crate) unsafe fn flush_and_close_unsafe(&mut self) {
         // ── Flush video encoder ───────────────────────────────────────────────
-        let _ = self.vid_enc_ctx.send_frame_ref(None);
+        let _ = self.vid_enc_ctx.send_frame(None);
         drain_encoder(
             &mut self.vid_enc_ctx,
             &mut self.out_ctx,
@@ -411,7 +411,7 @@ impl MuxerCore {
                         self.aud_enc_frame.set_nb_samples(n);
                         self.aud_enc_frame.set_pts(self.audio_pts);
                         if let Some(aud_ctx) = self.aud_enc_ctx.as_mut()
-                            && aud_ctx.send_frame_ref(Some(&self.aud_enc_frame)).is_ok()
+                            && aud_ctx.send_frame(Some(&self.aud_enc_frame)).is_ok()
                         {
                             let aud_frame_period = AVRational {
                                 num: aud_ctx.frame_size(),
@@ -432,7 +432,7 @@ impl MuxerCore {
 
             // Flush the AAC encoder itself.
             if let Some(aud_ctx) = self.aud_enc_ctx.as_mut() {
-                let _ = aud_ctx.send_frame_ref(None);
+                let _ = aud_ctx.send_frame(None);
                 let aud_frame_period = AVRational {
                     num: aud_ctx.frame_size(),
                     den: aud_ctx.sample_rate(),

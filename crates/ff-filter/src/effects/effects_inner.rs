@@ -235,7 +235,7 @@ fn drain_encoded_packets(
     stream_tb: ff_sys::AVRational,
 ) {
     while matches!(
-        enc_ctx.receive_packet_into(pkt),
+        enc_ctx.receive_packet(pkt),
         Ok(ff_sys::ReceiveOutcome::Frame)
     ) {
         // Read enc_tb at drain time — some encoders mutate time_base lazily.
@@ -630,7 +630,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     };
 
     // ── Encode first frame ────────────────────────────────────────────────────
-    let _ = enc_ctx.send_frame_ref(Some(&first_frame));
+    let _ = enc_ctx.send_frame(Some(&first_frame));
     drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
     drop(first_frame);
 
@@ -645,13 +645,13 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         ) {
             break;
         }
-        let _ = enc_ctx.send_frame_ref(Some(&frame));
+        let _ = enc_ctx.send_frame(Some(&frame));
         drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
         // `frame` drops at end of iteration.
     }
 
     // ── Flush the encoder ─────────────────────────────────────────────────────
-    let _ = enc_ctx.send_frame_ref(None);
+    let _ = enc_ctx.send_frame(None);
     drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
 
     // ── Finalize output ───────────────────────────────────────────────────────

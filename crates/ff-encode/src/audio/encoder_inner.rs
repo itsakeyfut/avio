@@ -420,7 +420,7 @@ impl AudioEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(Some(&av_frame))
+                    .send_frame(Some(&av_frame))
                     .map_err(|e| EncodeError::Ffmpeg {
                         code: e.code(),
                         message: format!(
@@ -510,7 +510,7 @@ impl AudioEncoderInner {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Audio codec not initialized".to_string(),
             })?
-            .send_frame_ref(Some(&av_frame))
+            .send_frame(Some(&av_frame))
             .map_err(|e| EncodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(
@@ -670,7 +670,7 @@ impl AudioEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Audio codec not initialized".to_string(),
                 })?
-                .receive_packet_into(&mut packet);
+                .receive_packet(&mut packet);
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -727,7 +727,7 @@ impl AudioEncoderInner {
                     .ok_or_else(|| EncodeError::InvalidConfig {
                         reason: "Audio codec not initialized".to_string(),
                     })?
-                    .send_frame_ref(None)
+                    .send_frame(None)
                     .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
                 self.receive_packets()?;
             }

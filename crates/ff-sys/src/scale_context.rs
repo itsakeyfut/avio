@@ -4,10 +4,9 @@
 //! drop, replacing the manual `swscale::get_context` + `sws_freeContext`
 //! pair. Its constructor is safe (it takes only dimensions, pixel formats, and
 //! flags). The safe [`scale_frames`](ScaleContext::scale_frames) /
-//! [`scale_planes`](ScaleContext::scale_planes) methods drive the scaler from
-//! owned [`Frame`] / borrowed plane slices; the raw
-//! [`scale`](ScaleContext::scale) stays `unsafe` for callers that still pass raw
-//! plane pointers.
+//! [`scale_planes`](ScaleContext::scale_planes) / [`scale_slices`](ScaleContext::scale_slices)
+//! methods drive the scaler from owned [`Frame`] / borrowed plane slices, so no
+//! public signature exposes a raw plane pointer.
 
 use std::os::raw::c_int;
 use std::ptr::NonNull;
@@ -226,43 +225,6 @@ impl ScaleContext {
                 src_h,
                 dst_ptrs.as_ptr(),
                 dst_line.as_ptr(),
-            )
-        }
-        .map_err(AvError::new)
-    }
-
-    /// Scales / converts a slice of the source image into the destination.
-    ///
-    /// Returns the height of the output slice.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AvError`] if scaling fails.
-    ///
-    /// # Safety
-    ///
-    /// The plane and stride arrays must be valid and sized for the formats and
-    /// dimensions this context was created for.
-    pub unsafe fn scale(
-        &mut self,
-        src: *const *const u8,
-        src_stride: *const c_int,
-        src_slice_y: c_int,
-        src_slice_h: c_int,
-        dst: *const *mut u8,
-        dst_stride: *const c_int,
-    ) -> Result<c_int, AvError> {
-        // SAFETY: `self.ptr` is a valid owned scaling context; the caller upholds
-        //         the plane / stride arrays.
-        unsafe {
-            crate::swscale::scale(
-                self.ptr.as_ptr(),
-                src,
-                src_stride,
-                src_slice_y,
-                src_slice_h,
-                dst,
-                dst_stride,
             )
         }
         .map_err(AvError::new)
