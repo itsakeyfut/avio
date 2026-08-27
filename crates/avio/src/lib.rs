@@ -264,9 +264,6 @@ pub use ff_analysis::{
 // re-exported from avio without ambiguity.
 // VideoCodecEncodeExt provides encode-specific helpers (is_lgpl_compatible,
 // default_extension) on the shared VideoCodec type; import it to call them.
-// Engine surface: `BitrateMode` is an `EncoderConfig::builder()` setter dep and
-// `EncodeError` is named by `TimelineError::Encode(#[from] EncodeError)` — unconditional.
-pub use ff_encode::{BitrateMode, EncodeError};
 #[cfg(feature = "encode")]
 pub use ff_encode::{
     AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder,
@@ -278,6 +275,9 @@ pub use ff_encode::{
     VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, VideoEncoderConfig,
     Vp9Options,
 };
+// Engine surface: `BitrateMode` is an `EncoderConfig::builder()` setter dep and
+// `EncodeError` is named by `TimelineError::Encode(#[from] EncodeError)` — unconditional.
+pub use ff_encode::{BitrateMode, EncodeError};
 
 // media-ops + trim moved to the `ff-remux` crate; re-exported here so `avio`'s
 // surface is unchanged (enabled by the `encode` feature, which pulls `ff-remux`).
@@ -301,6 +301,14 @@ pub use ff_decode::{
 pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 
 // ── filter feature ────────────────────────────────────────────────────────────
+#[cfg(feature = "filter")]
+pub use ff_filter::{
+    AnalyzeOptions, AnimationEntry, AudioConcatenator, AudioTrack, CrossfadeJoiner, FilterGraph,
+    FilterGraphBuilder, Interpolation, LavfiSource, LayerSource, LensProfile, Lerp, LoudnessMeter,
+    LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType, ProxySource,
+    QualityMetrics, RealtimeComposer, SolidSource, StabilizeOptions, Stabilizer, TextSource,
+    VideoConcatenator, VideoLayer,
+};
 // Engine surface: the ff-filter authoring set the model names via Clip / FilterStep /
 // animation (Clip fields, FilterStep variant payloads, animation authoring,
 // Clip::realtime_layer[_descriptor] returns, FilterError, and the EncoderConfig HwAccel
@@ -309,14 +317,6 @@ pub use ff_filter::{
     AnimatedValue, AnimationTrack, BlendMode, CompositeOp, DrawTextOptions, Easing, EqBand,
     FilterError, FilterStep, HwAccel, Keyframe, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
-};
-#[cfg(feature = "filter")]
-pub use ff_filter::{
-    AnalyzeOptions, AnimationEntry, AudioConcatenator, AudioTrack, CrossfadeJoiner, FilterGraph,
-    FilterGraphBuilder, Interpolation, LavfiSource, LayerSource, LensProfile, Lerp, LoudnessMeter,
-    LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType, ProxySource,
-    QualityMetrics, RealtimeComposer, SolidSource, StabilizeOptions, Stabilizer, TextSource,
-    VideoConcatenator, VideoLayer,
 };
 
 // ── editing model (unconditional) ─────────────────────────────────────────────
@@ -347,15 +347,15 @@ pub use timeline::{Timeline, TimelineBuilder};
 pub use track::Track;
 pub use validate::TimelineIssue;
 
-// Engine surface: `Timeline::render(config: EncoderConfig)` and
-// `render_with_progress(_, _, impl Fn(&Progress) -> bool)` name these; the builder is
-// `EncoderConfig::builder()`'s constructor — unconditional.
-pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
     AudioPipeline, Pipeline, PipelineBuilder, PipelineError, ProgressCallback, ThumbnailPipeline,
     VideoPipeline,
 };
+// Engine surface: `Timeline::render(config: EncoderConfig)` and
+// `render_with_progress(_, _, impl Fn(&Progress) -> bool)` name these; the builder is
+// `EncoderConfig::builder()`'s constructor — unconditional.
+pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 
 // ── stream feature ────────────────────────────────────────────────────────────
 //
