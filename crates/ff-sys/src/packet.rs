@@ -41,14 +41,19 @@ impl Packet {
     }
 
     /// Returns the packet pointer for read-only use.
+    ///
+    /// Crate-internal: the safe codec / format APIs consume the owned [`Packet`],
+    /// so no public signature exposes this raw pointer.
     #[must_use]
-    pub const fn as_ptr(&self) -> *const AVPacket {
+    pub(crate) const fn as_ptr(&self) -> *const AVPacket {
         self.ptr.as_ptr()
     }
 
     /// Returns the packet pointer for mutation and FFI calls.
+    ///
+    /// Crate-internal: see [`as_ptr`](Self::as_ptr).
     #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut AVPacket {
         self.ptr.as_ptr()
     }
 

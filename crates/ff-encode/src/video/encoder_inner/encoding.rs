@@ -42,7 +42,7 @@ impl VideoEncoderInner {
         })?;
 
         loop {
-            match codec_ctx.receive_packet_into(&mut packet) {
+            match codec_ctx.receive_packet(&mut packet) {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Discard — do not write to the format context.
                     packet.unref();
@@ -265,7 +265,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .receive_packet_into(&mut packet);
+                .receive_packet(&mut packet);
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully
@@ -455,7 +455,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Audio codec not initialized".to_string(),
                 })?
-                .receive_packet_into(&mut packet);
+                .receive_packet(&mut packet);
             match recv {
                 Ok(ff_sys::ReceiveOutcome::Frame) => {
                     // Packet received successfully

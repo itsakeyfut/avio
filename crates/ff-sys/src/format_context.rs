@@ -3,18 +3,16 @@
 //! [`InputFormatContext`] opens a demuxing context and frees it exactly once on
 //! drop, replacing the manual `avformat::open_input*` + `avformat::close_input`
 //! pair. Its fallible methods return [`AvError`]. The packet argument of
-//! [`read_frame`](InputFormatContext::read_frame) stays a raw pointer for now
-//! (an owned Packet is a later step), so that method is `unsafe`: the caller
-//! upholds the usual FFmpeg preconditions.
+//! [`read_frame`](InputFormatContext::read_frame) is the owned [`Packet`], so no
+//! public signature exposes a raw pointer.
 //!
 //! [`OutputFormatContext`] owns the mux (output) lifecycle: it allocates a
 //! muxing context, opens/closes its IO (`pb`), writes the header/trailer, and
 //! frees the context exactly once on drop (closing a caller-opened `pb`),
 //! replacing the manual `avformat_alloc_output_context2` + `avio_open` +
 //! `avformat_free_context` teardown. The write path (stream creation, packet
-//! writing, metadata / attachments / chapters) is exposed through safe methods;
-//! a transitional `as_mut_ptr` remains for the few sites not yet wrapped and is
-//! removed once the safe layer is sealed.
+//! writing, metadata / attachments / chapters) is exposed entirely through safe
+//! methods.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -143,18 +141,6 @@ impl InputFormatContext {
         NonNull::new(ptr)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
             .map(|ptr| Self { ptr })
-    }
-
-    /// Returns the context pointer for read-only use.
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFormatContext {
-        self.ptr.as_ptr()
-    }
-
-    /// Returns the context pointer for mutation and FFI calls.
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
-        self.ptr.as_ptr()
     }
 
     /// Returns the number of streams in the container.
@@ -393,13 +379,10 @@ unsafe impl Send for InputFormatContext {}
 /// Exactly-once free is guaranteed by construction: the value owns a
 /// [`NonNull`] and is neither `Copy` nor `Clone`.
 ///
-/// The lifecycle (allocation, IO open/close, header/trailer) is wrapped as
-/// methods; the write path (`avformat_new_stream`, per-stream field setup,
-/// `av_interleaved_write_frame`) still goes through [`as_mut_ptr`] for now, so
-/// this type carries a transitional raw accessor like [`InputFormatContext`]
-/// (both are removed when the safe layer is sealed).
-///
-/// [`as_mut_ptr`]: OutputFormatContext::as_mut_ptr
+/// The lifecycle (allocation, IO open/close, header/trailer) and the write path
+/// (`avformat_new_stream`, per-stream field setup, `av_interleaved_write_frame`)
+/// are exposed entirely through safe methods, so no public signature exposes the
+/// raw context pointer.
 #[derive(Debug)]
 pub struct OutputFormatContext {
     ptr: NonNull<AVFormatContext>,
@@ -446,19 +429,6 @@ impl OutputFormatContext {
         NonNull::new(ctx)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
             .map(|ptr| Self { ptr })
-    }
-
-    /// Returns the context pointer for read-only use.
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFormatContext {
-        self.ptr.as_ptr()
-    }
-
-    /// Returns the context pointer for mutation and FFI calls (stream creation,
-    /// packet writing, and per-stream field setup during migration).
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
-        self.ptr.as_ptr()
     }
 
     /// Returns the number of streams registered on the context.

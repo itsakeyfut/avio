@@ -13,8 +13,8 @@ use std::ptr::{self, NonNull};
 
 use crate::{
     AVCodecContext, AVCodecID, AVCodecParameters, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVColorTransferCharacteristic, AVDictionary, AVFrame, AVPacket, AVPixelFormat, AVRational,
-    AVSampleFormat, AvError, Codec, CodecParameters, Frame, HwDeviceContext, Packet,
+    AVColorTransferCharacteristic, AVDictionary, AVPixelFormat, AVRational, AVSampleFormat,
+    AvError, Codec, CodecParameters, Frame, HwDeviceContext, Packet,
     av_buffer_replace as ffi_av_buffer_replace, avcodec_free_context as ffi_avcodec_free_context,
 };
 
@@ -87,14 +87,22 @@ impl CodecContext {
     }
 
     /// Returns the context pointer for read-only use.
+    ///
+    /// Test-only: retained solely for ff-sys's own unit tests (the raw-FFI audio
+    /// decoder helper in `swresample`). No public or non-test signature exposes
+    /// this raw pointer.
+    #[cfg(test)]
     #[must_use]
-    pub const fn as_ptr(&self) -> *const AVCodecContext {
+    pub(crate) const fn as_ptr(&self) -> *const AVCodecContext {
         self.ptr.as_ptr()
     }
 
     /// Returns the context pointer for mutation and FFI calls.
+    ///
+    /// Test-only: see `as_ptr`.
+    #[cfg(test)]
     #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVCodecContext {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut AVCodecContext {
         self.ptr.as_ptr()
     }
 
@@ -584,51 +592,20 @@ impl CodecContext {
         unsafe { crate::avcodec::flush_buffers(self.ptr.as_ptr()) };
     }
 
-    /// Sends a frame to the encoder (a null frame flushes it, entering draining).
-    ///
-    /// After sending a null frame, loop [`receive_packet`](Self::receive_packet)
-    /// until it returns [`ReceiveOutcome::Drained`] to collect the buffered packets.
-    ///
-    /// # Safety
-    ///
-    /// `frame` must be null or a valid `*const AVFrame`.
-    pub unsafe fn send_frame(&mut self, frame: *const AVFrame) -> Result<(), AvError> {
-        // SAFETY: `self.ptr` is a valid open encoder context; the caller upholds `frame`.
-        unsafe { crate::avcodec::send_frame(self.ptr.as_ptr(), frame) }.map_err(AvError::new)
-    }
-
-    /// Receives an encoded packet, returning a typed [`ReceiveOutcome`].
-    ///
-    /// `EAGAIN` (need input) and `EOF` (drained) are returned as
-    /// [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`] rather than
-    /// errors; only other negative codes are `Err`.
-    ///
-    /// # Safety
-    ///
-    /// `pkt` must be a valid `*mut AVPacket`.
-    pub unsafe fn receive_packet(&mut self, pkt: *mut AVPacket) -> Result<ReceiveOutcome, AvError> {
-        // SAFETY: `self.ptr` is a valid open encoder context; the caller upholds `pkt`.
-        let result = unsafe { crate::avcodec::receive_packet(self.ptr.as_ptr(), pkt) };
-        classify_receive(result)
-    }
-
     /// Sends a frame to the encoder; `None` flushes it, entering draining.
     ///
-    /// The safe counterpart of [`send_frame`](Self::send_frame): after sending
-    /// `None`, loop [`receive_packet_into`](Self::receive_packet_into) until it
+    /// After sending `None`, loop [`receive_packet`](Self::receive_packet) until it
     /// returns [`ReceiveOutcome::Drained`] to collect the buffered packets.
-    ///
-    /// Transitional name: this is renamed to `send_frame` once the raw `unsafe`
-    /// [`send_frame`](Self::send_frame) is removed (#1506).
     ///
     /// # Errors
     ///
     /// Returns an [`AvError`] on a real encode error.
-    pub fn send_frame_ref(&mut self, frame: Option<&Frame>) -> Result<(), AvError> {
+    pub fn send_frame(&mut self, frame: Option<&Frame>) -> Result<(), AvError> {
         let ptr = frame.map_or(std::ptr::null(), Frame::as_ptr);
-        // SAFETY: `ptr` is null (flush) or a valid `*const AVFrame` borrowed from
-        //         `frame` for the duration of the call; `self.ptr` is a valid context.
-        unsafe { self.send_frame(ptr) }
+        // SAFETY: `self.ptr` is a valid owned encoder context; `ptr` is null (flush)
+        //         or a valid `*const AVFrame` borrowed from `frame` for the call. An
+        //         unopened context is rejected with EINVAL (no deref), so this is safe.
+        unsafe { crate::avcodec::send_frame(self.ptr.as_ptr(), ptr) }.map_err(AvError::new)
     }
 
     /// Attaches a hardware device context to this codec context (for hardware
@@ -662,20 +639,19 @@ impl CodecContext {
 
     /// Receives an encoded packet into `pkt`, returning a typed [`ReceiveOutcome`].
     ///
-    /// The safe counterpart of [`receive_packet`](Self::receive_packet), pairing
-    /// with [`receive_frame`](Self::receive_frame). `EAGAIN` / `EOF` are returned
-    /// as [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`], not errors.
-    ///
-    /// Transitional name: this is renamed to `receive_packet` once the raw `unsafe`
-    /// [`receive_packet`](Self::receive_packet) is removed (#1506).
+    /// Pairs with [`receive_frame`](Self::receive_frame). `EAGAIN` / `EOF` are
+    /// returned as [`ReceiveOutcome::NeedInput`] / [`ReceiveOutcome::Drained`],
+    /// not errors.
     ///
     /// # Errors
     ///
     /// Returns an [`AvError`] on a real encode error.
-    pub fn receive_packet_into(&mut self, pkt: &mut Packet) -> Result<ReceiveOutcome, AvError> {
-        // SAFETY: `pkt` is a valid owned packet borrowed mutably for the call;
-        //         `self.ptr` is a valid context.
-        unsafe { self.receive_packet(pkt.as_mut_ptr()) }
+    pub fn receive_packet(&mut self, pkt: &mut Packet) -> Result<ReceiveOutcome, AvError> {
+        // SAFETY: `self.ptr` is a valid owned encoder context; `pkt` is a valid owned
+        //         packet borrowed mutably for the call. An unopened context is rejected
+        //         with EINVAL (no deref), so this is safe.
+        let result = unsafe { crate::avcodec::receive_packet(self.ptr.as_ptr(), pkt.as_mut_ptr()) };
+        classify_receive(result)
     }
 
     /// Copies this context's parameters into `par` (encoder → stream codecpar).
@@ -727,9 +703,8 @@ mod tests {
     fn codec_context_new_should_allocate_and_drop_cleanly() {
         // A `None` codec yields a generic context, so this does not depend on any
         // specific decoder being present in the linked FFmpeg build.
-        let ctx = CodecContext::new(None).expect("alloc should succeed");
-        assert!(!ctx.as_ptr().is_null());
-        // Dropping `ctx` here frees the context exactly once (no panic / double free).
+        let _ctx = CodecContext::new(None).expect("alloc should succeed");
+        // Dropping `_ctx` here frees the context exactly once (no panic / double free).
     }
 
     #[test]
@@ -827,17 +802,17 @@ mod tests {
     }
 
     #[test]
-    fn send_frame_ref_and_receive_packet_into_should_err_when_unopened() {
+    fn send_frame_and_receive_packet_should_err_when_unopened() {
         // On an unopened context avcodec_send_frame / avcodec_receive_packet return
         // EINVAL via the avcodec_is_open guard (no deref); the safe wrappers must
         // surface that as Err without panicking — for both the flush (None) and
         // frame (Some) send paths and the receive path.
         let mut ctx = CodecContext::new(None).expect("alloc should succeed");
-        assert!(ctx.send_frame_ref(None).is_err());
+        assert!(ctx.send_frame(None).is_err());
         let frame = Frame::new().expect("frame alloc should succeed");
-        assert!(ctx.send_frame_ref(Some(&frame)).is_err());
+        assert!(ctx.send_frame(Some(&frame)).is_err());
         let mut pkt = Packet::new().expect("packet alloc should succeed");
-        assert!(ctx.receive_packet_into(&mut pkt).is_err());
+        assert!(ctx.receive_packet(&mut pkt).is_err());
     }
 
     #[test]

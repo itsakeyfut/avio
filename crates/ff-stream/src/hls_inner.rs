@@ -495,7 +495,7 @@ unsafe fn write_hls_unsafe(
                     false
                 };
 
-                if scaled && vid_enc_ctx.send_frame_ref(Some(&vid_enc_frame)).is_ok() {
+                if scaled && vid_enc_ctx.send_frame(Some(&vid_enc_frame)).is_ok() {
                     crate::codec_utils::drain_encoder(
                         &mut vid_enc_ctx,
                         &mut out_ctx,
@@ -553,7 +553,7 @@ unsafe fn write_hls_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
+                    if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
@@ -574,7 +574,7 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 14. Flush encoders ────────────────────────────────────────────────────
-    let _ = vid_enc_ctx.send_frame_ref(None);
+    let _ = vid_enc_ctx.send_frame(None);
     crate::codec_utils::drain_encoder(
         &mut vid_enc_ctx,
         &mut out_ctx,
@@ -611,7 +611,7 @@ unsafe fn write_hls_unsafe(
                 {
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
-                    if aud_enc.send_frame_ref(Some(&aud_enc_frame)).is_ok() {
+                    if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
                         crate::codec_utils::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
@@ -624,7 +624,7 @@ unsafe fn write_hls_unsafe(
                 aud_enc_frame.unref();
             }
         }
-        let _ = aud_enc.send_frame_ref(None);
+        let _ = aud_enc.send_frame(None);
         crate::codec_utils::drain_encoder(
             aud_enc,
             &mut out_ctx,

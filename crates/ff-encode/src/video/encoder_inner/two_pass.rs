@@ -72,7 +72,7 @@ impl VideoEncoderInner {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Pass-1 codec context not initialized".to_string(),
             })?
-            .send_frame(ptr::null())
+            .send_frame(None)
             && e.code() != ff_sys::error_codes::EOF
         {
             return Err(EncodeError::Ffmpeg {
@@ -157,7 +157,7 @@ impl VideoEncoderInner {
                 .ok_or_else(|| EncodeError::InvalidConfig {
                     reason: "Video codec not initialized".to_string(),
                 })?
-                .send_frame(ptr::null())
+                .send_frame(None)
                 && e.code() != ff_sys::error_codes::EOF
             {
                 return Err(EncodeError::Ffmpeg {
@@ -411,7 +411,7 @@ impl VideoEncoderInner {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Video codec not initialized".to_string(),
             })?
-            .send_frame_ref(Some(&av_frame))
+            .send_frame(Some(&av_frame))
             .map_err(|e| EncodeError::Ffmpeg {
                 code: e.code(),
                 message: format!(

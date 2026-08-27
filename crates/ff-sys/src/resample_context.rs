@@ -8,10 +8,11 @@
 //! [`convert_into_planes`](ResampleContext::convert_into_planes) resamples an
 //! owned [`Frame`]'s audio into caller-provided plane slices, and its mirror
 //! [`convert_into_frame`](ResampleContext::convert_into_frame) resamples caller
-//! plane slices into an owned output [`Frame`]; both take borrowed slices instead
-//! of raw pointers. [`convert`](ResampleContext::convert) stays `unsafe` for
-//! callers that still pass raw plane pointers, and [`new`](Self::new) is `unsafe`
-//! because it takes raw channel-layout pointers.
+//! plane slices into an owned output [`Frame`], and
+//! [`flush_into_frame`](ResampleContext::flush_into_frame) drains the buffered
+//! samples; all take borrowed slices instead of raw pointers, so no public
+//! signature exposes a raw plane pointer. [`new`](Self::new) is `unsafe` because
+//! it takes raw channel-layout pointers.
 
 use std::os::raw::c_int;
 use std::ptr::NonNull;
@@ -232,32 +233,6 @@ impl ResampleContext {
             )
         }
         .map_err(AvError::new)
-    }
-
-    /// Converts (resamples / reformats) audio samples into the output buffers.
-    ///
-    /// Returns the number of samples produced per channel. Passing a null `in_`
-    /// with `in_count` 0 flushes buffered samples.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AvError`] if conversion fails.
-    ///
-    /// # Safety
-    ///
-    /// `out` / `in_` and their counts must describe buffers valid for this
-    /// context's configured formats (or a null `in_` with a zero count).
-    pub unsafe fn convert(
-        &mut self,
-        out: *mut *mut u8,
-        out_count: c_int,
-        in_: *const *const u8,
-        in_count: c_int,
-    ) -> Result<c_int, AvError> {
-        // SAFETY: `self.ptr` is a valid initialized context; the caller upholds
-        //         the sample buffers.
-        unsafe { crate::swresample::convert(self.ptr.as_ptr(), out, out_count, in_, in_count) }
-            .map_err(AvError::new)
     }
 
     /// Returns the number of output samples a `swr_convert` with `in_samples`

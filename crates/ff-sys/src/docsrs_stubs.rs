@@ -1161,16 +1161,6 @@ impl CodecContext {
         Err(crate::AvError::new(-1))
     }
 
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const AVCodecContext {
-        self._ptr.as_ptr()
-    }
-
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVCodecContext {
-        self._ptr.as_ptr()
-    }
-
     pub fn set_thread_count(&mut self, _thread_count: c_int) {}
 
     pub fn set_width(&mut self, _width: c_int) {}
@@ -1338,24 +1328,9 @@ impl CodecContext {
     /// Stub; never executed on docs.rs.
     pub unsafe fn flush_buffers(&mut self) {}
 
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn send_frame(&mut self, _frame: *const AVFrame) -> Result<(), crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
-
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn receive_packet(
-        &mut self,
-        _pkt: *mut AVPacket,
-    ) -> Result<ReceiveOutcome, crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
-
     /// # Errors
     /// Stub; never executed on docs.rs.
-    pub fn send_frame_ref(&mut self, _frame: Option<&Frame>) -> Result<(), crate::AvError> {
+    pub fn send_frame(&mut self, _frame: Option<&Frame>) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 
@@ -1370,7 +1345,7 @@ impl CodecContext {
 
     /// # Errors
     /// Stub; never executed on docs.rs.
-    pub fn receive_packet_into(
+    pub fn receive_packet(
         &mut self,
         _pkt: &mut Packet,
     ) -> Result<ReceiveOutcome, crate::AvError> {
@@ -1428,16 +1403,6 @@ impl InputFormatContext {
         _framerate: u32,
     ) -> Result<Self, crate::AvError> {
         Err(crate::AvError::new(-1))
-    }
-
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFormatContext {
-        self._ptr.as_ptr()
-    }
-
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
-        self._ptr.as_ptr()
     }
 
     #[must_use]
@@ -1559,16 +1524,6 @@ impl OutputFormatContext {
         _filename: &std::path::Path,
     ) -> Result<Self, crate::AvError> {
         Err(crate::AvError::new(-1))
-    }
-
-    #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFormatContext {
-        self._ptr.as_ptr()
-    }
-
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFormatContext {
-        self._ptr.as_ptr()
     }
 
     #[must_use]
@@ -1868,12 +1823,12 @@ impl Frame {
     }
 
     #[must_use]
-    pub const fn as_ptr(&self) -> *const AVFrame {
+    pub(crate) const fn as_ptr(&self) -> *const AVFrame {
         self._ptr.as_ptr()
     }
 
     #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVFrame {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut AVFrame {
         self._ptr.as_ptr()
     }
 
@@ -2022,12 +1977,12 @@ impl Packet {
     }
 
     #[must_use]
-    pub const fn as_ptr(&self) -> *const AVPacket {
+    pub(crate) const fn as_ptr(&self) -> *const AVPacket {
         self._ptr.as_ptr()
     }
 
     #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut AVPacket {
         self._ptr.as_ptr()
     }
 
@@ -2211,21 +2166,6 @@ impl ScaleContext {
         Err(crate::AvError::new(-1))
     }
 
-    /// # Errors
-    /// Stub; never executed on docs.rs.
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn scale(
-        &mut self,
-        _src: *const *const u8,
-        _src_stride: *const c_int,
-        _src_slice_y: c_int,
-        _src_slice_h: c_int,
-        _dst: *const *mut u8,
-        _dst_stride: *const c_int,
-    ) -> Result<c_int, crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
 }
 
 impl Drop for ScaleContext {
@@ -2291,20 +2231,6 @@ impl ResampleContext {
     /// # Safety
     /// Stub; never executed on docs.rs.
     pub unsafe fn flush_into_frame(&mut self, _dst: &mut Frame) -> Result<c_int, crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
-
-    /// # Errors
-    /// Stub; never executed on docs.rs.
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn convert(
-        &mut self,
-        _out: *mut *mut u8,
-        _out_count: c_int,
-        _in_: *const *const u8,
-        _in_count: c_int,
-    ) -> Result<c_int, crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 

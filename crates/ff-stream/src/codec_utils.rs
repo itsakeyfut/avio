@@ -213,7 +213,7 @@ pub(crate) fn drain_encoder(
     let frame_dur_enc_tb = unsafe { av_rescale_q(1, frame_period, enc_tb) };
 
     // NeedInput (EAGAIN) / Drained (EOF) / real error all end the drain.
-    while let Ok(ReceiveOutcome::Frame) = enc_ctx.receive_packet_into(&mut pkt) {
+    while let Ok(ReceiveOutcome::Frame) = enc_ctx.receive_packet(&mut pkt) {
         // Always override duration with the correct per-frame value BEFORE rescaling.
         if frame_dur_enc_tb > 0 {
             pkt.set_duration(frame_dur_enc_tb);
