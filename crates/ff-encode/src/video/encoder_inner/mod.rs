@@ -39,10 +39,9 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_VP9, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, avcodec, swresample,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, swresample,
 };
 use std::ffi::CString;
-use std::ptr;
 
 /// Internal encoder state with FFmpeg contexts.
 pub(super) struct VideoEncoderInner {

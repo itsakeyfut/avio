@@ -1,7 +1,6 @@
 //! Packet writing loop and segment management for single-rendition and ABR DASH output.
 
 use std::ffi::CString;
-use std::ptr;
 
 use ff_sys::{
     AVPictureType_AV_PICTURE_TYPE_I, AVPictureType_AV_PICTURE_TYPE_NONE,
@@ -89,7 +88,7 @@ pub(super) unsafe fn write_dash_unsafe(
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .open(vid_decoder, ptr::null_mut())
+        .open_codec(vid_decoder)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 5. Open input audio decoder (optional) ────────────────────────────────
@@ -106,9 +105,7 @@ pub(super) unsafe fn write_dash_unsafe(
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.apply_parameters(&aud_par).is_ok()
-                    && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
-                {
+                if ctx.apply_parameters(&aud_par).is_ok() && ctx.open_codec(aud_decoder).is_ok() {
                     aud_sample_rate = ctx.sample_rate();
                     aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
@@ -177,7 +174,7 @@ pub(super) unsafe fn write_dash_unsafe(
     // On error the owned `vid_enc_ctx` / decoders / `input_ctx` / `out_ctx` all
     // drop; no manual teardown is needed.
     vid_enc_ctx
-        .open(vid_enc_codec, ptr::null_mut())
+        .open_codec(vid_enc_codec)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 9. Add video output stream ────────────────────────────────────────────
@@ -626,7 +623,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     vid_dec_ctx
-        .open(vid_decoder, ptr::null_mut())
+        .open_codec(vid_decoder)
         .map_err(|e| ffmpeg_err(e.code()))?;
 
     // ── 5. Open input audio decoder (optional) ────────────────────────────────
@@ -643,9 +640,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
 
         if let Some(aud_decoder) = ff_sys::Codec::find_decoder(aud_codec_id) {
             if let Ok(mut ctx) = ff_sys::CodecContext::new(Some(aud_decoder)) {
-                if ctx.apply_parameters(&aud_par).is_ok()
-                    && ctx.open(aud_decoder, ptr::null_mut()).is_ok()
-                {
+                if ctx.apply_parameters(&aud_par).is_ok() && ctx.open_codec(aud_decoder).is_ok() {
                     aud_sample_rate = ctx.sample_rate();
                     aud_nb_channels = ctx.ch_layout().nb_channels;
                     aud_dec_ctx = Some(ctx);
@@ -724,7 +719,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
         enc_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
         enc_ctx.set_bit_rate(target_bitrate);
 
-        if let Err(e) = enc_ctx.open(vid_enc_codec, ptr::null_mut()) {
+        if let Err(e) = enc_ctx.open_codec(vid_enc_codec) {
             // `enc_ctx` and the prior renditions drop on return.
             return Err(ffmpeg_err(e.code()));
         }

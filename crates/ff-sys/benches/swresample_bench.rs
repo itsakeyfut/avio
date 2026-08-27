@@ -6,9 +6,69 @@ use std::hint::black_box;
 use std::os::raw::c_int;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use ff_sys::swresample::{
-    alloc_set_opts2, channel_layout, convert, estimate_output_samples, init, sample_format,
-};
+use ff_sys::swresample::{channel_layout, estimate_output_samples, sample_format};
+use ff_sys::{AVChannelLayout, AVSampleFormat, SwrContext};
+
+// The hand-written `swresample::alloc_set_opts2` / `init` / `convert` wrappers are
+// sealed (`pub(crate)`), so this raw-FFI microbenchmark calls the bindgen entry
+// points directly through these thin shims, keeping the benchmark bodies unchanged.
+
+/// # Safety
+/// The channel-layout pointers must be valid for the duration of the call.
+unsafe fn alloc_set_opts2(
+    out_ch_layout: *const AVChannelLayout,
+    out_sample_fmt: AVSampleFormat,
+    out_sample_rate: c_int,
+    in_ch_layout: *const AVChannelLayout,
+    in_sample_fmt: AVSampleFormat,
+    in_sample_rate: c_int,
+) -> Result<*mut SwrContext, c_int> {
+    let mut ctx: *mut SwrContext = std::ptr::null_mut();
+    // SAFETY: `&mut ctx` is a valid out-pointer; the layout pointers are upheld
+    //         by the caller; null log_ctx and 0 log_offset are accepted.
+    let ret = unsafe {
+        ff_sys::swr_alloc_set_opts2(
+            &mut ctx,
+            out_ch_layout,
+            out_sample_fmt,
+            out_sample_rate,
+            in_ch_layout,
+            in_sample_fmt,
+            in_sample_rate,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if ret < 0 {
+        Err(ret)
+    } else if ctx.is_null() {
+        Err(-1)
+    } else {
+        Ok(ctx)
+    }
+}
+
+/// # Safety
+/// `ctx` must be an allocated, configured `SwrContext`.
+unsafe fn init(ctx: *mut SwrContext) -> Result<(), c_int> {
+    // SAFETY: the caller upholds `ctx`.
+    let ret = unsafe { ff_sys::swr_init(ctx) };
+    if ret < 0 { Err(ret) } else { Ok(()) }
+}
+
+/// # Safety
+/// `ctx` and the sample buffers must be valid for the configured formats.
+unsafe fn convert(
+    ctx: *mut SwrContext,
+    out: *mut *mut u8,
+    out_count: c_int,
+    in_: *const *const u8,
+    in_count: c_int,
+) -> Result<c_int, c_int> {
+    // SAFETY: the caller upholds the context and sample buffers.
+    let ret = unsafe { ff_sys::swr_convert(ctx, out, out_count, in_, in_count) };
+    if ret < 0 { Err(ret) } else { Ok(ret) }
+}
 
 /// Benchmark context creation for different configurations.
 fn bench_context_creation(c: &mut Criterion) {

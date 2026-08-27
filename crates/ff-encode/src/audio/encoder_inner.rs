@@ -202,7 +202,7 @@ impl AudioEncoderInner {
 
         // Open codec
         codec_ctx
-            .open(codec, ptr::null_mut())
+            .open_codec(codec)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // After open2, frame_size is populated.  Allocate an AVAudioFifo when
@@ -565,7 +565,7 @@ impl AudioEncoderInner {
                         target_ch_layout,
                         target_format,
                         target_sample_rate,
-                        &raw const src_ch_layout,
+                        &src_ch_layout,
                         src_format,
                         src_sample_rate,
                     )

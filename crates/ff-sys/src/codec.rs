@@ -54,6 +54,14 @@ impl Codec {
     }
 
     /// Returns the underlying codec pointer for FFI calls.
+    ///
+    /// [`Codec`] is a lightweight borrowed handle to a static FFmpeg codec, not a
+    /// sealed owned resource, so it deliberately exposes its raw pointer for
+    /// consumers that read codec-descriptor fields (`sample_fmts`, `capabilities`,
+    /// …) the safe API does not (yet) mirror.
+    // seal-allow-raw: Codec is a borrowed static handle, intentionally out of the
+    // #1506 owned-type seal (see #1566); consumers read AVCodec descriptor fields
+    // through this pointer.
     #[must_use]
     pub const fn as_ptr(&self) -> *const AVCodec {
         self.ptr.as_ptr()

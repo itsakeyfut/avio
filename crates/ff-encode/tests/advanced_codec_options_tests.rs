@@ -22,25 +22,17 @@ use std::time::Instant;
 
 /// Returns `true` when `libx265` is compiled into this FFmpeg build.
 fn is_libx265_available() -> bool {
-    let name = b"libx265\0";
-    // SAFETY: `name` is a valid null-terminated C string with static lifetime.
-    // The pointer is never stored beyond this call; FFmpeg does not take
-    // ownership of the name buffer.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("libx265").is_some()
 }
 
 /// Returns `true` when `libaom-av1` is compiled into this FFmpeg build.
 fn is_libaom_av1_available() -> bool {
-    let name = b"libaom-av1\0";
-    // SAFETY: same invariants as above.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("libaom-av1").is_some()
 }
 
 /// Returns `true` when `libvpx-vp9` is compiled into this FFmpeg build.
 fn is_libvpx_vp9_available() -> bool {
-    let name = b"libvpx-vp9\0";
-    // SAFETY: same invariants as above.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("libvpx-vp9").is_some()
 }
 
 // ── H.265 ─────────────────────────────────────────────────────────────────────

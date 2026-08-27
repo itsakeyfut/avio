@@ -1287,25 +1287,6 @@ impl CodecContext {
         Err(crate::AvError::new(-1))
     }
 
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn parameters_to_context(
-        &mut self,
-        _par: *const AVCodecParameters,
-    ) -> Result<(), crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
-
-    /// # Safety
-    /// Stub; never executed on docs.rs.
-    pub unsafe fn open(
-        &mut self,
-        _codec: Codec,
-        _options: *mut *mut AVDictionary,
-    ) -> Result<(), crate::AvError> {
-        Err(crate::AvError::new(-1))
-    }
-
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn send_packet(&mut self, _pkt: &Packet) -> Result<(), crate::AvError> {
@@ -1354,7 +1335,7 @@ impl CodecContext {
 
     /// # Safety
     /// Stub; never executed on docs.rs.
-    pub unsafe fn parameters_from_context(
+    pub(crate) unsafe fn parameters_from_context(
         &self,
         _par: *mut AVCodecParameters,
     ) -> Result<(), crate::AvError> {

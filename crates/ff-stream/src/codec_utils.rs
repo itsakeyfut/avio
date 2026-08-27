@@ -105,8 +105,7 @@ pub(crate) unsafe fn open_aac_encoder(
     enc.set_ch_layout_default(nb_channels);
 
     // On open failure `enc` drops (Drop = avcodec_free_context), so no manual free.
-    enc.open(codec, std::ptr::null_mut())
-        .map_err(|e| ffmpeg_err(e.code()))?;
+    enc.open_codec(codec).map_err(|e| ffmpeg_err(e.code()))?;
 
     log::info!(
         "{log_prefix} aac encoder opened \

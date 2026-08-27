@@ -16,7 +16,6 @@ use super::color::{
 use super::options::codec_to_id;
 use super::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, CString, EncodeError, VideoEncoderConfig, VideoEncoderInner,
-    ptr,
 };
 
 /// FFmpeg pass-1 encoding flag: collect two-pass statistics, discard encoded output.
@@ -314,7 +313,7 @@ impl VideoEncoderInner {
         // native mpeg4 encoder without meaningful stats) do not support PASS2 and
         // return AVERROR(EPERM). In that case, fall back to opening without the
         // flag so the caller still gets a valid encoder and usable output.
-        if codec_ctx.open(selected_codec, ptr::null_mut()).is_err() {
+        if codec_ctx.open_codec(selected_codec).is_err() {
             log::warn!(
                 "two-pass pass-2 codec rejected AV_CODEC_FLAG_PASS2, \
                  falling back to single-pass mode codec={encoder_name}"
@@ -324,7 +323,7 @@ impl VideoEncoderInner {
             codec_ctx.set_flags(codec_ctx.flags() & !AV_CODEC_FLAG_PASS2);
             codec_ctx.clear_stats_in();
             codec_ctx
-                .open(selected_codec, ptr::null_mut())
+                .open_codec(selected_codec)
                 .map_err(|e| EncodeError::Ffmpeg {
                     code: e.code(),
                     message: format!(

@@ -2,7 +2,10 @@
 
 use std::os::raw::c_int;
 
-use crate::{SwrContext, swr_convert as ffi_swr_convert, swr_get_delay as ffi_swr_get_delay};
+use crate::{SwrContext, swr_convert as ffi_swr_convert};
+// Only the test-only `get_delay` wrapper uses this binding.
+#[cfg(test)]
+use crate::swr_get_delay as ffi_swr_get_delay;
 
 /// Headroom samples added to output buffer estimates.
 ///
@@ -40,7 +43,7 @@ pub(super) const RESAMPLE_HEADROOM_SAMPLES: i32 = 256;
 ///
 /// To flush remaining samples after all input has been processed,
 /// call with `in_` set to null and `in_count` set to 0.
-pub unsafe fn convert(
+pub(crate) unsafe fn convert(
     ctx: *mut SwrContext,
     out: *mut *mut u8,
     out_count: c_int,
@@ -83,7 +86,8 @@ pub unsafe fn convert(
 /// # Safety
 ///
 /// The context pointer must be valid.
-pub unsafe fn get_delay(ctx: *mut SwrContext, base: i64) -> i64 {
+#[cfg(test)]
+pub(crate) unsafe fn get_delay(ctx: *mut SwrContext, base: i64) -> i64 {
     if ctx.is_null() {
         return 0;
     }

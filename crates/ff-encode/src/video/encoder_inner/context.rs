@@ -18,7 +18,7 @@ use super::options::audio_codec_to_id;
 use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P, AudioCodec, EncodeError,
-    VideoCodec, VideoEncoderInner, ptr,
+    VideoCodec, VideoEncoderInner,
 };
 
 impl VideoEncoderInner {
@@ -217,7 +217,7 @@ impl VideoEncoderInner {
 
         // Open codec
         codec_ctx
-            .open(selected_codec, ptr::null_mut())
+            .open_codec(selected_codec)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         let actual_pix_fmt = from_av_pixel_format(codec_ctx.pix_fmt());
         log::info!(
@@ -330,7 +330,7 @@ impl VideoEncoderInner {
 
         // Open codec
         codec_ctx
-            .open(selected_codec, ptr::null_mut())
+            .open_codec(selected_codec)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
         // Create stream. The owned codec_ctx frees itself if this returns.

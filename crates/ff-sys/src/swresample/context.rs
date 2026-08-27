@@ -3,10 +3,12 @@
 use std::os::raw::c_int;
 
 use crate::{
-    AVChannelLayout, AVSampleFormat, SwrContext, ensure_initialized, swr_alloc as ffi_swr_alloc,
+    AVChannelLayout, AVSampleFormat, SwrContext, ensure_initialized,
     swr_alloc_set_opts2 as ffi_swr_alloc_set_opts2, swr_init as ffi_swr_init,
-    swr_is_initialized as ffi_swr_is_initialized,
 };
+// Only the test-only `alloc` / `is_initialized` wrappers use these bindings.
+#[cfg(test)]
+use crate::{swr_alloc as ffi_swr_alloc, swr_is_initialized as ffi_swr_is_initialized};
 
 /// Allocate an empty SwrContext.
 ///
@@ -22,7 +24,8 @@ use crate::{
 ///
 /// The returned context must be freed with `crate::swr_free` (or wrapped in
 /// [`ResampleContext`](crate::ResampleContext)) when no longer needed.
-pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
+#[cfg(test)]
+pub(crate) unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
     ensure_initialized();
 
     // SAFETY: swr_alloc takes no arguments and allocates a fresh context;
@@ -60,7 +63,7 @@ pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
 /// - The returned context must be freed with `crate::swr_free` (or wrapped in
 ///   [`ResampleContext`](crate::ResampleContext)) when no longer needed.
 /// - Channel layout pointers must be valid for the duration of this call.
-pub unsafe fn alloc_set_opts2(
+pub(crate) unsafe fn alloc_set_opts2(
     out_ch_layout: *const AVChannelLayout,
     out_sample_fmt: AVSampleFormat,
     out_sample_rate: c_int,
@@ -130,7 +133,7 @@ pub unsafe fn alloc_set_opts2(
 /// Returns a negative error code if:
 /// - Context is null (`error_codes::EINVAL`)
 /// - Initialization fails (e.g., invalid configuration)
-pub unsafe fn init(ctx: *mut SwrContext) -> Result<(), c_int> {
+pub(crate) unsafe fn init(ctx: *mut SwrContext) -> Result<(), c_int> {
     if ctx.is_null() {
         return Err(crate::error_codes::EINVAL);
     }
@@ -155,7 +158,8 @@ pub unsafe fn init(ctx: *mut SwrContext) -> Result<(), c_int> {
 /// # Safety
 ///
 /// The context pointer must be valid or null.
-pub unsafe fn is_initialized(ctx: *const SwrContext) -> bool {
+#[cfg(test)]
+pub(crate) unsafe fn is_initialized(ctx: *const SwrContext) -> bool {
     if ctx.is_null() {
         return false;
     }

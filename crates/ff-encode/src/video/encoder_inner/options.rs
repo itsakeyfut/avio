@@ -19,7 +19,7 @@ use super::{
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
     AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AudioCodec,
-    CString, EncodeError, VideoCodec, VideoEncoderInner, avcodec,
+    EncodeError, VideoCodec, VideoEncoderInner,
 };
 
 /// Convert VideoCodec to FFmpeg AVCodecID.
@@ -405,11 +405,7 @@ impl VideoEncoderInner {
     ) -> Result<String, EncodeError> {
         // Early check: when Av1Svt is requested, verify that libsvtav1 is registered.
         if codec == VideoCodec::Av1Svt {
-            // SAFETY: find_encoder_by_name is always safe to call with a valid NUL-terminated
-            // C string literal; the returned pointer is owned by FFmpeg and must not be freed.
-            let has_svt = unsafe {
-                avcodec::find_encoder_by_name(b"libsvtav1\0".as_ptr() as *const i8).is_some()
-            };
+            let has_svt = ff_sys::Codec::find_encoder_by_name("libsvtav1").is_some();
             if !has_svt {
                 return Err(EncodeError::EncoderUnavailable {
                     codec: "av1/svt".to_string(),
@@ -421,9 +417,7 @@ impl VideoEncoderInner {
         // Early check: when H265 is requested, verify that at least one HEVC encoder
         // is registered in this FFmpeg build before attempting candidate selection.
         if codec == VideoCodec::H265 {
-            // SAFETY: avcodec::find_encoder is always safe to call with a valid codec ID;
-            // the returned pointer is owned by FFmpeg and must not be freed.
-            let has_hevc = unsafe { avcodec::find_encoder(AVCodecID_AV_CODEC_ID_HEVC).is_some() };
+            let has_hevc = ff_sys::Codec::find_encoder(AVCodecID_AV_CODEC_ID_HEVC).is_some();
             if !has_hevc {
                 return Err(EncodeError::EncoderUnavailable {
                     codec: "h265/hevc".to_string(),
@@ -454,14 +448,8 @@ impl VideoEncoderInner {
 
         // Try each candidate
         for &name in &candidates {
-            unsafe {
-                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Invalid encoder name".to_string(),
-                })?;
-                if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
-                    return Ok(name.to_string());
-                }
+            if ff_sys::Codec::find_encoder_by_name(name).is_some() {
+                return Ok(name.to_string());
             }
         }
 

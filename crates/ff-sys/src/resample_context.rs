@@ -43,17 +43,20 @@ impl ResampleContext {
     ///
     /// # Safety
     ///
-    /// `out_ch_layout` and `in_ch_layout` must be valid `*const AVChannelLayout`
-    /// pointers for the duration of the call.
+    /// The borrowed `out_ch_layout` / `in_ch_layout` are always valid to read, but
+    /// they must hold well-formed, initialized `AVChannelLayout` values (e.g. from
+    /// [`channel_layout::stereo`](crate::swresample::channel_layout::stereo)); a
+    /// malformed layout is passed on to libswresample unchecked.
     pub unsafe fn new(
-        out_ch_layout: *const AVChannelLayout,
+        out_ch_layout: &AVChannelLayout,
         out_sample_fmt: AVSampleFormat,
         out_sample_rate: c_int,
-        in_ch_layout: *const AVChannelLayout,
+        in_ch_layout: &AVChannelLayout,
         in_sample_fmt: AVSampleFormat,
         in_sample_rate: c_int,
     ) -> Result<Self, AvError> {
-        // SAFETY: the caller upholds the channel-layout pointers; `alloc_set_opts2`
+        // SAFETY: the borrowed layouts are valid for the call (the caller upholds
+        //         that they are well-formed per # Safety); `alloc_set_opts2`
         //         validates the sample rates and returns a non-null context or an
         //         error code.
         let ptr = unsafe {

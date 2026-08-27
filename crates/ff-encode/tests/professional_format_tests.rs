@@ -24,18 +24,12 @@ use std::path::Path;
 
 /// Returns `true` when `prores_ks` is compiled into this FFmpeg build.
 fn is_prores_ks_available() -> bool {
-    let name = b"prores_ks\0";
-    // SAFETY: `name` is a valid null-terminated C string with static lifetime.
-    // The pointer is never stored beyond this call; FFmpeg does not take
-    // ownership of the name buffer.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("prores_ks").is_some()
 }
 
 /// Returns `true` when the `dnxhd` encoder is compiled into this FFmpeg build.
 fn is_dnxhd_available() -> bool {
-    let name = b"dnxhd\0";
-    // SAFETY: same invariants as above.
-    unsafe { ff_sys::avcodec::find_encoder_by_name(name.as_ptr() as *const i8).is_some() }
+    ff_sys::Codec::find_encoder_by_name("dnxhd").is_some()
 }
 
 // ── ffprobe CLI helpers ───────────────────────────────────────────────────────
