@@ -215,10 +215,10 @@ impl AudioEncoderInner {
             self.fifo =
                 swresample::audio_fifo::alloc(target_fmt, config.channels as i32, required as i32)
                     .map_err(|e| EncodeError::Ffmpeg {
-                        code: e,
+                        code: e.code(),
                         message: format!(
                             "Cannot allocate audio FIFO: {}",
-                            ff_sys::av_error_string(e)
+                            ff_sys::av_error_string(e.code())
                         ),
                     })?;
             self.frame_size = required;
@@ -392,10 +392,10 @@ impl AudioEncoderInner {
                     swresample::audio_fifo::write_frame(self.fifo, &av_frame, nb_samples);
 
                 write_result.map_err(|e| EncodeError::Ffmpeg {
-                    code: e,
+                    code: e.code(),
                     message: format!(
                         "Failed to write to audio FIFO: {}",
-                        ff_sys::av_error_string(e)
+                        ff_sys::av_error_string(e.code())
                     ),
                 })?;
 
@@ -496,10 +496,10 @@ impl AudioEncoderInner {
         // SAFETY: get_buffer allocated the plane buffers; they are large enough
         swresample::audio_fifo::read_frame(self.fifo, &mut av_frame, frame_size).map_err(|e| {
             EncodeError::Ffmpeg {
-                code: e,
+                code: e.code(),
                 message: format!(
                     "Failed to read from audio FIFO: {}",
-                    ff_sys::av_error_string(e)
+                    ff_sys::av_error_string(e.code())
                 ),
             }
         })?;

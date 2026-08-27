@@ -963,8 +963,8 @@ pub mod swresample {
         pub unsafe fn copy(
             _dst: *mut AVChannelLayout,
             _src: *const AVChannelLayout,
-        ) -> Result<(), i32> {
-            Err(-1)
+        ) -> Result<(), crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
         pub unsafe fn is_equal(
             _chl: *const AVChannelLayout,
@@ -1002,8 +1002,8 @@ pub mod swresample {
             _sample_fmt: AVSampleFormat,
             _channels: c_int,
             _nb_samples: c_int,
-        ) -> Result<*mut AVAudioFifo, c_int> {
-            Err(-1)
+        ) -> Result<*mut AVAudioFifo, crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
 
         pub unsafe fn free(_fifo: *mut AVAudioFifo) {}
@@ -1012,16 +1012,16 @@ pub mod swresample {
             _fifo: *mut AVAudioFifo,
             _data: *const *mut c_void,
             _nb_samples: c_int,
-        ) -> Result<c_int, c_int> {
-            Err(-1)
+        ) -> Result<c_int, crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
 
         pub unsafe fn read(
             _fifo: *mut AVAudioFifo,
             _data: *const *mut c_void,
             _nb_samples: c_int,
-        ) -> Result<c_int, c_int> {
-            Err(-1)
+        ) -> Result<c_int, crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
 
         pub unsafe fn size(_fifo: *mut AVAudioFifo) -> c_int {
@@ -1032,16 +1032,16 @@ pub mod swresample {
             _fifo: *mut AVAudioFifo,
             _src: &super::super::Frame,
             _nb_samples: c_int,
-        ) -> Result<c_int, c_int> {
-            Err(-1)
+        ) -> Result<c_int, crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
 
         pub unsafe fn read_frame(
             _fifo: *mut AVAudioFifo,
             _dst: &mut super::super::Frame,
             _nb_samples: c_int,
-        ) -> Result<c_int, c_int> {
-            Err(-1)
+        ) -> Result<c_int, crate::AvError> {
+            Err(crate::AvError::new(-1))
         }
     }
 

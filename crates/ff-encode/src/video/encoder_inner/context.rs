@@ -368,7 +368,7 @@ impl VideoEncoderInner {
                 fifo_nb_channels,
                 frame_size * 2,
             )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
             self.audio_fifo = Some(fifo);
         }
 
