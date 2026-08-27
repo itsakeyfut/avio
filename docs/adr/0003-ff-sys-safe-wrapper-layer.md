@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-21
 decision-makers: itsakeyfut
 ---
@@ -76,19 +76,27 @@ scope here and would be its own record.
 
 ### Confirmation
 
-`proposed`, so nothing enforces it yet. Once implemented, these guard it:
+Implemented across the RAII hardening track (#1477–#1506) and enforced by:
 
-* Each owned newtype has a `Drop` test (a drop counter, or a Miri run over
-  alloc → drop) proving the resource is freed exactly once; a manual-free API no
-  longer exists to misuse.
-* The safe layer compiles under `#![deny(unsafe_op_in_unsafe_fn)]` and the
-  workspace clippy gate; a raw `*mut` / `*const` or an un-annotated `unsafe` in its
-  public surface fails review.
-* A grep / CI guard that `pub` signatures in the safe layer name no raw pointer
-  type.
-
-Until the PR lands, this record is the only statement of the direction; the status
-is honest, not enforced.
+* Each owned newtype has a drop-once test proving the resource frees exactly once on
+  drop. Miri is not usable here — it cannot execute the FFmpeg FFI — so these are
+  runtime `alloc → drop` tests, plus a clone/move double-free test where the type
+  ref-counts: `Frame` / `Packet` (`new_should_allocate_and_drop_cleanly` +
+  `try_clone_should_produce_an_independent_owner`), `CodecContext`
+  (`codec_context_new_should_allocate_and_drop_cleanly` +
+  `stats_in_round_trip_should_drop_once`), `ScaleContext`
+  (`new_should_allocate_and_drop_cleanly`) / `ResampleContext`
+  (`new_should_allocate_init_and_drop_cleanly`), `InputFormatContext`
+  (`input_open_valid_file_should_allocate_and_drop_cleanly`) / `OutputFormatContext`
+  (`output_new_should_allocate_and_drop`), `HwDeviceContext`
+  (`new_should_return_a_result_without_panicking`). The manual-free API no longer
+  exists to misuse.
+* The safe layer compiles under `#![deny(unsafe_op_in_unsafe_fn)]`
+  (`crates/ff-sys/src/lib.rs`) and the workspace clippy gate (CI `clippy` / `test`
+  jobs), so an un-annotated `unsafe` in its public surface fails the build.
+* A CI guard — `crates/ff-sys/tests/seal.rs` — fails if any `pub` signature in the
+  safe layer names a raw pointer type (with a `seal-allow-raw` marker for the
+  deliberately unsealed `Codec::as_ptr` / `buffersink_get_frame`).
 
 ### Consequences
 
