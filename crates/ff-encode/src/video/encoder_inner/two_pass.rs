@@ -87,6 +87,7 @@ impl VideoEncoderInner {
             }
         })?)?;
 
+        // Read stats_out before the pass-1 context is dropped below; it owns the buffer.
         let stats_out = self
             .pass1_codec_ctx
             .as_ref()
