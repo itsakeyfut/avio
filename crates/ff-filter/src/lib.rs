@@ -52,7 +52,7 @@ pub use ff_format::{ErrorSeverity, MediaError};
 pub use graph::{
     AudioConcatenator, AudioTrack, CrossfadeJoiner, DrawTextOptions, EqBand, FilterGraph,
     FilterGraphBuilder, FilterStep, HwAccel, LavfiSource, LayerSource, MultiTrackAudioMixer,
-    MultiTrackComposer, ProxySource, RealtimeComposer, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
-    ScaleAlgorithm, SolidSource, TextSource, ToneMap, VideoConcatenator, VideoLayer,
-    XfadeTransition, YadifMode,
+    MultiTrackComposer, PitchAlgo, ProxySource, RealtimeComposer, RealtimeLayer,
+    RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, SolidSource, TextSource, ToneMap,
+    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
 };

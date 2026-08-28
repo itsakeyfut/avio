@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::FfmpegToken;
 use super::builder::FilterGraphBuilder;
 use super::types::{
-    DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    DrawTextOptions, EqBand, PitchAlgo, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
 use crate::animation::{AnimatedValue, AnimationEntry, AnimationTrack, Keyframe};
@@ -846,6 +846,9 @@ pub enum FilterStep {
     PitchShift {
         /// Pitch shift in semitones. Range: [−24.0, 24.0].
         semitones: f32,
+        /// Backend algorithm. [`PitchAlgo::Rubberband`] uses the formant-preserving
+        /// `rubberband` filter when available (else falls back to the signal path).
+        algo: PitchAlgo,
     },
 
     /// Time-stretch audio without changing pitch via `FFmpeg`'s `atempo` filter.
@@ -858,6 +861,9 @@ pub enum FilterStep {
     TimeStretch {
         /// Speed / duration factor. 0.5 = 2× longer; 2.0 = 2× shorter. Range: [0.1, 10.0].
         factor: f32,
+        /// Backend algorithm. [`PitchAlgo::Rubberband`] uses the higher-quality
+        /// `rubberband` filter when available (else falls back to the signal path).
+        algo: PitchAlgo,
     },
 
     /// Simultaneously change audio speed and pitch by the same factor.
@@ -1758,14 +1764,14 @@ impl FilterStep {
             }
             // args() is not consumed by add_and_link_step (which is bypassed for
             // this compound step); provided here for completeness.
-            Self::PitchShift { semitones } => {
+            Self::PitchShift { semitones, .. } => {
                 let rate = 2f64.powf(f64::from(*semitones) / 12.0);
                 let atempo = 1.0 / rate;
                 format!("asetrate=sr*{rate:.6},atempo={atempo:.6}")
             }
             // args() is not consumed by add_and_link_step (bypassed in favour of
             // add_atempo_chain); provided here for single-instance completeness.
-            Self::TimeStretch { factor } => format!("{factor:.6}"),
+            Self::TimeStretch { factor, .. } => format!("{factor:.6}"),
             // args() is not consumed by add_and_link_step (bypassed; sample rate
             // is resolved from buffersrc_args at build time); provided for completeness.
             Self::SpeedChange { factor } => format!("asetrate=sr*{factor:.6}"),

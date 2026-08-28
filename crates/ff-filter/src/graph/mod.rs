@@ -18,5 +18,6 @@ pub use ffmpeg_token::FfmpegToken;
 pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
 pub use types::{
-    DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    DrawTextOptions, EqBand, HwAccel, PitchAlgo, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition,
+    YadifMode,
 };

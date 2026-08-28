@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::error::FilterError;
 use crate::graph::FilterGraph;
+use crate::graph::PitchAlgo;
 use crate::graph::filter_step::FilterStep;
 
 /// Noise type used as the initial spectral model for `afftdn`.
@@ -90,13 +91,38 @@ impl FilterGraph {
     ///
     /// Returns [`FilterError::Ffmpeg`] if `semitones` is outside −24.0..=24.0.
     pub fn pitch_shift(&mut self, semitones: f32) -> Result<&mut Self, FilterError> {
+        self.pitch_shift_with(semitones, PitchAlgo::Signal)
+    }
+
+    /// Shift audio pitch by `semitones` using the formant-preserving `rubberband`
+    /// backend when available.
+    ///
+    /// Identical range and semantics to [`pitch_shift`](Self::pitch_shift), but
+    /// selects [`PitchAlgo::Rubberband`]: the graph build uses `FFmpeg`'s
+    /// `rubberband` filter (formant-preserving) when the `FFmpeg` build provides it,
+    /// otherwise it falls back to the `asetrate`/`atempo` signal path with a
+    /// `log::warn!`. No error is returned when `rubberband` is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `semitones` is outside −24.0..=24.0.
+    pub fn pitch_shift_rubberband(&mut self, semitones: f32) -> Result<&mut Self, FilterError> {
+        self.pitch_shift_with(semitones, PitchAlgo::Rubberband)
+    }
+
+    fn pitch_shift_with(
+        &mut self,
+        semitones: f32,
+        algo: PitchAlgo,
+    ) -> Result<&mut Self, FilterError> {
         if !(-24.0..=24.0).contains(&semitones) {
             return Err(FilterError::Ffmpeg {
                 code: 0,
                 message: format!("semitones must be in -24..=24, got {semitones}"),
             });
         }
-        self.inner.push_step(FilterStep::PitchShift { semitones });
+        self.inner
+            .push_step(FilterStep::PitchShift { semitones, algo });
         Ok(self)
     }
 
@@ -112,13 +138,38 @@ impl FilterGraph {
     ///
     /// Returns [`FilterError::Ffmpeg`] if `factor` is outside 0.1–10.0.
     pub fn time_stretch(&mut self, factor: f32) -> Result<&mut Self, FilterError> {
+        self.time_stretch_with(factor, PitchAlgo::Signal)
+    }
+
+    /// Stretch or compress audio duration by `factor` using the higher-quality
+    /// `rubberband` backend when available.
+    ///
+    /// Identical range and semantics to [`time_stretch`](Self::time_stretch), but
+    /// selects [`PitchAlgo::Rubberband`]: the graph build uses `FFmpeg`'s
+    /// `rubberband` filter when the `FFmpeg` build provides it, otherwise it falls
+    /// back to the `atempo` signal path with a `log::warn!`. No error is returned
+    /// when `rubberband` is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `factor` is outside 0.1–10.0.
+    pub fn time_stretch_rubberband(&mut self, factor: f32) -> Result<&mut Self, FilterError> {
+        self.time_stretch_with(factor, PitchAlgo::Rubberband)
+    }
+
+    fn time_stretch_with(
+        &mut self,
+        factor: f32,
+        algo: PitchAlgo,
+    ) -> Result<&mut Self, FilterError> {
         if !(0.1..=10.0).contains(&factor) {
             return Err(FilterError::Ffmpeg {
                 code: 0,
                 message: format!("time_stretch factor must be 0.1–10.0, got {factor}"),
             });
         }
-        self.inner.push_step(FilterStep::TimeStretch { factor });
+        self.inner
+            .push_step(FilterStep::TimeStretch { factor, algo });
         Ok(self)
     }
 
@@ -260,6 +311,7 @@ impl FilterGraph {
 #[cfg(test)]
 mod tests {
     use crate::effects::audio_effects::NoiseType;
+    use crate::graph::PitchAlgo;
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
@@ -383,7 +435,10 @@ mod tests {
 
     #[test]
     fn filter_step_time_stretch_should_have_atempo_filter_name() {
-        let step = FilterStep::TimeStretch { factor: 1.5 };
+        let step = FilterStep::TimeStretch {
+            factor: 1.5,
+            algo: PitchAlgo::Signal,
+        };
         assert_eq!(step.filter_name(), "atempo");
     }
 
@@ -443,8 +498,135 @@ mod tests {
 
     #[test]
     fn filter_step_pitch_shift_should_have_asetrate_filter_name() {
-        let step = FilterStep::PitchShift { semitones: 7.0 };
+        let step = FilterStep::PitchShift {
+            semitones: 7.0,
+            algo: PitchAlgo::Signal,
+        };
         assert_eq!(step.filter_name(), "asetrate");
+    }
+
+    #[test]
+    fn pitch_algo_should_default_to_signal() {
+        assert_eq!(PitchAlgo::default(), PitchAlgo::Signal);
+    }
+
+    #[test]
+    fn pitch_shift_should_push_signal_algo() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        graph.pitch_shift(7.0).unwrap();
+        assert!(
+            graph.inner.steps().iter().any(|s| matches!(
+                s,
+                FilterStep::PitchShift {
+                    algo: PitchAlgo::Signal,
+                    ..
+                }
+            )),
+            "pitch_shift must push a Signal-backed PitchShift step"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_rubberband_should_push_rubberband_algo() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        graph.pitch_shift_rubberband(7.0).unwrap();
+        assert!(
+            graph.inner.steps().iter().any(|s| matches!(
+                s,
+                FilterStep::PitchShift {
+                    algo: PitchAlgo::Rubberband,
+                    ..
+                }
+            )),
+            "pitch_shift_rubberband must push a Rubberband-backed PitchShift step"
+        );
+    }
+
+    #[test]
+    fn time_stretch_should_push_signal_algo() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        graph.time_stretch(1.5).unwrap();
+        assert!(
+            graph.inner.steps().iter().any(|s| matches!(
+                s,
+                FilterStep::TimeStretch {
+                    algo: PitchAlgo::Signal,
+                    ..
+                }
+            )),
+            "time_stretch must push a Signal-backed TimeStretch step"
+        );
+    }
+
+    #[test]
+    fn time_stretch_rubberband_should_push_rubberband_algo() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        graph.time_stretch_rubberband(1.5).unwrap();
+        assert!(
+            graph.inner.steps().iter().any(|s| matches!(
+                s,
+                FilterStep::TimeStretch {
+                    algo: PitchAlgo::Rubberband,
+                    ..
+                }
+            )),
+            "time_stretch_rubberband must push a Rubberband-backed TimeStretch step"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_rubberband_should_still_name_asetrate() {
+        // `filter_name` returns the always-available fallback filter so a
+        // `Rubberband` step validates on a build without the `rubberband` filter;
+        // the real filter choice happens at graph-build time.
+        let step = FilterStep::PitchShift {
+            semitones: 7.0,
+            algo: PitchAlgo::Rubberband,
+        };
+        assert_eq!(step.filter_name(), "asetrate");
+    }
+
+    #[test]
+    fn time_stretch_rubberband_should_still_name_atempo() {
+        let step = FilterStep::TimeStretch {
+            factor: 1.5,
+            algo: PitchAlgo::Rubberband,
+        };
+        assert_eq!(step.filter_name(), "atempo");
+    }
+
+    #[test]
+    fn pitch_shift_rubberband_should_accept_valid_range() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.pitch_shift_rubberband(12.0).is_ok());
+        assert!(graph.pitch_shift_rubberband(-24.0).is_ok());
+    }
+
+    #[test]
+    fn pitch_shift_rubberband_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.pitch_shift_rubberband(24.5);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "semitones=24.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn time_stretch_rubberband_should_accept_valid_range() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.time_stretch_rubberband(0.5).is_ok());
+        assert!(graph.time_stretch_rubberband(2.0).is_ok());
+    }
+
+    #[test]
+    fn time_stretch_rubberband_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.time_stretch_rubberband(11.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "factor=11.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
     }
 
     #[test]

@@ -192,6 +192,13 @@ impl FilterGraphInner {
         self.steps.push(step);
     }
 
+    /// The pending filter steps (test-only accessor for asserting what a builder
+    /// method pushed).
+    #[cfg(test)]
+    pub(crate) fn steps(&self) -> &[FilterStep] {
+        &self.steps
+    }
+
     /// Creates a pre-initialised inner for a source-only video composition graph.
     ///
     /// `graph` and `vsink_ctx` are owned by the returned struct and freed on drop
