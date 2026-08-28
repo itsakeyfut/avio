@@ -298,6 +298,17 @@ pub(crate) fn audio_volume(
     }
 }
 
+/// The per-clip pitch (semitones): a set `pitch_track` evaluated at its `t=0`
+/// value, else the static `Clip.pitch`. Per-sample pitch automation is a deferred
+/// primitive capability (see ADR-0002). Shared by the export [`audio_track`] and
+/// the preview projection ([`Timeline::to_scene`](crate::Timeline::to_scene)) so
+/// they cannot diverge.
+pub(crate) fn audio_pitch(clip: &Clip) -> f64 {
+    clip.pitch_track
+        .as_ref()
+        .map_or(clip.pitch, |t| t.value_at(Duration::ZERO))
+}
+
 /// Derives the export [`AudioTrack`] for one clip.
 ///
 /// `fade_out_eff_dur` is the caller-resolved effective clip duration, used only
@@ -337,13 +348,9 @@ pub(crate) fn audio_track(
     if (clip.speed - 1.0).abs() > 1e-9 {
         effects.push(FilterStep::Speed { factor: clip.speed });
     }
-    // Per-clip pitch shift (semitones). A set `pitch_track` is evaluated at its
-    // `t=0` value: the mixer applies a static `PitchShift` (per-sample pitch
-    // automation is a deferred primitive capability; see ADR-0002).
-    let pitch = clip
-        .pitch_track
-        .as_ref()
-        .map_or(clip.pitch, |t| t.value_at(Duration::ZERO));
+    // Per-clip pitch shift (semitones), via the shared `audio_pitch` so export and
+    // preview cannot diverge on the value.
+    let pitch = audio_pitch(clip);
     if pitch.abs() > 1e-9 {
         #[allow(clippy::cast_possible_truncation)]
         effects.push(FilterStep::PitchShift {

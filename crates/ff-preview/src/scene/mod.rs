@@ -214,6 +214,7 @@ impl ScenePlayer {
                 volume: clip_list[i].volume.clone(),
                 fade_in: clip_list[i].fade_in,
                 fade_out: clip_list[i].fade_out,
+                pitch: clip_list[i].pitch,
             });
         }
 
@@ -263,6 +264,7 @@ impl ScenePlayer {
                         fade_out: p.fade_out,
                         clip_dur,
                         speed: p.speed,
+                        pitch: p.pitch,
                         handle,
                         volume: p.volume.clone(),
                         cancel: None,
@@ -285,6 +287,7 @@ impl ScenePlayer {
                     volume: p.volume.clone(),
                     fade_in: p.fade_in,
                     fade_out: p.fade_out,
+                    pitch: p.pitch,
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -335,6 +338,7 @@ impl ScenePlayer {
                     fade_out: p.fade_out,
                     clip_dur,
                     speed: p.speed,
+                    pitch: p.pitch,
                     handle,
                     volume: p.volume.clone(),
                     cancel: None,
@@ -371,6 +375,7 @@ impl ScenePlayer {
                 let source = clip_states[0].source.clone();
                 let in_pt = clip_states[0].in_point;
                 let clip0_speed = clip_states[0].speed;
+                let clip0_pitch = clip_states[0].pitch;
                 let cancel = Arc::new(AtomicBool::new(false));
                 let thread = spawn_audio_track_thread(
                     source,
@@ -379,6 +384,7 @@ impl ScenePlayer {
                     Arc::clone(&cancel),
                     AudioFadeConfig {
                         speed: clip0_speed,
+                        pitch: clip0_pitch,
                         ..AudioFadeConfig::NONE
                     },
                 );
