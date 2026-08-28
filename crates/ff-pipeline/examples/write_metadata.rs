@@ -97,7 +97,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Parse chapter markers ─────────────────────────────────────────────────
+    // Parse chapter markers
     //
     // Format: "HH:MM:SS=Title,HH:MM:SS=Title,..."
     // Each chapter's end time is the next chapter's start (last chapter ends at
@@ -121,7 +121,7 @@ fn main() {
         Vec::new()
     };
 
-    // ── Open decoder — probe source dimensions and duration ───────────────────
+    // Open decoder — probe source dimensions and duration
 
     let vid_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -152,7 +152,7 @@ fn main() {
     println!("Output:  {out_name}");
     println!();
 
-    // ── Print metadata that will be written ───────────────────────────────────
+    // Print metadata that will be written
 
     let has_meta = title.is_some() || artist.is_some() || year.is_some();
     if has_meta {
@@ -169,7 +169,7 @@ fn main() {
         println!();
     }
 
-    // ── Build ChapterInfo list ────────────────────────────────────────────────
+    // Build ChapterInfo list
     //
     // Chapter end = next chapter's start; last chapter ends at total_duration.
 
@@ -206,7 +206,7 @@ fn main() {
         println!();
     }
 
-    // ── Build pipeline with metadata and chapters ─────────────────────────────
+    // Build pipeline with metadata and chapters
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

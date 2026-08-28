@@ -24,7 +24,7 @@ use std::time::Duration;
 use super::silence_detector::SilenceRange;
 use crate::AnalysisError;
 
-// ── SceneDetector inner ───────────────────────────────────────────────────────
+// SceneDetector inner
 
 /// Detects scene changes in `path` using the filter graph:
 ///
@@ -210,7 +210,7 @@ pub(super) unsafe fn detect_scenes_unsafe(
     Ok(timestamps)
 }
 
-// ── SilenceDetector inner ─────────────────────────────────────────────────────
+// SilenceDetector inner
 
 /// Detects silent intervals in `path` using the filter graph:
 ///
@@ -427,7 +427,7 @@ unsafe fn read_f64_meta(
         .and_then(|s| s.parse::<f64>().ok())
 }
 
-// ── BlackFrameDetector inner ──────────────────────────────────────────────────
+// BlackFrameDetector inner
 
 /// Detects black intervals in `path` using the filter graph:
 ///
@@ -603,7 +603,7 @@ pub(super) unsafe fn detect_black_frames_unsafe(
     Ok(timestamps)
 }
 
-// ── KeyframeEnumerator inner ──────────────────────────────────────────────────
+// KeyframeEnumerator inner
 
 /// Enumerates all keyframe PTS values for the given stream in `path`.
 ///

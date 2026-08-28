@@ -37,7 +37,6 @@ const SAMPLE_RATE: u32 = 48_000;
 
 #[test]
 fn multi_track_composition_should_produce_valid_mp4_output() {
-    // ── Step 1: generate three synthetic source files ──────────────────────────
     //
     // Each source is a solid-colour 10-frame clip with stereo AAC audio.
     //   Layer 0 (base)        : 320×180 — red-ish
@@ -78,7 +77,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         return;
     }
 
-    // ── Step 2: build MultiTrackComposer with three layers ─────────────────────
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
             source: LayerSource::File(src1_path.clone()),
@@ -128,7 +126,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         }
     };
 
-    // ── Step 3: build MultiTrackAudioMixer with two tracks ────────────────────
     let mut mixer = match MultiTrackAudioMixer::new(SAMPLE_RATE, ChannelLayout::Stereo)
         .add_track(AudioTrack {
             source: src1_path.clone(),
@@ -155,7 +152,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         }
     };
 
-    // ── Step 4: encode composition to output MP4 ───────────────────────────────
     let mut encoder = match VideoEncoder::create(&out_path)
         .video(CANVAS_W, CANVAS_H, FPS)
         .video_codec(VideoCodec::Mpeg4)
@@ -244,7 +240,6 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         return;
     }
 
-    // ── Step 5: validate output with ff_probe ──────────────────────────────────
     let info = match ff_probe::open(&out_path) {
         Ok(i) => i,
         Err(e) => {
@@ -300,7 +295,6 @@ fn video_concatenator_should_produce_output_longer_than_single_clip() {
     let _g2 = FileGuard::new(src2_path.clone());
     let _gout = FileGuard::new(out_path.clone());
 
-    // ── Step 1: generate two synthetic source clips ────────────────────────────
     // Clip 1: red-ish (Y=76, U=84, V=255)
     if make_source_file(&src1_path, W, H, FPS, FRAMES_PER_CLIP, 76, 84, 255).is_none() {
         return;
@@ -310,7 +304,6 @@ fn video_concatenator_should_produce_output_longer_than_single_clip() {
         return;
     }
 
-    // ── Step 2: build VideoConcatenator ────────────────────────────────────────
     let mut graph = match VideoConcatenator::new(vec![&src1_path, &src2_path])
         .output_resolution(W, H)
         .build()
@@ -322,7 +315,6 @@ fn video_concatenator_should_produce_output_longer_than_single_clip() {
         }
     };
 
-    // ── Step 3: pull all frames into a video-only output file ──────────────────
     let mut encoder = match VideoEncoder::create(&out_path)
         .video(W, H, FPS)
         .video_codec(VideoCodec::Mpeg4)
@@ -358,7 +350,6 @@ fn video_concatenator_should_produce_output_longer_than_single_clip() {
         return;
     }
 
-    // ── Step 4: validate with ff_probe ─────────────────────────────────────────
     let info = match ff_probe::open(&out_path) {
         Ok(i) => i,
         Err(e) => {
@@ -401,7 +392,6 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
     let _g2 = FileGuard::new(src2_path.clone());
     let _gout = FileGuard::new(out_path.clone());
 
-    // ── Step 1: create two silent mono AAC source clips ────────────────────────
     for src_path in [&src1_path, &src2_path] {
         let mut enc = match AudioEncoder::create(src_path)
             .audio(SAMPLE_RATE, CHANNELS)
@@ -434,7 +424,6 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
         }
     }
 
-    // ── Step 2: build AudioConcatenator ───────────────────────────────────────
     let mut graph = match AudioConcatenator::new(vec![&src1_path, &src2_path])
         .output_format(SAMPLE_RATE, ChannelLayout::Mono)
         .build()
@@ -446,7 +435,6 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
         }
     };
 
-    // ── Step 3: pull all audio frames into an output file ─────────────────────
     let mut out_enc = match AudioEncoder::create(&out_path)
         .audio(SAMPLE_RATE, CHANNELS)
         .audio_codec(AudioCodec::Aac)
@@ -480,7 +468,6 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
         return;
     }
 
-    // ── Step 4: validate with ff_probe ─────────────────────────────────────────
     let info = match ff_probe::open(&out_path) {
         Ok(i) => i,
         Err(e) => {
@@ -506,7 +493,7 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
     );
 }
 
-// ── Animation integration tests ───────────────────────────────────────────────
+// Animation integration tests
 
 /// Verifies that `AnimatedValue::Track` for `opacity` causes the composited
 /// luma to decrease as the layer fades from fully opaque to fully transparent.
@@ -582,7 +569,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
         }
     };
 
-    // ── Collect center-pixel luma for every frame ─────────────────────────────
+    // Collect center-pixel luma for every frame
     let cx = (W / 2) as usize;
     let cy = (H / 2) as usize;
     let mut lumas: Vec<f64> = Vec::with_capacity(FADE_FRAMES);
@@ -634,7 +621,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
     );
 }
 
-// ── Packed-F32 stereo audio frame with constant amplitude ────────────────────
+// Packed-F32 stereo audio frame with constant amplitude
 
 fn constant_amplitude_frame(amplitude: f32, samples: usize, sample_rate: u32) -> AudioFrame {
     let channels = 2usize;
@@ -692,7 +679,6 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
     let src_path = test_output_path("vol_auto_src.m4a");
     let _src_guard = FileGuard::new(src_path.clone());
 
-    // ── Step 1: encode source with constant-amplitude audio ───────────────────
     let mut enc = match AudioEncoder::create(&src_path)
         .audio(SAMPLE_RATE, CHANNELS)
         .audio_codec(AudioCodec::Aac)
@@ -717,7 +703,6 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
         return;
     }
 
-    // ── Step 2: build MultiTrackAudioMixer with animated volume ───────────────
     //
     // Volume ramps from −60 dB (near-silence) to 0 dB (unity gain).
     let total_duration =
@@ -744,7 +729,6 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
         }
     };
 
-    // ── Step 3: pull frames, tick at increasing timestamps ────────────────────
     let mut pulled: Vec<f64> = Vec::new(); // RMS per chunk
     let mut chunk_pts = Duration::ZERO;
     let chunk_duration = Duration::from_secs_f64(FRAME_SAMPLES as f64 / SAMPLE_RATE as f64);
@@ -852,7 +836,7 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
     );
 }
 
-// ── #1222: non-Over CompositeOp layer compositing ──────────────────────────────
+// #1222: non-Over CompositeOp layer compositing
 
 /// A layer with a non-`Over` `composite_op` (here `In`) composites via the
 /// Porter-Duff `blend all_expr` construction. Uses a `lavfi` source so no fixture
@@ -943,7 +927,7 @@ fn composite_op_under_layer_with_opacity_should_build_and_produce_frame() {
     }
 }
 
-// ── #1330: timeline trim/placement expressed as leading FilterSteps ─────────────
+// #1330: timeline trim/placement expressed as leading FilterSteps
 
 /// After #1330 the engine derive emits a clip's trim + timeline placement as
 /// leading `FilterStep`s (`Trim` + `ResetPts` + `OffsetPts`) instead of
@@ -993,7 +977,7 @@ fn trim_and_offset_effects_should_build_and_produce_frame() {
     }
 }
 
-// ── #1331: audio timeline trim/placement expressed as leading FilterSteps ───────
+// #1331: audio timeline trim/placement expressed as leading FilterSteps
 
 /// After #1331 the engine derive emits a clip's audio source trim + timeline
 /// placement as leading `FilterStep`s (`ATrim` + `AResetPts` + `AudioDelay`)
@@ -1039,7 +1023,7 @@ fn audio_trim_and_offset_effects_should_build_mix_and_pull() {
     }
 }
 
-// ── #1332: inter-clip transition expressed as a FilterStep::XFade ───────────────
+// #1332: inter-clip transition expressed as a FilterStep::XFade
 
 /// After #1332 the engine emits a cross-fade as a primitive `FilterStep::XFade`
 /// on the transitioning layer (no `ClipTransition`/`in_transition`). Verify the

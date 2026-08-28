@@ -27,7 +27,7 @@ use ff_filter::{
 };
 use ff_format::{AudioCodec, ChannelLayout, VideoCodec};
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     base: PathBuf,
@@ -78,12 +78,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Build video composition graph ─────────────────────────────────────
+    // 1. Build video composition graph
 
     // The overlay occupies the top-right quadrant at half the canvas width.
     let overlay_x = args.width / 2;
@@ -124,7 +124,7 @@ fn main() {
         }
     };
 
-    // ── 2. Build audio mix graph (optional) ───────────────────────────────────
+    // 2. Build audio mix graph (optional)
 
     let has_audio = args.audio_a.is_some() && args.audio_b.is_some();
     let mut audio_graph = if let (Some(audio_a), Some(audio_b)) = (&args.audio_a, &args.audio_b) {
@@ -157,7 +157,7 @@ fn main() {
         None
     };
 
-    // ── 3. Create encoder ─────────────────────────────────────────────────────
+    // 3. Create encoder
 
     let mut enc_builder = VideoEncoder::create(&args.output)
         .video(args.width, args.height, args.fps)
@@ -178,7 +178,7 @@ fn main() {
         }
     };
 
-    // ── 4. Drain video graph → encoder ────────────────────────────────────────
+    // 4. Drain video graph → encoder
 
     loop {
         match video_graph.pull_video() {
@@ -196,7 +196,7 @@ fn main() {
         }
     }
 
-    // ── 5. Drain audio graph → encoder ────────────────────────────────────────
+    // 5. Drain audio graph → encoder
 
     if let Some(ref mut agraph) = audio_graph {
         loop {
@@ -216,7 +216,7 @@ fn main() {
         }
     }
 
-    // ── 6. Finish ─────────────────────────────────────────────────────────────
+    // 6. Finish
 
     if let Err(e) = encoder.finish() {
         eprintln!("error: encoder.finish() failed: {e}");

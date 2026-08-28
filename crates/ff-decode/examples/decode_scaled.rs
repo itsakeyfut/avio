@@ -48,7 +48,7 @@ fn main() {
     println!("Input: {in_name}");
     println!();
 
-    // ── Source info ───────────────────────────────────────────────────────────
+    // Source info
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -65,7 +65,7 @@ fn main() {
     );
     println!();
 
-    // ── output_size — exact 320×240 ───────────────────────────────────────────
+    // output_size — exact 320×240
     //
     // Both width and height are specified directly. Width and height are
     // rounded up to the nearest even number if needed.
@@ -92,7 +92,7 @@ fn main() {
     }
     println!();
 
-    // ── output_width — fit to 640 px wide ─────────────────────────────────────
+    // output_width — fit to 640 px wide
     //
     // Height is derived from the source aspect ratio and rounded to the
     // nearest even number. Useful for responsive thumbnails or preview grids.
@@ -121,7 +121,7 @@ fn main() {
     }
     println!();
 
-    // ── output_height — fit to 360 px tall ───────────────────────────────────
+    // output_height — fit to 360 px tall
     //
     // Width is derived from the source aspect ratio. Useful when you must
     // target a fixed vertical resolution (e.g. a 360p preview stream).
@@ -150,7 +150,7 @@ fn main() {
     }
     println!();
 
-    // ── output_size + output_format — scale and convert in one pass ───────────
+    // output_size + output_format — scale and convert in one pass
     //
     // Combining output_size() with output_format() performs both operations
     // in a single libswscale call — no extra intermediate frame is allocated.

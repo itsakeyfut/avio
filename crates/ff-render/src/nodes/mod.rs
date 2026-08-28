@@ -15,7 +15,7 @@ pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
 pub use upload::{YuvFormat, YuvUploadNode};
 
-// ── RenderNodeCpu ─────────────────────────────────────────────────────────────
+// RenderNodeCpu
 
 /// CPU fallback processing for a render node.
 ///
@@ -30,7 +30,7 @@ pub trait RenderNodeCpu: Send {
     fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32);
 }
 
-// ── RenderNode ────────────────────────────────────────────────────────────────
+// RenderNode
 
 /// GPU render node. Extends [`RenderNodeCpu`] so both paths are available.
 ///

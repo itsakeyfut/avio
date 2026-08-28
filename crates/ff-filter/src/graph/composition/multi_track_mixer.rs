@@ -11,7 +11,7 @@ use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
 
-// ── AudioTrack ────────────────────────────────────────────────────────────────
+// AudioTrack
 
 /// A single audio track in a [`MultiTrackAudioMixer`] mix.
 #[derive(Debug, Clone)]
@@ -56,7 +56,7 @@ pub struct AudioTrack {
     pub channel_layout: ChannelLayout,
 }
 
-// ── MultiTrackAudioMixer ──────────────────────────────────────────────────────
+// MultiTrackAudioMixer
 
 /// Mixes multiple audio tracks into a single output stream.
 ///

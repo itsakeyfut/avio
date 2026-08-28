@@ -84,8 +84,6 @@ fn test_audio_path() -> std::path::PathBuf {
     ))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn silence_detector_missing_file_should_return_analysis_failed() {
     let result = SilenceDetector::new("does_not_exist_99999.mp3").run();
@@ -95,7 +93,7 @@ fn silence_detector_missing_file_should_return_analysis_failed() {
     );
 }
 
-// ── Functional tests using synthetic WAV fixture ──────────────────────────────
+// Functional tests using synthetic WAV fixture
 
 #[test]
 fn silence_detector_should_find_silence_range() {
@@ -213,7 +211,7 @@ fn silence_detector_range_start_should_be_before_end() {
     }
 }
 
-// ── Real audio file test ──────────────────────────────────────────────────────
+// Real audio file test
 
 #[test]
 fn silence_detector_real_audio_should_succeed() {

@@ -67,7 +67,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -92,7 +92,7 @@ fn main() {
 
     println!("Input:  {in_name}  {width}×{height}  {fps:.2} fps");
 
-    // ── Select codec + VideoCodecOptions ─────────────────────────────────────
+    // Select codec + VideoCodecOptions
 
     let (video_codec, codec_options, description) = match codec_str.to_lowercase().as_str() {
         "prores" => {
@@ -168,7 +168,7 @@ fn main() {
     println!("Output: {out_name}");
     println!();
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
 
     let mut encoder = match VideoEncoder::create(&output)
         .video(width, height, fps)
@@ -192,7 +192,7 @@ fn main() {
     );
     println!("Encoding...");
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

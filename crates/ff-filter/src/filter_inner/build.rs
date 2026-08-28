@@ -16,7 +16,7 @@ use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
 use ff_format::AlphaMode;
 
-// ── Hardware acceleration helpers ─────────────────────────────────────────────
+// Hardware acceleration helpers
 
 /// Map a [`HwAccel`] variant to the corresponding `AVHWDeviceType` constant.
 pub(super) fn hw_accel_to_device_type(hw: HwAccel) -> ff_sys::AVHWDeviceType {
@@ -93,7 +93,7 @@ pub(super) unsafe fn create_hw_filter(
     Ok(ctx)
 }
 
-// ── Shared graph-building helper ──────────────────────────────────────────────
+// Shared graph-building helper
 
 /// Create an `AVFilterContext` for `step`, link it after `prev_ctx`, and return
 /// the new context pointer.
@@ -589,7 +589,7 @@ pub(super) unsafe fn add_fill_to_aspect_step(
     add_fill_to_aspect_crop(graph, scale_ctx, width, height, index)
 }
 
-// ── Speed (atempo chain) ──────────────────────────────────────────────────────
+// Speed (atempo chain)
 
 /// Decompose a speed `factor` into a chain of `atempo` values, each in [0.5, 100.0].
 ///
@@ -700,7 +700,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     let mut ctx = prev_ctx;
 
-    // ── 1. apad=pad_dur=1 (optional) ────────────────────────────────────────
+    // 1. apad=pad_dur=1 (optional)
     // Prevents SWR polyphase resampler from reading uninitialised memory at EOF
     // when the last output frame cannot be filled from remaining input samples.
     // At speed=150 the 1 s of appended silence shrinks to ~7 ms — imperceptible.
@@ -734,7 +734,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
         }
     }
 
-    // ── 2. asetrate=r={new_sr} (required) ───────────────────────────────────
+    // 2. asetrate=r={new_sr} (required)
     let asetrate_filter = ff_sys::avfilter_get_by_name(c"asetrate".as_ptr());
     if asetrate_filter.is_null() {
         log::warn!("filter not found name=asetrate (speed fallback)");
@@ -763,7 +763,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
     }
     ctx = asetrate_ctx;
 
-    // ── 3. aresample={output_sr} (required) ────────────────────────────────
+    // 3. aresample={output_sr} (required)
     // aresample accepts the rate as a positional arg (just the number).
     // "r=" is not a valid option name in this FFmpeg version.
     let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
@@ -794,7 +794,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
     }
     ctx = aresample_ctx;
 
-    // ── 4. aeval NaN/Inf sanitizer (optional) ───────────────────────────────
+    // 4. aeval NaN/Inf sanitizer (optional)
     // Replaces any NaN or Inf samples that survive the resampler with 0.
     // One expression per channel, joined by `|`, so the output layout matches
     // the input layout exactly regardless of mono/stereo/surround.
@@ -933,7 +933,7 @@ mod tests {
     }
 }
 
-// ── Overlay image compound step ───────────────────────────────────────────────
+// Overlay image compound step
 
 /// Escapes a filesystem path for a `movie` / `amovie` filter `filename=`
 /// argument.
@@ -1116,7 +1116,7 @@ pub(super) unsafe fn add_overlay_image_step(
     Ok(overlay_ctx)
 }
 
-// ── Blend Normal mode compound step ──────────────────────────────────────────
+// Blend Normal mode compound step
 
 /// Overlay `:alpha=` suffix for `alpha`. `Straight` is the `overlay` default (no extra arg);
 /// `Premultiplied` selects premultiplied alpha. Verified `vf_overlay.c` (7.1/8.0).
@@ -1360,7 +1360,7 @@ pub(crate) unsafe fn add_blend_normal_step(
     Ok(overlay_ctx)
 }
 
-// ── Blend photographic-mode compound step ────────────────────────────────────
+// Blend photographic-mode compound step
 
 /// Insert a photographic-mode blend compound step (Multiply, Screen, etc.).
 ///
@@ -1465,7 +1465,7 @@ pub(crate) unsafe fn add_blend_photographic_step(
     Ok(blend_ctx)
 }
 
-// ── Blend Porter-Duff Under compound step ────────────────────────────────────
+// Blend Porter-Duff Under compound step
 
 /// Insert a Porter-Duff Under blend step.
 ///
@@ -1597,7 +1597,7 @@ pub(super) unsafe fn add_blend_under_step(
     Ok(overlay_ctx)
 }
 
-// ── Blend expression-based compound step ────────────────────────────────────
+// Blend expression-based compound step
 
 /// Insert a Porter-Duff expression-based blend step (In / Out / Atop / Xor).
 ///
@@ -1703,7 +1703,7 @@ pub(super) unsafe fn add_blend_expr_step(
     Ok(blend_ctx)
 }
 
-// ── FeatherMask compound step ─────────────────────────────────────────────────
+// FeatherMask compound step
 
 /// Insert the feather-mask compound step.
 ///
@@ -1721,7 +1721,7 @@ pub(super) unsafe fn add_blend_expr_step(
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
-// ── Composite compound step ───────────────────────────────────────────────────
+// Composite compound step
 /// Builds a Porter-Duff composite step from a [`CompositeOp`], dispatching to the
 /// shared blend construction helpers (`overlay` for `Over`/`Under`, `blend` with
 /// a per-channel expression for the rest). Consumed by [`FilterStep::Composite`]
@@ -1780,7 +1780,7 @@ pub(crate) unsafe fn add_composite_step(
     }
 }
 
-// ── Glow compound step ────────────────────────────────────────────────────────
+// Glow compound step
 /// Insert the glow / bloom compound step.
 ///
 /// ```text
@@ -2091,7 +2091,7 @@ pub(super) unsafe fn add_feather_mask_step(
     Ok(alphamerge_ctx)
 }
 
-// ── AlphaMatte compound step ─────────────────────────────────────────────────
+// AlphaMatte compound step
 
 /// Insert the alphamerge compound step.
 ///
@@ -2186,7 +2186,7 @@ pub(super) unsafe fn add_alphamerge_step(
     Ok(alphamerge_ctx)
 }
 
-// ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
+// buffersrc / buffersink arg-string helpers
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when
 /// creating a video `buffer` (buffersrc) context.
@@ -2238,7 +2238,7 @@ pub(super) fn parse_sample_rate_from_buffersrc(buffersrc_args: &str) -> u32 {
         .unwrap_or(44100)
 }
 
-// ── Parametric EQ (multi-band chain) ─────────────────────────────────────────
+// Parametric EQ (multi-band chain)
 
 /// Insert a chain of filter nodes for a [`FilterStep::ParametricEq`] step.
 ///
@@ -2304,7 +2304,7 @@ pub(super) unsafe fn add_parametric_eq_chain(
     Ok(ctx)
 }
 
-// ── Graph orchestrators ───────────────────────────────────────────────────────
+// Graph orchestrators
 
 use super::FilterGraphInner;
 
@@ -3095,7 +3095,7 @@ impl FilterGraphInner {
     }
 }
 
-// ── ReverbIr compound step ────────────────────────────────────────────────────
+// ReverbIr compound step
 /// Insert the convolution reverb compound step.
 ///
 /// ```text
@@ -3238,7 +3238,7 @@ pub(super) unsafe fn add_reverb_ir_step(
     Ok(afir_ctx)
 }
 
-// ── SidechainCompress compound step ──────────────────────────────────────────
+// SidechainCompress compound step
 
 /// Parameters for `add_sidechain_compress_step`.
 pub(super) struct DuckArgs {

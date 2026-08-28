@@ -70,7 +70,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Open source decoders ──────────────────────────────────────────────────
+    // Open source decoders
 
     let mut video_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -99,7 +99,7 @@ fn main() {
     println!("Bitrate:  {bitrate} bps");
     println!();
 
-    // ── Build individual targets ──────────────────────────────────────────────
+    // Build individual targets
 
     let has_audio = audio_dec.is_some();
     let seg_dur = Duration::from_secs(segment_secs);
@@ -134,11 +134,11 @@ fn main() {
         }
     };
 
-    // ── Wrap in FanoutOutput ──────────────────────────────────────────────────
+    // Wrap in FanoutOutput
 
     let mut fanout = FanoutOutput::new(vec![Box::new(hls), Box::new(dash)]);
 
-    // ── Frame loop ────────────────────────────────────────────────────────────
+    // Frame loop
 
     println!("Encoding and fanning out...");
     let start = std::time::Instant::now();

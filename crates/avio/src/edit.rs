@@ -2021,7 +2021,7 @@ mod tests {
         assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
     }
 
-    // ── markers ─────────────────────────────────────────────────────────────
+    // markers
 
     #[test]
     fn apply_add_marker_should_append_with_fresh_id() {
@@ -2154,7 +2154,7 @@ mod tests {
         assert_eq!(before, after, "adding a marker does not touch clips");
     }
 
-    // ── clip linking / groups (#1456) ─────────────────────────────────────────
+    // clip linking / groups (#1456)
 
     #[test]
     fn apply_group_clips_should_link_members_with_one_fresh_group() {

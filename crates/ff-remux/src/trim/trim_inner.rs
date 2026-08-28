@@ -26,22 +26,18 @@ pub(crate) fn run_trim(
     start_sec: f64,
     end_sec: f64,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open input (owned) ────────────────────────────────────────────
     // Both the input and output contexts are owned; every early return drops
     // them (closing IO / freeing) with no manual teardown on any path.
     let mut in_ctx = ff_sys::InputFormatContext::open(input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 2: find stream info ──────────────────────────────────────────────
     in_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 3: allocate output context (owned) ──────────────────────────────
     let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 4: copy stream parameters ───────────────────────────────────────
     let nb_streams = in_ctx.nb_streams() as usize;
     for i in 0..nb_streams {
         let Some(in_stream) = in_ctx.stream(i) else {
@@ -60,25 +56,21 @@ pub(crate) fn run_trim(
             .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
     }
 
-    // ── Step 5: seek to start ─────────────────────────────────────────────────
     let start_ts = (start_sec * AV_TIME_BASE as f64) as i64;
     in_ctx
         .seek_file(-1, i64::MIN, start_ts, start_ts, 0)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 6: open output file ──────────────────────────────────────────────
     out_ctx
         .open_io(output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 7: write header ──────────────────────────────────────────────────
     out_ctx
         .write_header()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
     log::debug!("stream copy trim header written nb_streams={nb_streams}");
 
-    // ── Step 8: packet copy loop ──────────────────────────────────────────────
     // The owned packet frees itself exactly once on drop at scope end.
     let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
@@ -141,7 +133,6 @@ pub(crate) fn run_trim(
         }
     }
 
-    // ── Step 9: write trailer ─────────────────────────────────────────────────
     let _ = out_ctx.write_trailer();
 
     // The owned `in_ctx` / `out_ctx` close their IO and free themselves when they

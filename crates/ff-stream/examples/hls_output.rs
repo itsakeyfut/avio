@@ -94,7 +94,7 @@ fn main() {
     println!();
     println!("Writing HLS segments...");
 
-    // ── Build HLS output ──────────────────────────────────────────────────────
+    // Build HLS output
     //
     // keyframe_interval(N) forces an IDR frame every N frames.
     // The default is 48; for clean segment alignment use fps × segment_duration.

@@ -1,6 +1,6 @@
 use super::RenderNodeCpu;
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
+// Pipeline cache
 
 #[cfg(feature = "wgpu")]
 struct CrossfadePipeline {
@@ -10,7 +10,7 @@ struct CrossfadePipeline {
     uniform_buf: wgpu::Buffer,
 }
 
-// ── CrossfadeNode ─────────────────────────────────────────────────────────────
+// CrossfadeNode
 
 /// Linear crossfade between two RGBA frames.
 ///
@@ -50,7 +50,7 @@ impl CrossfadeNode {
     }
 }
 
-// ── CPU path ──────────────────────────────────────────────────────────────────
+// CPU path
 
 impl RenderNodeCpu for CrossfadeNode {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -70,7 +70,7 @@ impl RenderNodeCpu for CrossfadeNode {
     }
 }
 
-// ── GPU path ──────────────────────────────────────────────────────────────────
+// GPU path
 
 #[cfg(feature = "wgpu")]
 impl CrossfadeNode {
@@ -307,8 +307,6 @@ impl super::RenderNode for CrossfadeNode {
         ctx.queue.submit(std::iter::once(encoder.finish()));
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@ use ff_format::{
     AudioFrame, PixelFormat, PooledBuffer, Rational, SampleFormat, Timestamp, VideoFrame,
 };
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// Constants
 
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
@@ -33,7 +33,7 @@ const AAC_FRAME_SAMPLES: usize = 1024;
 const TOTAL_FRAMES: u64 = DURATION_SECS * FPS as u64; // 1800
 const TOTAL_AUDIO_SAMPLES: usize = DURATION_SECS as usize * SAMPLE_RATE as usize; // 2_880_000
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+// Entry point
 
 fn main() {
     let out_path =
@@ -72,7 +72,7 @@ fn main() {
     let video_time_base = Rational::new(1, FPS as i32);
     let stride = WIDTH as usize * 4; // RGBA: 4 bytes per pixel
 
-    // ── Push all video frames ─────────────────────────────────────────────────
+    // Push all video frames
 
     for frame_idx in 0..TOTAL_FRAMES {
         let t = frame_idx as f32 / TOTAL_FRAMES as f32; // 0.0 → 1.0
@@ -114,7 +114,7 @@ fn main() {
         encoder.push_video(&vframe).expect("push_video failed");
     }
 
-    // ── Push all audio in 1024-sample chunks (AAC frame size) ────────────────
+    // Push all audio in 1024-sample chunks (AAC frame size)
 
     let audio_time_base = Rational::new(1, SAMPLE_RATE as i32);
     let mut sample_offset: usize = 0;
@@ -148,7 +148,7 @@ fn main() {
     encoder.finish().expect("encoder finish failed");
     println!("Done → {}", out_path.display());
 
-    // ── Also generate video-only av_sync_test_60s.mp4 ────────────────────────
+    // Also generate video-only av_sync_test_60s.mp4
     //
     // This file has NO audio so `PreviewPlayer` uses `MasterClock::System`
     // (wall-clock pacing), which is required for the A/V sync integration test
@@ -220,7 +220,7 @@ fn main() {
     println!("Done → {}", sync_path.display());
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 /// Convert a hue angle (0–360°) to an sRGB triplet (saturation = value = 1).
 fn hue_to_rgb(hue: f32) -> (u8, u8, u8) {

@@ -58,7 +58,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Try video decoder first ───────────────────────────────────────────────
+    // Try video decoder first
     let video_result = VideoDecoder::open(&input).build();
 
     if let Ok(dec) = video_result {
@@ -90,7 +90,7 @@ fn main() {
         return;
     }
 
-    // ── Fall back to audio decoder ────────────────────────────────────────────
+    // Fall back to audio decoder
     let audio_result = AudioDecoder::open(&input).build();
 
     match audio_result {

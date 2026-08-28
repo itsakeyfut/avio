@@ -91,7 +91,7 @@ fn main() {
     println!("Effect:  audio_delay  ({delay:+.0} ms  {direction})");
     println!("Output:  {out_name}");
 
-    // ── Build filter graph ────────────────────────────────────────────────────
+    // Build filter graph
 
     let filter = match FilterGraphBuilder::new().audio_delay(delay).build() {
         Ok(fg) => fg,
@@ -103,7 +103,7 @@ fn main() {
 
     println!();
 
-    // ── Assemble pipeline ─────────────────────────────────────────────────────
+    // Assemble pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

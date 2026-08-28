@@ -9,7 +9,7 @@ use std::f32::consts;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-// ── AudioTrack (private) ──────────────────────────────────────────────────────
+// AudioTrack (private)
 
 struct AudioTrack {
     buf: Arc<Mutex<VecDeque<f32>>>,
@@ -17,7 +17,7 @@ struct AudioTrack {
     pan: Arc<AtomicU32>,
 }
 
-// ── AudioTrackHandle ──────────────────────────────────────────────────────────
+// AudioTrackHandle
 
 /// Cloneable handle for filling a track and adjusting its gain from any thread.
 ///
@@ -81,7 +81,7 @@ impl AudioTrackHandle {
     }
 }
 
-// ── AudioMixer ────────────────────────────────────────────────────────────────
+// AudioMixer
 
 /// Multi-track, constant-power-panned stereo mixer.
 ///
@@ -200,8 +200,6 @@ impl AudioMixer {
         }
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

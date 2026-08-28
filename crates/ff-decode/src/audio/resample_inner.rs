@@ -26,7 +26,7 @@ use ff_sys::{AVSampleFormat, Frame, InputFormatContext};
 
 use crate::error::DecodeError;
 
-// ── Overflow / bounds guards (issue #1175) ───────────────────────────────────
+// Overflow / bounds guards (issue #1175)
 
 /// Rejects a negative `AVFrame::nb_samples` before casting it to `usize`.
 ///
@@ -66,7 +66,7 @@ fn checked_buffer_size(
         })
 }
 
-// ── SwrContext cache key ──────────────────────────────────────────────────────
+// SwrContext cache key
 
 /// Cache key that identifies a unique (src → dst) resampling configuration.
 /// Stored alongside the cached `ResampleContext` so the context can be reused
@@ -74,7 +74,7 @@ fn checked_buffer_size(
 /// (src_format, src_rate, src_channels, dst_format, dst_rate, dst_channels)
 pub(crate) type SwrKey = (i32, u32, u32, i32, u32, u32);
 
-// ── Format conversion helpers ─────────────────────────────────────────────────
+// Format conversion helpers
 
 /// Converts FFmpeg sample format to our `SampleFormat` enum.
 pub(crate) fn convert_sample_format(fmt: AVSampleFormat) -> SampleFormat {
@@ -127,7 +127,7 @@ pub(crate) fn sample_format_to_av(format: SampleFormat) -> AVSampleFormat {
     }
 }
 
-// ── Channel layout helper ─────────────────────────────────────────────────────
+// Channel layout helper
 
 /// Creates a default `AVChannelLayout` for the given channel count.
 ///
@@ -144,7 +144,7 @@ unsafe fn create_channel_layout(channels: u32) -> ff_sys::AVChannelLayout {
     layout
 }
 
-// ── Frame-to-AudioFrame conversion ───────────────────────────────────────────
+// Frame-to-AudioFrame conversion
 
 /// Extracts raw sample bytes from a decoded audio [`Frame`] into per-channel
 /// plane buffers, read through the frame's safe [`Frame::audio_plane`] accessor.
@@ -286,7 +286,7 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
     }
 }
 
-// ── SwResample pipeline ───────────────────────────────────────────────────────
+// SwResample pipeline
 
 /// Performs sample format / rate / channel conversion using `libswresample`.
 ///
@@ -493,7 +493,7 @@ unsafe fn convert_with_swr(
 mod tests {
     use super::*;
 
-    // ── Overflow / bounds guards (issue #1175) ───────────────────────────────
+    // Overflow / bounds guards (issue #1175)
 
     #[test]
     fn checked_nb_samples_negative_should_return_error() {

@@ -60,7 +60,7 @@ impl VideoEncoderInner {
         pkt: &mut ff_sys::Packet,
         meta: &ff_format::Hdr10Metadata,
     ) {
-        // ── Content light level (MaxCLL / MaxFALL) ──────────────────────────
+        // Content light level (MaxCLL / MaxFALL)
         match pkt.new_side_data(
             AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
             std::mem::size_of::<AvContentLightMetadata>(),
@@ -85,7 +85,7 @@ impl VideoEncoderInner {
             }
         }
 
-        // ── Mastering display colour volume ─────────────────────────────────
+        // Mastering display colour volume
         match pkt.new_side_data(
             AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
             std::mem::size_of::<AvMasteringDisplayMetadata>(),

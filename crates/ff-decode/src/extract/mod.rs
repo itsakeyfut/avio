@@ -224,7 +224,7 @@ impl ThumbnailSelector {
     }
 }
 
-// ── Private scoring helpers ───────────────────────────────────────────────────
+// Private scoring helpers
 
 /// Computes mean BT.601 luma across all pixels in an `RGB24` frame.
 ///
@@ -346,7 +346,7 @@ mod tests {
         );
     }
 
-    // ── mean_luma unit tests ──────────────────────────────────────────────────
+    // mean_luma unit tests
 
     fn make_rgb24_frame(width: u32, height: u32, fill: [u8; 3]) -> VideoFrame {
         use ff_format::{PooledBuffer, Timestamp};

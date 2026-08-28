@@ -12,7 +12,7 @@ use crate::nodes::{BlendMode, RenderNode, TransformNode};
 
 use super::FrameLayer;
 
-// ── CompositorGraph ───────────────────────────────────────────────────────────
+// CompositorGraph
 
 /// Internal GPU state for the compositor.
 ///
@@ -104,7 +104,7 @@ impl CompositorGraph {
     }
 }
 
-// ── Frame → RGBA conversion ───────────────────────────────────────────────────
+// Frame → RGBA conversion
 
 /// Convert any supported `VideoFrame` to a dense RGBA byte buffer.
 ///
@@ -248,7 +248,7 @@ fn yuv_to_rgba(
     Ok(out)
 }
 
-// ── GPU helpers ───────────────────────────────────────────────────────────────
+// GPU helpers
 
 /// Create a black `Rgba8Unorm` canvas texture suitable as a render target.
 fn create_canvas(ctx: &Arc<RenderContext>, w: u32, h: u32) -> wgpu::Texture {
@@ -355,8 +355,6 @@ fn blend_textures(
 
     submit_render_pass(ctx, pipeline, &bind_group, &out_view, "Compositor blend");
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

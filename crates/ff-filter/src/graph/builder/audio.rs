@@ -4,7 +4,7 @@
 use super::*;
 
 impl FilterGraphBuilder {
-    // ── Audio filters ─────────────────────────────────────────────────────────
+    // Audio filters
 
     /// Audio fade-in from silence, starting at `start_sec` seconds and reaching
     /// full volume after `duration_sec` seconds.

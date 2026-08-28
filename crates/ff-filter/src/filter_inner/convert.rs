@@ -8,7 +8,7 @@ use ff_sys::AVFrame;
 
 use super::{VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM};
 
-// ── Timestamp PTS helpers ──────────────────────────────────────────────────────
+// Timestamp PTS helpers
 
 /// Compute the `AVFrame.pts` ticks for pushing a video frame.
 ///
@@ -73,7 +73,7 @@ pub(super) fn audio_ticks_to_timestamp(pts_raw: i64, sample_rate: u32) -> Timest
     }
 }
 
-// ── Format conversion helpers ─────────────────────────────────────────────────
+// Format conversion helpers
 
 /// Convert a [`PixelFormat`] to the corresponding `AVPixelFormat` integer.
 pub(crate) fn pixel_format_to_av(fmt: PixelFormat) -> c_int {
@@ -170,7 +170,7 @@ pub(super) fn av_to_sample_format(av_fmt: c_int) -> SampleFormat {
     }
 }
 
-// ── AVFrame ↔ frame data helpers ──────────────────────────────────────────────
+// AVFrame ↔ frame data helpers
 
 /// Number of pixel rows in the given plane of a video frame.
 pub(super) fn plane_height(fmt: PixelFormat, plane: usize, frame_height: usize) -> usize {
@@ -351,8 +351,6 @@ pub(super) fn av_frame_to_audio_frame(frame: &ff_sys::Frame) -> Result<AudioFram
     AudioFrame::new(planes, samples, channels, sample_rate, format, timestamp).map_err(|_| ())
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +359,7 @@ mod tests {
     // Negative-linesize (RK-008 / #1306) plane copying now lives in
     // `ff_sys::Frame::copy_plane_rows`, which carries its own regression test.
 
-    // ── PTS helpers ───────────────────────────────────────────────────────────
+    // PTS helpers
 
     /// A valid 1-second video timestamp must scale to exactly 90 000 ticks
     /// in the 1/90000 time base used by the video buffersrc.

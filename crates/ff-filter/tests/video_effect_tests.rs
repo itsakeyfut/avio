@@ -9,7 +9,7 @@ use fixtures::yuv420p_frame;
 
 use ff_filter::{FilterError, FilterGraph, LensProfile};
 
-// ── motion_blur ───────────────────────────────────────────────────────────────
+// motion_blur
 
 #[test]
 fn motion_blur_should_accept_video_frame_without_error() {
@@ -40,7 +40,7 @@ fn motion_blur_should_accept_video_frame_without_error() {
     let _ = graph.pull_video();
 }
 
-// ── film_grain ────────────────────────────────────────────────────────────────
+// film_grain
 
 #[test]
 fn film_grain_should_produce_output_frame_with_preserved_dimensions() {
@@ -71,7 +71,7 @@ fn film_grain_should_produce_output_frame_with_preserved_dimensions() {
     }
 }
 
-// ── lens_correction ───────────────────────────────────────────────────────────
+// lens_correction
 
 #[test]
 fn lens_correction_should_preserve_frame_dimensions_on_output() {
@@ -105,7 +105,7 @@ fn lens_correction_should_preserve_frame_dimensions_on_output() {
     }
 }
 
-// ── fix_chromatic_aberration ──────────────────────────────────────────────────
+// fix_chromatic_aberration
 
 #[test]
 fn chromatic_aberration_correction_should_preserve_frame_dimensions() {
@@ -143,7 +143,7 @@ fn chromatic_aberration_correction_should_preserve_frame_dimensions() {
     }
 }
 
-// ── glow / bloom ──────────────────────────────────────────────────────────────
+// glow / bloom
 
 #[test]
 fn glow_effect_should_produce_output_with_preserved_dimensions() {
@@ -174,7 +174,7 @@ fn glow_effect_should_produce_output_with_preserved_dimensions() {
     }
 }
 
-// ── lens_profile ──────────────────────────────────────────────────────────────
+// lens_profile
 
 #[test]
 fn lens_profile_custom_identity_should_process_frame_without_error() {

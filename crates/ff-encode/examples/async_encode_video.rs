@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Probe source dimensions ───────────────────────────────────────────────
+    // Probe source dimensions
     //
     // AsyncVideoDecoder does not expose metadata methods; use the sync decoder
     // briefly to read width, height, and frame rate before building the encoder.
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output: {out_name}  {width}×{height}  codec=h264");
     println!();
 
-    // ── Pattern 1: basic async encode ────────────────────────────────────────
+    // Pattern 1: basic async encode
     //
     // AsyncVideoEncoder::from_builder() is the entry point.
     //   - Pass any VideoEncoderBuilder configured via VideoEncoder::create().
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Done. {out_name}  {size_str}  {frames} frames encoded");
     println!();
 
-    // ── Pattern 2: producer / consumer with separate task ─────────────────────
+    // Pattern 2: producer / consumer with separate task
     //
     // Decoding and encoding can run concurrently on separate tasks.
     // A tokio::sync::mpsc channel connects the producer (decoder) to the

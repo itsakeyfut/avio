@@ -9,7 +9,7 @@ use fixtures::*;
 use ff_decode::{DecodeError, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── File-backed decoder is unaffected by UDP changes ────────────────────────
+// File-backed decoder is unaffected by UDP changes
 
 #[test]
 fn file_video_decoder_should_not_be_live_udp_regression() {
@@ -23,7 +23,7 @@ fn file_video_decoder_should_not_be_live_udp_regression() {
     );
 }
 
-// ── UDP URL bypasses file-existence check ────────────────────────────────────
+// UDP URL bypasses file-existence check
 
 #[test]
 fn udp_url_open_should_not_return_file_not_found() {
@@ -48,7 +48,7 @@ fn udp_multicast_url_open_should_not_return_file_not_found() {
     }
 }
 
-// ── Non-UDP URLs are not affected ────────────────────────────────────────────
+// Non-UDP URLs are not affected
 
 #[test]
 fn http_url_open_should_not_return_file_not_found() {
@@ -61,7 +61,7 @@ fn http_url_open_should_not_return_file_not_found() {
     }
 }
 
-// ── Live UDP stream (requires reachable source) ──────────────────────────────
+// Live UDP stream (requires reachable source)
 
 /// Validates that a live UDP/MPEG-TS stream is detected as live.
 ///

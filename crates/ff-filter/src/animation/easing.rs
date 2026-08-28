@@ -81,7 +81,7 @@ impl Easing {
     }
 }
 
-// ── Cubic Bézier helpers (P0=0, P3=1) ────────────────────────────────────────
+// Cubic Bézier helpers (P0=0, P3=1)
 
 /// X position on the Bézier curve at parameter `t`.
 fn bez_x(t: f64, p1x: f64, p2x: f64) -> f64 {
@@ -100,8 +100,6 @@ fn bez_y(t: f64, p1y: f64, p2y: f64) -> f64 {
     let u = 1.0 - t;
     3.0 * p1y * t * u * u + 3.0 * p2y * t * t * u + t * t * t
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -214,7 +212,7 @@ mod tests {
         );
     }
 
-    // ── Full-track easing tests (issue #366) ─────────────────────────────────
+    // Full-track easing tests (issue #366)
     //
     // Each test builds a two-keyframe AnimationTrack<f64>:
     //   keyframe 0: t=0 s  → value 0.0  (with the easing under test)

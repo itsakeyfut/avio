@@ -8,7 +8,7 @@ use super::helpers::{
 };
 use crate::nodes::RenderNodeCpu;
 
-// ── Shared mask pipeline ──────────────────────────────────────────────────────
+// Shared mask pipeline
 
 #[cfg(feature = "wgpu")]
 struct MaskPipeline {
@@ -102,7 +102,7 @@ fn submit_mask_pass(
     submit_render_pass(ctx, &pd.render_pipeline, &bind_group, &out_view, label);
 }
 
-// ── ShapeMaskNode ─────────────────────────────────────────────────────────────
+// ShapeMaskNode
 
 /// Mask `inputs[0]` using the alpha channel of `inputs[1]` (or `mask_rgba`).
 ///
@@ -190,7 +190,7 @@ impl crate::nodes::RenderNode for ShapeMaskNode {
     }
 }
 
-// ── LumaMaskNode ──────────────────────────────────────────────────────────────
+// LumaMaskNode
 
 /// Mask `inputs[0]` using the BT.709 luma of `inputs[1]` (or `mask_rgba`).
 ///
@@ -280,7 +280,7 @@ impl crate::nodes::RenderNode for LumaMaskNode {
     }
 }
 
-// ── AlphaMatteNode ────────────────────────────────────────────────────────────
+// AlphaMatteNode
 
 /// Porter-Duff src-over: composite `inputs[0]` (foreground) over `inputs[1]`
 /// (background) using the foreground's own alpha channel.
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(rgba[3], 0, "transparent mask must produce zero alpha");
     }
 
-    // ── LumaMaskNode ─────────────────────────────────────────────────────────
+    // LumaMaskNode
 
     #[test]
     fn luma_mask_node_white_mask_should_preserve_alpha() {
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(rgba[3], 0, "black mask must zero out alpha");
     }
 
-    // ── AlphaMatteNode ───────────────────────────────────────────────────────
+    // AlphaMatteNode
 
     #[test]
     fn alpha_matte_node_opaque_fg_should_replace_background() {

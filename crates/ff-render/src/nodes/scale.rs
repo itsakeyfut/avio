@@ -12,7 +12,7 @@ pub enum ScaleAlgorithm {
     Lanczos,
 }
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
+// Pipeline cache
 
 #[cfg(feature = "wgpu")]
 struct ScalePipeline {
@@ -21,7 +21,7 @@ struct ScalePipeline {
     sampler: wgpu::Sampler,
 }
 
-// ── ScaleNode ─────────────────────────────────────────────────────────────────
+// ScaleNode
 
 /// Resample a frame to a target resolution.
 ///
@@ -62,7 +62,7 @@ impl Default for ScaleNode {
     }
 }
 
-// ── CPU path — no-op ──────────────────────────────────────────────────────────
+// CPU path — no-op
 
 impl RenderNodeCpu for ScaleNode {
     fn process_cpu(&self, _rgba: &mut [u8], _w: u32, _h: u32) {
@@ -71,7 +71,7 @@ impl RenderNodeCpu for ScaleNode {
     }
 }
 
-// ── GPU path ──────────────────────────────────────────────────────────────────
+// GPU path
 
 #[cfg(feature = "wgpu")]
 impl ScaleNode {
@@ -230,8 +230,6 @@ impl super::RenderNode for ScaleNode {
         ctx.queue.submit(std::iter::once(encoder.finish()));
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

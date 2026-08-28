@@ -13,7 +13,7 @@
 //! cargo test -p avio --all-features         # all combinations at once
 //! ```
 
-// ── Always-on types (ff-format, no feature gate) ─────────────────────────────
+// Always-on types (ff-format, no feature gate)
 
 #[test]
 fn format_types_should_be_accessible_without_any_feature() {
@@ -27,7 +27,7 @@ fn format_types_should_be_accessible_without_any_feature() {
     let _: avio::MediaInfo = avio::MediaInfo::default();
 }
 
-// ── probe feature ─────────────────────────────────────────────────────────────
+// probe feature
 
 #[cfg(feature = "probe")]
 #[test]
@@ -37,7 +37,7 @@ fn probe_feature_should_expose_probe_error_and_open() {
     assert!(matches!(result, Err(avio::ProbeError::FileNotFound { .. })));
 }
 
-// ── decode feature ────────────────────────────────────────────────────────────
+// decode feature
 
 #[cfg(feature = "decode")]
 #[test]
@@ -50,7 +50,7 @@ fn decode_feature_should_expose_decode_error_and_decoders() {
     assert_eq!(pool.capacity(), 4);
 }
 
-// ── encode feature ────────────────────────────────────────────────────────────
+// encode feature
 
 #[cfg(feature = "encode")]
 #[test]
@@ -60,7 +60,7 @@ fn encode_feature_should_expose_encode_error_and_bitrate_mode() {
     let _: avio::BitrateMode = avio::BitrateMode::Crf(28);
 }
 
-// ── filter feature ────────────────────────────────────────────────────────────
+// filter feature
 
 #[cfg(feature = "filter")]
 #[test]
@@ -71,7 +71,7 @@ fn filter_feature_should_expose_filter_error_and_graph_builder() {
     let _: avio::HwAccel = avio::HwAccel::Cuda;
 }
 
-// ── pipeline feature ──────────────────────────────────────────────────────────
+// pipeline feature
 
 #[cfg(feature = "pipeline")]
 #[test]
@@ -82,7 +82,7 @@ fn pipeline_feature_should_expose_pipeline_error_and_builder() {
     let _cb: avio::ProgressCallback = Box::new(|_: &avio::Progress| true);
 }
 
-// ── stream feature ────────────────────────────────────────────────────────────
+// stream feature
 
 #[cfg(feature = "stream")]
 #[test]
@@ -100,7 +100,7 @@ fn stream_feature_should_expose_stream_error_and_output_builders() {
     };
 }
 
-// ── all-features combination ──────────────────────────────────────────────────
+// all-features combination
 
 #[cfg(all(feature = "filter", feature = "pipeline", feature = "stream"))]
 #[test]

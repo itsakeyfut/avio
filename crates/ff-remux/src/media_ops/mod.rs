@@ -64,7 +64,7 @@ impl AudioReplacement {
     }
 }
 
-// ── AudioExtractor ────────────────────────────────────────────────────────────
+// AudioExtractor
 
 /// Demux an audio track from a media file and write it to a standalone audio file.
 ///
@@ -129,7 +129,7 @@ impl AudioExtractor {
     }
 }
 
-// ── AudioAdder ────────────────────────────────────────────────────────────────
+// AudioAdder
 
 /// Mux an audio track into a silent (or existing) video file.
 ///

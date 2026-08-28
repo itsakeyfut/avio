@@ -21,7 +21,7 @@ use ff_encode::VideoEncoder;
 use ff_filter::FilterGraphBuilder;
 use ff_format::VideoCodec;
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     input: PathBuf,
@@ -58,12 +58,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Open decoder ───────────────────────────────────────────────────────
+    // 1. Open decoder
 
     let mut vdec = match VideoDecoder::open(&args.input).build() {
         Ok(d) => d,
@@ -77,7 +77,7 @@ fn main() {
     let height = vdec.height();
     let fps = vdec.frame_rate();
 
-    // ── 2. Define polygon ─────────────────────────────────────────────────────
+    // 2. Define polygon
     //
     // A centered hexagon that covers roughly the central 70 % of the frame.
     // Vertices are in normalised (0.0–1.0) coordinates, clockwise order.
@@ -91,7 +91,7 @@ fn main() {
         (0.15, 0.35), // upper left
     ];
 
-    // ── 3. Build filter graph ─────────────────────────────────────────────────
+    // 3. Build filter graph
 
     let mut builder = FilterGraphBuilder::new().polygon_matte(vertices.clone(), args.invert);
 
@@ -107,7 +107,7 @@ fn main() {
         }
     };
 
-    // ── 4. Build encoder ──────────────────────────────────────────────────────
+    // 4. Build encoder
 
     let mut encoder = match VideoEncoder::create(&args.output)
         .video(width, height, fps)
@@ -139,7 +139,7 @@ fn main() {
     println!();
     println!("Encoding...");
 
-    // ── 5. Decode → filter → encode loop ─────────────────────────────────────
+    // 5. Decode → filter → encode loop
 
     let mut frames: u64 = 0;
 
@@ -176,7 +176,7 @@ fn main() {
         }
     }
 
-    // ── 6. Finish ─────────────────────────────────────────────────────────────
+    // 6. Finish
 
     if let Err(e) = encoder.finish() {
         eprintln!("error: encoder.finish() failed: {e}");

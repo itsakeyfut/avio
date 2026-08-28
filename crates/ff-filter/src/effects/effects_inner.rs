@@ -221,7 +221,7 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
     Ok(())
 }
 
-// ── Pass 2 — transform ────────────────────────────────────────────────────────
+// Pass 2 — transform
 
 /// Drain all available encoded packets from `enc_ctx` into `out_ctx`, rescaling
 /// timestamps from the encoder's time base to the output stream's time base.
@@ -290,7 +290,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         }};
     }
 
-    // ── Pre-flight: check that vidstabtransform is available ──────────────────
+    // Pre-flight: check that vidstabtransform is available
     let vstab_filt = ff_sys::avfilter_get_by_name(c"vidstabtransform".as_ptr());
     if vstab_filt.is_null() {
         return Err(FilterError::Ffmpeg {
@@ -299,7 +299,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── Build CString arguments before allocating the graph ───────────────────
+    // Build CString arguments before allocating the graph
     // Escape paths for the filter's `:`-separated option parser (movie
     // `filename=` and vidstabtransform `input=`): Windows drive colons /
     // backslashes would otherwise break it.
@@ -335,7 +335,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         message: "trf path contains null byte".to_string(),
     })?;
 
-    // ── Allocate the filter graph ─────────────────────────────────────────────
+    // Allocate the filter graph
     let graph = ff_sys::avfilter_graph_alloc();
     if graph.is_null() {
         return Err(FilterError::Ffmpeg {
@@ -344,7 +344,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── 1. movie source ───────────────────────────────────────────────────────
+    // 1. movie source
     let movie_filt = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
     if movie_filt.is_null() {
         bail!(graph, 0, "filter not found: movie");
@@ -362,7 +362,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         bail!(graph, ret, format!("movie create_filter failed code={ret}"));
     }
 
-    // ── 2. vidstabtransform ───────────────────────────────────────────────────
+    // 2. vidstabtransform
     log::debug!(
         "filter added name=vidstabtransform args={}",
         vstab_args.to_string_lossy()
@@ -384,7 +384,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         );
     }
 
-    // ── 3. format — normalize to yuv420p for encoder compatibility ────────────
+    // 3. format — normalize to yuv420p for encoder compatibility
     let format_filt = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if format_filt.is_null() {
         bail!(graph, 0, "filter not found: format");
@@ -406,7 +406,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         );
     }
 
-    // ── 4. buffersink ─────────────────────────────────────────────────────────
+    // 4. buffersink
     let buffersink_filt = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if buffersink_filt.is_null() {
         bail!(graph, 0, "filter not found: buffersink");
@@ -428,7 +428,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         );
     }
 
-    // ── Link: movie → vidstabtransform → format → buffersink ─────────────────
+    // Link: movie → vidstabtransform → format → buffersink
     let ret = ff_sys::avfilter_link(src_ctx, 0, vstab_ctx, 0);
     if ret < 0 {
         bail!(
@@ -454,7 +454,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         );
     }
 
-    // ── Configure the graph — opens input file and validates the trf path ─────
+    // Configure the graph — opens input file and validates the trf path
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         bail!(
@@ -470,7 +470,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     // After graph config the output time base is stable.
     let filter_tb = ff_sys::av_buffersink_get_time_base(sink_ctx);
 
-    // ── From here manual cleanup is required (encoder + muxer are allocated) ──
+    // From here manual cleanup is required (encoder + muxer are allocated)
 
     // Pull the first frame to discover frame dimensions.
     let Ok(mut first_frame) = ff_sys::Frame::new() else {
@@ -501,7 +501,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     let frame_width = first_frame.width();
     let frame_height = first_frame.height();
 
-    // ── Find the best available H.264 encoder ─────────────────────────────────
+    // Find the best available H.264 encoder
     let enc_codec = {
         let candidates: &[&str] = &[
             "h264_nvenc",
@@ -532,7 +532,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         }
     };
 
-    // ── Allocate and configure the encoder context ────────────────────────────
+    // Allocate and configure the encoder context
     let mut enc_ctx = match ff_sys::CodecContext::new(Some(enc_codec)) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -559,7 +559,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── Allocate the output format context (owned) ────────────────────────────
+    // Allocate the output format context (owned)
     // The owned context frees itself and closes its IO on drop; each early return
     // below still frees the raw filter graph explicitly. Because the graph is raw,
     // out_ctx operations use explicit `match`/`if let` (not `?`).
@@ -575,7 +575,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         }
     };
 
-    // ── Add video stream and copy codec parameters ────────────────────────────
+    // Add video stream and copy codec parameters
     let Ok(out_idx) = out_ctx.new_stream(None) else {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
@@ -594,7 +594,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── Open the output file ──────────────────────────────────────────────────
+    // Open the output file
     if let Err(code) = out_ctx.open_io(output) {
         let code = code.code();
         let mut g = graph;
@@ -605,7 +605,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     }
 
-    // ── Write container header ────────────────────────────────────────────────
+    // Write container header
     if let Err(e) = out_ctx.write_header() {
         let mut g = graph;
         ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
@@ -618,7 +618,7 @@ pub(super) unsafe fn transform_vidstab_unsafe(
     // Read stream time base AFTER write_header — the muxer may adjust it.
     let stream_tb = out_ctx.stream_time_base(out_idx);
 
-    // ── Allocate encode packet ────────────────────────────────────────────────
+    // Allocate encode packet
     let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
         let mut g = graph;
@@ -629,12 +629,12 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         });
     };
 
-    // ── Encode first frame ────────────────────────────────────────────────────
+    // Encode first frame
     let _ = enc_ctx.send_frame(Some(&first_frame));
     drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
     drop(first_frame);
 
-    // ── Encode remaining frames from the filter graph ─────────────────────────
+    // Encode remaining frames from the filter graph
     loop {
         let Ok(mut frame) = ff_sys::Frame::new() else {
             break;
@@ -650,11 +650,11 @@ pub(super) unsafe fn transform_vidstab_unsafe(
         // `frame` drops at end of iteration.
     }
 
-    // ── Flush the encoder ─────────────────────────────────────────────────────
+    // Flush the encoder
     let _ = enc_ctx.send_frame(None);
     drain_encoded_packets(&mut enc_ctx, &mut pkt, &mut out_ctx, stream_tb);
 
-    // ── Finalize output ───────────────────────────────────────────────────────
+    // Finalize output
     // `pkt` drops at end of scope, freeing it. The owned `out_ctx` closes its IO
     // and frees itself when it drops at scope end; only the raw filter graph
     // needs an explicit free here.

@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-// ── FrameSink ─────────────────────────────────────────────────────────────────
+// FrameSink
 
 /// A sink that receives decoded video frames as contiguous RGBA bytes.
 ///
@@ -34,7 +34,7 @@ pub trait FrameSink: Send {
     fn flush(&mut self) {}
 }
 
-// ── RgbaFrame / RgbaSink ──────────────────────────────────────────────────────
+// RgbaFrame / RgbaSink
 
 /// A decoded video frame as contiguous RGBA bytes.
 ///
@@ -115,8 +115,6 @@ impl FrameSink for RgbaSink {
     }
     // flush() inherits the default no-op
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

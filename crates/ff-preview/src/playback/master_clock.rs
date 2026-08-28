@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-// ── MasterClock ───────────────────────────────────────────────────────────────
+// MasterClock
 
 /// Reference clock for the A/V sync loop in [`PreviewPlayer::run`].
 ///
@@ -265,8 +265,6 @@ impl MasterClock {
         }
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

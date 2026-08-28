@@ -114,7 +114,7 @@ fn main() {
         _ => ScaleAlgorithm::Fast,
     };
 
-    // ── Build filter graph ────────────────────────────────────────────────────
+    // Build filter graph
 
     let filter_result = match effect.as_str() {
         "vignette" => {
@@ -172,7 +172,7 @@ fn main() {
 
     println!();
 
-    // ── Assemble pipeline ─────────────────────────────────────────────────────
+    // Assemble pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

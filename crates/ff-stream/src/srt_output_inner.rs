@@ -104,7 +104,7 @@ impl SrtInner {
         }
     }
 
-    // ── Private unsafe implementations ───────────────────────────────────────
+    // Private unsafe implementations
 
     #[allow(unsafe_op_in_unsafe_fn)]
     #[allow(clippy::too_many_arguments)]
@@ -120,13 +120,13 @@ impl SrtInner {
     ) -> Result<Self, StreamError> {
         ff_sys::ensure_initialized();
 
-        // ── 1. Allocate MPEG-TS output context with SRT URL ────────────────
+        // 1. Allocate MPEG-TS output context with SRT URL
         // The owned context frees itself on every early return below (closing its
         // `pb` if one was opened), so no manual teardown is needed on error paths.
         let mut out_ctx = ff_sys::OutputFormatContext::new(Some("mpegts"), Path::new(url))
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 2. Open H.264 video encoder ────────────────────────────────────
+        // 2. Open H.264 video encoder
         let vid_enc_codec = crate::codec_utils::select_h264_encoder("srt").ok_or_else(|| {
             ffmpeg_err_msg(
                 "no H.264 encoder available \
@@ -157,7 +157,7 @@ impl SrtInner {
             .open_codec(vid_enc_codec)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 3. Add video output stream ─────────────────────────────────────
+        // 3. Add video output stream
         let vid_out_stream_idx = out_ctx
             .new_stream(Some(&vid_enc_codec))
             .map_err(|e| ffmpeg_err(e.code()))? as i32;
@@ -166,7 +166,7 @@ impl SrtInner {
             .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 4. Open AAC audio encoder ──────────────────────────────────────
+        // 4. Open AAC audio encoder
         let aud_enc_ctx = open_aac_encoder(aud_sample_rate, aud_channels, aud_bitrate, "srt")?;
 
         let aud_frame_size = if aud_enc_ctx.frame_size() > 0 {
@@ -175,7 +175,7 @@ impl SrtInner {
             1024
         };
 
-        // ── 5. Add audio output stream ─────────────────────────────────────
+        // 5. Add audio output stream
         let aud_out_stream_idx = out_ctx.new_stream(None).map_err(|e| ffmpeg_err(e.code()))? as i32;
         out_ctx.set_stream_time_base(
             aud_out_stream_idx as usize,
@@ -191,7 +191,7 @@ impl SrtInner {
             log::warn!("srt audio stream codecpar copy failed");
         }
 
-        // ── 6. Open SRT connection and write MPEG-TS header ────────────────
+        // 6. Open SRT connection and write MPEG-TS header
         // SRT uses a persistent network connection like RTMP. `open_io` opens the
         // avio handle for the URL and attaches it as the context's `pb`.
         out_ctx
@@ -211,7 +211,7 @@ impl SrtInner {
              bitrate={video_bitrate}bps"
         );
 
-        // ── 7. Build MuxerCore ─────────────────────────────────────────────
+        // 7. Build MuxerCore
         let core = MuxerCore::new(
             out_ctx,
             vid_enc_ctx,

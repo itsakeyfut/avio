@@ -33,7 +33,7 @@ use ff_decode::VideoDecoder;
 use ff_encode::{EncodeError, EncodeProgress, EncodeProgressCallback, VideoEncoder};
 use ff_format::VideoCodec;
 
-// ── Custom progress handler ───────────────────────────────────────────────────
+// Custom progress handler
 //
 // Implement EncodeProgressCallback on a concrete struct so that state
 // (the frame counter, the optional limit) travels with the callback.
@@ -110,7 +110,7 @@ impl EncodeProgressCallback for CancellableProgress {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -142,7 +142,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -172,7 +172,7 @@ fn main() {
     }
     println!();
 
-    // ── Shared state for cancellation ─────────────────────────────────────────
+    // Shared state for cancellation
 
     let frames_seen = Arc::new(AtomicU64::new(0));
     let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -183,7 +183,7 @@ fn main() {
         cancel_flag: Arc::clone(&cancel_flag),
     };
 
-    // ── Build encoder with trait-based progress callback ──────────────────────
+    // Build encoder with trait-based progress callback
     //
     // progress_callback() accepts any type implementing EncodeProgressCallback.
     // Use on_progress() (the simpler form) when you only need a closure.
@@ -201,7 +201,7 @@ fn main() {
         }
     };
 
-    // ── Decode loop ───────────────────────────────────────────────────────────
+    // Decode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -232,7 +232,7 @@ fn main() {
         }
     }
 
-    // ── Finalise ──────────────────────────────────────────────────────────────
+    // Finalise
 
     let cancelled = match encoder.finish() {
         Ok(()) => false,

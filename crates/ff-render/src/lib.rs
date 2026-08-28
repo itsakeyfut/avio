@@ -69,7 +69,7 @@ pub mod compositor;
 #[cfg(feature = "wgpu")]
 pub mod context;
 
-// ── Top-level re-exports ─────────────────────────────────────────────────────
+// Top-level re-exports
 
 #[cfg(feature = "wgpu")]
 pub use compositor::{Compositor, FrameLayer, LayerTransform};

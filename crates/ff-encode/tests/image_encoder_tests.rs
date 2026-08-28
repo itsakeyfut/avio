@@ -11,7 +11,7 @@ use fixtures::{
     test_output_path,
 };
 
-// ── Baseline tests ────────────────────────────────────────────────────────────
+// Baseline tests
 
 #[test]
 fn encode_jpeg_should_produce_valid_output() {
@@ -94,7 +94,7 @@ fn build_with_unsupported_extension_should_return_error() {
     assert!(result.is_err(), "expected error for unsupported extension");
 }
 
-// ── Dimension tests ───────────────────────────────────────────────────────────
+// Dimension tests
 
 #[test]
 fn encode_jpeg_with_explicit_dimensions_should_produce_valid_output() {
@@ -181,7 +181,7 @@ fn encode_jpeg_with_only_width_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
 }
 
-// ── Quality tests ─────────────────────────────────────────────────────────────
+// Quality tests
 
 #[test]
 fn encode_jpeg_with_quality_should_produce_valid_output() {
@@ -277,7 +277,7 @@ fn encode_png_with_quality_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
 }
 
-// ── Pixel format tests ────────────────────────────────────────────────────────
+// Pixel format tests
 
 #[test]
 fn encode_jpeg_with_pixel_format_should_produce_valid_output() {
@@ -335,7 +335,7 @@ fn encode_png_with_rgb24_pixel_format_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
 }
 
-// ── File creation and round-trip tests ───────────────────────────────────────
+// File creation and round-trip tests
 
 #[test]
 fn new_with_missing_parent_dir_should_return_error() {

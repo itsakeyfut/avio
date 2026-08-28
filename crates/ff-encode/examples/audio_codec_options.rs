@@ -63,7 +63,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match AudioDecoder::open(&input).build() {
         Ok(d) => d,
@@ -87,7 +87,7 @@ fn main() {
 
     println!("Input:  {in_name}  {sample_rate} Hz  {channels} ch");
 
-    // ── Select codec + AudioCodecOptions ─────────────────────────────────────
+    // Select codec + AudioCodecOptions
     //
     // AudioCodecOptions is the v0.7.0 API for per-codec audio configuration.
     // Each variant holds a typed options struct specific to that codec.
@@ -181,7 +181,7 @@ fn main() {
     println!("Output: {out_name}");
     println!();
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
     //
     // .codec_options() applies the per-codec option struct.
     // .audio_bitrate() sets the target bitrate (ignored by lossless codecs and
@@ -206,7 +206,7 @@ fn main() {
         }
     };
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match AudioDecoder::open(&input).build() {
         Ok(d) => d,

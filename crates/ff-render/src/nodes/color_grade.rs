@@ -1,6 +1,6 @@
 use super::RenderNodeCpu;
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
+// Pipeline cache
 
 #[cfg(feature = "wgpu")]
 struct ColorGradePipeline {
@@ -10,7 +10,7 @@ struct ColorGradePipeline {
     uniform_buf: wgpu::Buffer,
 }
 
-// ── ColorGradeNode ────────────────────────────────────────────────────────────
+// ColorGradeNode
 
 /// Basic colour grading: brightness, contrast, saturation, temperature, tint.
 ///
@@ -60,7 +60,7 @@ impl Default for ColorGradeNode {
     }
 }
 
-// ── CPU path ──────────────────────────────────────────────────────────────────
+// CPU path
 
 impl RenderNodeCpu for ColorGradeNode {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -101,7 +101,7 @@ impl RenderNodeCpu for ColorGradeNode {
     }
 }
 
-// ── GPU path ──────────────────────────────────────────────────────────────────
+// GPU path
 
 #[cfg(feature = "wgpu")]
 impl ColorGradeNode {
@@ -291,8 +291,6 @@ impl super::RenderNode for ColorGradeNode {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,7 +405,7 @@ mod tests {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// helpers
 
 #[cfg(feature = "wgpu")]
 fn pack_f32(values: &[f32]) -> Vec<u8> {

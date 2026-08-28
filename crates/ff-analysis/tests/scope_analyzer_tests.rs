@@ -7,7 +7,7 @@
 use ff_analysis::ScopeAnalyzer;
 use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 fn yuv420p_frame(w: u32, h: u32, y: u8, u: u8, v: u8) -> VideoFrame {
     let yp = PooledBuffer::standalone(vec![y; (w * h) as usize]);
@@ -41,7 +41,7 @@ fn yuv444p_frame(w: u32, h: u32, y: u8, u: u8, v: u8) -> VideoFrame {
     .expect("test yuv444p frame")
 }
 
-// ── vectorscope ───────────────────────────────────────────────────────────────
+// vectorscope
 
 #[test]
 fn vectorscope_neutral_yuv_frame_should_cluster_near_origin() {
@@ -114,7 +114,7 @@ fn vectorscope_unsupported_format_should_return_empty() {
     );
 }
 
-// ── rgb_parade ────────────────────────────────────────────────────────────────
+// rgb_parade
 
 /// `rgb_parade` only supports YUV formats. A neutral grey YUV frame
 /// (U=128, V=128) should produce equal R, G, B averages per column.

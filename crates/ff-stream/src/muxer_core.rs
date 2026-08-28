@@ -369,7 +369,7 @@ impl MuxerCore {
     /// `self` must have been initialised by the enclosing inner type's
     /// `open_unsafe`. This method must be called at most once.
     pub(crate) unsafe fn flush_and_close_unsafe(&mut self) {
-        // ── Flush video encoder ───────────────────────────────────────────────
+        // Flush video encoder
         let _ = self.vid_enc_ctx.send_frame(None);
         drain_encoder(
             &mut self.vid_enc_ctx,
@@ -382,7 +382,7 @@ impl MuxerCore {
             },
         );
 
-        // ── Flush audio encoder ───────────────────────────────────────────────
+        // Flush audio encoder
         if self.aud_out_stream_idx >= 0 && self.aud_enc_ctx.is_some() {
             // Drain any remaining resampler buffered samples.
             if self.swr_ctx.is_some() {
@@ -447,7 +447,7 @@ impl MuxerCore {
             }
         }
 
-        // ── Write trailer ─────────────────────────────────────────────────────
+        // Write trailer
         // The owned `out_ctx` closes its `pb` (if still open, i.e. RTMP/SRT) and
         // frees the context on drop, so no manual close/free is needed here.
         let _ = self.out_ctx.write_trailer();

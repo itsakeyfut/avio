@@ -16,8 +16,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn frame_extractor_zero_interval_should_return_analysis_failed() {
     let result = FrameExtractor::new("irrelevant.mp4")
@@ -36,8 +34,6 @@ fn frame_extractor_missing_file_should_return_error() {
         .run();
     assert!(result.is_err(), "expected error for missing file, got Ok");
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "decodes entire video; run explicitly with -- --include-ignored"]

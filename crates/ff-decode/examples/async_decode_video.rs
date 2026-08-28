@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Input: {in_name}");
     println!();
 
-    // ── 1. Frame-by-frame: decode_frame() ────────────────────────────────────
+    // 1. Frame-by-frame: decode_frame()
     //
     // decode_frame() offloads each FFmpeg call to spawn_blocking, so the
     // Tokio executor is never blocked by codec I/O or CPU-bound decoding work.
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Decoded {frame_count} frames");
     println!();
 
-    // ── 2. Stream API: into_stream() + StreamExt combinators ─────────────────
+    // 2. Stream API: into_stream() + StreamExt combinators
     //
     // into_stream() converts the decoder into an impl Stream<Item = Result<..>>.
     // This composes naturally with the futures::StreamExt trait methods:
@@ -125,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Total frames via stream: {total}");
     println!();
 
-    // ── 3. Spawn stream on a background task ─────────────────────────────────
+    // 3. Spawn stream on a background task
     //
     // into_stream() returns impl Stream + Send, which means it can be moved
     // into a tokio::spawn block. This is useful when you want to process frames

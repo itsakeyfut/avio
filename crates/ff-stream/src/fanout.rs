@@ -157,7 +157,7 @@ mod tests {
     use super::*;
     use ff_format::{PixelFormat, SampleFormat, VideoFrame};
 
-    // ── Mock helpers ────────────────────────────────────────────────────────
+    // Mock helpers
 
     struct OkOutput;
 
@@ -206,8 +206,6 @@ mod tests {
         AudioFrame::empty(1024, 2, 44100, SampleFormat::F32p)
             .expect("dummy audio frame allocation failed")
     }
-
-    // ── Tests ────────────────────────────────────────────────────────────────
 
     #[test]
     fn push_video_all_succeed_should_return_ok() {

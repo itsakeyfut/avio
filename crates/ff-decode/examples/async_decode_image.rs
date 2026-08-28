@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         process::exit(1);
     }
 
-    // ── 1. Single async decode ────────────────────────────────────────────────
+    // 1. Single async decode
     //
     // open() runs file I/O and codec initialisation on a spawn_blocking thread.
     // decode() runs the pixel conversion on a spawn_blocking thread and consumes
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // ── 2. Parallel decode with join_all ──────────────────────────────────────
+    // 2. Parallel decode with join_all
     //
     // Each AsyncImageDecoder::open().decode() chain is an independent future.
     // Because the futures are Send, join_all can poll them concurrently on the

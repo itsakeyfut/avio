@@ -264,7 +264,7 @@ mod tests {
         );
     }
 
-    // ── lens_correction ───────────────────────────────────────────────────────
+    // lens_correction
 
     #[test]
     fn lens_correction_with_valid_coefficients_should_succeed() {
@@ -323,7 +323,7 @@ mod tests {
         assert!(args.contains("k2=0.1"), "args must contain k2=0.1: {args}");
     }
 
-    // ── film_grain ────────────────────────────────────────────────────────────
+    // film_grain
 
     #[test]
     fn film_grain_with_valid_params_should_return_mutable_self() {
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(args, "alls=0:c0s=0:c1s=0:allf=t");
     }
 
-    // ── lens_profile ──────────────────────────────────────────────────────────
+    // lens_profile
 
     #[test]
     fn lens_profile_gopro_hero9_wide_should_push_two_steps() {
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(args, "w=iw*1:h=ih*1");
     }
 
-    // ── fix_chromatic_aberration ──────────────────────────────────────────────
+    // fix_chromatic_aberration
 
     #[test]
     fn fix_chromatic_aberration_with_valid_scales_should_succeed() {
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(args, "rh=0:bh=0:edge=smear");
     }
 
-    // ── glow ──────────────────────────────────────────────────────────────────
+    // glow
 
     #[test]
     fn glow_with_valid_params_should_return_mutable_self() {

@@ -89,7 +89,7 @@ fn main() {
     println!("Output:  {output}");
     println!();
 
-    // ── Probe source dimensions and frame rate ────────────────────────────────
+    // Probe source dimensions and frame rate
 
     let (width, height, fps) = if expect_video {
         match VideoDecoder::open(&input).build() {
@@ -103,7 +103,7 @@ fn main() {
         (0, 0, 0.0)
     };
 
-    // ── Build encoder from preset ─────────────────────────────────────────────
+    // Build encoder from preset
     //
     // apply_video() wires codec, bitrate mode, pixel format, and codec options.
     // apply_audio() wires sample rate, channel count, audio codec, and bitrate.
@@ -129,7 +129,7 @@ fn main() {
 
     println!("Encoding…");
 
-    // ── Push video frames ─────────────────────────────────────────────────────
+    // Push video frames
 
     if expect_video {
         let mut vdec = match VideoDecoder::open(&input).build() {
@@ -160,7 +160,7 @@ fn main() {
         println!("  Video: {frames} frame(s)");
     }
 
-    // ── Push audio frames ─────────────────────────────────────────────────────
+    // Push audio frames
 
     let sr = preset.audio.sample_rate;
     let ch = preset.audio.channels;
@@ -197,7 +197,7 @@ fn main() {
     }
     println!("  Audio: {audio_frames} frame(s)");
 
-    // ── Finalize ──────────────────────────────────────────────────────────────
+    // Finalize
 
     if let Err(e) = encoder.finish() {
         eprintln!("Error finalising output: {e}");

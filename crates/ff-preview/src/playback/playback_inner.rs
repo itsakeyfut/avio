@@ -24,7 +24,7 @@ pub(crate) fn audio_frame_to_f32(frame: &AudioFrame) -> Vec<f32> {
     frame.as_f32().map(<[f32]>::to_vec).unwrap_or_default()
 }
 
-// ── SwsRgbaConverter ──────────────────────────────────────────────────────────
+// SwsRgbaConverter
 
 /// Lazy `sws_scale` converter that outputs packed RGBA (4 bytes/pixel, alpha = 255).
 ///

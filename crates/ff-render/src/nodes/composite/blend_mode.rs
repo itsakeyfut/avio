@@ -8,7 +8,7 @@ use super::helpers::{
 };
 use crate::nodes::RenderNodeCpu;
 
-// ── BlendMode ─────────────────────────────────────────────────────────────────
+// BlendMode
 
 /// Photoshop-compatible blend modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,7 +53,7 @@ pub enum BlendMode {
     Luminosity = 17,
 }
 
-// ── BlendModeNode ─────────────────────────────────────────────────────────────
+// BlendModeNode
 
 #[cfg(feature = "wgpu")]
 struct BlendPipeline {
@@ -142,7 +142,7 @@ impl RenderNodeCpu for BlendModeNode {
     }
 }
 
-// ── GPU: BlendModeNode ────────────────────────────────────────────────────────
+// GPU: BlendModeNode
 
 #[cfg(feature = "wgpu")]
 impl BlendModeNode {

@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(dst, a);
     }
 
-    // ── apply_xfade (kind-aware transition blend) ─────────────────────────────
+    // apply_xfade (kind-aware transition blend)
 
     // A 4x1 packed-RGBA frame filled with one colour.
     fn frame(color: [u8; 4]) -> Vec<u8> {

@@ -82,7 +82,7 @@ fn main() {
     println!("Done.");
     println!();
 
-    // ── List output directory ─────────────────────────────────────────────────
+    // List output directory
 
     let entries = match std::fs::read_dir(&output) {
         Ok(e) => e,

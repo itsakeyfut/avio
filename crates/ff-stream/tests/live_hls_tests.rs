@@ -63,7 +63,7 @@ fn live_hls_output_should_generate_valid_m3u8_and_segments() {
     }
     Box::new(hls).finish().expect("finish");
 
-    // ── assertions ──────────────────────────────────────────────────────────
+    // assertions
     let playlist = out_dir.path().join("index.m3u8");
     assert!(playlist.exists(), "index.m3u8 must exist after finish()");
 

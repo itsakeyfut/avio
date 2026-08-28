@@ -29,13 +29,13 @@ use std::time::{Duration, Instant};
 use criterion::{Criterion, criterion_group, criterion_main};
 use ff_preview::{FrameSink, PreviewPlayer};
 
-// ── Asset path ────────────────────────────────────────────────────────────────
+// Asset path
 
 fn bench_video_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/preview_bench_1080p.mp4")
 }
 
-// ── TimingSink ────────────────────────────────────────────────────────────────
+// TimingSink
 
 /// [`FrameSink`] that records `(wall_time, pts)` for each delivered frame.
 ///
@@ -53,7 +53,7 @@ impl FrameSink for TimingSink {
     }
 }
 
-// ── On-time metric ────────────────────────────────────────────────────────────
+// On-time metric
 
 /// Returns `(on_time_count, total_pairs)`.
 ///
@@ -76,7 +76,7 @@ fn count_on_time(timings: &[(Instant, Duration)], frame_period: Duration) -> (us
     (on_time, total)
 }
 
-// ── Sync benchmark ────────────────────────────────────────────────────────────
+// Sync benchmark
 
 fn bench_1080p_sync_playback(c: &mut Criterion) {
     let path = bench_video_path();
@@ -121,7 +121,7 @@ fn bench_1080p_sync_playback(c: &mut Criterion) {
     group.finish();
 }
 
-// ── Async benchmark (tokio feature) ──────────────────────────────────────────
+// Async benchmark (tokio feature)
 
 #[cfg(feature = "tokio")]
 fn bench_1080p_async_playback(c: &mut Criterion) {
@@ -184,7 +184,7 @@ fn bench_1080p_async_playback(c: &mut Criterion) {
     group.finish();
 }
 
-// ── criterion_group / criterion_main ──────────────────────────────────────────
+// criterion_group / criterion_main
 
 #[cfg(not(feature = "tokio"))]
 criterion_group!(preview_benches, bench_1080p_sync_playback);

@@ -44,7 +44,7 @@ impl<T: Lerp> Keyframe<T> {
     }
 }
 
-// ── Ordering by timestamp only ────────────────────────────────────────────────
+// Ordering by timestamp only
 
 impl<T: Lerp> PartialEq for Keyframe<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -65,8 +65,6 @@ impl<T: Lerp> Ord for Keyframe<T> {
         self.timestamp.cmp(&other.timestamp)
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

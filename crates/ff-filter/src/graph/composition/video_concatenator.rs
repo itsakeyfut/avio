@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 
-// ── VideoConcatenator ─────────────────────────────────────────────────────────
+// VideoConcatenator
 
 /// Concatenates multiple video inputs into a single seamless output stream.
 ///

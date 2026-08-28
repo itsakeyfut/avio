@@ -118,7 +118,7 @@ pub(super) fn spawn_audio_track_thread(
                     if let Some(raw) = frame.as_f32()
                         && !raw.is_empty()
                     {
-                        // ── Speed resampling (linear interpolation) ────────────
+                        // Speed resampling (linear interpolation)
                         // For speed > 1.0: fewer output samples (fast motion, pitch up).
                         // For speed < 1.0: more output samples (slow motion, pitch down).
                         // This is a simple preview-quality resample; no pitch correction.

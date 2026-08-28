@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-// ── ClockState ────────────────────────────────────────────────────────────────
+// ClockState
 
 /// Internal state machine for `PlaybackClock`.
 ///
@@ -25,7 +25,7 @@ enum ClockState {
     Paused { frozen_at: Duration },
 }
 
-// ── PlaybackClock ─────────────────────────────────────────────────────────────
+// PlaybackClock
 
 /// A monotonic clock that tracks elapsed playback time.
 ///
@@ -207,8 +207,6 @@ impl Default for PlaybackClock {
         Self::new()
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

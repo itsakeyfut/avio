@@ -12,7 +12,7 @@ pub enum YuvFormat {
     Yuv444p,
 }
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
+// Pipeline cache
 
 #[cfg(feature = "wgpu")]
 struct YuvPipeline {
@@ -24,7 +24,7 @@ struct YuvPipeline {
     uniform_buf: wgpu::Buffer,
 }
 
-// ── YuvUploadNode ─────────────────────────────────────────────────────────────
+// YuvUploadNode
 
 /// Upload raw YUV plane buffers to the GPU and convert to RGBA in a fragment
 /// shader, bypassing CPU-side `sws_scale`.
@@ -98,7 +98,7 @@ fn chroma_divs(format: YuvFormat) -> (u32, u32) {
     }
 }
 
-// ── CPU path ──────────────────────────────────────────────────────────────────
+// CPU path
 
 impl RenderNodeCpu for YuvUploadNode {
     #[allow(
@@ -136,7 +136,7 @@ impl RenderNodeCpu for YuvUploadNode {
     }
 }
 
-// ── GPU path ──────────────────────────────────────────────────────────────────
+// GPU path
 
 #[cfg(feature = "wgpu")]
 impl YuvUploadNode {
@@ -454,8 +454,6 @@ impl super::RenderNode for YuvUploadNode {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,7 +605,7 @@ mod tests {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// helpers
 
 #[cfg(feature = "wgpu")]
 fn pack_u32(values: &[u32]) -> Vec<u8> {

@@ -7,7 +7,7 @@ use ff_decode::{HardwareAccel, VideoDecoder};
 mod fixtures;
 use fixtures::assets_dir;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 /// RAII guard that deletes a directory tree on drop.
 struct TempDir(PathBuf);
@@ -52,8 +52,6 @@ fn make_image_sequence(dir: &Path, src: &Path, count: usize) -> PathBuf {
     }
     dir.join(format!("frame%04d.{ext}"))
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn image_sequence_png_should_decode_all_frames() {

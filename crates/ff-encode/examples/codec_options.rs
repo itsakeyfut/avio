@@ -63,7 +63,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -88,7 +88,7 @@ fn main() {
 
     println!("Input:  {in_name}  {width}×{height}  {fps:.2} fps");
 
-    // ── Select codec + VideoCodecOptions ─────────────────────────────────────
+    // Select codec + VideoCodecOptions
     //
     // VideoCodecOptions is the main v0.7.0 API for per-codec configuration.
     // Each variant holds a typed options struct specific to that codec.
@@ -197,7 +197,7 @@ fn main() {
     println!("Output: {out_name}");
     println!();
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
     //
     // .codec_options() applies the per-codec option struct.
     // .pixel_format() overrides the default pixel format when needed (e.g. 10-bit).
@@ -225,7 +225,7 @@ fn main() {
         encoder.actual_video_codec()
     );
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

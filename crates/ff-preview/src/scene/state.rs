@@ -25,7 +25,7 @@ pub(super) fn db_to_linear(db: f64) -> f32 {
     10.0_f64.powf(db / 20.0) as f32
 }
 
-// ── ClipState ─────────────────────────────────────────────────────────────────
+// ClipState
 
 pub(super) struct ClipState {
     /// Source file path — needed to spawn audio threads on clip transition.
@@ -66,7 +66,7 @@ pub(super) struct ClipState {
     pub(super) fade_out: Duration,
 }
 
-// ── TransitionState ───────────────────────────────────────────────────────────
+// TransitionState
 
 pub(super) struct TransitionState {
     /// Index of the incoming clip (the one being faded in).
@@ -79,7 +79,7 @@ pub(super) struct TransitionState {
     pub(super) kind: XfadeTransition,
 }
 
-// ── OverlayLayer ──────────────────────────────────────────────────────────────
+// OverlayLayer
 
 /// One secondary video layer (V2, V3, …) inside [`SceneRunner`](super::runner::SceneRunner).
 pub(super) struct OverlayLayer {
@@ -97,7 +97,7 @@ pub(super) struct OverlayLayer {
     pub(super) pending: Option<VideoFrame>,
 }
 
-// ── LavfiOverlayState ─────────────────────────────────────────────────────────
+// LavfiOverlayState
 
 /// A timeline-global generated `lavfi` overlay, composited as the topmost layer.
 ///
@@ -186,7 +186,7 @@ impl LavfiOverlayState {
     }
 }
 
-// ── AudioFadeConfig ───────────────────────────────────────────────────────────
+// AudioFadeConfig
 
 /// Fade-in / fade-out parameters forwarded to
 /// [`spawn_audio_track_thread`](super::audio_resampling::spawn_audio_track_thread).
@@ -213,7 +213,7 @@ impl AudioFadeConfig {
     };
 }
 
-// ── AudioOnlyTrack ────────────────────────────────────────────────────────────
+// AudioOnlyTrack
 
 /// One dedicated audio-only clip (from an A1/A2/… track) inside
 /// [`SceneRunner`](super::runner::SceneRunner).

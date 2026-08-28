@@ -52,7 +52,7 @@ fn stream_copy_trimmer_should_produce_output_file_for_valid_range() {
     let _guard_source = FileGuard::new(source_path.clone());
     let _guard_output = FileGuard::new(output_path.clone());
 
-    // ── Build a short source file ────────────────────────────────────────────
+    // Build a short source file
     let mut encoder = match VideoEncoder::create(&source_path)
         .video(320, 240, 30.0)
         .video_codec(VideoCodec::Mpeg4)
@@ -79,7 +79,7 @@ fn stream_copy_trimmer_should_produce_output_file_for_valid_range() {
         return;
     }
 
-    // ── Trim [0.5, 2.5] ─────────────────────────────────────────────────────
+    // Trim [0.5, 2.5]
     let result = StreamCopyTrimmer::new(&source_path, 0.5, 2.5, &output_path).run();
     match result {
         Ok(()) => {}

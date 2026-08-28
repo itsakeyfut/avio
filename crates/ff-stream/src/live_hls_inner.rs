@@ -107,7 +107,7 @@ impl LiveHlsInner {
         }
     }
 
-    // ── Private unsafe implementations ───────────────────────────────────────
+    // Private unsafe implementations
 
     #[allow(unsafe_op_in_unsafe_fn)]
     #[allow(clippy::too_many_arguments)]
@@ -124,7 +124,7 @@ impl LiveHlsInner {
     ) -> Result<Self, StreamError> {
         ff_sys::ensure_initialized();
 
-        // ── 1. Allocate HLS output context ────────────────────────────────────
+        // 1. Allocate HLS output context
         let playlist_path = format!("{output_dir}/index.m3u8");
 
         // The owned context frees itself on every early return below, so no manual
@@ -132,7 +132,7 @@ impl LiveHlsInner {
         let mut out_ctx = ff_sys::OutputFormatContext::new(Some("hls"), Path::new(&playlist_path))
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 2. Set HLS muxer options ──────────────────────────────────────────
+        // 2. Set HLS muxer options
         let seg_time_str = format!("{segment_secs}");
         let list_size_str = format!("{playlist_size}");
         let use_fmp4 = segment_format == crate::hls::HlsSegmentFormat::Fmp4;
@@ -179,7 +179,7 @@ impl LiveHlsInner {
             }
         }
 
-        // ── 3. Open H.264 video encoder ───────────────────────────────────────
+        // 3. Open H.264 video encoder
         let vid_enc_codec =
             crate::codec_utils::select_h264_encoder("live_hls").ok_or_else(|| {
                 ffmpeg_err_msg(
@@ -210,7 +210,7 @@ impl LiveHlsInner {
             .open_codec(vid_enc_codec)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 4. Add video output stream ────────────────────────────────────────
+        // 4. Add video output stream
         let vid_out_stream_idx = out_ctx
             .new_stream(Some(&vid_enc_codec))
             .map_err(|e| ffmpeg_err(e.code()))? as i32;
@@ -219,7 +219,7 @@ impl LiveHlsInner {
             .apply_stream_params_from_context(vid_out_stream_idx as usize, &vid_enc_ctx)
             .map_err(|e| ffmpeg_err(e.code()))?;
 
-        // ── 5. Open AAC audio encoder and add audio stream (optional) ─────────
+        // 5. Open AAC audio encoder and add audio stream (optional)
         let mut aud_enc_ctx: Option<ff_sys::CodecContext> = None;
         let mut aud_out_stream_idx: i32 = -1;
         let mut aud_sample_rate = 44100i32;
@@ -266,7 +266,7 @@ impl LiveHlsInner {
             }
         }
 
-        // ── 6. Open output file and write header ──────────────────────────────
+        // 6. Open output file and write header
         out_ctx
             .open_io(Path::new(&playlist_path))
             .map_err(|e| ffmpeg_err(e.code()))?;
@@ -288,7 +288,7 @@ impl LiveHlsInner {
             aud_out_stream_idx >= 0
         );
 
-        // ── 7. Build MuxerCore ────────────────────────────────────────────────
+        // 7. Build MuxerCore
         let core = MuxerCore::new(
             out_ctx,
             vid_enc_ctx,

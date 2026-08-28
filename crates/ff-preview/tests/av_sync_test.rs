@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use ff_preview::{FrameSink, PreviewPlayer};
 
-// ── RecordingSink ─────────────────────────────────────────────────────────────
+// RecordingSink
 
 /// [`FrameSink`] that logs `(wall_clock, pts)` for every delivered frame.
 struct RecordingSink {
@@ -32,13 +32,11 @@ impl FrameSink for RecordingSink {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 fn test_file_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/av_sync_test_60s.mp4")
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "requires FFmpeg and assets/test/av_sync_test_60s.mp4; run with -- --include-ignored"]

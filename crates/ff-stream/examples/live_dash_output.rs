@@ -70,7 +70,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Open source decoders ──────────────────────────────────────────────────
+    // Open source decoders
 
     let mut video_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -98,7 +98,7 @@ fn main() {
     println!("Bitrate:  {bitrate} bps");
     println!();
 
-    // ── Open LiveDashOutput ───────────────────────────────────────────────────
+    // Open LiveDashOutput
 
     let mut builder = LiveDashOutput::new(&output)
         .video(width, height, fps_display)
@@ -117,7 +117,7 @@ fn main() {
         }
     };
 
-    // ── Frame loop ────────────────────────────────────────────────────────────
+    // Frame loop
 
     println!("Encoding frames...");
     let start = std::time::Instant::now();
@@ -174,7 +174,7 @@ fn main() {
     println!("Done in {elapsed:.2} s — {video_frames} video frames, {audio_frames} audio frames");
     println!();
 
-    // ── List output files ─────────────────────────────────────────────────────
+    // List output files
 
     let entries = match std::fs::read_dir(&output) {
         Ok(e) => e,

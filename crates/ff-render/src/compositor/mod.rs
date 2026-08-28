@@ -5,7 +5,7 @@ use ff_format::VideoFrame;
 
 use crate::nodes::BlendMode;
 
-// ── LayerTransform ────────────────────────────────────────────────────────────
+// LayerTransform
 
 /// 2D affine transform parameters for a compositor layer.
 ///
@@ -49,7 +49,7 @@ impl LayerTransform {
     }
 }
 
-// ── FrameLayer ────────────────────────────────────────────────────────────────
+// FrameLayer
 
 /// A single layer in the composition stack.
 pub struct FrameLayer {
@@ -66,7 +66,7 @@ pub struct FrameLayer {
     pub z_order: i32,
 }
 
-// ── Compositor ────────────────────────────────────────────────────────────────
+// Compositor
 
 /// Stateful high-level multi-layer GPU compositor.
 ///
@@ -149,8 +149,6 @@ impl Compositor {
         graph.composite(&self.ctx, layers, self.width, self.height)
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

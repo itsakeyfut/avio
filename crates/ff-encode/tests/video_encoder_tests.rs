@@ -400,7 +400,7 @@ fn crf_h265_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
 }
 
-// ── H265Options integration tests ────────────────────────────────────────────
+// H265Options integration tests
 
 #[test]
 fn h265_main_profile_should_produce_valid_output() {

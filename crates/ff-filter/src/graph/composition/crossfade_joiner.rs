@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 
-// ── CrossfadeJoiner ────────────────────────────────────────────────────────────────
+// CrossfadeJoiner
 
 /// Joins two video inputs with a cross-dissolve transition.
 ///

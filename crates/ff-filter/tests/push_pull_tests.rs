@@ -1664,7 +1664,7 @@ fn push_audio_through_concat_audio_should_produce_output() {
     assert_eq!(out.channels(), 2, "channel count should be unchanged");
 }
 
-// ── Blend: Multiply and Screen ────────────────────────────────────────────────
+// Blend: Multiply and Screen
 
 /// YUV420p frame filled with a solid luma value; U/V neutral at 128.
 fn make_solid_yuv_frame(width: u32, height: u32, y_val: u8) -> VideoFrame {
@@ -2202,7 +2202,7 @@ fn blend_new_modes_should_be_accepted_by_ffmpeg() {
     }
 }
 
-// ── CompositeOp (Porter-Duff via the new Composite step) ──────────────────────
+// CompositeOp (Porter-Duff via the new Composite step)
 //
 // Porter-Duff alpha compositing is driven via `FilterGraphBuilder::composite()`
 // (the `CompositeOp` API, #1221); these behavioural tests cover each operator.
@@ -2496,7 +2496,7 @@ fn composite_out_should_produce_black_where_bottom_is_white() {
     );
 }
 
-// ── Color key ─────────────────────────────────────────────────────────────────
+// Color key
 
 #[test]
 fn colorkey_solid_color_background_should_become_transparent() {
@@ -2544,7 +2544,7 @@ fn colorkey_solid_color_background_should_become_transparent() {
     }
 }
 
-// ── Alpha matte ───────────────────────────────────────────────────────────────
+// Alpha matte
 
 #[test]
 fn alpha_matte_white_region_should_be_opaque() {
@@ -2642,7 +2642,7 @@ fn alpha_matte_black_region_should_be_transparent() {
     }
 }
 
-// ── Spill suppress ────────────────────────────────────────────────────────────
+// Spill suppress
 
 #[test]
 fn spill_suppress_should_reduce_green_cast_on_subject_edges() {
@@ -2686,7 +2686,7 @@ fn spill_suppress_should_reduce_green_cast_on_subject_edges() {
     }
 }
 
-// ── Chroma key ────────────────────────────────────────────────────────────────
+// Chroma key
 
 #[test]
 fn chromakey_green_screen_should_produce_transparent_green_area() {
@@ -2731,7 +2731,7 @@ fn chromakey_green_screen_should_produce_transparent_green_area() {
     }
 }
 
-// ── Luma key ──────────────────────────────────────────────────────────────────
+// Luma key
 
 #[test]
 fn lumakey_white_background_should_be_transparent_at_threshold_1() {
@@ -2816,7 +2816,7 @@ fn lumakey_invert_should_key_out_dark_regions() {
     }
 }
 
-// ── Feather mask ──────────────────────────────────────────────────────────────
+// Feather mask
 
 #[test]
 fn feather_mask_should_produce_smooth_alpha_edges() {
@@ -2862,7 +2862,7 @@ fn feather_mask_should_produce_smooth_alpha_edges() {
     }
 }
 
-// ── Polygon matte ─────────────────────────────────────────────────────────────
+// Polygon matte
 
 #[test]
 fn polygon_matte_triangle_should_isolate_triangular_region() {
@@ -2909,7 +2909,7 @@ fn polygon_matte_triangle_should_isolate_triangular_region() {
     }
 }
 
-// ── Rect mask ─────────────────────────────────────────────────────────────────
+// Rect mask
 
 #[test]
 fn rect_mask_100x100_makes_outside_transparent() {

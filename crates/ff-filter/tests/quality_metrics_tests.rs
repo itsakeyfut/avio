@@ -16,8 +16,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn quality_metrics_ssim_missing_reference_should_return_analysis_failed() {
     let result = QualityMetrics::ssim(
@@ -29,8 +27,6 @@ fn quality_metrics_ssim_missing_reference_should_return_analysis_failed() {
         "expected AnalysisFailed for missing reference, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn quality_metrics_ssim_identical_files_should_return_one() {
@@ -76,7 +72,7 @@ fn quality_metrics_ssim_result_should_be_between_zero_and_one() {
     );
 }
 
-// ── PSNR error-path tests ─────────────────────────────────────────────────────
+// PSNR error-path tests
 
 #[test]
 fn quality_metrics_psnr_missing_reference_should_return_analysis_failed() {
@@ -90,7 +86,7 @@ fn quality_metrics_psnr_missing_reference_should_return_analysis_failed() {
     );
 }
 
-// ── PSNR functional tests ─────────────────────────────────────────────────────
+// PSNR functional tests
 
 #[test]
 fn quality_metrics_psnr_identical_files_should_return_large_value() {

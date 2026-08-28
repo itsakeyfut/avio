@@ -15,8 +15,6 @@ use ff_analysis::{AnalysisError, WaveformAnalyzer, WaveformSample};
 use ff_decode::AudioDecoder;
 use std::time::Duration;
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn waveform_analyzer_zero_interval_should_return_analysis_failed() {
     let result = WaveformAnalyzer::new(test_audio_path())
@@ -27,8 +25,6 @@ fn waveform_analyzer_zero_interval_should_return_analysis_failed() {
         "expected Failed for zero interval, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 /// A 1-second interval produces roughly `duration_ms / 100 ± 2` samples.
 #[test]

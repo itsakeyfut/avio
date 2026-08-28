@@ -19,7 +19,7 @@ pub const ENOMEM: i32 = -12;
 /// Invalid data
 pub const EINVAL: i32 = -22;
 
-// ── Network errno values (AVERROR = -errno on POSIX) ─────────────────────────
+// Network errno values (AVERROR = -errno on POSIX)
 //
 // These are used in ff-decode to map FFmpeg network errors to typed variants.
 // errno numbering differs across platforms:

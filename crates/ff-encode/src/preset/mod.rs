@@ -91,7 +91,7 @@ pub struct ExportPreset {
 }
 
 impl ExportPreset {
-    // ── Predefined presets ────────────────────────────────────────────────────
+    // Predefined presets
 
     /// `YouTube` 1080p preset: H.264, CRF 18, 1920×1080, 30 fps, AAC 192 kbps.
     #[must_use]
@@ -147,7 +147,7 @@ impl ExportPreset {
         presets::web_h264()
     }
 
-    // ── Validation ────────────────────────────────────────────────────────────
+    // Validation
 
     /// Validates this preset against platform-specific constraints.
     ///
@@ -164,7 +164,7 @@ impl ExportPreset {
         validation::validate_preset(self)
     }
 
-    // ── Builder helpers ───────────────────────────────────────────────────────
+    // Builder helpers
 
     /// Applies the video configuration to a [`VideoEncoderBuilder`].
     ///
@@ -210,7 +210,7 @@ impl ExportPreset {
 mod tests {
     use super::*;
 
-    // ── youtube_1080p ─────────────────────────────────────────────────────────
+    // youtube_1080p
 
     #[test]
     fn youtube_1080p_preset_should_have_correct_codec() {
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(preset.audio.bitrate, 192_000);
     }
 
-    // ── youtube_4k ───────────────────────────────────────────────────────────
+    // youtube_4k
 
     #[test]
     fn youtube_4k_preset_should_have_h265_codec() {
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(preset.audio.bitrate, 256_000);
     }
 
-    // ── lossless_rgb ─────────────────────────────────────────────────────────
+    // lossless_rgb
 
     #[test]
     fn lossless_rgb_preset_should_have_ffv1_codec() {
@@ -282,7 +282,7 @@ mod tests {
         assert!(video.fps.is_none(), "lossless_rgb should not fix fps");
     }
 
-    // ── podcast_mono ─────────────────────────────────────────────────────────
+    // podcast_mono
 
     #[test]
     fn podcast_mono_preset_should_have_no_video() {
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(preset.audio.channels, 1);
     }
 
-    // ── web_h264 ─────────────────────────────────────────────────────────────
+    // web_h264
 
     #[test]
     fn web_h264_preset_should_use_vp9_codec() {
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(video.codec, VideoCodec::Vp9);
     }
 
-    // ── human-readable names ──────────────────────────────────────────────────
+    // human-readable names
 
     #[test]
     fn all_presets_should_have_non_empty_names() {
@@ -328,7 +328,7 @@ mod tests {
         }
     }
 
-    // ── apply_video / apply_audio ─────────────────────────────────────────────
+    // apply_video / apply_audio
 
     #[test]
     fn custom_preset_should_apply_codec_to_builder() {
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(builder.audio_bitrate, Some(192_000));
     }
 
-    // ── validation ───────────────────────────────────────────────────────────
+    // validation
 
     #[test]
     fn youtube_1080p_preset_should_pass_validation() {

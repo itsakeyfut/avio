@@ -12,8 +12,6 @@ mod fixtures;
 use ff_remux::{AudioReplacement, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn audio_replacement_should_fail_when_video_input_missing() {
     let result =
@@ -69,8 +67,6 @@ fn audio_replacement_should_fail_when_audio_input_has_no_audio_stream() {
     );
 }
 
-// ── Functional tests ──────────────────────────────────────────────────────────
-
 /// Encode a video-only source and a separate audio-only source, then replace
 /// the audio.  The output file must exist and be non-empty.
 #[test]
@@ -85,7 +81,7 @@ fn audio_replacement_should_produce_output_with_both_streams() {
     let _guard_a = FileGuard::new(audio_path.clone());
     let _guard_o = FileGuard::new(output_path.clone());
 
-    // ── Build video-only source (1 s at 15 fps, 160×120) ───────────────────
+    // Build video-only source (1 s at 15 fps, 160×120)
     let mut venc = match VideoEncoder::create(&video_path)
         .video(160, 120, 15.0)
         .video_codec(VideoCodec::Mpeg4)
@@ -111,7 +107,7 @@ fn audio_replacement_should_produce_output_with_both_streams() {
         return;
     }
 
-    // ── Build audio-only source (~1 s of silence at 44100 Hz mono) ─────────
+    // Build audio-only source (~1 s of silence at 44100 Hz mono)
     let sample_rate = 44100_u32;
     let channels = 1_u32;
     let samples_per_frame = 1152_usize; // MP3 frame size
@@ -151,7 +147,7 @@ fn audio_replacement_should_produce_output_with_both_streams() {
         return;
     }
 
-    // ── Replace audio ──────────────────────────────────────────────────────
+    // Replace audio
     let result = AudioReplacement::new(&video_path, &audio_path, &output_path).run();
     match result {
         Ok(()) => {}

@@ -9,7 +9,7 @@ use fixtures::*;
 use ff_decode::{DecodeError, SeekMode, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── File-backed decoder is not a DASH live stream ────────────────────────────
+// File-backed decoder is not a DASH live stream
 
 #[test]
 fn file_video_decoder_should_not_be_live_dash() {
@@ -24,7 +24,7 @@ fn file_video_decoder_should_not_be_live_dash() {
     );
 }
 
-// ── MPD URL does not produce FileNotFound ────────────────────────────────────
+// MPD URL does not produce FileNotFound
 
 #[test]
 fn dash_mpd_open_should_not_return_file_not_found() {
@@ -38,7 +38,7 @@ fn dash_mpd_open_should_not_return_file_not_found() {
     }
 }
 
-// ── Live DASH stream detection (requires reachable DASH server) ──────────────
+// Live DASH stream detection (requires reachable DASH server)
 
 /// Validates that a live DASH stream (`type="dynamic"` MPD) is detected as live.
 ///

@@ -16,8 +16,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn scene_detector_threshold_below_zero_should_return_analysis_failed() {
     let result = SceneDetector::new("irrelevant.mp4").threshold(-0.1).run();
@@ -44,8 +42,6 @@ fn scene_detector_missing_file_should_return_analysis_failed() {
         "expected Failed for missing file, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn scene_detector_should_return_vec_duration() {

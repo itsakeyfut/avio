@@ -9,7 +9,7 @@ use ff_format::ChannelLayout;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 
-// ── AudioConcatenator ─────────────────────────────────────────────────────────
+// AudioConcatenator
 
 /// Concatenates multiple audio inputs into a single seamless output stream.
 ///

@@ -27,7 +27,7 @@ use ff_encode::VideoEncoder;
 use ff_filter::{CompositeOp, FilterGraph, FilterGraphBuilder};
 use ff_format::{AlphaMode, VideoCodec};
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     title: PathBuf,
@@ -82,12 +82,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Open decoders ──────────────────────────────────────────────────────
+    // 1. Open decoders
 
     let mut bg_dec = match VideoDecoder::open(&args.bg).build() {
         Ok(d) => d,
@@ -127,7 +127,7 @@ fn main() {
     println!("Output:     {}", args.output.display());
     println!();
 
-    // ── 2. Build compositing filter graph ─────────────────────────────────────
+    // 2. Build compositing filter graph
     //
     // title_builder: lumakey removes the bright (or dark if inverted) background
     // from the title card (slot 1).  The main graph composites the keyed title
@@ -151,7 +151,7 @@ fn main() {
         }
     };
 
-    // ── 3. Build encoder ──────────────────────────────────────────────────────
+    // 3. Build encoder
 
     let mut encoder = match VideoEncoder::create(&args.output)
         .video(width, height, fps)
@@ -167,7 +167,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── 4. Compositing loop ───────────────────────────────────────────────────
+    // 4. Compositing loop
     //
     // Each iteration decodes one frame from each source, pushes the background
     // to slot 0 and the title card to slot 1, then drains composited frames
@@ -222,7 +222,7 @@ fn main() {
         }
     }
 
-    // ── 5. Finish ─────────────────────────────────────────────────────────────
+    // 5. Finish
 
     if let Err(e) = encoder.finish() {
         eprintln!("error: encoder.finish() failed: {e}");

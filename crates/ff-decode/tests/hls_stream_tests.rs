@@ -9,7 +9,7 @@ use fixtures::*;
 use ff_decode::{AudioDecoder, DecodeError, SeekMode, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── is_live detection on file-backed decoders ────────────────────────────────
+// is_live detection on file-backed decoders
 
 #[test]
 fn file_video_decoder_should_not_be_live() {
@@ -33,7 +33,7 @@ fn file_audio_decoder_should_not_be_live() {
     );
 }
 
-// ── Seek is allowed on file-backed decoders ──────────────────────────────────
+// Seek is allowed on file-backed decoders
 
 #[test]
 fn file_video_decoder_seek_should_not_return_seek_not_supported() {
@@ -59,7 +59,7 @@ fn file_audio_decoder_seek_should_not_return_seek_not_supported() {
     );
 }
 
-// ── Network URL does not produce FileNotFound ────────────────────────────────
+// Network URL does not produce FileNotFound
 
 #[test]
 fn hls_video_open_should_not_return_file_not_found() {
@@ -83,7 +83,7 @@ fn hls_audio_open_should_not_return_file_not_found() {
     }
 }
 
-// ── Seek guard on live decoder (requires reachable HLS server) ──────────────
+// Seek guard on live decoder (requires reachable HLS server)
 
 /// Validates that `seek()` on a live HLS decoder returns `SeekNotSupported`.
 ///

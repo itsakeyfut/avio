@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use ff_preview::{FrameSink, PlayerHandle, PreviewPlayer, ProxyGenerator, ProxyResolution};
 
-// ── Asset path ────────────────────────────────────────────────────────────────
+// Asset path
 
 fn bench_video_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/preview_bench_1080p.mp4")
 }
 
-// ── DimSink ───────────────────────────────────────────────────────────────────
+// DimSink
 
 /// Records `(width, height)` per delivered frame; stops the player after
 /// `max_frames` frames via the shared handle.
@@ -42,8 +42,6 @@ impl FrameSink for DimSink {
         }
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "requires assets/test/preview_bench_1080p.mp4 and --features proxy; \

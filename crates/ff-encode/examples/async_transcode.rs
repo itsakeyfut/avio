@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Probe source dimensions ───────────────────────────────────────────────
+    // Probe source dimensions
     //
     // AsyncVideoDecoder does not expose metadata; use the sync decoder briefly
     // to read width, height, and frame rate before building the encoder.
@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output: {out_name}  {width}×{height}  codec={codec_str}");
     println!();
 
-    // ── Pattern 1: sequential async transcode ────────────────────────────────
+    // Pattern 1: sequential async transcode
     //
     // The decoder's into_stream() produces frames one at a time on a
     // spawn_blocking thread. Each frame is pushed to the encoder, which queues
@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Done. {out_name}  {size_str}  {frames} frames");
     println!();
 
-    // ── Pattern 2: concurrent decode + encode ────────────────────────────────
+    // Pattern 2: concurrent decode + encode
     //
     // Decoding and encoding are split across two concurrent tasks connected by
     // a tokio::sync::mpsc channel. The decoder runs as a background task and

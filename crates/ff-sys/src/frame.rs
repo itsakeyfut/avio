@@ -64,7 +64,7 @@ impl Frame {
         self.ptr.as_ptr()
     }
 
-    // ── Scalar field accessors ────────────────────────────────────────────────
+    // Scalar field accessors
     //
     // Each getter reads one plain scalar field of the frame; each setter writes
     // one. They let downstream crates configure and inspect a frame without
@@ -236,7 +236,7 @@ impl Frame {
         unsafe { (*self.ptr.as_ptr()).ch_layout.nb_channels }
     }
 
-    // ── Plane data accessors ──────────────────────────────────────────────────
+    // Plane data accessors
     //
     // Typed, self-sizing views over one image / audio plane. Each length is
     // computed from the frame's own valid fields, so no raw pointer or size

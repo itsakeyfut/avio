@@ -105,7 +105,7 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Build filter graph ────────────────────────────────────────────────────
+    // Build filter graph
 
     let filter_result = match effect.as_str() {
         "fade-in" => {
@@ -230,7 +230,7 @@ fn main() {
 
     println!();
 
-    // ── Assemble pipeline ─────────────────────────────────────────────────────
+    // Assemble pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

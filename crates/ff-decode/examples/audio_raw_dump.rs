@@ -118,7 +118,7 @@ fn main() {
         }
 
         if fmt.is_packed() {
-            // ── Packed: data() gives the whole interleaved plane ──────────────
+            // Packed: data() gives the whole interleaved plane
             //
             // Layout: [L0 R0 L1 R1 ...] where each sample is `bps` bytes.
             // data() is non-empty because there is exactly one plane.
@@ -130,7 +130,7 @@ fn main() {
             }
             bytes_written += bytes.len() as u64;
         } else {
-            // ── Planar: data() returns &[] — use channel() instead ────────────
+            // Planar: data() returns &[] — use channel() instead
             //
             // Layout: plane[0] = [L0 L1 L2 ...], plane[1] = [R0 R1 R2 ...]
             // We interleave by cycling through samples across all channels.

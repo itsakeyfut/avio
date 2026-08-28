@@ -6,7 +6,7 @@ use ff_encode::{VideoCodec, VideoEncoder};
 use fixtures::{create_black_frame, test_output_dir};
 use std::path::{Path, PathBuf};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 /// RAII guard that deletes a directory tree on drop.
 struct TempDir(PathBuf);
@@ -28,8 +28,6 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn image_sequence_png_should_encode_all_frames() {

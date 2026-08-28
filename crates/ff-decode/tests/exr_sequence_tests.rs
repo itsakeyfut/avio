@@ -11,7 +11,7 @@ use ff_format::PixelFormat;
 mod fixtures;
 use fixtures::assets_dir;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 /// RAII guard that deletes a directory tree on drop.
 struct TempDir(PathBuf);
@@ -64,8 +64,6 @@ fn make_exr_sequence(dir: &Path, count: usize) -> Option<PathBuf> {
     }
     Some(dir.join("frame%04d.exr"))
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn exr_sequence_should_decode_all_frames() {

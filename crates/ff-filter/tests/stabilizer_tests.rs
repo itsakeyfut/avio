@@ -81,7 +81,7 @@ fn analyze_nonexistent_input_should_return_ffmpeg_error() {
     }
 }
 
-// ── Pass 2 — transform tests ──────────────────────────────────────────────────
+// Pass 2 — transform tests
 
 /// Verifies that `Stabilizer::transform` produces a non-empty output file when
 /// run through both passes against a valid synthetic video clip.
@@ -206,7 +206,7 @@ fn stabilize_options_default_should_have_expected_values() {
     assert_eq!(opts.interpol, Interpolation::Bilinear);
 }
 
-// ── Issue #412 — motion-variance integration test ────────────────────────────
+// Issue #412 — motion-variance integration test
 
 /// Verifies that two-pass stabilization produces measurably smoother output
 /// than the original shaky clip, measured as mean squared frame-to-frame
@@ -278,7 +278,7 @@ fn two_pass_stabilization_should_reduce_motion_variance() {
     );
 }
 
-// ── Helpers for issue #412 ────────────────────────────────────────────────────
+// Helpers for issue #412
 
 /// Generates a 320×180, 30fps, 60-frame synthetic shaky video at `path`.
 ///

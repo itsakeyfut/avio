@@ -19,7 +19,7 @@ use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
 
-// ── RealtimeLayer ─────────────────────────────────────────────────────────────
+// RealtimeLayer
 
 /// One layer in a [`RealtimeComposer`], composited bottom-up in `Vec` order
 /// (index `0` is the base; later layers blend on top).
@@ -67,7 +67,7 @@ pub struct RealtimeLayer {
     pub composite_op: CompositeOp,
 }
 
-// ── RealtimeLayerDescriptor ───────────────────────────────────────────────────
+// RealtimeLayerDescriptor
 
 /// The dimension-independent part of a [`RealtimeLayer`]: every field except
 /// `width` / `height` / `pixel_format`, which are only known once a frame has been
@@ -125,7 +125,7 @@ impl RealtimeLayer {
     }
 }
 
-// ── RealtimeComposer ──────────────────────────────────────────────────────────
+// RealtimeComposer
 
 /// Composites externally-decoded frames from several layers into one frame,
 /// reusing a single built filter graph across frames.
@@ -202,7 +202,7 @@ impl RealtimeComposer {
     }
 }
 
-// ── LavfiSource ────────────────────────────────────────────────────────────────
+// LavfiSource
 
 /// Generates video frames from an `FFmpeg` `lavfi` filtergraph string (e.g.
 /// `color=s=1920x1080:c=black@0.0,drawtext=text='Title'`), so a host such as the

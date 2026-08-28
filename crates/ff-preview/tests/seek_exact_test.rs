@@ -16,13 +16,11 @@ use std::time::Duration;
 
 use ff_preview::{DecodeBuffer, FrameResult};
 
-// ── Asset path ────────────────────────────────────────────────────────────────
+// Asset path
 
 fn test_file_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/av_sync_test_60s.mp4")
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "requires assets/test/av_sync_test_60s.mp4; run with -- --include-ignored"]

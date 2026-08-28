@@ -18,7 +18,7 @@ use std::{path::PathBuf, process, time::Duration};
 
 use avio::{Clip, EncoderConfig, Timeline};
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     clip_a: PathBuf,
@@ -59,12 +59,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Build clips ────────────────────────────────────────────────────────
+    // 1. Build clips
 
     // clip_a starts at the beginning of the timeline.
     let clip_a = Clip::new(&args.clip_a);
@@ -72,7 +72,7 @@ fn main() {
     // clip_b is offset by 5 seconds on the timeline.
     let clip_b = Clip::new(&args.clip_b).offset(Duration::from_secs(5));
 
-    // ── 2. Build timeline ─────────────────────────────────────────────────────
+    // 2. Build timeline
 
     let timeline = match Timeline::builder()
         .canvas(1280, 720)
@@ -93,7 +93,7 @@ fn main() {
         args.output.display(),
     );
 
-    // ── 3. Render ─────────────────────────────────────────────────────────────
+    // 3. Render
 
     let config = EncoderConfig::builder().build();
 

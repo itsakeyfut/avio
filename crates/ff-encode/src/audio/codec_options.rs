@@ -24,7 +24,7 @@ pub enum AudioCodecOptions {
     Flac(FlacOptions),
 }
 
-// ── Opus ──────────────────────────────────────────────────────────────────────
+// Opus
 
 /// Opus (libopus) per-codec options.
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ impl OpusApplication {
     }
 }
 
-// ── AAC ───────────────────────────────────────────────────────────────────────
+// AAC
 
 /// AAC per-codec options.
 #[derive(Debug, Clone)]
@@ -122,7 +122,7 @@ impl AacProfile {
     }
 }
 
-// ── MP3 ───────────────────────────────────────────────────────────────────────
+// MP3
 
 /// MP3 quality mode: VBR quality scale or CBR fixed bitrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +151,7 @@ impl Default for Mp3Options {
     }
 }
 
-// ── FLAC ──────────────────────────────────────────────────────────────────────
+// FLAC
 
 /// FLAC per-codec options.
 #[derive(Debug, Clone)]
@@ -167,8 +167,6 @@ impl Default for FlacOptions {
         }
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

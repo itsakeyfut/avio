@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Probe source parameters ───────────────────────────────────────────────
+    // Probe source parameters
     //
     // AsyncAudioDecoder does not expose metadata; use the sync decoder briefly
     // to read sample_rate and channels before building the async encoder.
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output: {out_name}  codec={codec_str}  bitrate={bitrate}");
     println!();
 
-    // ── Pattern 1: basic async encode ────────────────────────────────────────
+    // Pattern 1: basic async encode
     //
     // AsyncAudioEncoder::from_builder() consumes an AudioEncoderBuilder,
     // calls .build() internally to open the output file, and starts a worker
@@ -172,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Done. {out_name}  {size_str}  {frames} frames encoded");
     println!();
 
-    // ── Pattern 2: streaming from an async source ─────────────────────────────
+    // Pattern 2: streaming from an async source
     //
     // In real-time audio applications (microphone, network, live stream), frames
     // arrive asynchronously from an external source. This pattern models that

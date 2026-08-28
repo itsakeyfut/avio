@@ -18,8 +18,6 @@ fn hard_cut_video_path() -> std::path::PathBuf {
         .join("assets/test/hard_cut_video.mp4")
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[test]
 fn scene_detector_should_detect_known_cuts_within_one_frame_tolerance() {
     let video_path = hard_cut_video_path();

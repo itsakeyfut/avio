@@ -9,7 +9,7 @@ use fixtures::*;
 use ff_decode::{DecodeError, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── File-backed decoder is not an SRT source ─────────────────────────────────
+// File-backed decoder is not an SRT source
 
 #[test]
 fn file_video_decoder_should_not_be_live_srt() {
@@ -23,7 +23,7 @@ fn file_video_decoder_should_not_be_live_srt() {
     );
 }
 
-// ── Without the srt feature, srt:// returns ConnectionFailed ─────────────────
+// Without the srt feature, srt:// returns ConnectionFailed
 
 #[cfg(not(feature = "srt"))]
 #[test]
@@ -43,7 +43,7 @@ fn srt_url_without_feature_should_return_connection_failed() {
     }
 }
 
-// ── With the srt feature, srt:// bypasses file-existence check ───────────────
+// With the srt feature, srt:// bypasses file-existence check
 
 #[cfg(feature = "srt")]
 #[test]
@@ -58,7 +58,7 @@ fn srt_url_open_should_not_return_file_not_found() {
     }
 }
 
-// ── Non-SRT URLs are not affected by the SRT check ───────────────────────────
+// Non-SRT URLs are not affected by the SRT check
 
 #[test]
 fn http_url_open_should_not_be_affected_by_srt_check() {
@@ -71,7 +71,7 @@ fn http_url_open_should_not_be_affected_by_srt_check() {
     }
 }
 
-// ── Live SRT stream (requires reachable SRT server) ──────────────────────────
+// Live SRT stream (requires reachable SRT server)
 
 /// Validates that a live SRT stream is detected as live.
 ///

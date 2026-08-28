@@ -49,7 +49,7 @@ fn main() {
     println!("Input: {in_name}");
     println!();
 
-    // ── Video: decode to RGB24 ────────────────────────────────────────────────
+    // Video: decode to RGB24
     //
     // output_format() instructs FFmpeg to convert the decoded frame to the
     // requested pixel format before returning it. This avoids a separate
@@ -103,7 +103,7 @@ fn main() {
     }
     println!();
 
-    // ── Audio: decode to I16 at 44 100 Hz ────────────────────────────────────
+    // Audio: decode to I16 at 44 100 Hz
     //
     // output_format(SampleFormat::I16) converts the decoded samples to
     // signed 16-bit interleaved PCM — the standard format for CD audio,

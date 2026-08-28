@@ -67,7 +67,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Open source decoders ──────────────────────────────────────────────────
+    // Open source decoders
 
     let mut video_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -95,7 +95,7 @@ fn main() {
     println!();
     println!("Connecting...");
 
-    // ── Open SrtOutput ────────────────────────────────────────────────────────
+    // Open SrtOutput
 
     let mut builder = SrtOutput::new(&url)
         .video(width, height, fps_display)
@@ -120,7 +120,7 @@ fn main() {
     println!("Connected. Streaming frames...");
     println!();
 
-    // ── Frame loop ────────────────────────────────────────────────────────────
+    // Frame loop
 
     let start = std::time::Instant::now();
     let mut video_frames: u64 = 0;

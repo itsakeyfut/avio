@@ -13,7 +13,7 @@ use crate::nodes::RenderNode;
 #[cfg(feature = "wgpu")]
 use std::sync::Arc;
 
-// ── RenderGraph ───────────────────────────────────────────────────────────────
+// RenderGraph
 
 /// Linear chain of render nodes executed in insertion order.
 ///
@@ -107,7 +107,7 @@ impl RenderGraph {
         self
     }
 
-    // ── Processing ────────────────────────────────────────────────────────────
+    // Processing
 
     /// Run the GPU pipeline: upload `rgba` → execute all GPU nodes → download result.
     ///
@@ -146,8 +146,6 @@ impl RenderGraph {
         out
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -24,7 +24,7 @@ pub(crate) fn escape_filter_path(path: &str) -> String {
     path.replace('\\', "/").replace(':', "\\:")
 }
 
-// ── FilterStep ────────────────────────────────────────────────────────────────
+// FilterStep
 
 /// A single step in a filter chain.
 ///
