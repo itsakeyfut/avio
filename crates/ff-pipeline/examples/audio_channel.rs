@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_channel --features pipeline -- \
+//! cargo run --example audio_channel -- \
 //!   --input   input.mp4   \
 //!   --output  out.mp4     \
 //!   --effect  mono        \

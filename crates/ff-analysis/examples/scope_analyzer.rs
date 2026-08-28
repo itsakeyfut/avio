@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example scope_analyzer --features decode -- --input video.mp4
-//! cargo run --example scope_analyzer --features decode -- --input video.mp4 --interval 60
+//! cargo run --example scope_analyzer -- --input video.mp4
+//! cargo run --example scope_analyzer -- --input video.mp4 --interval 60
 //! ```
 
 use std::process;

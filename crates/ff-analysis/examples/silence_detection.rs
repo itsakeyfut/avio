@@ -6,8 +6,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example silence_detection --features decode -- --input audio.mp3
-//! cargo run --example silence_detection --features decode -- \
+//! cargo run --example silence_detection -- --input audio.mp3
+//! cargo run --example silence_detection -- \
 //!     --input audio.mp3 --threshold-db -50 --min-duration-ms 300
 //! ```
 

@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example decode_format_convert --features decode -- \
+//! cargo run --example decode_format_convert -- \
 //!   --input input.mp4
 //! ```
 

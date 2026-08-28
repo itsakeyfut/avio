@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_normalize --features pipeline -- \
+//! cargo run --example audio_normalize -- \
 //!   --input   input.mp4      \
 //!   --output  normalized.mp4 \
 //!   --effect  loudness       \

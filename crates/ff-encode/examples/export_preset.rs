@@ -13,11 +13,11 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example export_preset --features "decode encode" -- \
+//! cargo run --example export_preset -- \
 //!     --input  input.mp4     \
 //!     --output output.mp4
 //!
-//! cargo run --example export_preset --features "decode encode" -- \
+//! cargo run --example export_preset -- \
 //!     --input  input.mp4     \
 //!     --output output.mp4    \
 //!     --preset twitter

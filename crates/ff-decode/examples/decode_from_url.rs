@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example decode_from_url --features decode -- \
+//! cargo run --example decode_from_url -- \
 //!   --url   http://example.com/video.mp4   \
 //!   [--max-frames 30]                      \
 //!   [--connect-timeout 10]                 \

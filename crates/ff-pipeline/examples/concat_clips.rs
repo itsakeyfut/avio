@@ -3,7 +3,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example concat_clips --features pipeline -- \
+//! cargo run --example concat_clips -- \
 //!   --output joined.mp4 \
 //!   clip1.mp4 clip2.mp4 clip3.mp4
 //! ```

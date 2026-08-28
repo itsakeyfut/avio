@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example stream_copy_trim --features encode -- \
+//! cargo run --example stream_copy_trim -- \
 //!     --input  input.mp4  \
 //!     --start  10.0       \
 //!     --end    30.0       \

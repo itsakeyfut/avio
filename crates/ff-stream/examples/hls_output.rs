@@ -15,7 +15,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example hls_output --features stream -- \
+//! cargo run --example hls_output -- \
 //!   --input              input.mp4  \
 //!   --output             ./hls/     \
 //!   [--segment           6]         \

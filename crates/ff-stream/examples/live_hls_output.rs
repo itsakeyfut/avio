@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example live_hls_output --features stream -- \
+//! cargo run --example live_hls_output -- \
 //!   --input    input.mp4   \
 //!   --output   ./live-hls/ \
 //!   [--segment 6]          \

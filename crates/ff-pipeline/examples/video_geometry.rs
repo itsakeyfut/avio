@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example video_geometry --features pipeline -- \
+//! cargo run --example video_geometry -- \
 //!   --input   input.mp4  \
 //!   --output  out.mp4    \
 //!   --effect  vignette   \

@@ -8,8 +8,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example black_frames --features decode -- --input video.mp4
-//! cargo run --example black_frames --features decode -- --input video.mp4 --threshold 0.2
+//! cargo run --example black_frames -- --input video.mp4
+//! cargo run --example black_frames -- --input video.mp4 --threshold 0.2
 //! ```
 
 use std::process;

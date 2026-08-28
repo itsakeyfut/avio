@@ -3,7 +3,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example extract_thumbnails --features pipeline -- \
+//! cargo run --example extract_thumbnails -- \
 //!   --input  video.mp4 \
 //!   --output thumbs/   \
 //!   --times  0,30,60,90 \

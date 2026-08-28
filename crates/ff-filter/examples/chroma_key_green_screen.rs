@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example chroma_key_green_screen --features "decode encode filter" -- \
+//! cargo run --example chroma_key_green_screen -- \
 //!   --fg foreground.mp4 --bg background.mp4 --output composited.mp4 \
 //!   [--color 0x00FF00] [--similarity 0.3] [--blend-factor 0.0]
 //! ```

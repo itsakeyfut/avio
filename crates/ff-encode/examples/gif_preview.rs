@@ -8,12 +8,12 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example gif_preview --features encode -- \
+//! cargo run --example gif_preview --features preview-image -- \
 //!     --input  video.mp4   \
 //!     --output preview.gif
 //!
 //! # Custom range, frame rate, and width:
-//! cargo run --example gif_preview --features encode -- \
+//! cargo run --example gif_preview --features preview-image -- \
 //!     --input    video.mp4   \
 //!     --output   preview.gif \
 //!     --start    5           \

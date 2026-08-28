@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example clip_concat --features pipeline -- \
+//! cargo run --example clip_concat -- \
 //!   --input-a  clip1.mp4  \
 //!   --input-b  clip2.mp4  \
 //!   --output   joined.mp4 \

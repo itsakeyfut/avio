@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example histogram --features decode -- --input video.mp4
-//! cargo run --example histogram --features decode -- --input video.mp4 --interval 30
+//! cargo run --example histogram -- --input video.mp4
+//! cargo run --example histogram -- --input video.mp4 --interval 30
 //! ```
 
 use std::process;

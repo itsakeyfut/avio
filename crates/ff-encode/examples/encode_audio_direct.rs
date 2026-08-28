@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example encode_audio_direct --features "decode encode" -- \
+//! cargo run --example encode_audio_direct -- \
 //!   --input   input.mp3   \
 //!   --output  output.aac  \
 //!   [--codec  aac]        # aac | mp3 | opus | flac (default: aac)

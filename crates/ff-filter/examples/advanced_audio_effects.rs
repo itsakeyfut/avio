@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example advanced_audio_effects --features "decode encode filter" -- \
+//! cargo run --example advanced_audio_effects -- \
 //!   --input   input.mp4  \
 //!   --output  out.mp4    \
 //!   --effect  pitch-up

@@ -21,7 +21,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example container_format --features "decode encode" -- \
+//! cargo run --example container_format -- \
 //!   --input     input.mp4    \
 //!   --output    output.mkv   \
 //!   [--container mp4|mkv|webm|avi|mov]  # default: infer from extension

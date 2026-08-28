@@ -18,7 +18,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example codec_options --features "decode encode" -- \
+//! cargo run --example codec_options -- \
 //!   --input   input.mp4   \
 //!   --output  output.mp4  \
 //!   --codec   h264        # h264 | h265 | av1 | svt-av1 | vp9  (default: h264)

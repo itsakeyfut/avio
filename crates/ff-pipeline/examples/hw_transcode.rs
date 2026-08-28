@@ -15,7 +15,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example hw_transcode --features pipeline -- \
+//! cargo run --example hw_transcode -- \
 //!   --input   input.mp4   \
 //!   --output  output.mp4  \
 //!   --hw      cuda         \  # cuda | videotoolbox | vaapi | none

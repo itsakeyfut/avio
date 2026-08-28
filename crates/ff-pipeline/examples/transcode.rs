@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example transcode --features pipeline -- \
+//! cargo run --example transcode -- \
 //!   --input        input.mp4 \
 //!   --output       output.mp4 \
 //!   [--codec       h265]        # video codec: h264 | h265 | vp9 | av1 (default: h264)

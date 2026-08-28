@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example scene_detection --features decode -- --input video.mp4
-//! cargo run --example scene_detection --features decode -- --input video.mp4 --threshold 0.3
+//! cargo run --example scene_detection -- --input video.mp4
+//! cargo run --example scene_detection -- --input video.mp4 --threshold 0.3
 //! ```
 
 use std::process;

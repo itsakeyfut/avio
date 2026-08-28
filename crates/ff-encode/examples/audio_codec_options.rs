@@ -18,7 +18,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_codec_options --features "decode encode" -- \
+//! cargo run --example audio_codec_options -- \
 //!   --input   input.mp3   \
 //!   --output  output.opus  \
 //!   --codec   opus          # opus | aac | mp3 | flac  (default: opus)

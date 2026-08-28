@@ -24,11 +24,11 @@
 //!
 //! ```bash
 //! # Default build — H.264 falls back to VP9 (LGPL)
-//! cargo run --example gpl_encode --features "decode encode" -- \
+//! cargo run --example gpl_encode -- \
 //!   --input input.mp4 --output output.mp4 --codec h264
 //!
 //! # GPL build — uses libx264 (GPL)
-//! cargo run --example gpl_encode --features "decode encode gpl" -- \
+//! cargo run --example gpl_encode --features gpl -- \
 //!   --input input.mp4 --output output.mp4 --codec h264
 //! ```
 

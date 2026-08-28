@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example frame_pool_usage --features decode -- \
+//! cargo run --example frame_pool_usage -- \
 //!   --input      input.mp4  \
 //!   [--pool-size 8]         # number of frame buffers to retain (default: 8)
 //! ```

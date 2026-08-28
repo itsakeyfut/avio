@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example keyframes --features decode -- --input video.mp4
-//! cargo run --example keyframes --features decode -- --input video.mp4 --stream 0
+//! cargo run --example keyframes -- --input video.mp4
+//! cargo run --example keyframes -- --input video.mp4 --stream 0
 //! ```
 
 use std::process;

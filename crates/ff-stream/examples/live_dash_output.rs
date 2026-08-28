@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example live_dash_output --features stream -- \
+//! cargo run --example live_dash_output -- \
 //!   --input    input.mp4    \
 //!   --output   ./live-dash/ \
 //!   [--segment 4]           \

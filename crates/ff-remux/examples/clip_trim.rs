@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example clip_trim --features encode -- \
+//! cargo run --example clip_trim -- \
 //!   --input   input.mp4  \
 //!   --output  trimmed.mp4 \
 //!   --start   10.0        \   # start time in seconds (default: 0.0)

@@ -16,7 +16,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example tone_map_hdr --features "pipeline probe" -- \
+//! cargo run --example tone_map_hdr -- \
 //!   --input   input_hdr.mp4   \
 //!   --output  output_sdr.mp4  \
 //!   [--method hable|reinhard|mobius]

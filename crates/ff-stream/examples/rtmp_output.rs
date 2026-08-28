@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example rtmp_output --features stream -- \
+//! cargo run --example rtmp_output -- \
 //!   --input   input.mp4                              \
 //!   --url     rtmp://ingest.example.com/live/key     \
 //!   [--bitrate 4000000]
@@ -22,7 +22,7 @@
 //!
 //! ```bash
 //! # nginx-rtmp on localhost:1935, application "live"
-//! cargo run --example rtmp_output --features stream -- \
+//! cargo run --example rtmp_output -- \
 //!   --input input.mp4  --url rtmp://127.0.0.1/live/test
 //! ```
 

@@ -7,13 +7,13 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_addition --features encode -- \
+//! cargo run --example audio_addition -- \
 //!     --video  silent.mp4    \
 //!     --audio  music.mp3     \
 //!     --output with_audio.mp4
 //!
 //! # Loop short audio to cover the full video duration:
-//! cargo run --example audio_addition --features encode -- \
+//! cargo run --example audio_addition -- \
 //!     --video  silent.mp4    \
 //!     --audio  short.mp3     \
 //!     --output with_audio.mp4 \

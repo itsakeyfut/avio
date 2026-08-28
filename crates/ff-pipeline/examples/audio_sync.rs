@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_sync --features pipeline -- \
+//! cargo run --example audio_sync -- \
 //!   --input   input.mp4  \
 //!   --output  synced.mp4 \
 //!   --delay   250.0      # ms to shift audio: positive = delay, negative = advance

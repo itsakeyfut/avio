@@ -17,7 +17,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example openexr_sequence --features "decode" -- \
+//! cargo run --example openexr_sequence -- \
 //!   --input "frames/frame%04d.exr"  \
 //!   [--fps 24]
 //! ```

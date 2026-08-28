@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example text_overlay --features pipeline -- \
+//! cargo run --example text_overlay -- \
 //!   --input   input.mp4   \
 //!   --output  out.mp4     \
 //!   --effect  drawtext    \

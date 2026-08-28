@@ -23,13 +23,13 @@
 //!
 //! ```bash
 //! cargo run --example hwaccel_encode --no-default-features \
-//!   --features "decode encode" -- --input input.mp4 --output output.mp4
+//!   -- --input input.mp4 --output output.mp4
 //! ```
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example hwaccel_encode --features "decode encode" -- \
+//! cargo run --example hwaccel_encode -- \
 //!   --input  input.mp4   \
 //!   --output output.mp4  \
 //!   [--hw    auto|nvenc|qsv|amf|videotoolbox|vaapi|none]  \

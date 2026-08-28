@@ -7,12 +7,12 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_extraction --features encode -- \
+//! cargo run --example audio_extraction -- \
 //!     --input  video.mp4     \
 //!     --output audio.m4a
 //!
 //! # Extract a specific audio stream (0-based index):
-//! cargo run --example audio_extraction --features encode -- \
+//! cargo run --example audio_extraction -- \
 //!     --input  video.mp4     \
 //!     --output audio.m4a     \
 //!     --stream 1
