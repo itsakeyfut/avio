@@ -76,7 +76,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── gpl feature status ────────────────────────────────────────────────────
+    // gpl feature status
     //
     // Report at startup whether the gpl feature is compiled in.
     // This is a compile-time constant; the selected encoder will confirm it.
@@ -90,7 +90,7 @@ fn main() {
     );
     println!();
 
-    // ── Parse --codec ─────────────────────────────────────────────────────────
+    // Parse --codec
 
     let (video_codec, codec_options, description) = match codec_str.to_lowercase().as_str() {
         "h264" | "avc" => {
@@ -119,7 +119,7 @@ fn main() {
         }
     };
 
-    // ── VideoCodecEncodeExt::is_lgpl_compatible() ─────────────────────────────
+    // VideoCodecEncodeExt::is_lgpl_compatible()
     //
     // Static check on the codec *family*, not the runtime encoder.
     // H.264 and H.265 both return false because their canonical software
@@ -134,7 +134,7 @@ fn main() {
         video_codec.is_lgpl_compatible(),
     );
 
-    // ── Probe input ───────────────────────────────────────────────────────────
+    // Probe input
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -161,7 +161,7 @@ fn main() {
     println!("Output: {out_name}  {description}  crf={crf}");
     println!();
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
     //
     // HardwareEncoder::None forces software-only encoding so the GPL/LGPL
     // fallback logic is clearly visible. With hardware acceleration enabled
@@ -187,7 +187,7 @@ fn main() {
         }
     };
 
-    // ── Inspect actual encoder chosen ─────────────────────────────────────────
+    // Inspect actual encoder chosen
     //
     // actual_video_codec() returns the FFmpeg encoder name that was opened.
     //
@@ -211,7 +211,7 @@ fn main() {
     }
     println!();
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

@@ -78,7 +78,7 @@ fn main() {
     }
 }
 
-// ── Decode mode: image sequence → video ──────────────────────────────────────
+// Decode mode: image sequence → video
 
 fn decode_sequence(pattern: &str, output: &str, fps: u32) {
     let out_name = Path::new(output)
@@ -162,7 +162,7 @@ fn decode_sequence(pattern: &str, output: &str, fps: u32) {
     println!("Done. {out_name}  {size_str}  {frames} frames assembled");
 }
 
-// ── Encode mode: video → image sequence ──────────────────────────────────────
+// Encode mode: video → image sequence
 
 fn encode_sequence(input: &str, pattern: &str) {
     let in_name = Path::new(input)

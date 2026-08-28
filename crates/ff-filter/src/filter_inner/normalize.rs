@@ -314,7 +314,7 @@ pub(super) unsafe fn run_volume_graph(
     Ok(output)
 }
 
-// ── Peak normalization helper ─────────────────────────────────────────────────
+// Peak normalization helper
 
 /// Build a temporary `abuffer → astats=metadata=1 → abuffersink` graph,
 /// feed all `frames` through it, drain the output, and return the maximum

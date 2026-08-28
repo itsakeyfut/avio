@@ -10,7 +10,7 @@ use crate::error::FilterError;
 use std::ptr::NonNull;
 
 impl FilterGraphInner {
-    // ── Animation ─────────────────────────────────────────────────────────────
+    // Animation
 
     /// Evaluates every registered [`AnimationEntry`] at time `t` and sends the
     /// updated value to the corresponding filter node via
@@ -92,7 +92,7 @@ impl FilterGraphInner {
         }
     }
 
-    // ── Video ─────────────────────────────────────────────────────────────────
+    // Video
 
     /// Lazily initialise the video filter graph from the first pushed frame.
     pub(super) fn ensure_video_graph(
@@ -235,7 +235,7 @@ impl FilterGraphInner {
         }
     }
 
-    // ── Audio ─────────────────────────────────────────────────────────────────
+    // Audio
 
     /// Returns the number of video input slots required by the configured steps.
     ///
@@ -512,7 +512,7 @@ impl FilterGraphInner {
         }
     }
 
-    // ── Two-pass loudness normalization ──────────────────────────────────────
+    // Two-pass loudness normalization
 
     /// Run EBU R128 two-pass loudness normalization over `self.loudness_buf`:
     ///
@@ -575,7 +575,7 @@ impl FilterGraphInner {
         Ok(())
     }
 
-    // ── Two-pass peak normalization ───────────────────────────────────────────
+    // Two-pass peak normalization
 
     /// Run peak-level two-pass normalization over `self.peak_buf`:
     ///

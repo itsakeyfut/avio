@@ -32,7 +32,6 @@ fn render_config() -> EncoderConfig {
 
 #[test]
 fn timeline_render_should_produce_ffprobe_valid_output() {
-    // ── Step 1: generate a synthetic source file ───────────────────────────────
     //
     // One 1-second solid-colour clip (red-ish in YUV) that is reused as both
     // clip 1 (starts at t=0) and clip 2 (starts at t=1 s).  Using the same
@@ -50,7 +49,6 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
         return;
     }
 
-    // ── Step 2: build a Timeline with two clips in sequence ────────────────────
     //
     // Both video and audio tracks contain:
     //   clip 1 — offset = 0 s  (plays from 0 → 1 s)
@@ -75,8 +73,6 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
         }
     };
 
-    // ── Step 3: render ─────────────────────────────────────────────────────────
-
     match timeline.render(&out_path, render_config()) {
         Ok(()) => {}
         Err(TimelineError::Filter(e)) => {
@@ -93,8 +89,6 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
         }
         Err(e) => panic!("unexpected error from Timeline::render: {e}"),
     }
-
-    // ── Step 4: validate with ff_probe ─────────────────────────────────────────
 
     let info = match ff_probe::open(&out_path) {
         Ok(i) => i,

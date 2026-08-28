@@ -15,8 +15,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn thumbnail_selector_zero_interval_should_return_analysis_failed() {
     let result = ThumbnailSelector::new("irrelevant.mp4")
@@ -33,8 +31,6 @@ fn thumbnail_selector_missing_input_should_return_error() {
     let result = ThumbnailSelector::new("does_not_exist_99999.mp4").run();
     assert!(result.is_err(), "expected error for missing input file");
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "decodes video frames; run explicitly with -- --include-ignored"]

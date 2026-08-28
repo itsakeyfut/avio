@@ -42,7 +42,7 @@ use crate::EncodeError;
 /// Maximum number of planes in AVFrame data/linesize arrays.
 const MAX_PLANES: usize = 8;
 
-// ── Public options struct ─────────────────────────────────────────────────────
+// Public options struct
 
 /// Options forwarded from the builder to the encoder.
 pub(super) struct ImageEncodeOptions {
@@ -56,7 +56,7 @@ pub(super) struct ImageEncodeOptions {
     pub(super) pixel_format: Option<PixelFormat>,
 }
 
-// ── RAII wrapper ──────────────────────────────────────────────────────────────
+// RAII wrapper
 
 /// Owns all FFmpeg resources for a single still-image encode operation.
 ///
@@ -108,7 +108,6 @@ impl ImageEncoderInner {
         let dst_frame =
             ff_sys::Frame::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
         let packet = ff_sys::Packet::new().map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
-        // ── Step 1: Output format context (owned) ─────────────────────────────
         // Prefer an explicit single-image muxer when one is known. Auto-detection
         // (NULL format name) resolves to the `image2` muxer for most still-image
         // formats, which expects a `%d` sequence pattern in the filename and emits
@@ -141,13 +140,11 @@ impl ImageEncoderInner {
             pix_fmt,
         };
 
-        // ── Step 2: Video stream ──────────────────────────────────────────────
         let stream_idx = inner
             .format_ctx
             .new_stream(None)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 3: Configure codec context ──────────────────────────────────
         inner.codec_ctx.set_width(dst_width as i32);
         inner.codec_ctx.set_height(dst_height as i32);
         inner.codec_ctx.set_time_base(AVRational { num: 1, den: 1 });
@@ -167,31 +164,26 @@ impl ImageEncoderInner {
             apply_quality(&mut inner.codec_ctx, codec_id, q);
         }
 
-        // ── Step 4: Open codec ────────────────────────────────────────────────
         inner
             .codec_ctx
             .open_codec(codec)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 5: Copy parameters to stream ─────────────────────────────────
         inner
             .format_ctx
             .apply_stream_params_from_context(stream_idx, &inner.codec_ctx)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 8: Open output file ──────────────────────────────────────────
         inner
             .format_ctx
             .open_io(path)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 9: Write file header ─────────────────────────────────────────
         inner
             .format_ctx
             .write_header()
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Step 10: Configure destination frame and allocate its buffer ──────
         inner.dst_frame.set_format(pix_fmt);
         inner.dst_frame.set_width(dst_width as i32);
         inner.dst_frame.set_height(dst_height as i32);
@@ -213,7 +205,7 @@ impl ImageEncoderInner {
     ///
     /// `self` must have been successfully opened via [`open`].
     unsafe fn encode_frame(&mut self, src: &VideoFrame) -> Result<(), EncodeError> {
-        // ── Fill dst_frame ────────────────────────────────────────────────────
+        // Fill dst_frame
         let src_fmt = pixel_format_to_av(src.format());
         let needs_conversion = src_fmt != self.pix_fmt
             || src.width() != self.dst_width
@@ -289,23 +281,23 @@ impl ImageEncoderInner {
 
         self.dst_frame.set_pts(0);
 
-        // ── Send frame → encoder ──────────────────────────────────────────────
+        // Send frame → encoder
         self.codec_ctx
             .send_frame(Some(&self.dst_frame))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Receive packets ───────────────────────────────────────────────────
+        // Receive packets
         self.drain_packets(false)?;
 
-        // ── Flush encoder ─────────────────────────────────────────────────────
+        // Flush encoder
         self.codec_ctx
             .send_frame(None)
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // ── Drain remaining packets ───────────────────────────────────────────
+        // Drain remaining packets
         self.drain_packets(true)?;
 
-        // ── Finalise file ─────────────────────────────────────────────────────
+        // Finalise file
         // Preserve the prior behaviour of not surfacing a trailer error here.
         let _ = self.format_ctx.write_trailer();
         // Close the IO now (nulls `pb`) so the later drop does not double-close.
@@ -349,7 +341,7 @@ impl ImageEncoderInner {
     }
 }
 
-// ── Extension / format helpers ────────────────────────────────────────────────
+// Extension / format helpers
 
 /// Return the `AVCodecID` for the given file extension.
 ///
@@ -432,7 +424,7 @@ fn pixel_format_to_av(fmt: PixelFormat) -> AVPixelFormat {
     }
 }
 
-// ── Quality helper ────────────────────────────────────────────────────────────
+// Quality helper
 
 /// Apply a quality value (0–100, 100 = best) to the codec context.
 ///
@@ -483,7 +475,7 @@ fn apply_quality(codec_ctx: &mut ff_sys::CodecContext, codec_id: AVCodecID, qual
     }
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// Public entry point
 
 /// Encode a single `VideoFrame` and write it to `path`.
 ///
@@ -521,8 +513,6 @@ pub(super) fn encode_image(
         Ok(())
     } // unsafe
 }
-
-// ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

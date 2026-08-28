@@ -13,7 +13,7 @@ use std::time::Duration;
 use ff_decode::{DecodeError, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── HTTP VOD: decode one frame ────────────────────────────────────────────────
+// HTTP VOD: decode one frame
 
 #[test]
 fn open_url_http_should_decode_first_frame() {
@@ -35,7 +35,7 @@ fn open_url_http_should_decode_first_frame() {
     );
 }
 
-// ── HTTP VOD: is_live must be false ───────────────────────────────────────────
+// HTTP VOD: is_live must be false
 
 #[test]
 fn open_url_http_vod_should_not_be_live() {
@@ -56,7 +56,7 @@ fn open_url_http_vod_should_not_be_live() {
     );
 }
 
-// ── Refused connection → ConnectionFailed (or NetworkTimeout on Windows) ──────
+// Refused connection → ConnectionFailed (or NetworkTimeout on Windows)
 
 #[test]
 fn open_url_connection_refused_should_return_connection_failed() {

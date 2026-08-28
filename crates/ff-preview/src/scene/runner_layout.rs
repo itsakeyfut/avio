@@ -30,7 +30,7 @@ impl SceneRunner {
     ) -> Result<(), PreviewError> {
         let v_tracks = &scene.video_tracks;
 
-        // ── Validate V1 ────────────────────────────────────────────────────────
+        // Validate V1
         let new_v1_len = v_tracks.first().map_or(0, |t| t.placements.len());
         if new_v1_len != self.clips.len() {
             return Err(PreviewError::Ffmpeg {
@@ -54,7 +54,7 @@ impl SceneRunner {
             }
         }
 
-        // ── Update V1 clip positions ───────────────────────────────────────────
+        // Update V1 clip positions
         for (i, p) in v_tracks[0].placements.iter().enumerate() {
             let new_speed = p.speed;
             let old_scaled_dur = self.clips[i]
@@ -81,7 +81,7 @@ impl SceneRunner {
             self.clips[i].xfade_kind = p.xfade_kind;
         }
 
-        // ── Update overlay layers (V2+) ────────────────────────────────────────
+        // Update overlay layers (V2+)
         let new_overlay_count = v_tracks.len().saturating_sub(1);
         if new_overlay_count == self.overlay_layers.len() {
             for (layer_i, v_track) in v_tracks.iter().skip(1).enumerate() {
@@ -103,7 +103,7 @@ impl SceneRunner {
             }
         }
 
-        // ── Update audio-only tracks (A1+) ─────────────────────────────────────
+        // Update audio-only tracks (A1+)
         // Collect new (timeline_start, in_point, out_point) from the scene's audio
         // tracks, matched positionally. Mismatched counts are skipped rather than
         // returning an error because audio tracks are optional.
@@ -130,7 +130,7 @@ impl SceneRunner {
             }
         }
 
-        // ── Seek everything to resume_pts ──────────────────────────────────────
+        // Seek everything to resume_pts
         // seek_timeline invalidates all mixer buffers, stops audio-only threads,
         // and repositions the active clip's DecodeBuffer to the correct
         // source-file PTS. Audio-only threads restart on the next frame tick

@@ -10,7 +10,7 @@ use super::player_handle::PlayerHandle;
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
 
-// ── AsyncPreviewPlayer ────────────────────────────────────────────────────────
+// AsyncPreviewPlayer
 
 /// Async wrapper around [`PlayerHandle`].
 ///
@@ -131,8 +131,6 @@ impl Drop for AsyncPreviewPlayer {
         self.handle.stop();
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

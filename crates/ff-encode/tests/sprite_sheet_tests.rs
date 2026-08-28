@@ -17,8 +17,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn sprite_sheet_zero_cols_should_return_media_operation_failed() {
     let result = SpriteSheet::new("irrelevant.mp4")
@@ -62,8 +60,6 @@ fn sprite_sheet_missing_input_should_return_error() {
         .run();
     assert!(result.is_err(), "expected error for missing input file");
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "runs full filter graph across video; run explicitly with -- --include-ignored"]

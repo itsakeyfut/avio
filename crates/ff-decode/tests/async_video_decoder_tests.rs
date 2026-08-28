@@ -104,7 +104,7 @@ async fn into_stream_should_terminate_at_eof() {
     );
 }
 
-// ── Builder options (issue #1005) ─────────────────────────────────────────────
+// Builder options (issue #1005)
 
 /// Verify that `output_format` on `AsyncVideoDecoderBuilder` is accepted and
 /// frames are decoded to the requested pixel format. Acceptance criterion for

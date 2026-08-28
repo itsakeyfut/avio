@@ -405,7 +405,7 @@ mod tests {
         HashMap::new()
     }
 
-    // ── video_layer ─────────────────────────────────────────────────────────
+    // video_layer
 
     #[test]
     fn video_layer_file_clip_should_map_to_file_source() {
@@ -557,7 +557,7 @@ mod tests {
         assert!(matches!(e[5], FilterStep::XFade { .. }));
     }
 
-    // ── fit / fill framing (#1422) ──────────────────────────────────────────
+    // fit / fill framing (#1422)
 
     #[test]
     fn video_layer_fit_none_should_emit_no_framing_step() {
@@ -657,7 +657,7 @@ mod tests {
         );
     }
 
-    // ── audio_track ─────────────────────────────────────────────────────────
+    // audio_track
 
     #[test]
     fn audio_track_volume_track_should_win() {
@@ -754,7 +754,7 @@ mod tests {
         );
     }
 
-    // ── audio_volume (shared 3-way merge) ─────────────────────────────────────
+    // audio_volume (shared 3-way merge)
 
     #[test]
     fn audio_volume_should_fall_back_to_timeline_animation() {
@@ -784,7 +784,7 @@ mod tests {
         ));
     }
 
-    // ── realtime_descriptor (single derive → preview) ─────────────────────────
+    // realtime_descriptor (single derive → preview)
 
     #[test]
     fn realtime_descriptor_should_carry_no_temporal_or_xfade_steps() {
@@ -866,7 +866,7 @@ mod tests {
         assert!(matches!(d.composite_op, CompositeOp::Under));
     }
 
-    // ── per-clip scale / rotation (3-way merge) ───────────────────────────────
+    // per-clip scale / rotation (3-way merge)
 
     #[test]
     fn video_layer_static_scale_should_drive_both_axes() {

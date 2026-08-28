@@ -161,7 +161,7 @@ fn main() {
     println!("Output:  {out_name}  {codec_label}  {hw_label}  crf={crf}");
     println!();
 
-    // ── Build pipeline with hardware backend ──────────────────────────────────
+    // Build pipeline with hardware backend
 
     let mut b = EncoderConfig::builder()
         .video_codec(video_codec)

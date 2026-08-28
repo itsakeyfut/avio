@@ -207,7 +207,7 @@ unsafe fn read_f32_meta(
     }
 }
 
-// ── QualityMetrics inner ──────────────────────────────────────────────────────
+// QualityMetrics inner
 
 /// Computes the mean SSIM between `reference` and `distorted` using the filter
 /// graph:
@@ -236,7 +236,7 @@ pub(super) unsafe fn compute_ssim_unsafe(
     reference: &Path,
     distorted: &Path,
 ) -> Result<f32, FilterError> {
-    // ── Pre-flight: reject inputs with different frame counts ──────────────
+    // Pre-flight: reject inputs with different frame counts
     let ref_count = probe_video_frame_count(reference);
     let dist_count = probe_video_frame_count(distorted);
     if let (Some(r), Some(d)) = (ref_count, dist_count)
@@ -458,7 +458,7 @@ pub(super) unsafe fn compute_psnr_unsafe(
     reference: &Path,
     distorted: &Path,
 ) -> Result<f32, FilterError> {
-    // ── Pre-flight: reject inputs with different frame counts ──────────────
+    // Pre-flight: reject inputs with different frame counts
     let ref_count = probe_video_frame_count(reference);
     let dist_count = probe_video_frame_count(distorted);
     if let (Some(r), Some(d)) = (ref_count, dist_count)

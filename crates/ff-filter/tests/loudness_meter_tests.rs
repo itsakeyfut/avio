@@ -17,8 +17,6 @@ fn test_audio_path() -> std::path::PathBuf {
     ))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn loudness_meter_missing_file_should_return_analysis_failed() {
     let result = LoudnessMeter::new("does_not_exist_99999.mp3").measure();
@@ -27,8 +25,6 @@ fn loudness_meter_missing_file_should_return_analysis_failed() {
         "expected AnalysisFailed for missing file, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn loudness_meter_should_return_lufs_result() {

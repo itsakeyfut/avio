@@ -54,7 +54,7 @@ use state::{
 
 const CHANNEL_CAP: usize = 64;
 
-// ── ScenePlayer ─────────────────────────────────────────────────────────────
+// ScenePlayer
 
 /// Thin builder for a ([`SceneRunner`], [`PlayerHandle`]) pair backed by a
 /// [`Scene`].
@@ -111,7 +111,7 @@ impl ScenePlayer {
         let fps = scene.fps.max(1.0);
         let clip_list = &v_tracks[0].placements;
 
-        // ── Phase 1: probe all clips ──────────────────────────────────────────
+        // Phase 1: probe all clips
 
         let mut probes: Vec<ProbeResult> = Vec::with_capacity(clip_list.len());
         let mut has_any_audio = false;
@@ -156,7 +156,7 @@ impl ScenePlayer {
             });
         }
 
-        // ── Phase 2: build mixer and track handles (if audio present) ─────────
+        // Phase 2: build mixer and track handles (if audio present)
 
         let (mut mixer_arc, audio_track_handles): (
             Option<Arc<Mutex<AudioMixer>>>,
@@ -178,7 +178,7 @@ impl ScenePlayer {
             (None, probes.iter().map(|_| None).collect())
         };
 
-        // ── Phase 3: build ClipState objects ──────────────────────────────────
+        // Phase 3: build ClipState objects
 
         let mut clip_states: Vec<ClipState> = Vec::with_capacity(probes.len());
         for (i, p) in probes.iter().enumerate() {
@@ -217,7 +217,7 @@ impl ScenePlayer {
             });
         }
 
-        // ── Phase 4: build overlay layers (V2, V3, …) ────────────────────────
+        // Phase 4: build overlay layers (V2, V3, …)
         // Audio from V2+ clips is routed through AudioOnlyTrack (same mechanism as
         // A1) so it is started/stopped as the playhead crosses each clip window.
 
@@ -297,7 +297,7 @@ impl ScenePlayer {
             });
         }
 
-        // ── Phase 5: build audio-only tracks (A1, A2, …) ─────────────────────
+        // Phase 5: build audio-only tracks (A1, A2, …)
 
         for track in &scene.audio_tracks {
             for p in &track.placements {
@@ -343,7 +343,7 @@ impl ScenePlayer {
             }
         }
 
-        // ── Compute total duration ─────────────────────────────────────────────
+        // Compute total duration
 
         let total_dur = clip_states
             .iter()
@@ -352,7 +352,7 @@ impl ScenePlayer {
             .unwrap_or(Duration::ZERO);
         let duration_millis = u64::try_from(total_dur.as_millis()).unwrap_or(u64::MAX);
 
-        // ── Build runner and handle ───────────────────────────────────────────
+        // Build runner and handle
 
         let current_pts = Arc::new(AtomicU64::new(0));
         let paused = Arc::new(AtomicBool::new(false));
@@ -449,13 +449,11 @@ impl ScenePlayer {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── blend_rgba delegate ────────────────────────────────────────────────
+    // blend_rgba delegate
 
     #[test]
     fn inner_blend_rgba_at_zero_alpha_should_return_a() {
@@ -466,7 +464,7 @@ mod tests {
         assert_eq!(dst, a);
     }
 
-    // ── open ──────────────────────────────────────────────────────────────
+    // open
 
     #[test]
     fn timeline_player_open_should_fail_when_no_video_tracks() {

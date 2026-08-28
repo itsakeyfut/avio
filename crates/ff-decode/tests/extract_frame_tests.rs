@@ -15,8 +15,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Functional tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn extract_frame_should_return_frame_at_timestamp() {
     let path = test_video_path();

@@ -67,7 +67,7 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let vprobe = VideoDecoder::open(&input).build().ok();
     let (src_w, src_h, fps) = vprobe.as_ref().map_or((1280, 720, 25.0_f64), |d| {
@@ -75,7 +75,7 @@ fn main() {
     });
     drop(vprobe);
 
-    // ── Build FilterGraph and apply the chosen audio effect ───────────────────
+    // Build FilterGraph and apply the chosen audio effect
     //
     // Audio effects are methods on FilterGraph that add FFmpeg filter steps.
     // They must be called before the first push_audio call.
@@ -141,7 +141,7 @@ fn main() {
     println!("Output:  {out_name}");
     println!();
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
 
     let audio_probe = AudioDecoder::open(&input).build().ok();
     let (sample_rate, channels) = audio_probe
@@ -170,7 +170,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── Video pass-through ────────────────────────────────────────────────────
+    // Video pass-through
 
     let mut video_frames: u64 = 0;
 
@@ -187,7 +187,7 @@ fn main() {
         }
     }
 
-    // ── Audio loop: decode → filter → encode ─────────────────────────────────
+    // Audio loop: decode → filter → encode
 
     let mut audio_frames: u64 = 0;
 
@@ -242,7 +242,7 @@ fn main() {
         }
     }
 
-    // ── Finalise ──────────────────────────────────────────────────────────────
+    // Finalise
 
     if let Err(e) = encoder.finish() {
         eprintln!("Error finalising output: {e}");

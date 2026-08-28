@@ -17,7 +17,7 @@ use ff_filter::{
 };
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
-// ── Dimensions ────────────────────────────────────────────────────────────────
+// Dimensions
 
 const CANVAS_W: u32 = 1920;
 const CANVAS_H: u32 = 1080;
@@ -28,7 +28,7 @@ const FRAME_COUNT: usize = 60;
 const X_FROM: f64 = 0.0;
 const X_TO: f64 = 1910.0;
 
-// ── Standalone Bézier reference ───────────────────────────────────────────────
+// Standalone Bézier reference
 //
 // Independent implementation of CSS cubic-bezier(0.25, 0.1, 0.25, 1.0) so the
 // reference values are not derived from the `Easing::Bezier` implementation
@@ -92,14 +92,13 @@ fn build_bezier_reference() -> [f64; FRAME_COUNT] {
     refs
 }
 
-// ── Integration test ─────────────────────────────────────────────────────────
+// Integration test
 
 #[test]
 #[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
 fn bezier_position_animation_should_match_reference_curve() {
     let reference = build_bezier_reference();
 
-    // ── Step 1: synthetic source files ────────────────────────────────────────
     //
     // Background: 1920×1080, full black (Y=16 U=128 V=128 in studio-swing YUV)
     // Marker:       10× 10, full white (Y=235 U=128 V=128)
@@ -128,8 +127,6 @@ fn bezier_position_animation_should_match_reference_curve() {
         return;
     }
 
-    // ── Step 2: Bézier animation track (x: 0 → 1910 over 60 frames @ 30 fps) ─
-
     let end_pts = Duration::from_secs_f64((FRAME_COUNT as f64 - 1.0) / FPS);
     let bezier_track = AnimationTrack::new()
         .push(Keyframe::new(
@@ -141,8 +138,6 @@ fn bezier_position_animation_should_match_reference_curve() {
             },
         ))
         .push(Keyframe::new(end_pts, X_TO, Easing::Linear));
-
-    // ── Step 3: build MultiTrackComposer ─────────────────────────────────────
 
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
@@ -180,8 +175,6 @@ fn bezier_position_animation_should_match_reference_curve() {
         }
     };
 
-    // ── Step 4: render 60 frames, detect marker, compare to reference ─────────
-
     for i in 0..FRAME_COUNT {
         let pts = Duration::from_secs_f64(i as f64 / FPS);
 
@@ -210,7 +203,7 @@ fn bezier_position_animation_should_match_reference_curve() {
             return;
         }
 
-        // ── Detect marker leading edge at Y-plane row 5 ───────────────────────
+        // Detect marker leading edge at Y-plane row 5
         //
         // The 10×10 white marker (Y≈235) is composited on a black background
         // (Y≈16).  The first pixel with luma > 128 in row 5 is the marker's

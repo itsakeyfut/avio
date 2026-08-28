@@ -466,7 +466,7 @@ fn duck_should_reduce_background_by_at_least_12db_when_foreground_active() {
     );
 }
 
-// ── pitch_shift ───────────────────────────────────────────────────────────────
+// pitch_shift
 
 /// Verifies that `FilterGraph::pitch_shift()` accepts audio and produces
 /// output with the same number of channels and an opaque (non-panic) result.
@@ -687,7 +687,7 @@ fn pitch_shift_24_semitones_should_double_frequency_twice() {
     );
 }
 
-// ── time_stretch ──────────────────────────────────────────────────────────────
+// time_stretch
 
 /// Verifies that `FilterGraph::time_stretch()` accepts audio and produces
 /// output without panic. Acceptance criterion for issue #404.
@@ -732,7 +732,7 @@ fn time_stretch_half_speed_should_produce_audio_output() {
     );
 }
 
-// ── noise_reduce ──────────────────────────────────────────────────────────────
+// noise_reduce
 
 /// Verifies that `FilterGraph::noise_reduce()` accepts audio and produces
 /// output. Acceptance criterion for issue #406.
@@ -775,7 +775,7 @@ fn noise_reduce_should_produce_audio_output_from_noise_input() {
     }
 }
 
-// ── reverb_echo ───────────────────────────────────────────────────────────────
+// reverb_echo
 
 /// Verifies that `FilterGraph::reverb_echo()` builds and processes audio.
 /// Acceptance criterion for issue #402.
@@ -819,7 +819,7 @@ fn reverb_echo_single_tap_should_produce_audio_output() {
     }
 }
 
-// ── speed_change ──────────────────────────────────────────────────────────────
+// speed_change
 
 /// Verifies that `FilterGraph::speed_change()` accepts audio. Acceptance
 /// criterion for issue #405.

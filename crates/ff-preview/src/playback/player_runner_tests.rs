@@ -16,7 +16,7 @@ fn test_audio_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio/konekonoosanpo.mp3")
 }
 
-// ── open ──────────────────────────────────────────────────────────────────
+// open
 
 #[test]
 fn preview_player_open_should_fail_for_nonexistent_file() {
@@ -27,7 +27,7 @@ fn preview_player_open_should_fail_for_nonexistent_file() {
     );
 }
 
-// ── play / pause / stop via handle ───────────────────────────────────────
+// play / pause / stop via handle
 
 #[test]
 fn player_handle_play_pause_should_update_paused_flag_immediately() {
@@ -54,7 +54,7 @@ fn player_handle_play_pause_should_update_paused_flag_immediately() {
     assert!(handle.stopped.load(Ordering::Relaxed));
 }
 
-// ── run with sink ─────────────────────────────────────────────────────────
+// run with sink
 
 #[test]
 fn player_runner_run_should_deliver_frames_to_sink() {
@@ -97,7 +97,7 @@ fn player_runner_run_should_deliver_frames_to_sink() {
     );
 }
 
-// ── pop_audio_samples ────────────────────────────────────────────────────
+// pop_audio_samples
 
 #[test]
 fn pop_audio_samples_should_return_empty_when_paused() {
@@ -182,7 +182,7 @@ fn pop_audio_samples_clock_increment_should_equal_half_sample_count() {
     );
 }
 
-// ── current_pts / duration ───────────────────────────────────────────────
+// current_pts / duration
 
 #[test]
 fn current_pts_should_return_zero_before_first_frame() {
@@ -279,7 +279,7 @@ fn current_pts_should_advance_after_frames_are_presented() {
     );
 }
 
-// ── seek ──────────────────────────────────────────────────────────────────
+// seek
 
 #[test]
 fn seek_coarse_should_delegate_to_decode_buffer() {
@@ -310,7 +310,7 @@ fn seek_coarse_should_delegate_to_decode_buffer() {
     }
 }
 
-// ── proxy ─────────────────────────────────────────────────────────────────
+// proxy
 
 #[test]
 fn use_proxy_if_available_should_return_false_when_no_proxy_in_dir() {
@@ -348,7 +348,7 @@ fn active_source_should_return_original_path_before_proxy_activation() {
     );
 }
 
-// ── set_rate / set_av_offset ──────────────────────────────────────────────
+// set_rate / set_av_offset
 
 #[test]
 fn set_rate_should_accept_positive_value() {
@@ -420,7 +420,7 @@ fn positive_av_offset_at_zero_pts_should_saturate_to_zero() {
     );
 }
 
-// ── audio_sample_rate ────────────────────────────────────────────────────
+// audio_sample_rate
 
 #[test]
 fn audio_sample_rate_should_return_some_48_khz_for_audio_only_file() {
@@ -474,7 +474,7 @@ fn audio_sample_rate_should_return_none_when_no_audio_buf_present() {
     );
 }
 
-// ── audio-only ────────────────────────────────────────────────────────────
+// audio-only
 
 #[test]
 fn audio_only_open_should_succeed() {
@@ -550,7 +550,7 @@ fn audio_only_seek_should_not_fail_for_valid_target() {
     handle.seek(Duration::from_secs(1));
 }
 
-// ── seek event delivery (integration) ────────────────────────────────────
+// seek event delivery (integration)
 
 #[test]
 #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
@@ -613,7 +613,7 @@ fn seek_should_deliver_seek_completed_event_via_poll_event() {
     }
 }
 
-// ── PlayerEvent: PositionUpdate + Error ───────────────────────────────────
+// PlayerEvent: PositionUpdate + Error
 
 #[test]
 fn position_update_and_error_event_variants_should_be_accessible() {
@@ -710,7 +710,7 @@ fn position_update_should_be_emitted_for_each_video_frame() {
     );
 }
 
-// ── HardwareAccel ─────────────────────────────────────────────────────────
+// HardwareAccel
 
 #[test]
 fn hardware_accel_variants_should_be_accessible_on_player_runner() {

@@ -4,7 +4,7 @@ use ff_preview::FrameSink;
 
 use crate::graph::RenderGraph;
 
-// ── TextureHandle ─────────────────────────────────────────────────────────────
+// TextureHandle
 
 /// A GPU texture together with its default view and dimensions.
 ///
@@ -18,7 +18,7 @@ pub struct TextureHandle {
     pub height: u32,
 }
 
-// ── GpuFrameSink ─────────────────────────────────────────────────────────────
+// GpuFrameSink
 
 /// A [`FrameSink`] that processes each frame through a [`RenderGraph`] before
 /// forwarding to a downstream sink.
@@ -76,8 +76,6 @@ impl FrameSink for GpuFrameSink {
         self.downstream.flush();
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

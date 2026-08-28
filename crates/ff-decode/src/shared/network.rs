@@ -148,7 +148,7 @@ pub(crate) fn map_network_error(code: i32, endpoint: String) -> DecodeError {
 mod tests {
     use super::*;
 
-    // ── is_url ────────────────────────────────────────────────────────────────
+    // is_url
 
     #[test]
     fn is_url_should_return_true_for_http() {
@@ -200,7 +200,7 @@ mod tests {
         assert!(!is_url("C:/Users/user/video.mp4"));
     }
 
-    // ── sanitize_url ──────────────────────────────────────────────────────────
+    // sanitize_url
 
     #[test]
     fn sanitize_url_should_strip_password_from_rtmp_url() {
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(sanitize_url(raw), raw);
     }
 
-    // ── map_network_error ────────────────────────────────────────────────────
+    // map_network_error
 
     #[test]
     fn map_network_error_should_map_etimedout_to_network_timeout() {

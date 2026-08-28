@@ -649,7 +649,7 @@ impl AudioDecoderInner {
         self.eof = false;
     }
 
-    // ── Reconnect helpers ─────────────────────────────────────────────────────
+    // Reconnect helpers
 
     /// Attempts to reconnect to the stream URL using exponential backoff.
     ///

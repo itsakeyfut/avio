@@ -53,7 +53,7 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&input);
 
-    // ── VecPool ───────────────────────────────────────────────────────────────
+    // VecPool
     //
     // VecPool::new() returns Arc<VecPool>.
     // capacity() is the maximum number of buffers retained between frames.
@@ -66,14 +66,14 @@ fn main() {
         pool.available()
     );
 
-    // ── FramePool (trait) ─────────────────────────────────────────────────────
+    // FramePool (trait)
     //
     // FramePool is the trait that abstracts over pool implementations.
     // The decoder accepts Arc<dyn FramePool>.
 
     let pool_as_trait: Arc<dyn FramePool> = pool.clone();
 
-    // ── Attach pool to decoder ────────────────────────────────────────────────
+    // Attach pool to decoder
     //
     // frame_pool() passes the pool to the decoder. On each decoded frame, the
     // decoder attempts to claim a buffer from the pool instead of allocating.

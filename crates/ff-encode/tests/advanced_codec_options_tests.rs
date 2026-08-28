@@ -18,7 +18,7 @@ use fixtures::{
 };
 use std::time::Instant;
 
-// ── Skip helpers ──────────────────────────────────────────────────────────────
+// Skip helpers
 
 /// Returns `true` when `libx265` is compiled into this FFmpeg build.
 fn is_libx265_available() -> bool {
@@ -35,7 +35,7 @@ fn is_libvpx_vp9_available() -> bool {
     ff_sys::Codec::find_encoder_by_name("libvpx-vp9").is_some()
 }
 
-// ── H.265 ─────────────────────────────────────────────────────────────────────
+// H.265
 
 /// Encodes with H.265 Main10 profile and explicit `yuv420p10le` pixel format,
 /// then probes the output to confirm the stored pixel format is `yuv420p10le`.
@@ -94,7 +94,7 @@ fn h265_main10_with_yuv420p10le_should_report_yuv420p10le_via_probe() {
     );
 }
 
-// ── AV1 ───────────────────────────────────────────────────────────────────────
+// AV1
 
 /// Encodes the same content with `cpu_used=8` and `cpu_used=4` and asserts
 /// that the faster setting finishes in no more time than the slower one.
@@ -188,7 +188,7 @@ fn av1_cpu_used_9_should_be_rejected_with_invalid_option_error() {
     );
 }
 
-// ── VP9 ───────────────────────────────────────────────────────────────────────
+// VP9
 
 /// Encodes with VP9 in constrained-quality (CQ) mode at `cq_level=33`,
 /// then probes the output to confirm VP9 is the stored codec.

@@ -1,6 +1,6 @@
 use super::RenderNodeCpu;
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
+// Pipeline cache
 
 #[cfg(feature = "wgpu")]
 struct OverlayPipeline {
@@ -9,7 +9,7 @@ struct OverlayPipeline {
     sampler: wgpu::Sampler,
 }
 
-// ── OverlayNode ───────────────────────────────────────────────────────────────
+// OverlayNode
 
 /// Porter-Duff "src over dst" alpha compositing.
 ///
@@ -45,7 +45,7 @@ impl OverlayNode {
     }
 }
 
-// ── CPU path ──────────────────────────────────────────────────────────────────
+// CPU path
 
 impl RenderNodeCpu for OverlayNode {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -78,7 +78,7 @@ impl RenderNodeCpu for OverlayNode {
     }
 }
 
-// ── GPU path ──────────────────────────────────────────────────────────────────
+// GPU path
 
 #[cfg(feature = "wgpu")]
 impl OverlayNode {
@@ -284,8 +284,6 @@ impl super::RenderNode for OverlayNode {
         ctx.queue.submit(std::iter::once(encoder.finish()));
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

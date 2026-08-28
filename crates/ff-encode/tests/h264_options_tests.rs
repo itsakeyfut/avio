@@ -15,7 +15,7 @@ use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 /// Returns `true` when `libx264` is compiled into this FFmpeg build **and**
 /// the `gpl` feature flag is enabled, meaning the encoder selection code will
@@ -26,8 +26,6 @@ fn is_libx264_available() -> bool {
     }
     ff_sys::Codec::find_encoder_by_name("libx264").is_some()
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Encodes 1920×1080 at 30 fps with High profile and level 4.1.
 /// Probes the output to confirm H.264 is the stored codec.

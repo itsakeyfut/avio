@@ -66,7 +66,7 @@ fn main() {
         }
     };
 
-    // ── Probe source parameters ───────────────────────────────────────────────
+    // Probe source parameters
 
     let probe_dec = match AudioDecoder::open(&input).build() {
         Ok(d) => d,
@@ -96,7 +96,7 @@ fn main() {
     println!("Output:   {out_name}  codec={codec_str}  bitrate={bitrate}");
     println!();
 
-    // ── Build encoder directly ────────────────────────────────────────────────
+    // Build encoder directly
     //
     // AudioEncoder::create() is the low-level entry point.
     // .audio() sets the output sample rate and channel count.
@@ -118,7 +118,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── Manual decode → encode loop ───────────────────────────────────────────
+    // Manual decode → encode loop
     //
     // Open a second decoder for the actual decode loop (the first was probe-only).
     // push() feeds one decoded frame into the encoder.
@@ -151,7 +151,7 @@ fn main() {
         frames += 1;
     }
 
-    // ── Flush and finalise ────────────────────────────────────────────────────
+    // Flush and finalise
     //
     // finish() flushes buffered frames and writes the container trailer.
 

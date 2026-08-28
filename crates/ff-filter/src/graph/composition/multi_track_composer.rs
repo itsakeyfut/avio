@@ -13,7 +13,7 @@ use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::Rgb;
 
-// ── LayerSource ───────────────────────────────────────────────────────────────
+// LayerSource
 
 /// The source of a composited [`VideoLayer`]'s frames.
 ///
@@ -33,7 +33,7 @@ pub enum LayerSource {
     Solid(Color),
 }
 
-// ── ProxySource ───────────────────────────────────────────────────────────────
+// ProxySource
 
 /// A low-resolution proxy substitute for a [`VideoLayer`]'s source.
 ///
@@ -51,7 +51,7 @@ pub struct ProxySource {
     pub height: u32,
 }
 
-// ── VideoLayer ────────────────────────────────────────────────────────────────
+// VideoLayer
 
 /// A single video layer in a [`MultiTrackComposer`] composition.
 ///
@@ -123,7 +123,7 @@ pub struct VideoLayer {
     pub effects: Vec<crate::graph::filter_step::FilterStep>,
 }
 
-// ── MultiTrackComposer ────────────────────────────────────────────────────────
+// MultiTrackComposer
 
 /// Composes multiple video layers onto a solid-colour canvas.
 ///

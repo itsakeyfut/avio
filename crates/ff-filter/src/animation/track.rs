@@ -192,8 +192,6 @@ impl<T: Lerp> Default for AnimationTrack<T> {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;

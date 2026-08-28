@@ -16,7 +16,7 @@ use crate::filter_inner::FilterGraphInner;
 mod audio;
 mod video;
 
-// ── FilterGraphBuilder ────────────────────────────────────────────────────────
+// FilterGraphBuilder
 
 /// Builder for constructing a [`FilterGraph`].
 ///
@@ -95,7 +95,7 @@ impl FilterGraphBuilder {
         self
     }
 
-    // ── Build ─────────────────────────────────────────────────────────────────
+    // Build
 
     /// Build the [`FilterGraph`].
     ///
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(Rgb::NEUTRAL.b, 1.0);
     }
 
-    // ── blend() ───────────────────────────────────────────────────────────
+    // blend()
 
     #[test]
     fn blend_normal_full_opacity_should_use_overlay_filter() {

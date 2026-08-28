@@ -15,8 +15,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn keyframe_enumerator_missing_file_should_return_analysis_failed() {
     let result = KeyframeEnumerator::new("does_not_exist_99999.mp4").run();
@@ -40,8 +38,6 @@ fn keyframe_enumerator_invalid_stream_index_should_return_analysis_failed() {
         "expected Failed for stream_index=9999, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn keyframe_enumerator_should_return_non_empty_vec() {

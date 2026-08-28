@@ -60,7 +60,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Parse ToneMap variant ─────────────────────────────────────────────────
+    // Parse ToneMap variant
 
     let tone_map = match method_str.to_lowercase().as_str() {
         "hable" => ToneMap::Hable,
@@ -72,7 +72,7 @@ fn main() {
         }
     };
 
-    // ── Probe: detect HDR and print colour metadata ───────────────────────────
+    // Probe: detect HDR and print colour metadata
 
     let info = match open(&input) {
         Ok(i) => i,
@@ -110,7 +110,7 @@ fn main() {
         video.color_primaries()
     );
 
-    // ── Skip if not HDR ───────────────────────────────────────────────────────
+    // Skip if not HDR
 
     if !video.is_hdr() {
         println!(
@@ -129,7 +129,7 @@ fn main() {
     println!("Output:   {out_name}  tone_map={method_str}");
     println!();
 
-    // ── Build tone-mapping filter ─────────────────────────────────────────────
+    // Build tone-mapping filter
     //
     // tone_map() inserts libavfilter's `tonemap` filter into the graph.
     // The three ToneMap variants select the tone-mapping algorithm:
@@ -145,7 +145,7 @@ fn main() {
         }
     };
 
-    // ── Run pipeline ──────────────────────────────────────────────────────────
+    // Run pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

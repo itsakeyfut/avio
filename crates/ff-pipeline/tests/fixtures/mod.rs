@@ -72,7 +72,7 @@ impl Drop for FileGuard {
     }
 }
 
-// ── Synthetic frame factories ──────────────────────────────────────────────────
+// Synthetic frame factories
 
 /// YUV420P frame filled with a solid colour specified as (Y, U, V).
 pub fn yuv420p_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
@@ -97,7 +97,7 @@ pub fn silent_audio_frame(samples: usize, sample_rate: u32) -> AudioFrame {
         .expect("failed to create silent audio frame")
 }
 
-// ── Source file generator ─────────────────────────────────────────────────────
+// Source file generator
 
 /// Encodes `frame_count` synthetic frames to `path` as an MP4 with MPEG-4 video
 /// and AAC audio.  Returns `None` (and prints a skip message) if the encoder

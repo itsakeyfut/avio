@@ -83,7 +83,7 @@ fn main() {
         }
     };
 
-    // ── Probe input for display info ──────────────────────────────────────────
+    // Probe input for display info
 
     let dec = match AudioDecoder::open(&input).build() {
         Ok(d) => d,
@@ -124,7 +124,7 @@ fn main() {
     println!();
     println!("Encoding...");
 
-    // ── Run pipeline ──────────────────────────────────────────────────────────
+    // Run pipeline
 
     if let Err(e) = AudioPipeline::new()
         .input(&input)

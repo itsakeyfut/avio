@@ -91,13 +91,11 @@ unsafe fn generate_sprite_sheet_unsafe(
     frame_height: u32,
     output: &Path,
 ) -> Result<(), PreviewImageError> {
-    // ── Step 1: probe duration ────────────────────────────────────────────────
     let duration_secs = probe_video_duration_secs(input)?;
     let n = cols * rows;
     // FPS needed to sample exactly N frames across the full duration.
     let fps_arg = format!("{n}/{duration_secs:.6}");
 
-    // ── Step 2: build filter graph ────────────────────────────────────────────
     macro_rules! bail {
         ($graph:expr, $reason:expr) => {{
             let mut g = $graph;
@@ -259,7 +257,6 @@ unsafe fn generate_sprite_sheet_unsafe(
         bail!(graph, format!("avfilter_graph_config failed code={ret}"));
     }
 
-    // ── Step 3: pull one output frame from the tile filter ────────────────────
     let Ok(mut tile_frame) = ff_sys::Frame::new() else {
         bail!(graph, "av_frame_alloc failed for tile frame");
     };
@@ -271,7 +268,6 @@ unsafe fn generate_sprite_sheet_unsafe(
         bail!(graph, "tile filter produced no output frame");
     }
 
-    // ── Step 4: encode the tile frame as PNG ──────────────────────────────────
     let encode_result = encode_frame_as_png(
         &mut tile_frame,
         output,
@@ -315,7 +311,7 @@ unsafe fn encode_frame_as_png(
     let height = frame.height();
     let src_pix_fmt = frame.format();
 
-    // ── Convert to rgb24 if the frame pixel format is not PNG-compatible ──────
+    // Convert to rgb24 if the frame pixel format is not PNG-compatible
     // PNG encoder only accepts: rgb24, rgba, rgb48be, rgba64be, pal8, gray, …
     // Filter outputs (tile, palettegen) typically emit yuv420p or bgra.
     // We unconditionally convert to rgb24 to avoid EINVAL from avcodec_open2.
@@ -372,7 +368,7 @@ unsafe fn encode_frame_as_png_inner(
 ) -> Result<(), PreviewImageError> {
     let pix_fmt = AVPixelFormat_AV_PIX_FMT_RGB24;
 
-    // ── Allocate output format context (owned) ────────────────────────────────
+    // Allocate output format context (owned)
     // Use the image2 muxer explicitly: it accepts the png encoder for single-
     // frame output, regardless of the file extension.  The "apng" muxer only
     // accepts the APNG (animated PNG) codec — not the plain PNG codec — and
@@ -381,12 +377,12 @@ unsafe fn encode_frame_as_png_inner(
     let mut fmt_ctx = OutputFormatContext::new(Some("image2"), output)
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    // ── Create video stream ───────────────────────────────────────────────────
+    // Create video stream
     let stream_idx = fmt_ctx
         .new_stream(None)
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    // ── Find and open PNG encoder ─────────────────────────────────────────────
+    // Find and open PNG encoder
     let Some(codec) = ff_sys::Codec::find_encoder(AVCodecID_AV_CODEC_ID_PNG) else {
         return Err(PreviewImageError::UnsupportedCodec {
             codec: "png".to_string(),
@@ -411,7 +407,7 @@ unsafe fn encode_frame_as_png_inner(
         .apply_stream_params_from_context(stream_idx, &codec_ctx)
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    // ── Open output IO and write header ───────────────────────────────────────
+    // Open output IO and write header
     fmt_ctx
         .open_io(output)
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
@@ -420,7 +416,7 @@ unsafe fn encode_frame_as_png_inner(
         .write_header()
         .map_err(|e| PreviewImageError::from_ffmpeg_error(e.code()))?;
 
-    // ── Allocate packet ───────────────────────────────────────────────────────
+    // Allocate packet
     let Ok(mut packet) = ff_sys::Packet::new() else {
         return Err(PreviewImageError::Ffmpeg {
             code: 0,
@@ -428,7 +424,7 @@ unsafe fn encode_frame_as_png_inner(
         });
     };
 
-    // ── Encode: send frame → flush → drain packets ────────────────────────────
+    // Encode: send frame → flush → drain packets
     frame.set_pts(0);
 
     let encode_result = (|| -> Result<(), PreviewImageError> {
@@ -489,7 +485,7 @@ unsafe fn drain_packets(
     Ok(())
 }
 
-// ── GifPreview implementation ─────────────────────────────────────────────────
+// GifPreview implementation
 
 /// Generates an animated GIF from `input` using a two-pass palettegen approach.
 ///
@@ -534,7 +530,7 @@ unsafe fn generate_gif_preview_unsafe(
     let palette_path =
         std::env::temp_dir().join(format!("ff_gif_palette_{}.png", std::process::id()));
 
-    // ── Pass 1: generate palette ──────────────────────────────────────────────
+    // Pass 1: generate palette
     let palette_result =
         generate_palette_unsafe(input, start_sec, dur_sec, fps, width, &palette_path);
 
@@ -543,7 +539,7 @@ unsafe fn generate_gif_preview_unsafe(
         return Err(e);
     }
 
-    // ── Pass 2: encode GIF ────────────────────────────────────────────────────
+    // Pass 2: encode GIF
     let gif_result =
         encode_gif_unsafe(input, start_sec, dur_sec, fps, width, &palette_path, output);
 
@@ -1033,7 +1029,7 @@ unsafe fn encode_gif_unsafe(
         bail!(graph, format!("avfilter_graph_config failed code={ret}"));
     }
 
-    // ── Open GIF output (owned format context) ────────────────────────────────
+    // Open GIF output (owned format context)
     // The owned context frees itself and closes its IO on drop; each early return
     // below still frees the raw filter graph explicitly.
     let mut fmt_ctx = match OutputFormatContext::new(Some("gif"), output) {
@@ -1147,7 +1143,7 @@ unsafe fn encode_gif_unsafe(
         });
     };
 
-    // ── Encode all frames ─────────────────────────────────────────────────────
+    // Encode all frames
     let encode_result = (|| -> Result<(), PreviewImageError> {
         let mut frame_counter: i64 = 0;
 

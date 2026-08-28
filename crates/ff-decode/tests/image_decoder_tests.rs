@@ -21,7 +21,7 @@ fn jpeg_path() -> PathBuf {
     fixtures::test_jpeg_path()
 }
 
-// ── crate-root exports ────────────────────────────────────────────────────────
+// crate-root exports
 
 /// `ImageDecoder` and `ImageDecoderBuilder` must be importable from the crate
 /// root without any extra path segments.
@@ -31,7 +31,7 @@ fn crate_root_should_export_image_decoder_types() {
     let _: fn(&str) -> ImageDecoderBuilder = |p| ImageDecoder::open(p);
 }
 
-// ── open() / build() — error cases ───────────────────────────────────────────
+// open() / build() — error cases
 
 #[test]
 fn open_missing_file_should_return_file_not_found_error() {
@@ -58,7 +58,7 @@ fn open_audio_only_file_should_return_error() {
     );
 }
 
-// ── open() / build() — happy path ────────────────────────────────────────────
+// open() / build() — happy path
 
 #[test]
 fn open_png_should_succeed() {
@@ -104,7 +104,7 @@ fn open_returns_builder_then_build_opens_file() {
     }
 }
 
-// ── decode() — consuming convenience API ──────────────────────────────────────
+// decode() — consuming convenience API
 
 #[test]
 fn decode_png_should_return_video_frame() {
@@ -291,7 +291,7 @@ fn decode_png_frame_pixel_format_should_be_supported() {
     );
 }
 
-// ── decode_one() — mutable incremental API ────────────────────────────────────
+// decode_one() — mutable incremental API
 
 #[test]
 fn decode_one_first_call_should_return_some_frame() {
@@ -352,7 +352,7 @@ fn decode_one_frame_dimensions_should_match_reported_dimensions() {
     assert_eq!(frame.height(), h);
 }
 
-// ── frames() — iterator API ───────────────────────────────────────────────────
+// frames() — iterator API
 
 #[test]
 fn frames_iterator_should_yield_exactly_one_frame() {
@@ -437,7 +437,7 @@ fn frames_iterator_frame_should_have_correct_dimensions() {
     }
 }
 
-// ── Drop safety ───────────────────────────────────────────────────────────────
+// Drop safety
 
 #[test]
 fn decoder_drop_after_decode_should_not_panic() {
@@ -462,7 +462,7 @@ fn decoder_drop_without_decode_should_not_panic() {
     }
 }
 
-// ── JPEG decoding ─────────────────────────────────────────────────────────────
+// JPEG decoding
 
 #[test]
 fn open_jpeg_should_succeed() {

@@ -31,7 +31,7 @@ const CHANNEL_CAP: usize = 64;
 /// Must match the value used by `spawn_audio_thread` and `MasterClock::Audio`.
 pub(crate) const DECODED_SAMPLE_RATE: u32 = 48_000;
 
-// ── PlayerCommand ─────────────────────────────────────────────────────────────
+// PlayerCommand
 
 /// Commands sent from [`PlayerHandle`] to [`PlayerRunner`] via a
 /// bounded sync channel (capacity 64).
@@ -60,7 +60,7 @@ pub enum PlayerCommand {
     UpdateLayout(Box<Scene>),
 }
 
-// ── PreviewPlayer (thin builder) ──────────────────────────────────────────────
+// PreviewPlayer (thin builder)
 
 /// Thin builder for a ([`PlayerRunner`], [`PlayerHandle`]) pair.
 ///

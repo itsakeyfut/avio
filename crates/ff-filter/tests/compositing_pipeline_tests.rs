@@ -47,7 +47,7 @@ fn make_yuv420p_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFram
 /// - Y channel average of the output should be close to 235 (white), not 150 (green).
 #[test]
 fn garbage_matte_chromakey_blend_over_background_should_composite_correctly() {
-    // ── Build the filter graph ─────────────────────────────────────────────────
+    // Build the filter graph
     //
     // fg_builder: polygon_matte + chromakey applied to the foreground (slot 1).
     // main builder: blend the keyed foreground over the background (slot 0).
@@ -66,7 +66,7 @@ fn garbage_matte_chromakey_blend_over_background_should_composite_correctly() {
         }
     };
 
-    // ── Push frames ───────────────────────────────────────────────────────────
+    // Push frames
     // Slot 0: white background (Y=235, U=128, V=128)
     let bg = make_yuv420p_frame(64, 64, 235, 128, 128);
     match graph.push_video(0, &bg) {
@@ -87,7 +87,7 @@ fn garbage_matte_chromakey_blend_over_background_should_composite_correctly() {
         }
     }
 
-    // ── Pull and assert ───────────────────────────────────────────────────────
+    // Pull and assert
     let out = graph
         .pull_video()
         .expect("pull_video must not fail")

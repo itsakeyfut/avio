@@ -1,6 +1,6 @@
 //! Porter-Duff alpha-compositing operators.
 
-// ── CompositeOp ────────────────────────────────────────────────────────────────
+// CompositeOp
 
 /// Porter-Duff alpha-compositing operator for combining two video layers.
 ///

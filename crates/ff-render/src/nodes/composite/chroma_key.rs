@@ -6,7 +6,7 @@ use super::helpers::{
 };
 use crate::nodes::RenderNodeCpu;
 
-// ── ChromaKeyNode ─────────────────────────────────────────────────────────────
+// ChromaKeyNode
 
 #[cfg(feature = "wgpu")]
 struct ChromaKeyPipeline {
@@ -47,7 +47,7 @@ impl ChromaKeyNode {
     }
 }
 
-// ── CPU helpers ───────────────────────────────────────────────────────────────
+// CPU helpers
 
 pub(super) fn bt709_luma(r: f32, g: f32, b: f32) -> f32 {
     0.2126 * r + 0.7152 * g + 0.0722 * b

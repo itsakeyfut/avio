@@ -22,7 +22,7 @@ use ff_filter::FilterGraphBuilder;
 use ff_format::VideoCodec;
 use ff_pipeline::{EncoderConfig, Pipeline};
 
-// ── Position helpers ──────────────────────────────────────────────────────────
+// Position helpers
 
 #[derive(Debug, Clone, Copy)]
 enum Position {
@@ -61,7 +61,7 @@ impl Position {
     }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -107,7 +107,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe watermark dimensions ────────────────────────────────────────────
+    // Probe watermark dimensions
 
     let wm_dec = match ImageDecoder::open(&watermark).build() {
         Ok(d) => d,
@@ -126,7 +126,7 @@ fn main() {
     let wm_w = wm_frame.width();
     let wm_h = wm_frame.height();
 
-    // ── Probe video dimensions ────────────────────────────────────────────────
+    // Probe video dimensions
 
     let vid_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -138,7 +138,7 @@ fn main() {
     let vid_w = vid_dec.width();
     let vid_h = vid_dec.height();
 
-    // ── Compute overlay position ──────────────────────────────────────────────
+    // Compute overlay position
 
     let (x, y) = position.compute(vid_w, vid_h, wm_w, wm_h, margin);
 
@@ -161,7 +161,7 @@ fn main() {
     println!("Output:     {out_name}");
     println!();
 
-    // ── Build overlay filter graph ────────────────────────────────────────────
+    // Build overlay filter graph
 
     let filter = match FilterGraphBuilder::new().overlay(x, y).build() {
         Ok(fg) => fg,
@@ -171,7 +171,7 @@ fn main() {
         }
     };
 
-    // ── Build and run pipeline ────────────────────────────────────────────────
+    // Build and run pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)

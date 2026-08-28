@@ -1,6 +1,6 @@
 //! Supporting types for [`super::FilterGraphBuilder`] and [`super::FilterGraph`].
 
-// ── Supporting enums ──────────────────────────────────────────────────────────
+// Supporting enums
 
 /// Tone-mapping algorithm for HDR-to-SDR conversion.
 ///

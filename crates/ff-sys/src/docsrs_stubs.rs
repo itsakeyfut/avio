@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 
-// ── Type aliases ──────────────────────────────────────────────────────────────
+// Type aliases
 
 pub type AVCodecID = c_uint;
 pub type AVPixelFormat = c_int;
@@ -26,7 +26,7 @@ pub type AVHWDeviceType = c_int;
 pub type AVChannelOrder = c_uint;
 pub type AVPictureType = c_int;
 
-// ── Opaque types (only ever used behind raw pointers) ─────────────────────────
+// Opaque types (only ever used behind raw pointers)
 
 pub struct AVDictionary(());
 pub struct SwsContext(());
@@ -44,7 +44,7 @@ pub struct AVInputFormat {
     pub flags: c_int,
 }
 
-// ── Structs with field-level access ───────────────────────────────────────────
+// Structs with field-level access
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -209,7 +209,7 @@ pub struct AVCodec {
     pub capabilities: c_int,
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// Constants
 
 pub const AV_DICT_IGNORE_SUFFIX: u32 = 2;
 pub const AV_NUM_DATA_POINTERS: usize = 8;
@@ -394,7 +394,7 @@ pub const AVHWDeviceType_AV_HWDEVICE_TYPE_D3D11VA: AVHWDeviceType = 8;
 pub const AVPictureType_AV_PICTURE_TYPE_NONE: AVPictureType = 0;
 pub const AVPictureType_AV_PICTURE_TYPE_I: AVPictureType = 1;
 
-// ── Raw FFmpeg functions (bindgen-generated counterparts) ─────────────────────
+// Raw FFmpeg functions (bindgen-generated counterparts)
 //
 // These mirror what bindgen would emit from the real FFmpeg headers.
 // All bodies are stubs; the code is compiled but never executed on docs.rs.
@@ -616,12 +616,12 @@ pub unsafe fn av_packet_rescale_ts(
 ) {
 }
 
-// ── Wrapper module stubs ──────────────────────────────────────────────────────
+// Wrapper module stubs
 //
 // These mirror the safe wrapper modules in avformat.rs, avcodec.rs,
 // swresample.rs, and swscale.rs.  Signatures must exactly match those files.
 
-// ── libavfilter opaque types ──────────────────────────────────────────────────
+// libavfilter opaque types
 
 pub struct AVFilterGraph(());
 pub struct AVFilter(());
@@ -630,12 +630,12 @@ pub struct AVFilterContext {
     pub hw_device_ctx: *mut AVBufferRef,
 }
 
-// ── libavfilter constants ─────────────────────────────────────────────────────
+// libavfilter constants
 
 /// Flag for `av_buffersrc_add_frame_flags`: keep a reference to the frame.
 pub const AV_BUFFERSRC_FLAG_KEEP_REF: c_int = 8;
 
-// ── libavfilter functions ─────────────────────────────────────────────────────
+// libavfilter functions
 
 // SAFETY: docs.rs stubs — never called at runtime.
 
@@ -1136,7 +1136,7 @@ pub mod swscale {
     }
 }
 
-// ── RAII owner stub (mirrors crate::codec_context::CodecContext) ──────────────
+// RAII owner stub (mirrors crate::codec_context::CodecContext)
 // Under DOCS_RS the real `codec_context` module is cfg'd out (it depends on the
 // docsrs-gated `avcodec` wrapper); this shape-compatible stub keeps
 // `ff_sys::CodecContext` available so ff-decode compiles for docs.rs.
@@ -1350,7 +1350,7 @@ impl Drop for CodecContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for CodecContext {}
 
-// ── RAII owner stub (mirrors crate::format_context::InputFormatContext) ───────
+// RAII owner stub (mirrors crate::format_context::InputFormatContext)
 // Under DOCS_RS the real `format_context` module is cfg'd out (it depends on the
 // docsrs-gated `avformat` wrapper); this shape-compatible stub keeps
 // `ff_sys::InputFormatContext` available so ff-decode compiles for docs.rs.
@@ -1488,7 +1488,7 @@ impl Drop for InputFormatContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for InputFormatContext {}
 
-// ── RAII owner stub (mirrors crate::format_context::OutputFormatContext) ──────
+// RAII owner stub (mirrors crate::format_context::OutputFormatContext)
 // Keeps `ff_sys::OutputFormatContext` available so the mux consumers compile for
 // docs.rs while the real `format_context` module is cfg'd out.
 
@@ -1630,7 +1630,7 @@ pub struct ChapterSpec<'a> {
     pub title: Option<&'a str>,
 }
 
-// ── Borrowed stream / params stubs (mirror crate::format_context) ─────────────
+// Borrowed stream / params stubs (mirror crate::format_context)
 
 #[derive(Clone, Copy, Debug)]
 pub struct StreamRef<'a> {
@@ -1787,7 +1787,7 @@ impl ChapterRef<'_> {
     }
 }
 
-// ── Owned Frame / Packet / Codec stubs (mirror crate::{frame,packet,codec}) ───
+// Owned Frame / Packet / Codec stubs (mirror crate::{frame,packet,codec})
 // Under DOCS_RS the real modules are cfg'd out; these shape-compatible stubs keep
 // `ff_sys::{Frame, Packet, Codec}` available for docs.rs.
 
@@ -2058,7 +2058,7 @@ impl Codec {
     }
 }
 
-// ── RAII owner stub (mirrors crate::hwdevice::HwDeviceContext) ────────────────
+// RAII owner stub (mirrors crate::hwdevice::HwDeviceContext)
 // Under DOCS_RS the real `hwdevice` module is cfg'd out; this shape-compatible
 // stub keeps `ff_sys::HwDeviceContext` available for docs.rs.
 
@@ -2082,7 +2082,7 @@ impl Drop for HwDeviceContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for HwDeviceContext {}
 
-// ── RAII owner stub (mirrors crate::scale_context::ScaleContext) ──────────────
+// RAII owner stub (mirrors crate::scale_context::ScaleContext)
 // Under DOCS_RS the real `scale_context` module is cfg'd out; this
 // shape-compatible stub keeps `ff_sys::ScaleContext` available for docs.rs.
 
@@ -2156,7 +2156,7 @@ impl Drop for ScaleContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for ScaleContext {}
 
-// ── RAII owner stub (mirrors crate::resample_context::ResampleContext) ────────
+// RAII owner stub (mirrors crate::resample_context::ResampleContext)
 // Under DOCS_RS the real `resample_context` module is cfg'd out; this
 // shape-compatible stub keeps `ff_sys::ResampleContext` available for docs.rs.
 
@@ -2228,7 +2228,7 @@ impl Drop for ResampleContext {
 // SAFETY: stub; never executed on docs.rs.
 unsafe impl Send for ResampleContext {}
 
-// ── Free-function stub (mirrors crate::buffersink) ────────────────────────────
+// Free-function stub (mirrors crate::buffersink)
 // Under DOCS_RS the real `buffersink` module is cfg'd out; these shape-compatible
 // stubs keep `ff_sys::BufferSinkOutcome` / `ff_sys::buffersink_get_frame`
 // available for docs.rs.

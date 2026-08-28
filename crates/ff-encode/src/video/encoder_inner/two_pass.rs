@@ -57,7 +57,6 @@ impl VideoEncoderInner {
     /// Must only be called from `finish` when `self.two_pass` is `true`.
     /// All FFmpeg resources must be valid at the point of the call.
     pub(super) unsafe fn run_pass2(&mut self) -> Result<(), EncodeError> {
-        // ── Step 1: Flush pass-1 encoder ────────────────────────────────────
         if self.pass1_codec_ctx.is_none() {
             return Err(EncodeError::InvalidConfig {
                 reason: "Pass-1 codec context not available".to_string(),
@@ -88,7 +87,6 @@ impl VideoEncoderInner {
             }
         })?)?;
 
-        // ── Step 2: Collect stats_out (before freeing pass 1) ────────────────
         let stats_out = self
             .pass1_codec_ctx
             .as_ref()
@@ -108,10 +106,8 @@ impl VideoEncoderInner {
         };
         log::info!("two-pass pass-1 complete stats_len={}", stats_str.len());
 
-        // ── Step 3: Free pass-1 codec context (owned context drops → frees) ──
         self.pass1_codec_ctx = None;
 
-        // ── Step 4: Set up pass-2 codec context ─────────────────────────────
         let config = self
             .two_pass_config
             .take()
@@ -122,7 +118,6 @@ impl VideoEncoderInner {
         let output_path = config.path.clone();
         self.init_pass2_codec_ctx(&config, &stats_str)?;
 
-        // ── Step 5: Open output file and write header ────────────────────────
         self.format_ctx
             .open_io(&output_path)
             .map_err(|_| EncodeError::CannotCreateFile { path: output_path })?;
@@ -140,14 +135,12 @@ impl VideoEncoderInner {
                 ),
             })?;
 
-        // ── Step 6: Re-encode all buffered frames ────────────────────────────
         let frames = std::mem::take(&mut self.buffered_frames);
         self.frame_count = 0;
         for tf in &frames {
             self.push_two_pass_frame(tf)?;
         }
 
-        // ── Step 7: Flush pass-2 encoder and write trailer ───────────────────
         if self.video_codec_ctx.is_some() {
             // SAFETY: the pass-2 codec context is valid and open. Flush tolerates EOF.
             if let Err(e) = self

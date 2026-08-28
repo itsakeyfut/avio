@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(original.data(), &[99, 2, 3]);
     }
 
-    // ── VecPool tests ─────────────────────────────────────────────────────────
+    // VecPool tests
 
     #[test]
     fn vec_pool_should_start_empty() {

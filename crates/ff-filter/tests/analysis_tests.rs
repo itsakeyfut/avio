@@ -15,7 +15,7 @@ use std::process::Command;
 use ff_filter::LoudnessMeter;
 use fixtures::{FileGuard, test_output_path};
 
-// ── Reference signal generation ───────────────────────────────────────────────
+// Reference signal generation
 
 /// Generates a 5-second 1 kHz sine wave normalised to `target_lufs` using
 /// `ffmpeg`'s `loudnorm` filter and writes it to `path` as a WAV file.
@@ -68,8 +68,6 @@ fn generate_reference_at_lufs(path: &Path, target_lufs: f32) -> Option<()> {
 
     Some(())
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn loudness_meter_should_measure_minus23_lufs_within_tolerance() {

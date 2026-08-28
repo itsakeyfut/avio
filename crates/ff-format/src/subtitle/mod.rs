@@ -250,7 +250,7 @@ impl SubtitleTrack {
     }
 }
 
-// ── SRT parser ────────────────────────────────────────────────────────────────
+// SRT parser
 
 fn parse_srt(input: &str) -> Result<SubtitleTrack, SubtitleError> {
     let mut events: Vec<SubtitleEvent> = Vec::new();
@@ -352,7 +352,7 @@ fn parse_srt_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_millis(total_ms))
 }
 
-// ── ASS/SSA parser ─────────────────────────────────────────────────────────────
+// ASS/SSA parser
 
 fn parse_ass(input: &str) -> Result<SubtitleTrack, SubtitleError> {
     let mut events: Vec<SubtitleEvent> = Vec::new();
@@ -469,7 +469,7 @@ fn parse_ass_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_millis(total_ms))
 }
 
-// ── WebVTT parser ──────────────────────────────────────────────────────────────
+// WebVTT parser
 
 fn parse_vtt(input: &str) -> Result<SubtitleTrack, SubtitleError> {
     let mut lines_iter = input.lines();
@@ -589,7 +589,7 @@ fn parse_vtt_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_millis(total_ms))
 }
 
-// ── Timestamp serialisation helpers ───────────────────────────────────────────
+// Timestamp serialisation helpers
 
 /// Format a [`Duration`] as `HH:MM:SS,mmm` (SRT / `SubRip` style).
 #[allow(clippy::cast_possible_truncation)]
@@ -627,7 +627,7 @@ fn duration_to_vtt_timestamp(d: Duration) -> String {
     format!("{h:02}:{m:02}:{s:02}.{ms:03}")
 }
 
-// ── Tag stripping helpers ──────────────────────────────────────────────────────
+// Tag stripping helpers
 
 /// Strip HTML-style tags (`<tag>`, `</tag>`) from `s`.
 fn strip_html_tags(s: &str) -> String {
@@ -687,7 +687,7 @@ fn strip_ass_tags(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // ── SRT ───────────────────────────────────────────────────────────────────
+    // SRT
 
     #[test]
     fn from_srt_should_parse_single_event() {
@@ -741,7 +741,7 @@ mod tests {
         assert!(matches!(result, Err(SubtitleError::NoEvents)));
     }
 
-    // ── ASS ───────────────────────────────────────────────────────────────────
+    // ASS
 
     const ASS_SAMPLE: &str = "\
 [Script Info]
@@ -789,7 +789,7 @@ Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0,0,0,,Second line
         assert!(matches!(result, Err(SubtitleError::NoEvents)));
     }
 
-    // ── VTT ───────────────────────────────────────────────────────────────────
+    // VTT
 
     const VTT_SAMPLE: &str = "\
 WEBVTT
@@ -839,7 +839,7 @@ Hello world
         assert!(matches!(result, Err(SubtitleError::NoEvents)));
     }
 
-    // ── from_file ─────────────────────────────────────────────────────────────
+    // from_file
 
     #[test]
     fn from_file_should_return_unsupported_for_unknown_extension() {
@@ -850,7 +850,7 @@ Hello world
         ));
     }
 
-    // ── timestamp helpers ─────────────────────────────────────────────────────
+    // timestamp helpers
 
     #[test]
     fn parse_srt_timestamp_should_parse_millisecond_precision() {
@@ -885,7 +885,7 @@ Hello world
         assert_eq!(ts, Duration::from_millis(expected_ms));
     }
 
-    // ── tag stripping helpers ─────────────────────────────────────────────────
+    // tag stripping helpers
 
     #[test]
     fn strip_html_tags_should_remove_italic_bold_underline() {
@@ -911,7 +911,7 @@ Hello world
         assert_eq!(strip_ass_tags("line1\\nline2"), "line1\nline2");
     }
 
-    // ── timestamp serialisation helpers ───────────────────────────────────────
+    // timestamp serialisation helpers
 
     #[test]
     fn duration_to_srt_timestamp_should_format_correctly() {
@@ -931,7 +931,7 @@ Hello world
         assert_eq!(duration_to_vtt_timestamp(d), "01:02:03.456");
     }
 
-    // ── to_srt ────────────────────────────────────────────────────────────────
+    // to_srt
 
     #[test]
     fn to_srt_should_produce_1_based_sequential_indices() {
@@ -993,7 +993,7 @@ Hello world
         }
     }
 
-    // ── to_ass ────────────────────────────────────────────────────────────────
+    // to_ass
 
     #[test]
     fn to_ass_should_contain_required_sections() {
@@ -1032,7 +1032,7 @@ Hello world
         }
     }
 
-    // ── to_vtt ────────────────────────────────────────────────────────────────
+    // to_vtt
 
     #[test]
     fn to_vtt_should_start_with_webvtt_header() {
@@ -1067,7 +1067,7 @@ Hello world
         }
     }
 
-    // ── write_to_file ─────────────────────────────────────────────────────────
+    // write_to_file
 
     #[test]
     fn write_to_file_should_return_unsupported_for_unknown_extension() {
@@ -1082,7 +1082,7 @@ Hello world
         ));
     }
 
-    // ── helpers ───────────────────────────────────────────────────────────────
+    // helpers
 
     fn make_event(index: usize, start_ms: u64, end_ms: u64, text: &str) -> SubtitleEvent {
         SubtitleEvent {

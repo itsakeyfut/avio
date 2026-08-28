@@ -12,7 +12,7 @@ use super::player::PlayerCommand;
 use crate::audio::AudioMixer;
 use crate::event::PlayerEvent;
 
-// ── PlayerHandle ─────────────────────────────────────────────────────────────
+// PlayerHandle
 
 /// Shared, cloneable handle to a running [`PlayerRunner`](super::player_runner::PlayerRunner).
 ///

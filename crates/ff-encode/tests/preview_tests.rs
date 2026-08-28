@@ -24,8 +24,6 @@ fn read_file_prefix(path: &std::path::Path, n: usize) -> std::io::Result<Vec<u8>
     Ok(buf)
 }
 
-// ── Functional tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn sprite_sheet_should_produce_correct_pixel_dimensions() {
     let input = test_video_path();
@@ -56,7 +54,7 @@ fn sprite_sheet_should_produce_correct_pixel_dimensions() {
         }
     }
 
-    // ── PNG magic bytes ──────────────────────────────────────────────────────
+    // PNG magic bytes
     // The first 4 bytes of every PNG file are the magic signature \x89PNG.
     let header = read_file_prefix(&output, 24).expect("output file must be readable");
 
@@ -66,7 +64,7 @@ fn sprite_sheet_should_produce_correct_pixel_dimensions() {
         "output file does not begin with PNG magic bytes"
     );
 
-    // ── IHDR dimensions ──────────────────────────────────────────────────────
+    // IHDR dimensions
     // PNG layout: [8-byte sig][4-byte len][4-byte "IHDR"][4-byte width][4-byte height]…
     // Width is at byte offset 16, height at byte offset 20, both big-endian u32.
     let width = u32::from_be_bytes(header[16..20].try_into().unwrap());

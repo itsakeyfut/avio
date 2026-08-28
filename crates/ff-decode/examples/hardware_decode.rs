@@ -46,7 +46,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Parse HardwareAccel variant ───────────────────────────────────────────
+    // Parse HardwareAccel variant
     //
     // Each variant maps to a specific FFmpeg hardware decoder:
     //   Auto         — probe and use the best available backend
@@ -87,7 +87,7 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&input);
 
-    // ── Open decoder with hardware acceleration ───────────────────────────────
+    // Open decoder with hardware acceleration
     //
     // hardware_accel() configures the decode backend. If the requested backend
     // is unavailable, build() returns a DecodeError — skip gracefully.
@@ -111,7 +111,7 @@ fn main() {
         decoder.stream_info().codec_name(),
     );
 
-    // ── SeekMode::Backward ────────────────────────────────────────────────────
+    // SeekMode::Backward
     //
     // Backward seek moves to the nearest keyframe at or before the target.
     // It is the mirror of Keyframe (which seeks forward to the next keyframe)
@@ -136,7 +136,7 @@ fn main() {
         }
     }
 
-    // ── Decode a few frames ───────────────────────────────────────────────────
+    // Decode a few frames
 
     let mut count = 0u32;
     let limit = 30;

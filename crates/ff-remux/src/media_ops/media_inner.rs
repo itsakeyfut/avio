@@ -21,18 +21,15 @@ pub(crate) fn run_audio_replacement(
     audio_input: &Path,
     output: &Path,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open video input (owned) ──────────────────────────────────────
     // All contexts are owned; every early return drops them (closing IO /
     // freeing) with no manual teardown on any path.
     let mut vid_ctx = ff_sys::InputFormatContext::open(video_input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 2: find stream info for video input ──────────────────────────────
     vid_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 3: locate the first video stream ─────────────────────────────────
     let Some(video_stream_idx) = vid_ctx
         .streams()
         .find(|s| s.codecpar().codec_type() == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO)
@@ -46,16 +43,13 @@ pub(crate) fn run_audio_replacement(
         });
     };
 
-    // ── Step 4: open audio input (owned) ──────────────────────────────────────
     let mut aud_ctx = ff_sys::InputFormatContext::open(audio_input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 5: find stream info for audio input ──────────────────────────────
     aud_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 6: locate the first audio stream ─────────────────────────────────
     let Some(audio_stream_idx) = aud_ctx
         .streams()
         .find(|s| s.codecpar().codec_type() == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO)
@@ -69,11 +63,9 @@ pub(crate) fn run_audio_replacement(
         });
     };
 
-    // ── Step 7: allocate output context (owned) ──────────────────────────────
     let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 8: copy video stream parameters to output ────────────────────────
     // copy_stream_params deep-copies the parameters and clears codec_tag so the
     // muxer assigns the correct value for the container. The input time base is
     // stable across write_header, so capture it here.
@@ -94,7 +86,6 @@ pub(crate) fn run_audio_replacement(
         vid_in.time_base()
     };
 
-    // ── Step 9: copy audio stream parameters to output ────────────────────────
     let aud_out_idx = out_ctx.new_stream(None).map_err(|_| RemuxError::Ffmpeg {
         code: 0,
         message: "avformat_new_stream failed for audio".to_string(),
@@ -112,12 +103,10 @@ pub(crate) fn run_audio_replacement(
         aud_in.time_base()
     };
 
-    // ── Step 10: open output file ─────────────────────────────────────────────
     out_ctx
         .open_io(output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 11: write header ─────────────────────────────────────────────────
     out_ctx
         .write_header()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
@@ -132,7 +121,6 @@ pub(crate) fn run_audio_replacement(
          video_stream_idx={video_stream_idx} audio_stream_idx={audio_stream_idx}"
     );
 
-    // ── Step 12: allocate packet ──────────────────────────────────────────────
     // The owned packet frees itself exactly once on drop at scope end.
     let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
@@ -142,7 +130,6 @@ pub(crate) fn run_audio_replacement(
         });
     };
 
-    // ── Step 13: interleaved packet copy loop ─────────────────────────────────
     // Alternate between video and audio inputs; use av_interleaved_write_frame
     // so the muxer buffers and flushes packets in the correct timestamp order.
     let mut loop_err: Option<RemuxError> = None;
@@ -211,7 +198,6 @@ pub(crate) fn run_audio_replacement(
         }
     }
 
-    // ── Step 14: write trailer ────────────────────────────────────────────────
     let _ = out_ctx.write_trailer();
 
     // The owned `vid_ctx` / `aud_ctx` / `out_ctx` close their IO and free
@@ -224,7 +210,7 @@ pub(crate) fn run_audio_replacement(
     }
 }
 
-// ── Audio extraction ──────────────────────────────────────────────────────────
+// Audio extraction
 
 /// Demux the audio track at `stream_index` (or the first audio stream when
 /// `stream_index` is `None`) from `input` and write it to `output`.
@@ -235,17 +221,14 @@ pub(crate) fn run_audio_extraction(
     output: &Path,
     requested_idx: Option<usize>,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open input (owned) ────────────────────────────────────────────
     // The input and output contexts are owned; every early return drops them.
     let mut in_ctx = ff_sys::InputFormatContext::open(input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 2: find stream info ──────────────────────────────────────────────
     in_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 3: locate the audio stream ──────────────────────────────────────
     let nb_streams = in_ctx.nb_streams() as usize;
     let audio_stream_idx = if let Some(idx) = requested_idx {
         // Validate that the requested index is actually an audio stream.
@@ -277,11 +260,9 @@ pub(crate) fn run_audio_extraction(
         idx
     };
 
-    // ── Step 4: allocate output context (owned) ──────────────────────────────
     let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 5: create output stream and copy parameters ─────────────────────
     // copy_stream_params deep-copies the parameters and clears codec_tag so the
     // muxer assigns the correct value for the container. The input time base is
     // stable across write_header, so capture it here.
@@ -302,12 +283,10 @@ pub(crate) fn run_audio_extraction(
         in_stream.time_base()
     };
 
-    // ── Step 6: open output file ──────────────────────────────────────────────
     out_ctx
         .open_io(output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 7: write header ──────────────────────────────────────────────────
     // A non-zero return here usually means the codec is incompatible with the
     // chosen output container. Wrap it with a clear message so callers know what
     // went wrong.
@@ -330,7 +309,6 @@ pub(crate) fn run_audio_extraction(
         output.display()
     );
 
-    // ── Step 8: allocate packet ───────────────────────────────────────────────
     // The owned packet frees itself exactly once on drop at scope end.
     let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
@@ -340,7 +318,6 @@ pub(crate) fn run_audio_extraction(
         });
     };
 
-    // ── Step 9: packet copy loop (audio stream only) ──────────────────────────
     let mut loop_err: Option<RemuxError> = None;
 
     'read: loop {
@@ -372,7 +349,6 @@ pub(crate) fn run_audio_extraction(
         }
     }
 
-    // ── Step 10: write trailer ────────────────────────────────────────────────
     let _ = out_ctx.write_trailer();
 
     // The owned `in_ctx` / `out_ctx` close their IO and free themselves when they
@@ -388,7 +364,7 @@ pub(crate) fn run_audio_extraction(
     }
 }
 
-// ── Audio addition ────────────────────────────────────────────────────────────
+// Audio addition
 
 /// Mux `audio_input` into `video_input`, writing both streams to `output`.
 ///
@@ -401,17 +377,14 @@ pub(crate) fn run_audio_addition(
     output: &Path,
     loop_audio: bool,
 ) -> Result<(), RemuxError> {
-    // ── Step 1: open video input (owned) ──────────────────────────────────────
     // All contexts are owned; every early return drops them.
     let mut vid_ctx = ff_sys::InputFormatContext::open(video_input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 2: find stream info for video input ──────────────────────────────
     vid_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 3: locate the first video stream ─────────────────────────────────
     let Some(video_stream_idx) = vid_ctx
         .streams()
         .find(|s| s.codecpar().codec_type() == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO)
@@ -425,16 +398,13 @@ pub(crate) fn run_audio_addition(
         });
     };
 
-    // ── Step 4: open audio input (owned) ──────────────────────────────────────
     let mut aud_ctx = ff_sys::InputFormatContext::open(audio_input)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 5: find stream info for audio input ──────────────────────────────
     aud_ctx
         .find_stream_info()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 6: locate the first audio stream ─────────────────────────────────
     let Some(audio_stream_idx) = aud_ctx
         .streams()
         .find(|s| s.codecpar().codec_type() == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO)
@@ -448,7 +418,6 @@ pub(crate) fn run_audio_addition(
         });
     };
 
-    // ── Step 7: decide whether to loop the audio ──────────────────────────────
     // Loop only when requested AND audio duration < video duration.
     // Durations are in AV_TIME_BASE (microseconds); a value ≤ 0 means unknown.
     let vid_duration_us = vid_ctx.duration();
@@ -458,11 +427,9 @@ pub(crate) fn run_audio_addition(
         && aud_duration_us > 0
         && aud_duration_us < vid_duration_us;
 
-    // ── Step 8: allocate output context (owned) ──────────────────────────────
     let mut out_ctx = ff_sys::OutputFormatContext::new(None, output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 9: copy video stream parameters ─────────────────────────────────
     // copy_stream_params deep-copies the parameters and clears codec_tag so the
     // muxer assigns the correct value for the container. The input time base is
     // stable across write_header, so capture it here.
@@ -483,7 +450,6 @@ pub(crate) fn run_audio_addition(
         vid_in.time_base()
     };
 
-    // ── Step 10: copy audio stream parameters ────────────────────────────────
     let aud_out_idx = out_ctx.new_stream(None).map_err(|_| RemuxError::Ffmpeg {
         code: 0,
         message: "avformat_new_stream failed for audio".to_string(),
@@ -501,12 +467,10 @@ pub(crate) fn run_audio_addition(
         aud_in.time_base()
     };
 
-    // ── Step 11: open output file ─────────────────────────────────────────────
     out_ctx
         .open_io(output)
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
 
-    // ── Step 12: write header ─────────────────────────────────────────────────
     out_ctx
         .write_header()
         .map_err(|e| RemuxError::from_ffmpeg_error(e.code()))?;
@@ -527,7 +491,6 @@ pub(crate) fn run_audio_addition(
          video_stream_idx={video_stream_idx} audio_stream_idx={audio_stream_idx}"
     );
 
-    // ── Step 13: allocate packet ──────────────────────────────────────────────
     // The owned packet frees itself exactly once on drop at scope end.
     let Ok(mut pkt) = ff_sys::Packet::new() else {
         let _ = out_ctx.write_trailer();
@@ -537,7 +500,6 @@ pub(crate) fn run_audio_addition(
         });
     };
 
-    // ── Step 14: interleaved packet copy loop ─────────────────────────────────
     // Terminate when video is exhausted.  Audio terminates naturally (non-loop)
     // or is re-seeked with an advancing PTS offset (loop).
     let mut add_loop_err: Option<RemuxError> = None;
@@ -547,7 +509,7 @@ pub(crate) fn run_audio_addition(
     let mut aud_pts_offset_in_tb: i64 = 0;
 
     'copy: loop {
-        // ── video packet ──────────────────────────────────────────────────
+        // video packet
         if !vid_eof {
             match vid_ctx.read_frame(&mut pkt) {
                 Err(e) if e.is_eof() => {
@@ -579,7 +541,7 @@ pub(crate) fn run_audio_addition(
             break 'copy;
         }
 
-        // ── audio packet ──────────────────────────────────────────────────
+        // audio packet
         if !aud_eof {
             match aud_ctx.read_frame(&mut pkt) {
                 Err(e) if e.is_eof() => {
@@ -628,7 +590,6 @@ pub(crate) fn run_audio_addition(
         }
     }
 
-    // ── Step 15: write trailer ────────────────────────────────────────────────
     let _ = out_ctx.write_trailer();
 
     // The owned `vid_ctx` / `aud_ctx` / `out_ctx` close their IO and free

@@ -5,7 +5,7 @@ use super::*;
 use crate::animation::{AnimationTrack, Keyframe};
 use ff_format::{ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 
-// ── Tuple-track projection helper ─────────────────────────────────────────────
+// Tuple-track projection helper
 
 /// Projects each component of an `AnimatedValue<(f64, f64, f64)>` track into
 /// three separate `f64` `AnimationEntry` items and appends them to `animations`.
@@ -1024,7 +1024,7 @@ mod tests {
         );
     }
 
-    // ── eq_animated tests ─────────────────────────────────────────────────────
+    // eq_animated tests
 
     #[test]
     fn eq_animated_with_valid_static_values_should_succeed() {
@@ -1212,7 +1212,7 @@ mod tests {
         assert_eq!(graph.pending_animations[0].param, "brightness");
     }
 
-    // ── color_correct / color_correct_animated tests ──────────────────────────
+    // color_correct / color_correct_animated tests
 
     #[test]
     fn color_correct_static_should_build_successfully() {

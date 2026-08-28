@@ -30,7 +30,7 @@ use super::state::{
     db_to_linear,
 };
 
-// ── SceneRunner ────────────────────────────────────────────────────────────
+// SceneRunner
 
 /// Exclusive owner of the timeline decode pipeline.
 ///
@@ -293,7 +293,7 @@ impl SceneRunner {
         self.clock.reset(Duration::ZERO);
 
         loop {
-            // ── Drain commands ────────────────────────────────────────────────
+            // Drain commands
             let mut pending_seek: Option<Duration> = None;
             while let Ok(cmd) = self.cmd_rx.try_recv() {
                 match cmd {
@@ -373,7 +373,7 @@ impl SceneRunner {
                 }
             }
 
-            // ── Apply pending seek ────────────────────────────────────────────
+            // Apply pending seek
             let had_seek = pending_seek.is_some();
             if let Some(target) = pending_seek {
                 self.seek_timeline(target)?;
@@ -423,7 +423,7 @@ impl SceneRunner {
                 }
             }
 
-            // ── Error events from active clip ─────────────────────────────────
+            // Error events from active clip
             {
                 let active = self.active;
                 while let Ok(msg) = self.clips[active].decode_buf.error_events().try_recv() {
@@ -437,7 +437,7 @@ impl SceneRunner {
                 }
             }
 
-            // ── Stopped / paused ──────────────────────────────────────────────
+            // Stopped / paused
             if self.stopped.load(Ordering::Acquire) {
                 break;
             }
@@ -446,7 +446,7 @@ impl SceneRunner {
                 continue;
             }
 
-            // ── Reverse playback path ─────────────────────────────────────────
+            // Reverse playback path
             if self.rate < 0.0 {
                 let current = Duration::from_micros(self.current_pts.load(Ordering::Relaxed));
                 let step = Duration::from_secs_f64(self.rate.abs() / fps.max(f64::MIN_POSITIVE));
@@ -520,7 +520,7 @@ impl SceneRunner {
                 continue;
             }
 
-            // ── Pop frame from active clip ─────────────────────────────────────
+            // Pop frame from active clip
             let active = self.active;
             let pop_result = self.clips[active].decode_buf.pop_frame();
 
@@ -626,7 +626,7 @@ impl SceneRunner {
 
                     let timeline_pts = clip_tl_start + tl_elapsed;
 
-                    // ── Manage audio-only decode threads ──────────────────────
+                    // Manage audio-only decode threads
                     for at in &mut self.audio_only_tracks {
                         let should_run =
                             timeline_pts >= at.timeline_start && timeline_pts < at.timeline_end;
@@ -663,7 +663,7 @@ impl SceneRunner {
                     );
                     self.resume_pts = timeline_pts;
 
-                    // ── Transition zone entry check ────────────────────────────
+                    // Transition zone entry check
                     if self.transition.is_none() && active + 1 < self.clips.len() {
                         let next = &self.clips[active + 1];
                         if next.xfade_dur > Duration::ZERO && timeline_pts >= next.timeline_start {
@@ -687,7 +687,7 @@ impl SceneRunner {
                         }
                     }
 
-                    // ── A/V sync (system clock) ───────────────────────────────
+                    // A/V sync (system clock)
                     {
                         let clock_pts = self.clock.current_pts();
                         let diff = timeline_pts.as_secs_f64() - clock_pts.as_secs_f64();
@@ -866,7 +866,7 @@ impl SceneRunner {
                         self.restart_audio_at(active, local);
                     }
 
-                    // ── Present frame ─────────────────────────────────────────
+                    // Present frame
                     let w = frame.width();
                     let h = frame.height();
                     self.last_frame_w = w;

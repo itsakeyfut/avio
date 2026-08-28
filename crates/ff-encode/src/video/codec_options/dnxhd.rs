@@ -6,7 +6,7 @@
 /// and require a fixed bitrate. `DNxHR` variants (`Dnxhr*`) work at any resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DnxhdVariant {
-    // ── DNxHD (legacy fixed-bitrate, 1920×1080 or 1280×720 only) ─────────────
+    // DNxHD (legacy fixed-bitrate, 1920×1080 or 1280×720 only)
     /// 1080i/p 115 Mbps, 8-bit yuv422p.
     Dnxhd115,
     /// 1080i/p 145 Mbps, 8-bit yuv422p.
@@ -15,7 +15,7 @@ pub enum DnxhdVariant {
     Dnxhd220,
     /// 1080p 220 Mbps, 10-bit yuv422p10le.
     Dnxhd220x,
-    // ── DNxHR (resolution-agnostic) ───────────────────────────────────────────
+    // DNxHR (resolution-agnostic)
     /// Low Bandwidth, 8-bit yuv422p.
     DnxhrLb,
     /// Standard Quality, 8-bit yuv422p (default).

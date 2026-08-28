@@ -47,7 +47,7 @@
 //! per-clip colour correction and transitions, a real-time preview that matches the
 //! exported result, and scene / silence / loudness analysis.
 
-// ── Always-available types from ff-format ────────────────────────────────────
+// Always-available types from ff-format
 //
 // ff-format is an unconditional dependency, so these types are always present
 // regardless of which features are enabled. Re-exporting them here avoids the
@@ -65,14 +65,14 @@ pub use ff_format::{
     VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
-// ── probe (media metadata) ────────────────────────────────────────────────────
+// probe (media metadata)
 // `open` inspects a file before building a Timeline; kept as an engine convenience.
 pub use ff_probe::{ProbeError, open};
 
 // Errors the engine's `TimelineError` wraps by `#[from]`.
 pub use ff_decode::DecodeError;
 
-// ── analysis (scene / silence / loudness / scopes) ────────────────────────────
+// analysis (scene / silence / loudness / scopes)
 // Media analysis feeds editing decisions; kept as an engine convenience.
 pub use ff_analysis::{
     AnalysisError, BlackFrameDetector, BpmResult, FrameHistogram, Histogram, HistogramExtractor,
@@ -83,7 +83,7 @@ pub use ff_analysis::{
 // `BitrateMode` configures `EncoderConfig`; `EncodeError` is wrapped by `TimelineError`.
 pub use ff_encode::{BitrateMode, EncodeError};
 
-// ── the ff-filter authoring set the model speaks ──────────────────────────────
+// the ff-filter authoring set the model speaks
 // Clip fields (BlendMode / CompositeOp / XfadeTransition), FilterStep variant
 // payloads (ScaleAlgorithm / ToneMap / EqBand / DrawTextOptions / YadifMode / Rgb /
 // AnimatedValue), animation authoring (AnimationTrack / Keyframe / Easing),
@@ -94,7 +94,7 @@ pub use ff_filter::{
     ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
-// ── editing model (unconditional) ─────────────────────────────────────────────
+// editing model (unconditional)
 //
 // The editing model (`Timeline` / `Clip` / `Editor` / `render` / `TimelineError`) is
 // defined in `avio` itself — the engine owns the model, always compiled
@@ -123,7 +123,7 @@ pub use validate::TimelineIssue;
 // `Timeline::render` takes an `EncoderConfig` and reports `Progress`.
 pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 
-// ── real-time preview (opt-in `preview`) ──────────────────────────────────────
+// real-time preview (opt-in `preview`)
 //
 // `TimelinePlayer` is avio's engine preview entry: it derives a `Scene` from a
 // `Timeline` and hands it to `ff-preview`'s runner. The `Scene` value types and the

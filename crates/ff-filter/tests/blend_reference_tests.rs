@@ -34,7 +34,7 @@ use image::RgbImage;
 use ff_filter::{BlendMode, FilterGraph, FilterGraphBuilder};
 use ff_format::{AlphaMode, PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
-// ── Synthetic input image generators ─────────────────────────────────────────
+// Synthetic input image generators
 
 /// 64×64 horizontal red gradient: pixel (x, y) = Rgb([x*4, 128, 64]).
 fn generate_bottom_image() -> RgbImage {
@@ -46,7 +46,7 @@ fn generate_top_image() -> RgbImage {
     RgbImage::from_fn(64, 64, |_x, y| image::Rgb([64u8, 128u8, (y * 4) as u8]))
 }
 
-// ── Frame conversion ──────────────────────────────────────────────────────────
+// Frame conversion
 
 /// Convert an RGB image to a Yuv420p `VideoFrame` using BT.601 coefficients.
 ///
@@ -162,7 +162,7 @@ fn frame_to_rgb_image(frame: &VideoFrame) -> Option<RgbImage> {
     None
 }
 
-// ── Blend helper ──────────────────────────────────────────────────────────────
+// Blend helper
 
 /// Apply `mode` blend to `bottom` (slot 0) and `top_frame` (slot 1).
 ///
@@ -179,7 +179,7 @@ fn apply_blend(bottom: &VideoFrame, top_frame: &VideoFrame, mode: BlendMode) -> 
     graph.pull_video().ok().flatten()
 }
 
-// ── Comparison helper ─────────────────────────────────────────────────────────
+// Comparison helper
 
 /// Assert that every pixel channel in `actual` differs from `expected` by at
 /// most `tolerance`.
@@ -208,7 +208,7 @@ fn assert_within_tolerance(actual: &RgbImage, expected: &RgbImage, tolerance: u8
     }
 }
 
-// ── Main test ─────────────────────────────────────────────────────────────────
+// Main test
 
 /// The 14 standard photographic blend modes verified against committed reference PNGs.
 ///
@@ -229,7 +229,7 @@ fn blend_mode_reference_images_should_match_within_tolerance() {
     let expected_dir = fixture_dir.join("expected");
     let generate = std::env::var("BLEND_GENERATE_REFS").is_ok();
 
-    // ── Load or generate input fixtures ───────────────────────────────────────
+    // Load or generate input fixtures
     let bottom_path = fixture_dir.join("bottom.png");
     let top_path = fixture_dir.join("top.png");
 
@@ -270,7 +270,7 @@ fn blend_mode_reference_images_should_match_within_tolerance() {
         std::fs::create_dir_all(&expected_dir).unwrap();
     }
 
-    // ── Blend mode table ──────────────────────────────────────────────────────
+    // Blend mode table
     let modes: &[(&str, BlendMode)] = &[
         ("normal", BlendMode::Normal),
         ("multiply", BlendMode::Multiply),
@@ -288,7 +288,7 @@ fn blend_mode_reference_images_should_match_within_tolerance() {
         ("subtract", BlendMode::Subtract),
     ];
 
-    // ── Per-mode generate or compare ──────────────────────────────────────────
+    // Per-mode generate or compare
     let mut failures = 0usize;
     for &(name, mode) in modes {
         let out_frame = match apply_blend(&bottom_frame, &top_frame, mode) {

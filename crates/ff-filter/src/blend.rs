@@ -1,6 +1,6 @@
 //! Blend mode definitions for video compositing operations.
 
-// ── BlendMode ────────────────────────────────────────────────────────────────
+// BlendMode
 
 /// Specifies how two video layers are combined during compositing.
 ///
@@ -19,7 +19,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlendMode {
-    // ── Standard modes ────────────────────────────────────────────────────
+    // Standard modes
     /// Standard alpha-over composite (`top * opacity + bottom * (1 − opacity)`).
     /// Built via `overlay=format=auto:shortest=1` (token: `normal`).
     Normal,
@@ -50,7 +50,7 @@ pub enum BlendMode {
     /// Linear subtraction, clamped. `blend all_mode=subtract`.
     Subtract,
 
-    // ── Additional FFmpeg blend modes ─────────────────────────────────────
+    // Additional FFmpeg blend modes
     /// Bitwise AND of the two pixels. `blend all_mode=and`.
     And,
     /// Arithmetic mean of the two pixels. `blend all_mode=average`.

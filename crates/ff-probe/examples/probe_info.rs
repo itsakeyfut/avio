@@ -70,7 +70,7 @@ fn main() {
         }
     };
 
-    // ── File header ──────────────────────────────────────────────────────────
+    // File header
 
     let filename = std::path::Path::new(&input_path)
         .file_name()
@@ -90,7 +90,7 @@ fn main() {
         println!("Title:    {title}");
     }
 
-    // ── Video streams ────────────────────────────────────────────────────────
+    // Video streams
 
     let video_streams = info.video_streams();
     println!("\nVideo streams ({}):", video_streams.len());
@@ -139,7 +139,7 @@ fn main() {
         }
     }
 
-    // ── Audio streams ────────────────────────────────────────────────────────
+    // Audio streams
 
     let audio_streams = info.audio_streams();
     println!("\nAudio streams ({}):", audio_streams.len());
@@ -165,7 +165,7 @@ fn main() {
         }
     }
 
-    // ── Subtitle streams ─────────────────────────────────────────────────────
+    // Subtitle streams
 
     let subtitle_streams = info.subtitle_streams();
     println!("\nSubtitle streams ({}):", subtitle_streams.len());
@@ -194,7 +194,7 @@ fn main() {
         }
     }
 
-    // ── Chapters ─────────────────────────────────────────────────────────────
+    // Chapters
 
     if info.has_chapters() {
         println!("\nChapters:");

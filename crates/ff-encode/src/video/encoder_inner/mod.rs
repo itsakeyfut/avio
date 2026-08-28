@@ -287,7 +287,7 @@ impl VideoEncoderInner {
     pub(super) fn push_video_frame(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
         // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
         unsafe {
-            // ── Two-pass path ────────────────────────────────────────────────────
+            // Two-pass path
             if self.two_pass {
                 // Read the pass-1 codec's target format up front (Copy scalars) so
                 // the `&mut self` convert call does not alias the codec context.
@@ -367,7 +367,7 @@ impl VideoEncoderInner {
                 return Ok(());
             }
 
-            // ── Single-pass path ─────────────────────────────────────────────────
+            // Single-pass path
             // Read the codec's target format up front (Copy scalars) so the
             // `&mut self` convert call does not alias the codec context.
             let (target_fmt, target_width, target_height) = {
@@ -450,7 +450,7 @@ impl VideoEncoderInner {
             })?;
             self.convert_audio_frame(frame, &mut av_frame)?;
 
-            // ── Variable frame-size path (PCM, Vorbis …) ────────────────────
+            // Variable frame-size path (PCM, Vorbis …)
             if frame_size <= 0 || self.audio_fifo.is_none() {
                 av_frame.set_pts(self.audio_sample_count as i64);
                 self.audio_codec_ctx
@@ -471,7 +471,7 @@ impl VideoEncoderInner {
                 return Ok(());
             }
 
-            // ── Fixed frame-size path (AAC, FLAC, ALAC …) ───────────────────
+            // Fixed frame-size path (AAC, FLAC, ALAC …)
             let fifo = self.audio_fifo.ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Audio FIFO not initialized for fixed-frame-size codec".to_string(),
             })?;

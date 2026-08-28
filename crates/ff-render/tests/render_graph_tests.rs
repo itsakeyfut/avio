@@ -10,7 +10,7 @@ use ff_render::{
     TransformNode, YuvFormat, YuvUploadNode,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 fn solid_rgba(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
     let n = (w * h * 4) as usize;
@@ -24,7 +24,7 @@ fn solid_rgba(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
     v
 }
 
-// ── ColorGradeNode ────────────────────────────────────────────────────────────
+// ColorGradeNode
 
 #[test]
 fn color_grade_node_brightness_boost_should_increase_rgb_channels() {
@@ -66,7 +66,7 @@ fn color_grade_node_saturation_zero_should_produce_equal_rgb_channels() {
     );
 }
 
-// ── ScaleNode ─────────────────────────────────────────────────────────────────
+// ScaleNode
 
 #[test]
 fn scale_node_cpu_path_is_passthrough_and_returns_input_unchanged() {
@@ -78,7 +78,7 @@ fn scale_node_cpu_path_is_passthrough_and_returns_input_unchanged() {
     assert_eq!(out, rgba, "ScaleNode CPU path must be a passthrough");
 }
 
-// ── OverlayNode ───────────────────────────────────────────────────────────────
+// OverlayNode
 
 #[test]
 fn overlay_node_fully_opaque_overlay_should_replace_base_color() {
@@ -94,7 +94,7 @@ fn overlay_node_fully_opaque_overlay_should_replace_base_color() {
     );
 }
 
-// ── CrossfadeNode ─────────────────────────────────────────────────────────────
+// CrossfadeNode
 
 #[test]
 fn crossfade_node_half_factor_should_average_from_and_to_colors() {
@@ -110,7 +110,7 @@ fn crossfade_node_half_factor_should_average_from_and_to_colors() {
     );
 }
 
-// ── BlendModeNode ─────────────────────────────────────────────────────────────
+// BlendModeNode
 
 #[test]
 fn blend_mode_multiply_node_should_darken_base() {
@@ -152,7 +152,7 @@ fn blend_mode_normal_at_zero_opacity_should_leave_base_unchanged() {
     assert_eq!(out[2], 50, "opacity=0.0 must leave B unchanged");
 }
 
-// ── TransformNode ─────────────────────────────────────────────────────────────
+// TransformNode
 
 #[test]
 fn transform_node_identity_cpu_should_return_input_unchanged() {
@@ -163,7 +163,7 @@ fn transform_node_identity_cpu_should_return_input_unchanged() {
     assert_eq!(out, rgba, "identity transform must return input unchanged");
 }
 
-// ── ChromaKeyNode ─────────────────────────────────────────────────────────────
+// ChromaKeyNode
 
 #[test]
 fn chroma_key_node_pure_green_pixels_should_become_transparent() {
@@ -190,7 +190,7 @@ fn chroma_key_node_non_key_pixel_should_remain_opaque() {
     );
 }
 
-// ── ShapeMaskNode ─────────────────────────────────────────────────────────────
+// ShapeMaskNode
 
 #[test]
 fn shape_mask_node_opaque_mask_should_preserve_base_alpha() {
@@ -212,7 +212,7 @@ fn shape_mask_node_transparent_mask_should_zero_alpha() {
     assert_eq!(out[3], 0, "fully transparent mask must produce alpha=0");
 }
 
-// ── LumaMaskNode ──────────────────────────────────────────────────────────────
+// LumaMaskNode
 
 #[test]
 fn luma_mask_node_white_mask_should_preserve_alpha() {
@@ -234,7 +234,7 @@ fn luma_mask_node_black_mask_should_zero_alpha() {
     assert_eq!(out[3], 0, "black luma mask must produce alpha=0");
 }
 
-// ── AlphaMatteNode ────────────────────────────────────────────────────────────
+// AlphaMatteNode
 
 #[test]
 fn alpha_matte_node_transparent_fg_should_reveal_background() {
@@ -270,7 +270,7 @@ fn alpha_matte_node_opaque_fg_should_show_foreground() {
     );
 }
 
-// ── YuvUploadNode ─────────────────────────────────────────────────────────────
+// YuvUploadNode
 
 #[test]
 fn yuv_upload_node_cpu_black_frame_should_produce_near_black_rgba() {
@@ -323,7 +323,7 @@ fn yuv_upload_node_cpu_white_frame_should_produce_near_white_rgba() {
     );
 }
 
-// ── Multi-node pipeline ───────────────────────────────────────────────────────
+// Multi-node pipeline
 
 #[test]
 fn multi_node_pipeline_brightness_then_multiply_should_accumulate() {

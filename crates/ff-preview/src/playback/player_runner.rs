@@ -25,7 +25,7 @@ use crate::event::PlayerEvent;
 const AUDIO_MAX_BUF: usize = 96_000;
 const AUDIO_STALL_FRAMES: u32 = 5;
 
-// ── PlayerRunner ─────────────────────────────────────────────────────────────
+// PlayerRunner
 
 /// Exclusive owner of the decode pipeline. Move to a background thread and
 /// call [`run`](Self::run).
@@ -190,7 +190,7 @@ impl PlayerRunner {
         let mut audio_stall_frames: u32 = 0;
 
         loop {
-            // ── Drain commands ────────────────────────────────────────────────
+            // Drain commands
             let mut pending_seek: Option<Duration> = None;
             while let Ok(cmd) = self.cmd_rx.try_recv() {
                 match cmd {
@@ -271,7 +271,7 @@ impl PlayerRunner {
                 }
             }
 
-            // ── Apply pending seek ────────────────────────────────────────────
+            // Apply pending seek
             let had_seek = pending_seek.is_some();
             if let Some(pts) = pending_seek {
                 // Invalidate the frame cache when seeking outside its range.
@@ -332,7 +332,7 @@ impl PlayerRunner {
                 continue;
             }
 
-            // ── Reverse playback path ─────────────────────────────────────────
+            // Reverse playback path
             if self.rate < 0.0 {
                 if let Some(buf) = self.decode_buf.as_mut() {
                     let current = Duration::from_micros(self.current_pts.load(Ordering::Relaxed));
@@ -375,7 +375,7 @@ impl PlayerRunner {
                 continue;
             }
 
-            // ── Audio-only path ───────────────────────────────────────────────
+            // Audio-only path
             if self.decode_buf.is_none() {
                 let poll_secs =
                     (10.0_f64 / self.rate.max(f64::MIN_POSITIVE)).clamp(1.0, 50.0) / 1_000.0;
@@ -399,7 +399,7 @@ impl PlayerRunner {
                 continue;
             }
 
-            // ── Frame cache hit ───────────────────────────────────────────────
+            // Frame cache hit
             let current = self.clock.current_pts();
             let cache_hit = self
                 .frame_cache
@@ -418,7 +418,7 @@ impl PlayerRunner {
                 continue;
             }
 
-            // ── Video decode path ─────────────────────────────────────────────
+            // Video decode path
             let pop_result = if let Some(buf) = self.decode_buf.as_mut() {
                 buf.pop_frame()
             } else {
@@ -621,7 +621,7 @@ impl Drop for PlayerRunner {
     }
 }
 
-// ── spawn_audio_thread ────────────────────────────────────────────────────────
+// spawn_audio_thread
 
 pub(crate) fn spawn_audio_thread(
     path: PathBuf,
@@ -690,8 +690,6 @@ pub(crate) fn spawn_audio_thread(
         }
     })
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[path = "player_runner_tests.rs"]

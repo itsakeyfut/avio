@@ -14,7 +14,7 @@ use ff_pipeline::{EncoderConfig, Pipeline, Progress};
 
 use crate::error::PreviewError;
 
-// ── ProxyResolution ───────────────────────────────────────────────────────────
+// ProxyResolution
 
 /// Output resolution for a proxy file, expressed as a fraction of the source.
 ///
@@ -55,7 +55,7 @@ impl ProxyResolution {
     }
 }
 
-// ── ProxyJob ──────────────────────────────────────────────────────────────────
+// ProxyJob
 
 /// A handle to a running background proxy generation job.
 ///
@@ -105,7 +105,7 @@ impl ProxyJob {
     }
 }
 
-// ── ProxyGenerator ────────────────────────────────────────────────────────────
+// ProxyGenerator
 
 /// Generates a lower-resolution proxy file from an original media file.
 ///

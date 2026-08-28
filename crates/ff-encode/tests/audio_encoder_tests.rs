@@ -226,7 +226,7 @@ fn aac_encoder_with_non_multiple_frame_count_should_succeed() {
     assert_valid_output_file(&output);
 }
 
-// ── AudioCodecOptions integration tests ──────────────────────────────────────
+// AudioCodecOptions integration tests
 
 #[test]
 fn opus_audio_options_should_produce_valid_output() {
@@ -592,7 +592,7 @@ fn flac_level_0_should_produce_larger_file_than_level_12() {
     );
 }
 
-// ── FLAC OutputContainer Tests ──────────────────────────────────────────────────────
+// FLAC OutputContainer Tests
 
 #[test]
 fn flac_auto_default_codec_should_not_return_container_codec_error() {
@@ -666,7 +666,7 @@ fn flac_flac_codec_should_produce_valid_output() {
     assert_valid_output_file(output.path());
 }
 
-// ── OGG OutputContainer Tests ───────────────────────────────────────────────────────
+// OGG OutputContainer Tests
 
 #[test]
 fn ogg_auto_default_codec_should_not_return_container_codec_error() {

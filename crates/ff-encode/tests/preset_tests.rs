@@ -16,7 +16,7 @@ use std::path::Path;
 use ff_encode::{AudioEncoderConfig, BitrateMode, ExportPreset, VideoEncoder, VideoEncoderConfig};
 use ff_format::{AudioCodec, AudioFrame, SampleFormat, VideoCodec};
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// Constants
 
 /// Small frame dimensions used in all video tests to keep encode time short.
 const W: u32 = 160;
@@ -25,7 +25,7 @@ const H: u32 = 90;
 /// Number of video frames to push per test (≈ 0.5 s at 30 fps).
 const VIDEO_FRAMES: usize = 15;
 
-// ── Shared helper ─────────────────────────────────────────────────────────────
+// Shared helper
 
 /// Encodes a short synthetic clip using `preset` and writes it to `output`.
 ///
@@ -128,7 +128,7 @@ fn run_preset_test(preset: &ExportPreset, output: &Path, expect_video: bool) {
     }
 }
 
-// ── Per-preset tests ──────────────────────────────────────────────────────────
+// Per-preset tests
 
 #[test]
 fn export_preset_youtube_1080p_should_produce_ffprobe_valid_output() {
@@ -196,7 +196,7 @@ fn export_preset_web_h264_should_produce_ffprobe_valid_output() {
     run_preset_test(&ExportPreset::web_h264(), &output, true);
 }
 
-// ── Custom preset test ────────────────────────────────────────────────────────
+// Custom preset test
 
 #[test]
 fn custom_export_preset_should_produce_ffprobe_valid_output() {

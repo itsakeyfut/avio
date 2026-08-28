@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use ff_filter::{AnimatedValue, RealtimeLayerDescriptor, XfadeTransition};
 
-// ── Scene ─────────────────────────────────────────────────────────────────────
+// Scene
 
 /// A whole timeline's worth of playback work, described without the editing model.
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ pub struct Scene {
     pub audio_tracks: Vec<SceneAudioTrack>,
 }
 
-// ── SceneVideoTrack ─────────────────────────────────────────────────────────────
+// SceneVideoTrack
 
 /// One video track: an ordered list of clip placements along the timeline. The
 /// track's index in [`Scene::video_tracks`] is its compositing order (`0` = base).
@@ -43,7 +43,7 @@ pub struct SceneVideoTrack {
     pub placements: Vec<ScenePlacement>,
 }
 
-// ── ScenePlacement ──────────────────────────────────────────────────────────────
+// ScenePlacement
 
 /// One video clip placed on the timeline.
 ///
@@ -84,7 +84,7 @@ pub struct ScenePlacement {
     pub volume: AnimatedValue<f64>,
 }
 
-// ── SceneAudioTrack ─────────────────────────────────────────────────────────────
+// SceneAudioTrack
 
 /// One dedicated audio-only track (A1, A2, …).
 #[derive(Debug, Clone)]
@@ -93,7 +93,7 @@ pub struct SceneAudioTrack {
     pub placements: Vec<SceneAudioPlacement>,
 }
 
-// ── SceneAudioPlacement ─────────────────────────────────────────────────────────
+// SceneAudioPlacement
 
 /// One audio-only clip placed on the timeline.
 #[derive(Debug, Clone)]

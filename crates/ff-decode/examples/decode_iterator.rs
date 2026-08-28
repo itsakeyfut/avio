@@ -51,7 +51,7 @@ fn main() {
     println!("Input: {in_name}");
     println!();
 
-    // ── VideoDecoder ──────────────────────────────────────────────────────────
+    // VideoDecoder
     //
     // VideoDecoder implements Iterator directly. Item = Result<VideoFrame, DecodeError>.
     //
@@ -91,7 +91,7 @@ fn main() {
 
     println!();
 
-    // ── AudioDecoder ──────────────────────────────────────────────────────────
+    // AudioDecoder
     //
     // AudioDecoder implements Iterator directly. Item = Result<AudioFrame, DecodeError>.
 
@@ -127,7 +127,7 @@ fn main() {
         Err(e) => println!("Skipping audio (no audio stream): {e}"),
     }
 
-    // ── ImageFrameIterator ────────────────────────────────────────────────────
+    // ImageFrameIterator
     //
     // ImageDecoder::frames() returns an iterator with
     // Item = Result<VideoFrame, DecodeError>.

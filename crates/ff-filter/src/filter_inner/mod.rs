@@ -32,7 +32,7 @@ use ff_format::AudioFrame;
 use crate::error::FilterError;
 use crate::graph::{FilterStep, HwAccel};
 
-// ── Time base used for the buffersrc ─────────────────────────────────────────
+// Time base used for the buffersrc
 
 /// The time base numerator used for the video buffersrc (1/90000).
 pub(super) const VIDEO_TIME_BASE_NUM: i32 = 1;
@@ -42,7 +42,7 @@ pub(super) const VIDEO_TIME_BASE_DEN: i32 = 90_000;
 /// The time base numerator used for the audio abuffersrc (`1/sample_rate`).
 pub(super) const AUDIO_TIME_BASE_NUM: i32 = 1;
 
-// ── Type aliases for complex return types ─────────────────────────────────────
+// Type aliases for complex return types
 
 type FilterCtxVec = Vec<Option<NonNull<ff_sys::AVFilterContext>>>;
 type BuildResult = Result<(FilterCtxVec, NonNull<ff_sys::AVFilterContext>), FilterError>;
@@ -57,7 +57,7 @@ type VideoGraphResult = Result<
     FilterError,
 >;
 
-// ── FFmpeg error helper ───────────────────────────────────────────────────────
+// FFmpeg error helper
 
 /// Convert a negative `FFmpeg` return code into a [`FilterError::Ffmpeg`].
 pub(super) fn ffmpeg_err(code: i32) -> FilterError {
@@ -67,7 +67,7 @@ pub(super) fn ffmpeg_err(code: i32) -> FilterError {
     }
 }
 
-// ── Build-time validation ─────────────────────────────────────────────────────
+// Build-time validation
 
 /// Best-effort check that every [`FilterStep`]'s libavfilter name is known to
 /// the linked `FFmpeg` build.
@@ -106,7 +106,7 @@ pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterEr
     Ok(())
 }
 
-// ── FilterGraphInner ──────────────────────────────────────────────────────────
+// FilterGraphInner
 
 /// Low-level filter graph wrapper.
 ///
@@ -284,8 +284,6 @@ impl FilterGraphInner {
     }
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::build::{audio_buffersrc_args, video_buffersrc_args};
@@ -345,7 +343,7 @@ mod tests {
         assert_send::<FilterGraphInner>();
     }
 
-    // ── buffersrc / buffersink arg-string helpers ──────────────────────────────
+    // buffersrc / buffersink arg-string helpers
 
     /// The video buffersrc args string must contain all fields required by the
     /// libavfilter `buffer` filter: `video_size`, `pix_fmt`, `time_base`, and
@@ -401,7 +399,7 @@ mod tests {
         );
     }
 
-    // ── video_input_count ──────────────────────────────────────────────────────
+    // video_input_count
 
     /// Single-input steps (no overlay) require exactly one buffersrc.
     #[test]
@@ -444,7 +442,7 @@ mod tests {
         assert_eq!(inner.video_input_count(), 1);
     }
 
-    // ── ffmpeg_err helper ──────────────────────────────────────────────────────
+    // ffmpeg_err helper
 
     /// `ffmpeg_err` must return the `Ffmpeg` variant carrying the original code.
     #[test]
@@ -470,7 +468,7 @@ mod tests {
         }
     }
 
-    // ── apply_animations ──────────────────────────────────────────────────────
+    // apply_animations
 
     /// `apply_animations` must be a no-op when the graph has not yet been
     /// initialised (i.e. `graph == None`).  It must not panic or access any
@@ -524,7 +522,7 @@ mod tests {
         inner.apply_animations(&[], Duration::ZERO);
     }
 
-    // ── validate_filter_steps ─────────────────────────────────────────────────
+    // validate_filter_steps
 
     /// `validate_filter_steps` must return `Ok` for a known-good filter name.
     ///

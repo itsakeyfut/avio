@@ -63,7 +63,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Parse OutputContainer variant ───────────────────────────────────────────────
+    // Parse OutputContainer variant
 
     let container = container_str
         .as_deref()
@@ -79,7 +79,7 @@ fn main() {
             }
         });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -117,7 +117,7 @@ fn main() {
     println!("Output: {out_name}");
     println!();
 
-    // ── Build encoder with explicit container ─────────────────────────────────
+    // Build encoder with explicit container
     //
     // .container() overrides the muxer selection.
     // When omitted, FFmpeg infers the container from the output path extension.
@@ -140,7 +140,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

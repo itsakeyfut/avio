@@ -81,7 +81,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── HardwareEncoder::available() ─────────────────────────────────────────
+    // HardwareEncoder::available()
     //
     // Probes FFmpeg for all hardware encoder backends present on this system.
     // Auto and None are control variants, not hardware backends — they are
@@ -105,7 +105,7 @@ fn main() {
         println!("Hardware encoders detected: {}", names.join(", "));
     }
 
-    // ── HardwareEncoder::is_available() ──────────────────────────────────────
+    // HardwareEncoder::is_available()
     //
     // Query individual backends. Useful when targeting a specific platform.
 
@@ -119,7 +119,7 @@ fn main() {
     );
     println!();
 
-    // ── Parse --hw and --codec flags ──────────────────────────────────────────
+    // Parse --hw and --codec flags
 
     let hw = match hw_str.to_lowercase().as_str() {
         "auto" => HardwareEncoder::Auto,
@@ -146,7 +146,7 @@ fn main() {
         }
     };
 
-    // ── VideoCodecEncodeExt::is_lgpl_compatible() ─────────────────────────────
+    // VideoCodecEncodeExt::is_lgpl_compatible()
     //
     // Static check: is this codec's *typical* software encoder LGPL-compatible?
     // H.264 and H.265 return false — their software encoders (libx264/libx265)
@@ -158,7 +158,7 @@ fn main() {
         video_codec.is_lgpl_compatible(),
     );
 
-    // ── Probe input ───────────────────────────────────────────────────────────
+    // Probe input
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -185,7 +185,7 @@ fn main() {
     println!("Output: {out_name}  codec={video_codec:?}  hw={hw_str}  crf={crf}");
     println!();
 
-    // ── Build encoder with hardware acceleration ──────────────────────────────
+    // Build encoder with hardware acceleration
     //
     // .hardware_encoder() sets the preferred backend. FFmpeg tries the hardware
     // encoder first; if unavailable it falls back to the next candidate and
@@ -207,7 +207,7 @@ fn main() {
         }
     };
 
-    // ── Inspect the selected encoder ──────────────────────────────────────────
+    // Inspect the selected encoder
     //
     // actual_video_codec() returns the FFmpeg encoder name that was opened,
     // e.g. "h264_nvenc", "h264_qsv", "libvpx-vp9" (LGPL fallback), etc.
@@ -236,7 +236,7 @@ fn main() {
     println!("is_lgpl_compliant (runtime) = {lgpl_ok}");
     println!();
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

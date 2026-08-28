@@ -76,7 +76,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -101,7 +101,7 @@ fn main() {
 
     println!("Input:  {in_name}  {width}×{height}  {fps:.2} fps");
 
-    // ── Build encoder with HDR metadata ──────────────────────────────────────
+    // Build encoder with HDR metadata
 
     let mut enc_builder = VideoEncoder::create(&output)
         .video(width, height, fps)
@@ -116,7 +116,7 @@ fn main() {
         }));
 
     if hlg {
-        // ── HLG (Hybrid Log-Gamma) colour tags ───────────────────────────────
+        // HLG (Hybrid Log-Gamma) colour tags
         //
         // HLG is a broadcast-compatible HDR standard (ARIB STD-B67 / BT.2100).
         // It does not use MaxCLL/MaxFALL side data — instead the OETF tag on
@@ -131,7 +131,7 @@ fn main() {
             .color_space(ColorSpace::Bt2020Ncl)
             .color_primaries(ColorPrimaries::Bt2020);
     } else {
-        // ── HDR10 static metadata ─────────────────────────────────────────────
+        // HDR10 static metadata
         //
         // Hdr10Metadata combines:
         //   max_cll   — Maximum Content Light Level (nits)
@@ -191,7 +191,7 @@ fn main() {
     );
     println!("Encoding...");
 
-    // ── Decode + encode loop ──────────────────────────────────────────────────
+    // Decode + encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,

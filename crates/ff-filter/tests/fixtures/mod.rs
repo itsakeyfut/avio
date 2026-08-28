@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ff_encode::{AudioCodec, VideoCodec, VideoEncoder};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
-// ── FileGuard ─────────────────────────────────────────────────────────────────
+// FileGuard
 
 /// Deletes the wrapped path when dropped.
 pub struct FileGuard {
@@ -36,7 +36,7 @@ impl Drop for FileGuard {
     }
 }
 
-// ── Output path helpers ────────────────────────────────────────────────────────
+// Output path helpers
 
 /// Returns a writable path inside `target/test-output/` for the given filename.
 pub fn test_output_path(filename: &str) -> PathBuf {
@@ -45,7 +45,7 @@ pub fn test_output_path(filename: &str) -> PathBuf {
     dir.join(filename)
 }
 
-// ── Synthetic frame factories ──────────────────────────────────────────────────
+// Synthetic frame factories
 
 /// YUV420P frame filled with a solid colour specified as (Y, U, V).
 pub fn yuv420p_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
@@ -70,7 +70,7 @@ pub fn silent_audio_frame(samples: usize, sample_rate: u32) -> AudioFrame {
         .expect("failed to create silent audio frame")
 }
 
-// ── Source file generator ─────────────────────────────────────────────────────
+// Source file generator
 
 /// Encodes `frame_count` synthetic frames to `path` as an MP4 with H.264 video
 /// and AAC audio.  Returns `None` (and prints a skip message) if the encoder

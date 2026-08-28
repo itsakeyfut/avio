@@ -6,7 +6,7 @@ use super::helpers::{
 };
 use crate::nodes::RenderNodeCpu;
 
-// ── TransformNode ─────────────────────────────────────────────────────────────
+// TransformNode
 
 #[cfg(feature = "wgpu")]
 struct TransformPipeline {

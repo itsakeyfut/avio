@@ -76,7 +76,7 @@ impl StreamCopyTrimmer {
     }
 }
 
-// ── StreamCopyTrim ────────────────────────────────────────────────────────────
+// StreamCopyTrim
 
 /// Trim a media file to a time range using stream copy (no re-encode).
 ///

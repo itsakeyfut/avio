@@ -25,7 +25,7 @@ use ff_encode::VideoEncoder;
 use ff_filter::FilterGraphBuilder;
 use ff_format::VideoCodec;
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     input: PathBuf,
@@ -62,12 +62,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Open decoder ───────────────────────────────────────────────────────
+    // 1. Open decoder
 
     let mut vdec = match VideoDecoder::open(&args.input).build() {
         Ok(d) => d,
@@ -81,14 +81,14 @@ fn main() {
     let height = vdec.height();
     let fps = vdec.frame_rate();
 
-    // ── 2. Derive a centred rectangle (inner 60 % of the frame) ──────────────
+    // 2. Derive a centred rectangle (inner 60 % of the frame)
 
     let rect_x = width / 5;
     let rect_y = height / 5;
     let rect_w = width * 3 / 5;
     let rect_h = height * 3 / 5;
 
-    // ── 3. Build filter graph: rect_mask → feather_mask ───────────────────────
+    // 3. Build filter graph: rect_mask → feather_mask
     //
     // rect_mask cuts a hard rectangular window into the frame.
     // feather_mask then blurs the alpha channel edges by `radius` pixels,
@@ -108,7 +108,7 @@ fn main() {
         }
     };
 
-    // ── 4. Build encoder ──────────────────────────────────────────────────────
+    // 4. Build encoder
 
     let mut encoder = match VideoEncoder::create(&args.output)
         .video(width, height, fps)
@@ -143,7 +143,7 @@ fn main() {
     println!();
     println!("Encoding...");
 
-    // ── 5. Decode → filter → encode loop ─────────────────────────────────────
+    // 5. Decode → filter → encode loop
 
     let mut frames: u64 = 0;
 
@@ -180,7 +180,7 @@ fn main() {
         }
     }
 
-    // ── 6. Finish ─────────────────────────────────────────────────────────────
+    // 6. Finish
 
     if let Err(e) = encoder.finish() {
         eprintln!("error: encoder.finish() failed: {e}");

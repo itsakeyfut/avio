@@ -20,7 +20,7 @@ use fixtures::{
 };
 use std::path::Path;
 
-// ── Skip helpers ──────────────────────────────────────────────────────────────
+// Skip helpers
 
 /// Returns `true` when `prores_ks` is compiled into this FFmpeg build.
 fn is_prores_ks_available() -> bool {
@@ -32,7 +32,7 @@ fn is_dnxhd_available() -> bool {
     ff_sys::Codec::find_encoder_by_name("dnxhd").is_some()
 }
 
-// ── ffprobe CLI helpers ───────────────────────────────────────────────────────
+// ffprobe CLI helpers
 
 /// Parses `max_content` (MaxCLL) from `ffprobe -show_streams` output.
 ///
@@ -64,7 +64,7 @@ fn probe_max_fall(path: &Path) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-// ── ProRes ────────────────────────────────────────────────────────────────────
+// ProRes
 
 /// Encodes 1920×1080 ProRes 422 HQ in a `.mov` container, then probes the
 /// output to confirm `yuv422p10le` is the stored pixel format and that at
@@ -126,7 +126,7 @@ fn prores_422hq_roundtrip_should_preserve_yuv422p10le_pixel_format() {
     );
 }
 
-// ── DNxHD ─────────────────────────────────────────────────────────────────────
+// DNxHD
 
 /// Encodes 1920×1080 DNxHD 145 Mbps in a `.mov` container, then probes the
 /// output to confirm `yuv422p` (8-bit) is the stored pixel format.
@@ -180,7 +180,7 @@ fn dnxhd_145_roundtrip_should_preserve_yuv422p_pixel_format() {
     );
 }
 
-// ── HDR10 in MKV ──────────────────────────────────────────────────────────────
+// HDR10 in MKV
 
 /// Encodes with H.265 Main10 + HDR10 static metadata (MaxCLL=1000, MaxFALL=400)
 /// in an MKV container, then:

@@ -102,7 +102,7 @@ fn main() {
         None => BitrateMode::Crf(crf),
     };
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -131,7 +131,7 @@ fn main() {
 
     println!("Input:  {in_name}  {width}×{height}  {fps:.2} fps  codec={in_codec}");
 
-    // ── VideoCodecEncodeExt — codec licence check ─────────────────────────────
+    // VideoCodecEncodeExt — codec licence check
     //
     // is_lgpl_compatible() returns true for open codecs (VP9, AV1, MPEG-4, …)
     // and false for codecs with licensing obligations (H.264, H.265).
@@ -142,7 +142,7 @@ fn main() {
         out_codec.is_lgpl_compatible()
     );
 
-    // ── HardwareEncoder::available() — runtime HW detection ──────────────────
+    // HardwareEncoder::available() — runtime HW detection
 
     let hw_list: Vec<String> = HardwareEncoder::available()
         .iter()
@@ -158,7 +158,7 @@ fn main() {
     println!("Output: {out_name}  {width}×{height}  preset={preset_str}  {quality_str}");
     println!();
 
-    // ── Build encoder directly ────────────────────────────────────────────────
+    // Build encoder directly
     //
     // VideoEncoder::create() is the low-level entry point.
     // .video()          — set output resolution and frame rate.
@@ -190,7 +190,7 @@ fn main() {
     );
     println!("Encoding...");
 
-    // ── Manual decode → encode loop ───────────────────────────────────────────
+    // Manual decode → encode loop
 
     let mut decoder = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -220,7 +220,7 @@ fn main() {
         frames += 1;
     }
 
-    // ── Flush and finalise ────────────────────────────────────────────────────
+    // Flush and finalise
 
     if let Err(e) = encoder.finish() {
         eprintln!("Error finalising output: {e}");

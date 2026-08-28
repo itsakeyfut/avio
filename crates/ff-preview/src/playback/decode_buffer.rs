@@ -16,12 +16,12 @@ use ff_format::VideoFrame;
 
 use crate::error::PreviewError;
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// Constants
 
 /// Default ring buffer capacity for [`DecodeBuffer`] (frames).
 const DEFAULT_DECODE_BUFFER_CAPACITY: usize = 8;
 
-// ── FrameResult ───────────────────────────────────────────────────────────────
+// FrameResult
 
 /// The result of a [`DecodeBuffer::pop_frame`] call.
 ///
@@ -41,7 +41,7 @@ pub enum FrameResult {
     Eof,
 }
 
-// ── SeekEvent ─────────────────────────────────────────────────────────────────
+// SeekEvent
 
 /// An event emitted by [`DecodeBuffer`] after a
 /// [`seek_async`](DecodeBuffer::seek_async) completes.
@@ -57,7 +57,7 @@ pub enum SeekEvent {
     Completed { pts: Duration },
 }
 
-// ── DecodeBufferBuilder ───────────────────────────────────────────────────────
+// DecodeBufferBuilder
 
 /// Builder for [`DecodeBuffer`].
 ///
@@ -153,7 +153,7 @@ impl DecodeBufferBuilder {
     }
 }
 
-// ── DecodeBuffer ──────────────────────────────────────────────────────────────
+// DecodeBuffer
 
 /// Pre-decodes frames from a video file into a ring buffer on a background thread.
 ///
@@ -563,7 +563,7 @@ impl Drop for DecodeBuffer {
     }
 }
 
-// ── decode_loop ───────────────────────────────────────────────────────────────
+// decode_loop
 
 /// Normal decode loop body shared between `build()` and the post-seek thread.
 ///
@@ -598,8 +598,6 @@ pub(super) fn decode_loop(
         }
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -552,7 +552,7 @@ mod tests {
         assert!(error.to_string().contains("Nvdec"));
     }
 
-    // ── is_fatal / is_recoverable exhaustive coverage ────────────────────────
+    // is_fatal / is_recoverable exhaustive coverage
 
     #[test]
     fn file_not_found_should_be_fatal_and_not_recoverable() {

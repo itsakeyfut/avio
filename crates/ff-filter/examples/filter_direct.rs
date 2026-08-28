@@ -57,7 +57,7 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -85,7 +85,7 @@ fn main() {
     println!("Output:  {out_name}  {out_w}×{out_h}  scale + volume(0.8)");
     println!();
 
-    // ── Build filter graph ────────────────────────────────────────────────────
+    // Build filter graph
     //
     // FilterGraphBuilder chains filter operations. The resulting FilterGraph
     // exposes push_video/pull_video for the video path and push_audio/pull_audio
@@ -103,7 +103,7 @@ fn main() {
         }
     };
 
-    // ── Build encoder ─────────────────────────────────────────────────────────
+    // Build encoder
 
     let mut enc_builder = VideoEncoder::create(&output)
         .video(out_w, out_h, fps)
@@ -125,7 +125,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── Video loop: decode → push_video → pull_video → encode ─────────────────
+    // Video loop: decode → push_video → pull_video → encode
     //
     // push_video(slot, frame) feeds a raw frame into filter slot 0.
     // pull_video() drains one filtered frame; returns None when the filter
@@ -176,7 +176,7 @@ fn main() {
         }
     }
 
-    // ── Audio loop: decode → push_audio → pull_audio → encode ─────────────────
+    // Audio loop: decode → push_audio → pull_audio → encode
     //
     // push_audio(slot, frame) feeds a raw audio frame into the filter graph.
     // pull_audio() drains one filtered audio frame.
@@ -219,7 +219,7 @@ fn main() {
         }
     }
 
-    // ── Finalise ──────────────────────────────────────────────────────────────
+    // Finalise
 
     if let Err(e) = encoder.finish() {
         eprintln!("Error finalising output: {e}");

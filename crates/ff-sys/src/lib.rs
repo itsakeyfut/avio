@@ -38,7 +38,7 @@ mod raw {
 }
 pub use raw::*;
 
-// ── Wrapper modules (real bindings only) ─────────────────────────────────────
+// Wrapper modules (real bindings only)
 #[cfg(not(docsrs))]
 pub mod avcodec;
 #[cfg(not(docsrs))]
@@ -48,7 +48,7 @@ pub mod swresample;
 #[cfg(not(docsrs))]
 pub mod swscale;
 
-// ── Sub-modules ───────────────────────────────────────────────────────────────
+// Sub-modules
 #[cfg(not(docsrs))]
 mod buffersink;
 #[cfg(not(docsrs))]
@@ -72,7 +72,7 @@ mod resample_context;
 mod scale_context;
 mod utils;
 
-// ── Re-exports ────────────────────────────────────────────────────────────────
+// Re-exports
 #[cfg(not(docsrs))]
 pub use buffersink::{BufferSinkOutcome, buffersink_get_frame};
 #[cfg(not(docsrs))]

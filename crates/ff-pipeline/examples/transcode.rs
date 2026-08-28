@@ -28,7 +28,7 @@ use ff_filter::FilterGraphBuilder;
 use ff_format::{AudioCodec, VideoCodec};
 use ff_pipeline::{EncoderConfig, Pipeline, PipelineError, Progress};
 
-// ── Argument parsing ─────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     input: String,
@@ -123,7 +123,7 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-// ── Progress rendering ────────────────────────────────────────────────────────
+// Progress rendering
 
 fn format_elapsed(elapsed: std::time::Duration) -> String {
     let s = elapsed.as_secs();
@@ -171,7 +171,7 @@ fn render_progress(p: &Progress) {
     let _ = io::stdout().flush();
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = match parse_args() {
@@ -187,7 +187,7 @@ fn main() {
         }
     };
 
-    // ── Print header ─────────────────────────────────────────────────────────
+    // Print header
 
     let in_name = Path::new(&args.input)
         .file_name()
@@ -228,7 +228,7 @@ fn main() {
     );
     println!();
 
-    // ── Build optional scale filter ───────────────────────────────────────────
+    // Build optional scale filter
 
     let filter = match (args.width, args.height) {
         (Some(w), Some(h)) => match FilterGraphBuilder::new()
@@ -244,7 +244,7 @@ fn main() {
         _ => None,
     };
 
-    // ── Build encoder config ─────────────────────────────────────────────────
+    // Build encoder config
 
     let config = EncoderConfig::builder()
         .video_codec(args.codec)
@@ -252,7 +252,7 @@ fn main() {
         .crf(args.crf)
         .build();
 
-    // ── Assemble pipeline ─────────────────────────────────────────────────────
+    // Assemble pipeline
 
     let start = Instant::now();
     // Store last_frames inside an Arc<Mutex> so we can print final count after run().
@@ -279,7 +279,7 @@ fn main() {
         }
     };
 
-    // ── Run ───────────────────────────────────────────────────────────────────
+    // Run
 
     match pipeline.run() {
         Ok(()) | Err(PipelineError::Cancelled) => {}
@@ -292,7 +292,7 @@ fn main() {
 
     println!(); // end progress line
 
-    // ── Final summary ─────────────────────────────────────────────────────────
+    // Final summary
 
     let elapsed = format_elapsed(start.elapsed());
     let frames = *last_frames.lock().unwrap_or_else(|e| e.into_inner());

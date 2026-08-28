@@ -23,7 +23,7 @@ use ff_encode::VideoEncoder;
 use ff_filter::{BlendMode, FilterGraph, FilterGraphBuilder};
 use ff_format::{AlphaMode, VideoCodec};
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// Argument parsing
 
 struct Args {
     base: PathBuf,
@@ -106,12 +106,12 @@ fn parse_args() -> Args {
     }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// Main
 
 fn main() {
     let args = parse_args();
 
-    // ── 1. Open decoders ──────────────────────────────────────────────────────
+    // 1. Open decoders
 
     let mut base_dec = match VideoDecoder::open(&args.base).build() {
         Ok(d) => d,
@@ -146,7 +146,7 @@ fn main() {
     println!("Output:  {}", args.output.display());
     println!();
 
-    // ── 2. Build blend filter graph ───────────────────────────────────────────
+    // 2. Build blend filter graph
     //
     // The main builder (slot 0) receives the base layer; the top builder
     // (slot 1) receives the overlay layer.  Both builders are empty here
@@ -165,7 +165,7 @@ fn main() {
         }
     };
 
-    // ── 3. Build encoder ──────────────────────────────────────────────────────
+    // 3. Build encoder
 
     let mut encoder = match VideoEncoder::create(&args.output)
         .video(width, height, fps)
@@ -181,7 +181,7 @@ fn main() {
 
     println!("Encoding...");
 
-    // ── 4. Blend loop ─────────────────────────────────────────────────────────
+    // 4. Blend loop
     //
     // Each iteration decodes one frame from each source, pushes the base to
     // slot 0 and the top overlay to slot 1, then drains blended frames from
@@ -237,7 +237,7 @@ fn main() {
         }
     }
 
-    // ── 5. Finish ─────────────────────────────────────────────────────────────
+    // 5. Finish
 
     if let Err(e) = encoder.finish() {
         eprintln!("error: encoder.finish() failed: {e}");

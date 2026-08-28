@@ -13,8 +13,6 @@ mod fixtures;
 use ff_remux::{AudioExtractor, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn audio_extractor_should_fail_when_input_missing() {
     let result = AudioExtractor::new("nonexistent_input.mp4", "out.mp3").run();
@@ -111,8 +109,6 @@ fn audio_extractor_should_fail_when_stream_index_out_of_range() {
         "expected MediaOperationFailed for out-of-range stream_index, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 /// Encode a video+audio source, then extract the audio track.
 /// The output file must exist and be non-empty.

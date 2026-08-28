@@ -14,8 +14,6 @@ mod fixtures;
 use ff_remux::{AudioAdder, RemuxError};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn audio_adder_should_fail_when_video_input_missing() {
     let result = AudioAdder::new("nonexistent_video.mp4", "nonexistent_audio.mp3", "out.mp4").run();
@@ -95,8 +93,6 @@ fn audio_adder_should_fail_when_audio_input_has_no_audio_stream() {
         "expected MediaOperationFailed when audio_input has no audio stream, got {result:?}"
     );
 }
-
-// ── Functional tests ──────────────────────────────────────────────────────────
 
 /// Encode a silent video + separate audio, mux them; output must exist and be non-empty.
 #[test]

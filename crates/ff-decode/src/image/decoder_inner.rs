@@ -30,7 +30,7 @@ use ff_sys::{
 use crate::error::DecodeError;
 use crate::shared::guards_inner::open_input_ctx;
 
-// ── ImageDecoderInner ─────────────────────────────────────────────────────────
+// ImageDecoderInner
 
 /// Internal state for the image decoder.
 ///

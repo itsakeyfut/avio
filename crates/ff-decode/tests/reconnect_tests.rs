@@ -9,7 +9,7 @@ use fixtures::*;
 use ff_decode::{DecodeError, VideoDecoder};
 use ff_format::NetworkOptions;
 
-// ── File-backed decoders are not subject to reconnect ─────────────────────────
+// File-backed decoders are not subject to reconnect
 
 #[test]
 fn file_decoder_should_decode_all_frames_without_reconnect() {
@@ -53,7 +53,7 @@ fn file_decoder_with_reconnect_enabled_should_reach_eof() {
     assert!(frame_count > 0, "Expected at least one frame");
 }
 
-// ── NetworkOptions defaults ───────────────────────────────────────────────────
+// NetworkOptions defaults
 
 #[test]
 fn network_options_should_default_reconnect_on_error_to_false() {
@@ -73,7 +73,7 @@ fn network_options_should_default_max_reconnect_attempts_to_three() {
     );
 }
 
-// ── Backoff formula ───────────────────────────────────────────────────────────
+// Backoff formula
 
 #[test]
 fn backoff_ms_should_double_each_attempt_up_to_cap() {
@@ -89,7 +89,7 @@ fn backoff_ms_should_double_each_attempt_up_to_cap() {
     assert_eq!(backoff(12), 102400); // still capped
 }
 
-// ── Unreachable network URL: reconnect_on_error=false propagates error ────────
+// Unreachable network URL: reconnect_on_error=false propagates error
 
 #[test]
 fn http_url_with_reconnect_disabled_should_not_reconnect() {
@@ -107,7 +107,7 @@ fn http_url_with_reconnect_disabled_should_not_reconnect() {
     // Any other error (ConnectionFailed, Ffmpeg, etc.) is acceptable.
 }
 
-// ── Live stream reconnect (requires a server that drops connections) ──────────
+// Live stream reconnect (requires a server that drops connections)
 
 /// Validates reconnect behavior on a live stream that intentionally drops.
 ///

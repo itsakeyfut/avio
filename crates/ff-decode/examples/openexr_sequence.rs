@@ -69,7 +69,7 @@ fn main() {
     println!("Input:  {in_name}  fps={fps}");
     println!();
 
-    // ── Open the EXR sequence ─────────────────────────────────────────────────
+    // Open the EXR sequence
     //
     // VideoDecoder::open() detects the `%` in the path and uses the `image2`
     // demuxer automatically.  .frame_rate() overrides the default 25 fps.
@@ -98,7 +98,7 @@ fn main() {
 
     println!("Sequence: {width}×{height}  actual_fps={actual_fps:.2}");
 
-    // ── Decode loop ───────────────────────────────────────────────────────────
+    // Decode loop
     //
     // EXR frames decode as gbrpf32le (32-bit float, planar, G/B/R order).
     // Each plane holds one colour channel; plane(0)=G, plane(1)=B, plane(2)=R.

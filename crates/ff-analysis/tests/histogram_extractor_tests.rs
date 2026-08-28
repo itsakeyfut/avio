@@ -15,8 +15,6 @@ fn test_video_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{manifest_dir}/../../assets/video/gameplay.mp4"))
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn histogram_extractor_missing_file_should_return_analysis_failed() {
     let result = HistogramExtractor::new("does_not_exist_99999.mp4").run();
@@ -37,7 +35,6 @@ fn histogram_extractor_zero_interval_should_return_analysis_failed() {
     );
 }
 
-// ── Functional tests ──────────────────────────────────────────────────────────
 // These tests decode the full video and can be slow on large files.
 // Run explicitly with: cargo test -p ff-analysis -- --include-ignored
 

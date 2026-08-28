@@ -62,7 +62,7 @@ fn live_dash_output_should_generate_valid_manifest_and_segments() {
     }
     Box::new(dash).finish().expect("finish");
 
-    // ── assertions ──────────────────────────────────────────────────────────
+    // assertions
     let manifest = out_dir.path().join("manifest.mpd");
     assert!(manifest.exists(), "manifest.mpd must exist after finish()");
 

@@ -40,8 +40,6 @@ impl<T: Lerp> AnimatedValue<T> {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,7 +10,7 @@ use crate::filter_inner::FilterGraphInner;
 
 use super::builder::FilterGraphBuilder;
 
-// ── FilterGraph ───────────────────────────────────────────────────────────────
+// FilterGraph
 
 /// An `FFmpeg` libavfilter filter graph.
 ///

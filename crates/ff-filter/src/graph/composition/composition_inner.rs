@@ -34,7 +34,7 @@ fn blend_mode_to_ffmpeg(mode: BlendMode) -> &'static str {
     mode.ffmpeg_token().unwrap_or("normal")
 }
 
-// ── Video composition graph builder ──────────────────────────────────────────
+// Video composition graph builder
 
 pub(super) unsafe fn build_video_composition(
     canvas_width: u32,
@@ -68,7 +68,7 @@ pub(super) unsafe fn build_video_composition(
         });
     }
 
-    // ── Base canvas ───────────────────────────────────────────────────────────
+    // Base canvas
     let r = (background.r.clamp(0.0, 1.0) * 255.0) as u8;
     let g_ch = (background.g.clamp(0.0, 1.0) * 255.0) as u8;
     let b = (background.b.clamp(0.0, 1.0) * 255.0) as u8;
@@ -122,7 +122,7 @@ pub(super) unsafe fn build_video_composition(
     for (idx, layer) in layers.iter().enumerate() {
         let is_last = idx == layer_count - 1;
 
-        // ── Layer source node ─────────────────────────────────────────────────
+        // Layer source node
         // File/Lavfi decode through a `movie` source; Text/Solid synthesize their
         // frames from `color`(+`drawtext`) nodes (RK-013: the lavfi *demuxer* is
         // absent on dev/CI, so generated layers must not route through it).
@@ -183,7 +183,7 @@ pub(super) unsafe fn build_video_composition(
             }
         };
 
-        // ── Proxy upscale ─────────────────────────────────────────────────────
+        // Proxy upscale
         // When decoding from a proxy, scale the low-resolution frames up to the
         // original source resolution immediately, so trim/effects/compositing
         // all operate as if the original were used.
@@ -224,7 +224,7 @@ pub(super) unsafe fn build_video_composition(
         // leading entries in `layer.effects` (emitted by the engine derive) and are
         // built by the per-layer effects loop below.
 
-        // ── Optional scale ────────────────────────────────────────────────────
+        // Optional scale
         let sx = layer.scale_x.value_at(Duration::ZERO);
         let sy = layer.scale_y.value_at(Duration::ZERO);
         if (sx - 1.0).abs() > f64::EPSILON || (sy - 1.0).abs() > f64::EPSILON {
@@ -262,7 +262,7 @@ pub(super) unsafe fn build_video_composition(
             chain_end = sc_ctx;
         }
 
-        // ── Optional rotation ─────────────────────────────────────────────────
+        // Optional rotation
         let rotation_deg = layer.rotation.value_at(Duration::ZERO);
         if rotation_deg.abs() > f64::EPSILON {
             let angle_rad = rotation_deg.to_radians();
@@ -299,7 +299,7 @@ pub(super) unsafe fn build_video_composition(
             log::debug!("video composition layer={idx} rotate angle_deg={rotation_deg}");
         }
 
-        // ── Optional opacity ──────────────────────────────────────────────────
+        // Optional opacity
         //
         // For BlendMode::Normal the opacity is applied via colorchannelmixer so
         // the overlay filter can blend the alpha channel.
@@ -342,7 +342,7 @@ pub(super) unsafe fn build_video_composition(
         });
 
         if needs_alpha {
-            // ── format=yuva420p: add alpha plane before colorchannelmixer ─────
+            // format=yuva420p: add alpha plane before colorchannelmixer
             let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
             if fmt_filter.is_null() {
                 bail!(graph, "filter not found: format");
@@ -371,7 +371,7 @@ pub(super) unsafe fn build_video_composition(
             }
             chain_end = fmt_ctx;
 
-            // ── colorchannelmixer: scale alpha plane by opacity ────────────────
+            // colorchannelmixer: scale alpha plane by opacity
             let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
             if ccm_filter.is_null() {
                 bail!(graph, "filter not found: colorchannelmixer");
@@ -417,7 +417,7 @@ pub(super) unsafe fn build_video_composition(
             }
         }
 
-        // ── Per-layer video effects ───────────────────────────────────────────
+        // Per-layer video effects
         for (eff_idx, step) in layer.effects.iter().enumerate() {
             // XFade is a 2-input cross-fade whose second input is the preceding
             // layer; it is wired by the post-loop transition block below, not by
@@ -485,7 +485,7 @@ pub(super) unsafe fn build_video_composition(
             }
         }
 
-        // ── xfade (when this layer carries a FilterStep::XFade) ───────────────
+        // xfade (when this layer carries a FilterStep::XFade)
         if let Some((transition, duration, offset)) = layer.effects.iter().find_map(|s| match s {
             crate::FilterStep::XFade {
                 transition,
@@ -552,12 +552,12 @@ pub(super) unsafe fn build_video_composition(
             }
         }
 
-        // ── Skip overlay (save chain_end for upcoming xfade) or overlay ────────
+        // Skip overlay (save chain_end for upcoming xfade) or overlay
         if skip_overlay[idx] {
             // The next layer will xfade from this one; defer the overlay.
             saved_chain = chain_end;
         } else if layer.composite_op != CompositeOp::Over {
-            // ── Porter-Duff alpha compositing (#1222) ─────────────────────────────
+            // Porter-Duff alpha compositing (#1222)
             //
             // A non-`Over` composite op drives this layer's compositing; the colour
             // `blend_mode` is not additionally applied. `A` = bottom (canvas) = pad 0,
@@ -781,7 +781,7 @@ pub(super) unsafe fn build_video_composition(
                 prev_ctx = uov_ctx;
             }
         } else if use_blend_filter {
-            // ── Photographic blend mode (Multiply, Screen, Overlay, etc.) ────────
+            // Photographic blend mode (Multiply, Screen, Overlay, etc.)
             //
             // FFmpeg's `blend` filter takes two same-sized inputs and applies a
             // pixel-level blend operation.  Opacity is forwarded via `all_opacity`.
@@ -873,7 +873,7 @@ pub(super) unsafe fn build_video_composition(
             );
             prev_ctx = blend_ctx;
         } else {
-            // ── Normal blend mode: overlay ────────────────────────────────────────
+            // Normal blend mode: overlay
             // Last layer uses eof_action=endall so the graph terminates when that
             // layer's source ends.  Intermediate layers use pass so the canvas
             // continues while other layers are still producing.
@@ -951,7 +951,7 @@ pub(super) unsafe fn build_video_composition(
         }
     }
 
-    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    // format=yuv420p: constrain output pixel format before sink
     let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if vfmt_filter.is_null() {
         bail!(graph, "filter not found: format");
@@ -974,7 +974,7 @@ pub(super) unsafe fn build_video_composition(
     }
     log::debug!("video composition format filter inserted output=yuv420p");
 
-    // ── Video buffersink ──────────────────────────────────────────────────────
+    // Video buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -996,7 +996,7 @@ pub(super) unsafe fn build_video_composition(
         bail!(graph, "link failed: format→buffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         log::warn!("video composition avfilter_graph_config failed code={ret}");
@@ -1017,7 +1017,7 @@ pub(super) unsafe fn build_video_composition(
     }
 }
 
-// ── Real-time composition graph builder ───────────────────────────────────────
+// Real-time composition graph builder
 
 /// Builds a `buffersrc`-fed composition graph for real-time preview.
 ///
@@ -1062,7 +1062,7 @@ pub(super) unsafe fn build_realtime_composition(
         });
     }
 
-    // ── One buffersrc per layer ───────────────────────────────────────────────
+    // One buffersrc per layer
     let buffer_filter = ff_sys::avfilter_get_by_name(c"buffer".as_ptr());
     if buffer_filter.is_null() {
         bail!(graph, "filter not found: buffer");
@@ -1102,7 +1102,7 @@ pub(super) unsafe fn build_realtime_composition(
     // (V1) effect animations (e.g. Ken Burns `CropAnimated`) are collected too.
     let mut animations: Vec<AnimationEntry> = Vec::new();
 
-    // ── Base = layer 0's buffersrc with its effects applied ───────────────────
+    // Base = layer 0's buffersrc with its effects applied
     let Some(base_src) = src_ctxs[0] else {
         bail!(graph, "layer 0 buffersrc missing");
     };
@@ -1126,7 +1126,7 @@ pub(super) unsafe fn build_realtime_composition(
     // `blend` filter requires identical input dimensions).
     let (canvas_w, canvas_h) = (layers[0].width, layers[0].height);
 
-    // ── Composite layers 1.. onto the accumulator ─────────────────────────────
+    // Composite layers 1.. onto the accumulator
     for idx in 1..layers.len() {
         let layer = &layers[idx];
         let Some(top_src) = src_ctxs[idx] else {
@@ -1245,7 +1245,7 @@ pub(super) unsafe fn build_realtime_composition(
         };
     }
 
-    // ── Optional fit-to-canvas ────────────────────────────────────────────────
+    // Optional fit-to-canvas
     // When a project canvas is set, letterbox/pillarbox the composited result to
     // exactly `canvas_w × canvas_h` so the preview frame matches the project's
     // output aspect. Runtime expressions (`force_original_aspect_ratio`,
@@ -1312,7 +1312,7 @@ pub(super) unsafe fn build_realtime_composition(
         acc = pad_ctx;
     }
 
-    // ── format=rgba: constrain output for direct read-back ────────────────────
+    // format=rgba: constrain output for direct read-back
     let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if vfmt_filter.is_null() {
         bail!(graph, "filter not found: format");
@@ -1334,7 +1334,7 @@ pub(super) unsafe fn build_realtime_composition(
         bail!(graph, "link failed: last→format");
     }
 
-    // ── Video buffersink ──────────────────────────────────────────────────────
+    // Video buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -1356,7 +1356,7 @@ pub(super) unsafe fn build_realtime_composition(
         bail!(graph, "link failed: format→buffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         bail!(graph, format!("avfilter_graph_config failed code={ret}"));
@@ -1377,7 +1377,7 @@ pub(super) unsafe fn build_realtime_composition(
     }
 }
 
-// ── Audio mix graph builder ───────────────────────────────────────────────────
+// Audio mix graph builder
 
 pub(super) unsafe fn build_audio_mix(
     sample_rate: u32,
@@ -1414,7 +1414,7 @@ pub(super) unsafe fn build_audio_mix(
             .replace('\\', "/")
             .replace(':', "\\:");
 
-        // ── amovie= source ────────────────────────────────────────────────────
+        // amovie= source
         let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
         if amovie_filter.is_null() {
             bail!(graph, "filter not found: amovie");
@@ -1448,7 +1448,7 @@ pub(super) unsafe fn build_audio_mix(
         // for the source window, `AudioDelay` for the timeline offset) and are
         // built by the per-track effects loop below.
 
-        // ── Optional aresample (sample rate conversion) ───────────────────────
+        // Optional aresample (sample rate conversion)
         if track.sample_rate != sample_rate {
             let src_rate = track.sample_rate;
             let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
@@ -1486,7 +1486,7 @@ pub(super) unsafe fn build_audio_mix(
             );
         }
 
-        // ── Optional aformat (channel layout conversion) ──────────────────────
+        // Optional aformat (channel layout conversion)
         if track.channel_layout != channel_layout {
             let af_args_str = match channel_layout {
                 ChannelLayout::Other(_) => format!("sample_rates={sample_rate}"),
@@ -1530,7 +1530,7 @@ pub(super) unsafe fn build_audio_mix(
 
         // (Timeline offset is applied via an `AudioDelay` effect in the loop below.)
 
-        // ── Volume (always inserted so the node can be targeted by send_command) ─
+        // Volume (always inserted so the node can be targeted by send_command)
         {
             // Warn if animated pan was requested — not yet implemented.
             if matches!(track.pan, AnimatedValue::Track(_)) {
@@ -1583,7 +1583,7 @@ pub(super) unsafe fn build_audio_mix(
             }
         }
 
-        // ── Per-track effects chain ───────────────────────────────────────────
+        // Per-track effects chain
         for (eff_idx, step) in track.effects.iter().enumerate() {
             let combined_idx = idx * 1000 + eff_idx;
             // FilterStep::Speed uses `setpts` for video but needs audio-specific
@@ -1678,7 +1678,7 @@ pub(super) unsafe fn build_audio_mix(
         end_ctxs.push(chain_end);
     }
 
-    // ── amix ──────────────────────────────────────────────────────────────────
+    // amix
     let amix_filter = ff_sys::avfilter_get_by_name(c"amix".as_ptr());
     if amix_filter.is_null() {
         bail!(graph, "filter not found: amix");
@@ -1705,7 +1705,7 @@ pub(super) unsafe fn build_audio_mix(
         }
     }
 
-    // ── aformat ───────────────────────────────────────────────────────────────
+    // aformat
     let aformat_args_str = match channel_layout {
         ChannelLayout::Other(_) => format!("sample_rates={sample_rate}"),
         _ => format!(
@@ -1737,7 +1737,7 @@ pub(super) unsafe fn build_audio_mix(
         bail!(graph, "link failed: amix→aformat");
     }
 
-    // ── abuffersink ───────────────────────────────────────────────────────────
+    // abuffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: abuffersink");
@@ -1759,7 +1759,7 @@ pub(super) unsafe fn build_audio_mix(
         bail!(graph, "link failed: aformat→abuffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         log::warn!("audio mix avfilter_graph_config failed code={ret}");
@@ -1774,7 +1774,7 @@ pub(super) unsafe fn build_audio_mix(
     Ok(FilterGraph::from_prebuilt_animated(inner, animations))
 }
 
-// ── Video concat graph builder ────────────────────────────────────────────────
+// Video concat graph builder
 
 pub(super) unsafe fn build_video_concat(
     clips: &[PathBuf],
@@ -1809,7 +1809,7 @@ pub(super) unsafe fn build_video_concat(
             .replace('\\', "/")
             .replace(':', "\\:");
 
-        // ── movie= source ─────────────────────────────────────────────────────
+        // movie= source
         let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
         if movie_filter.is_null() {
             bail!(graph, "filter not found: movie");
@@ -1838,7 +1838,7 @@ pub(super) unsafe fn build_video_concat(
         log::debug!("video concat clip={idx} movie source path={path}");
         let mut chain_end = movie_ctx;
 
-        // ── Optional scale ────────────────────────────────────────────────────
+        // Optional scale
         if let (Some(w), Some(h)) = (output_width, output_height) {
             let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
             if scale_filter.is_null() {
@@ -1875,7 +1875,7 @@ pub(super) unsafe fn build_video_concat(
         end_ctxs.push(chain_end);
     }
 
-    // ── concat (skipped for single clip) ─────────────────────────────────────
+    // concat (skipped for single clip)
     let pre_sink_ctx = if clip_count == 1 {
         end_ctxs[0]
     } else {
@@ -1907,7 +1907,7 @@ pub(super) unsafe fn build_video_concat(
         concat_ctx
     };
 
-    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    // format=yuv420p: constrain output pixel format before sink
     let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if vfmt_filter.is_null() {
         bail!(graph, "filter not found: format");
@@ -1930,7 +1930,7 @@ pub(super) unsafe fn build_video_concat(
     }
     log::debug!("video concat format filter inserted output=yuv420p");
 
-    // ── buffersink ────────────────────────────────────────────────────────────
+    // buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -1952,7 +1952,7 @@ pub(super) unsafe fn build_video_concat(
         bail!(graph, "link failed: format→buffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         log::warn!("video concat avfilter_graph_config failed code={ret}");
@@ -1967,7 +1967,7 @@ pub(super) unsafe fn build_video_concat(
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
-// ── Audio concat graph builder ────────────────────────────────────────────────
+// Audio concat graph builder
 
 pub(super) unsafe fn build_audio_concat(
     clips: &[PathBuf],
@@ -2002,7 +2002,7 @@ pub(super) unsafe fn build_audio_concat(
             .replace('\\', "/")
             .replace(':', "\\:");
 
-        // ── amovie= source ────────────────────────────────────────────────────
+        // amovie= source
         let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
         if amovie_filter.is_null() {
             bail!(graph, "filter not found: amovie");
@@ -2031,7 +2031,7 @@ pub(super) unsafe fn build_audio_concat(
         log::debug!("audio concat clip={idx} amovie source path={path}");
         let mut chain_end = amovie_ctx;
 
-        // ── Optional aresample (sample rate conversion) ───────────────────────
+        // Optional aresample (sample rate conversion)
         if let Some(sample_rate) = output_sample_rate {
             let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
             if aresample_filter.is_null() {
@@ -2066,7 +2066,7 @@ pub(super) unsafe fn build_audio_concat(
             log::debug!("audio concat clip={idx} aresample target_rate={sample_rate}");
         }
 
-        // ── Optional aformat (channel layout conversion) ──────────────────────
+        // Optional aformat (channel layout conversion)
         if let Some(layout) = output_channel_layout {
             let af_args_str = match layout {
                 ChannelLayout::Other(_) => {
@@ -2111,7 +2111,7 @@ pub(super) unsafe fn build_audio_concat(
         end_ctxs.push(chain_end);
     }
 
-    // ── concat (skipped for single clip) ─────────────────────────────────────
+    // concat (skipped for single clip)
     let pre_sink_ctx = if clip_count == 1 {
         end_ctxs[0]
     } else {
@@ -2143,7 +2143,7 @@ pub(super) unsafe fn build_audio_concat(
         concat_ctx
     };
 
-    // ── abuffersink ───────────────────────────────────────────────────────────
+    // abuffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: abuffersink");
@@ -2165,7 +2165,7 @@ pub(super) unsafe fn build_audio_concat(
         bail!(graph, "link failed: last→abuffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         log::warn!("audio concat avfilter_graph_config failed code={ret}");
@@ -2180,7 +2180,7 @@ pub(super) unsafe fn build_audio_concat(
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
-// ── Dissolve-join graph builder ────────────────────────────────────────────────
+// Dissolve-join graph builder
 
 /// Probe a clip's duration in seconds via an owned `ff_sys::InputFormatContext`
 /// (open + find stream info).  Returns `CompositionFailed` if the file cannot be
@@ -2232,12 +2232,12 @@ pub(super) unsafe fn build_dissolve_join(
         }};
     }
 
-    // ── Dissolve-duration == 0: use concat (plain concatenation) ──────────────
+    // Dissolve-duration == 0: use concat (plain concatenation)
     if dissolve_sec == 0.0 {
         return build_video_concat(&[clip_a.clone(), clip_b.clone()], None, None);
     }
 
-    // ── Probe clip durations ──────────────────────────────────────────────────
+    // Probe clip durations
     let clip_a_dur = probe_clip_duration_sec(clip_a)?;
     let clip_b_dur = probe_clip_duration_sec(clip_b)?;
 
@@ -2260,7 +2260,7 @@ pub(super) unsafe fn build_dissolve_join(
     // the first stream).
     let xfade_offset = clip_a_dur - dissolve_sec;
 
-    // ── Allocate graph ────────────────────────────────────────────────────────
+    // Allocate graph
     let graph = ff_sys::avfilter_graph_alloc();
     if graph.is_null() {
         return Err(FilterError::CompositionFailed {
@@ -2268,7 +2268,7 @@ pub(super) unsafe fn build_dissolve_join(
         });
     }
 
-    // ── movie[a] source ───────────────────────────────────────────────────────
+    // movie[a] source
     let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
     if movie_filter.is_null() {
         bail!(graph, "filter not found: movie");
@@ -2294,7 +2294,7 @@ pub(super) unsafe fn build_dissolve_join(
     }
     log::debug!("dissolve join clip_a movie source path={path_a}");
 
-    // ── movie[b] source ───────────────────────────────────────────────────────
+    // movie[b] source
     let path_b = clip_b.to_string_lossy();
     let Ok(movie_b_name) = CString::new("jd_movie_b") else {
         bail!(graph, "CString::new failed for movie_b name");
@@ -2316,7 +2316,7 @@ pub(super) unsafe fn build_dissolve_join(
     }
     log::debug!("dissolve join clip_b movie source path={path_b}");
 
-    // ── xfade ─────────────────────────────────────────────────────────────────
+    // xfade
     let xfade_filter = ff_sys::avfilter_get_by_name(c"xfade".as_ptr());
     if xfade_filter.is_null() {
         bail!(graph, "filter not found: xfade");
@@ -2354,7 +2354,7 @@ pub(super) unsafe fn build_dissolve_join(
         bail!(graph, "link failed: movie_b→xfade[1]");
     }
 
-    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    // format=yuv420p: constrain output pixel format before sink
     let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if vfmt_filter.is_null() {
         bail!(graph, "filter not found: format");
@@ -2377,7 +2377,7 @@ pub(super) unsafe fn build_dissolve_join(
     }
     log::debug!("dissolve join format filter inserted output=yuv420p");
 
-    // ── buffersink ────────────────────────────────────────────────────────────
+    // buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -2399,7 +2399,7 @@ pub(super) unsafe fn build_dissolve_join(
         bail!(graph, "link failed: format→buffersink");
     }
 
-    // ── Configure graph ───────────────────────────────────────────────────────
+    // Configure graph
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         log::warn!("dissolve join avfilter_graph_config failed code={ret}");
@@ -2422,7 +2422,7 @@ fn lavfi_movie_args(lavfi: &str) -> String {
     format!("filename={escaped}:format_name=lavfi")
 }
 
-// ── Lavfi source graph (generated overlay for the preview runner) ──────────────
+// Lavfi source graph (generated overlay for the preview runner)
 
 /// Builds a source-only graph that generates frames from a `lavfi` filtergraph
 /// string: `movie=filename=<lavfi>:format_name=lavfi → format=rgba → buffersink`.
@@ -2456,7 +2456,7 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
         });
     }
 
-    // ── movie=filename=<escaped>:format_name=lavfi ────────────────────────────
+    // movie=filename=<escaped>:format_name=lavfi
     let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
     if movie_filter.is_null() {
         bail!(graph, "filter not found: movie");
@@ -2480,7 +2480,7 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
         );
     }
 
-    // ── format=rgba (preserve the overlay's own alpha) ────────────────────────
+    // format=rgba (preserve the overlay's own alpha)
     let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if fmt_filter.is_null() {
         bail!(graph, "filter not found: format");
@@ -2505,7 +2505,7 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
         bail!(graph, "link failed: lavfi movie→format");
     }
 
-    // ── buffersink ────────────────────────────────────────────────────────────
+    // buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -2530,7 +2530,7 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
         bail!(graph, "link failed: lavfi format→buffersink");
     }
 
-    // ── Configure ─────────────────────────────────────────────────────────────
+    // Configure
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         bail!(
@@ -2547,7 +2547,7 @@ pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, Filt
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
-// ── Generated-source node helpers (shared by the source graphs and the compositor)
+// Generated-source node helpers (shared by the source graphs and the compositor)
 
 /// Creates a `movie` source node named `movie{idx}` with `movie_args` and
 /// returns it. Returns `None` on any failure; the caller owns and frees the
@@ -2680,7 +2680,7 @@ unsafe fn add_drawtext(
     Some(ctx)
 }
 
-// ── Text layer source graph (generated title/caption layer) ───────────────────
+// Text layer source graph (generated title/caption layer)
 
 /// Builds a source-only graph that renders a text layer onto a transparent canvas:
 /// `color(c=black@0.0:s=WxH:r=fps) → format=rgba → drawtext → buffersink`.
@@ -2727,7 +2727,7 @@ pub(super) unsafe fn build_text_source(
         bail!(graph, "failed to build drawtext node");
     };
 
-    // ── buffersink ────────────────────────────────────────────────────────────
+    // buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -2752,7 +2752,7 @@ pub(super) unsafe fn build_text_source(
         bail!(graph, "link failed: drawtext→buffersink");
     }
 
-    // ── Configure ─────────────────────────────────────────────────────────────
+    // Configure
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         bail!(
@@ -2769,7 +2769,7 @@ pub(super) unsafe fn build_text_source(
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
-// ── Solid color source graph (generated fill layer) ───────────────────────────
+// Solid color source graph (generated fill layer)
 
 /// Builds a source-only graph that generates a solid color layer:
 /// `color(<color_args>) → format=rgba → buffersink`. `color_args` is the full
@@ -2806,7 +2806,7 @@ pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph,
         bail!(graph, "failed to build color/format source");
     };
 
-    // ── buffersink ────────────────────────────────────────────────────────────
+    // buffersink
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
         bail!(graph, "filter not found: buffersink");
@@ -2831,7 +2831,7 @@ pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph,
         bail!(graph, "link failed: format→buffersink");
     }
 
-    // ── Configure ─────────────────────────────────────────────────────────────
+    // Configure
     let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
     if ret < 0 {
         bail!(

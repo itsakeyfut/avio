@@ -1000,7 +1000,7 @@ impl TimelineBuilder {
     }
 }
 
-// ── Timeline -> Scene derivation (real-time preview) ────────────────────────────
+// Timeline -> Scene derivation (real-time preview)
 
 /// Projects one video clip into a [`ScenePlacement`](ff_preview::ScenePlacement).
 /// `is_base` selects the V1 base track, where a crossfade transition contributes a

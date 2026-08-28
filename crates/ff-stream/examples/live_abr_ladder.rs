@@ -109,7 +109,7 @@ fn main() {
         None => DEFAULT_LADDER.to_vec(),
     };
 
-    // ── Open source decoders ──────────────────────────────────────────────────
+    // Open source decoders
 
     let mut video_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -137,7 +137,7 @@ fn main() {
     println!("Segment: {segment_secs} s");
     println!();
 
-    // ── Build rendition list ──────────────────────────────────────────────────
+    // Build rendition list
 
     let aspect = if src_height > 0 {
         f64::from(src_width) / f64::from(src_height)
@@ -166,7 +166,7 @@ fn main() {
     }
     println!();
 
-    // ── Open LiveAbrLadder ────────────────────────────────────────────────────
+    // Open LiveAbrLadder
 
     let fmt = if format_lower == "dash" {
         LiveAbrFormat::Dash
@@ -195,7 +195,7 @@ fn main() {
         }
     };
 
-    // ── Frame loop ────────────────────────────────────────────────────────────
+    // Frame loop
 
     println!("Encoding...");
     let start = std::time::Instant::now();
@@ -252,7 +252,7 @@ fn main() {
     println!("Done in {elapsed:.2} s — {video_frames} video frames, {audio_frames} audio frames");
     println!();
 
-    // ── Show master playlist location ─────────────────────────────────────────
+    // Show master playlist location
 
     if format_lower == "hls" {
         println!("Master playlist: {output}/master.m3u8");

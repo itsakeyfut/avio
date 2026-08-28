@@ -58,7 +58,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe input for display info ──────────────────────────────────────────
+    // Probe input for display info
 
     let dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -102,7 +102,7 @@ fn main() {
     println!();
     println!("Encoding (video only)...");
 
-    // ── Run pipeline ──────────────────────────────────────────────────────────
+    // Run pipeline
 
     if let Err(e) = VideoPipeline::new()
         .input(&input)

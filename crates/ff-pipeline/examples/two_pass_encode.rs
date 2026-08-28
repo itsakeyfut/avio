@@ -72,7 +72,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Probe source ──────────────────────────────────────────────────────────
+    // Probe source
 
     let probe = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
@@ -112,7 +112,7 @@ fn main() {
     println!();
     println!("Encoding (both passes handled internally)...");
 
-    // ── Run pipeline ──────────────────────────────────────────────────────────
+    // Run pipeline
 
     let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)
