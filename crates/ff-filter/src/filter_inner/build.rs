@@ -13,7 +13,7 @@ use crate::composite::CompositeOp;
 use crate::error::FilterError;
 use crate::graph::FfmpegToken;
 use crate::graph::filter_step::FilterStep;
-use crate::graph::types::{EqBand, HwAccel};
+use crate::graph::types::{EqBand, HwAccel, PitchAlgo};
 use ff_format::AlphaMode;
 
 // Hardware acceleration helpers
@@ -615,6 +615,32 @@ pub(super) fn decompose_atempo(factor: f64) -> Vec<f64> {
     chain
 }
 
+// Rubberband (high-quality, formant-preserving)
+
+/// `rubberband` filter args for a formant-preserving pitch shift of `semitones`.
+///
+/// The filter's `pitch` option is a frequency scale factor, so semitones map as
+/// `2^(semitones/12)`. `formant=preserved` keeps vocal formants in place (the
+/// point of the high-quality path).
+fn rubberband_pitch_args(semitones: f32) -> String {
+    let scale = 2f64.powf(f64::from(semitones) / 12.0);
+    format!("pitch={scale:.6}:formant=preserved")
+}
+
+/// `rubberband` filter args for a time-stretch by `factor` (duration only; the
+/// filter preserves pitch). The `tempo` option is the speed multiplier.
+fn rubberband_tempo_args(factor: f32) -> String {
+    format!("tempo={factor:.6}")
+}
+
+/// Whether the running `FFmpeg` build registered the `rubberband` filter
+/// (`--enable-librubberband`). Used to fall back to the signal path when absent.
+fn rubberband_available() -> bool {
+    // SAFETY: `avfilter_get_by_name` reads a valid static null-terminated C string
+    // and returns a borrowed pointer (or null); we only test it for null.
+    unsafe { !ff_sys::avfilter_get_by_name(c"rubberband".as_ptr()).is_null() }
+}
+
 /// Insert a chain of `atempo` filters for the audio path of a `Speed` step.
 ///
 /// Creates as many `atempo` instances as needed (see [`decompose_atempo`]) and
@@ -841,7 +867,33 @@ mod tests {
     use super::decompose_atempo;
     use super::escape_movie_path;
     use super::overlay_alpha_suffix;
+    use super::{rubberband_pitch_args, rubberband_tempo_args};
     use ff_format::AlphaMode;
+
+    #[test]
+    fn rubberband_pitch_args_should_convert_semitones_to_scale() {
+        // +12 semitones -> 2x frequency scale, formant preserved.
+        assert_eq!(
+            rubberband_pitch_args(12.0),
+            "pitch=2.000000:formant=preserved"
+        );
+        // -12 semitones -> half.
+        assert_eq!(
+            rubberband_pitch_args(-12.0),
+            "pitch=0.500000:formant=preserved"
+        );
+        // 0 semitones -> unity.
+        assert_eq!(
+            rubberband_pitch_args(0.0),
+            "pitch=1.000000:formant=preserved"
+        );
+    }
+
+    #[test]
+    fn rubberband_tempo_args_should_pass_factor() {
+        assert_eq!(rubberband_tempo_args(1.5), "tempo=1.500000");
+        assert_eq!(rubberband_tempo_args(0.5), "tempo=0.500000");
+    }
 
     #[test]
     fn escape_movie_path_escapes_windows_drive_and_backslashes() {
@@ -2923,8 +2975,24 @@ impl FilterGraphInner {
             }
 
             // TimeStretch — uses the same atempo chain as the audio path of Speed,
-            // but without any video setpts change.
-            if let FilterStep::TimeStretch { factor } = step {
+            // but without any video setpts change.  The Rubberband backend uses a
+            // single higher-quality `rubberband` filter when available, else falls
+            // back to the atempo chain.
+            if let FilterStep::TimeStretch { factor, algo } = step {
+                if *algo == PitchAlgo::Rubberband && rubberband_available() {
+                    prev_ctx = add_raw_filter_step(
+                        graph,
+                        prev_ctx,
+                        "rubberband",
+                        &rubberband_tempo_args(*factor),
+                        i,
+                        "stretch_rubberband",
+                    )?;
+                    continue;
+                }
+                if *algo == PitchAlgo::Rubberband {
+                    log::warn!("rubberband unavailable, falling back algo=signal");
+                }
                 prev_ctx = add_atempo_chain(graph, prev_ctx, f64::from(*factor), i)?;
                 continue;
             }
@@ -2955,7 +3023,23 @@ impl FilterGraphInner {
             // range, so add_atempo_chain decomposes it into linked instances.
             // The actual sample rate is resolved from buffersrc_args so the
             // integer value is substituted literally.
-            if let FilterStep::PitchShift { semitones } = step {
+            if let FilterStep::PitchShift { semitones, algo } = step {
+                // Rubberband backend: a single formant-preserving `rubberband`
+                // filter when available, else fall back to asetrate + atempo.
+                if *algo == PitchAlgo::Rubberband && rubberband_available() {
+                    prev_ctx = add_raw_filter_step(
+                        graph,
+                        prev_ctx,
+                        "rubberband",
+                        &rubberband_pitch_args(*semitones),
+                        i,
+                        "pitch_rubberband",
+                    )?;
+                    continue;
+                }
+                if *algo == PitchAlgo::Rubberband {
+                    log::warn!("rubberband unavailable, falling back algo=signal");
+                }
                 let rate = 2f64.powf(f64::from(*semitones) / 12.0);
                 let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]

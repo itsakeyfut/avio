@@ -503,6 +503,78 @@ fn pitch_shift_12_semitones_should_produce_audio_output() {
     );
 }
 
+/// Verifies the Rubberband pitch backend builds and runs, producing real audio.
+/// When the FFmpeg build provides the `rubberband` filter this exercises that
+/// path; otherwise the graph build falls back to `asetrate`/`atempo` (no error),
+/// which also produces output. Probe-gated via `drain_atempo` (RK-002/009):
+/// skips gracefully when no audio filters are available (CI). Formant
+/// preservation is spectral and not asserted here. Acceptance criterion for #1429.
+#[test]
+fn pitch_shift_rubberband_should_produce_audio_output() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const SAMPLES: usize = 48_000;
+
+    let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
+
+    // Seed a transparent `volume(0.0)` step so `build()` succeeds (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.pitch_shift_rubberband(12.0) {
+        println!("Skipping: pitch_shift_rubberband setup failed: {e}");
+        return;
+    }
+
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // rubberband and atempo filters unavailable — already logged.
+    };
+
+    assert!(
+        rms(&mono) > 0.01,
+        "pitch_shift_rubberband(12) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
+}
+
+/// Verifies the Rubberband time-stretch backend builds and runs, producing real
+/// audio. As with the pitch test, this exercises the `rubberband` filter when
+/// available and the `atempo` fallback otherwise, both without error.
+/// Probe-gated (RK-002/009). Acceptance criterion for #1429.
+#[test]
+fn time_stretch_rubberband_should_produce_audio_output() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const SAMPLES: usize = 48_000;
+
+    let frame = make_sine_frame(440.0, SAMPLE_RATE, SAMPLES);
+
+    // Seed a transparent `volume(0.0)` step so `build()` succeeds (RK-009).
+    let mut graph = match FilterGraph::builder().volume(0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.time_stretch_rubberband(0.5) {
+        println!("Skipping: time_stretch_rubberband setup failed: {e}");
+        return;
+    }
+
+    let Some(mono) = drain_atempo(&mut graph, &frame) else {
+        return; // rubberband and atempo filters unavailable — already logged.
+    };
+
+    assert!(
+        rms(&mono) > 0.01,
+        "time_stretch_rubberband(0.5) output must carry a real signal: rms={}",
+        rms(&mono)
+    );
+}
+
 /// Verifies that `FilterGraph::pitch_shift(24.0)` builds and runs. The +24
 /// semitone compensation factor (atempo = 0.25) falls outside a single atempo
 /// instance and must be realised as a chain. Acceptance criterion for #1091.
