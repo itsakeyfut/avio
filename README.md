@@ -76,7 +76,7 @@ ff-decode = "0.16"
 ff-encode = "0.16"
 ```
 
-The crates version independently; see [Versioning](#versioning). FFmpeg 7.x or 8.x development libraries must be installed on your system.
+All crates share a single workspace version and are released together in lockstep; see [Versioning](#versioning). FFmpeg 7.x or 8.x development libraries must be installed on your system.
 
 ### Windows
 
@@ -105,7 +105,7 @@ API documentation is on [docs.rs/avio](https://docs.rs/avio); each `ff-*` primit
 
 | Crate | Description | crates.io | docs.rs |
 |-------|-------------|-----------|---------|
-| [`avio`](./crates/avio) | Editing engine: owns the editing model (Timeline/Clip, derivation, history); re-exports the primitives | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
+| [`avio`](./crates/avio) | Editing engine: owns the editing model (Timeline/Clip, derivation, history) and depends on the primitives | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) | [![](https://docs.rs/avio/badge.svg)](https://docs.rs/avio) |
 | [`ff-probe`](./crates/ff-probe) | Media metadata extraction | [![](https://img.shields.io/crates/v/ff-probe.svg)](https://crates.io/crates/ff-probe) | [![](https://docs.rs/ff-probe/badge.svg)](https://docs.rs/ff-probe) |
 | [`ff-decode`](./crates/ff-decode) | Video and audio decoding | [![](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode) | [![](https://docs.rs/ff-decode/badge.svg)](https://docs.rs/ff-decode) |
 | [`ff-analysis`](./crates/ff-analysis) | Media analysis (scene, silence, BPM, scopes) | [![](https://img.shields.io/crates/v/ff-analysis.svg)](https://crates.io/crates/ff-analysis) | [![](https://docs.rs/ff-analysis/badge.svg)](https://docs.rs/ff-analysis) |
@@ -122,25 +122,16 @@ API documentation is on [docs.rs/avio](https://docs.rs/avio); each `ff-*` primit
 
 ## Feature flags
 
-The `avio` facade re-exports the member crates behind cargo features:
+The editing engine (`Timeline` / `Clip` / `Editor` / `render`), media probing (`open`), and analysis are always present in `avio`; the flags add opt-in capabilities on top:
 
 | Feature | Default | Enables |
 |---------|:------:|---------|
-| `probe` | yes | Metadata extraction |
-| `decode` | yes | Video and audio decoding |
-| `encode` | yes | Video and audio encoding |
-| `hwaccel` | yes | Hardware encoders (NVENC, QSV, AMF, VideoToolbox, VA-API) |
-| `filter` | | libavfilter graph operations |
-| `pipeline` | | Decode, filter, encode pipeline |
-| `stream` | | HLS/DASH output |
-| `preview` | | Real-time preview |
-| `preview-proxy` | | Proxy generation |
-| `render` | | CPU compositing |
-| `render-gpu` | | GPU compositing via wgpu |
-| `tokio` | | Async decode/encode API |
-| `gpl` | | GPL codecs (libx264, libx265) |
-| `srt` | | SRT protocol input and output |
-| `serde` | | serde derives for filter types |
+| `hwaccel` | yes | Hardware-accelerated export (NVENC, QSV, AMF, VideoToolbox, VA-API) |
+| `preview` | | Real-time `TimelinePlayer` and `Scene` types |
+| `serde` | | serde (de)serialization of the editing model |
+| `gpl` | | GPL-only codecs (libx264, libx265) |
+
+For standalone primitive work (a raw decoder, encoder, pipeline, stream output, or the GPU compositor), depend on the `ff-*` crate directly; each carries its own feature flags (`tokio`, `srt`, `render-gpu`, and so on).
 
 ## Versioning
 
