@@ -14,7 +14,7 @@ use avio::{
     AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Marker, Timeline,
     XfadeTransition, apply,
 };
-use ff_filter::FilterStep;
+use ff_filter::{FilterStep, PitchAlgo};
 use ff_format::{Color, TextSpec};
 
 /// Builds a representative multi-track document exercising File/Text/Solid clips,
@@ -137,22 +137,84 @@ fn clip_source_should_round_trip_each_variant() {
 }
 
 #[test]
-fn clip_effects_should_be_omitted_from_serialization() {
-    // FilterStep is not serializable yet, so video_effects/audio_effects are
-    // skipped: they never appear in the JSON and deserialize to an empty vec.
-    let clip = Clip::new("v.mp4").with_video_effect(FilterStep::Hue { degrees: 30.0 });
-    assert_eq!(clip.video_effects.len(), 1);
+fn clip_effects_should_round_trip_through_serde() {
+    // #1452: FilterStep effect chains now persist. Exercise a video chain and an
+    // audio chain, including a PitchShift carrying its `algo` backend selector.
+    let clip = Clip::new("v.mp4")
+        .with_video_effect(FilterStep::Hue { degrees: 30.0 })
+        .with_video_effect(FilterStep::HFlip)
+        .with_audio_effect(FilterStep::Volume(-3.0))
+        .with_audio_effect(FilterStep::PitchShift {
+            semitones: 4.0,
+            algo: PitchAlgo::Rubberband,
+        });
 
     let json = serde_json::to_string(&clip).unwrap();
-    assert!(
-        !json.contains("video_effects"),
-        "skipped field must not be serialized: {json}"
-    );
-
     let back: Clip = serde_json::from_str(&json).unwrap();
+
+    // FilterStep has no PartialEq (its composition variants carry a builder), so
+    // compare the re-serialized Values rather than the structs.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(v1, v2, "effect chains must round-trip through serde");
+
+    assert_eq!(
+        back.video_effects.len(),
+        2,
+        "video effects survive the load"
+    );
     assert!(
-        back.video_effects.is_empty(),
-        "skipped field must deserialize to an empty vec"
+        matches!(back.video_effects[0], FilterStep::Hue { degrees } if (degrees - 30.0).abs() < 1e-6)
+    );
+    assert!(matches!(back.video_effects[1], FilterStep::HFlip));
+    assert_eq!(
+        back.audio_effects.len(),
+        2,
+        "audio effects survive the load"
+    );
+    assert!(
+        matches!(
+            back.audio_effects[1],
+            FilterStep::PitchShift {
+                algo: PitchAlgo::Rubberband,
+                ..
+            }
+        ),
+        "the PitchShift algo backend survives the round-trip"
+    );
+}
+
+#[test]
+fn timeline_audio_filter_should_round_trip_through_serde() {
+    let original = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .audio_track(vec![Clip::new("music.mp3")])
+        .audio_filter(vec![
+            FilterStep::Volume(-2.0),
+            FilterStep::PitchShift {
+                semitones: -3.0,
+                algo: PitchAlgo::Signal,
+            },
+        ])
+        .build()
+        .unwrap();
+
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(
+        json.contains("audio_filter") && json.contains("PitchShift"),
+        "the audio_filter chain must be serialized: {json}"
+    );
+    let back: Timeline = serde_json::from_str(&json).unwrap();
+
+    // A dropped chain would make the re-serialized Value differ from the original.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(
+        v1, v2,
+        "timeline audio_filter must round-trip through serde"
     );
 }
 

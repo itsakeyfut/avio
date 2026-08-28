@@ -11,7 +11,7 @@ keywords = ["video", "audio", "ffmpeg", "filter", "effect"]
 categories = ["multimedia::video", "multimedia::audio", "api-bindings"]
 
 [features]
-serde = ["dep:serde"]
+serde = ["dep:serde", "ff-format/serde"]
 
 [package.metadata.docs.rs]
 all-features = true
