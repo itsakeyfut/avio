@@ -28,7 +28,13 @@ thiserror   = { workspace = true }
 log         = { workspace = true }
 
 [dev-dependencies]
+ff-probe = { path = "../ff-probe" }  # relocated example dep (#1484)
 tempfile = "3.27.0"
+
+
+[[example]]
+name = "srt_output"
+required-features = ["srt"]
 
 [lints]
 workspace = true

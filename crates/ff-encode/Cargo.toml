@@ -43,6 +43,10 @@ tokio = ["dep:tokio"]
 preview-image = []
 
 [dev-dependencies]
+# relocated example deps (#1484): async examples drive ff-decode's async
+# decoders (its `tokio` feature) and `futures::StreamExt`.
+ff-decode = { path = "../ff-decode", features = ["tokio"] }
+futures = { workspace = true }
 criterion = { workspace = true }
 ff-probe  = { path = "../ff-probe" }
 tokio = { version = "1.50.0", features = ["macros", "rt", "rt-multi-thread", "time"] }
@@ -62,6 +66,27 @@ required-features = ["preview-image"]
 
 [[test]]
 name = "sprite_sheet_tests"
+required-features = ["preview-image"]
+
+
+[[example]]
+name = "async_encode_audio"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_encode_video"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_transcode"
+required-features = ["tokio"]
+
+[[example]]
+name = "gif_preview"
+required-features = ["preview-image"]
+
+[[example]]
+name = "sprite_sheet"
 required-features = ["preview-image"]
 
 [lints]
