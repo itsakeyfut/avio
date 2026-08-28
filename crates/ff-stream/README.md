@@ -11,7 +11,7 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-stream = "0.16"
+ff-stream = "0.17"
 ```
 
 ## HLS Output

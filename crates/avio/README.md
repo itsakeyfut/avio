@@ -22,10 +22,10 @@ avio is a **video editing engine**: you describe an edit as data and the engine 
 ```toml
 [dependencies]
 # The editing engine: Timeline, Clip, Editor, render (build, edit, export).
-avio = "0.16"
+avio = "0.17"
 
 # With real-time preview:
-avio = { version = "0.16", features = ["preview"] }
+avio = { version = "0.17", features = ["preview"] }
 ```
 
 The editing engine (`Timeline` / `Clip` / `Editor` / `render`), media probing (`open`), and analysis are always available — `cargo add avio` gives you the engine. For standalone primitive work (a raw decoder, encoder, pipeline, stream output, or the GPU compositor), depend on the `ff-*` crate directly (see [Working with the primitives directly](#working-with-the-primitives-directly)).

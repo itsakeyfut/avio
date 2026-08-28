@@ -10,8 +10,8 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-decode = "0.16"
-ff-format = "0.16"
+ff-decode = "0.17"
+ff-format = "0.17"
 ```
 
 ## Video Decoding
@@ -209,7 +209,7 @@ Every error carries context in its `Display` message, and `err.is_recoverable()`
 
 ```toml
 [dependencies]
-ff-decode = { version = "0.16", features = ["tokio"] }
+ff-decode = { version = "0.17", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoDecoder` and `AudioDecoder` APIs are compiled. No tokio dependency is pulled in.

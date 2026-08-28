@@ -16,10 +16,10 @@ Implemented today: the CPU and GPU render graph (`RenderGraph`), all built-in no
 
 ```toml
 [dependencies]
-ff-render = "0.16"
+ff-render = "0.17"
 
 # Enable GPU processing (requires wgpu-compatible hardware)
-ff-render = { version = "0.16", features = ["wgpu"] }
+ff-render = { version = "0.17", features = ["wgpu"] }
 ```
 
 ## Feature Flags

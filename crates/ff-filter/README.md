@@ -10,7 +10,7 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-filter = "0.16"
+ff-filter = "0.17"
 ```
 
 ## Building a Filter Chain

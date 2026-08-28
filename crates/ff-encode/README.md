@@ -10,12 +10,12 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-encode = "0.16"
-ff-format = "0.16"
+ff-encode = "0.17"
+ff-format = "0.17"
 
 # Enable GPL-licensed encoders (libx264, libx265).
 # Requires GPL compliance or MPEG LA licensing in your project.
-# ff-encode = { version = "0.16", features = ["gpl"] }
+# ff-encode = { version = "0.17", features = ["gpl"] }
 ```
 
 By default, only LGPL-compatible encoders are enabled.
@@ -24,7 +24,7 @@ By default, only LGPL-compatible encoders are enabled.
 
 Encoding needs frames from somewhere; the example below decodes `input.mp4`
 with [`ff-decode`](https://crates.io/crates/ff-decode) and re-encodes it as a
-video-only H.264 file. Add `ff-decode = "0.16"` to run it.
+video-only H.264 file. Add `ff-decode = "0.17"` to run it.
 
 ```rust
 use ff_decode::VideoDecoder;
@@ -344,7 +344,7 @@ Common variants (not exhaustive):
 
 ```toml
 [dependencies]
-ff-encode = { version = "0.16", features = ["tokio"] }
+ff-encode = { version = "0.17", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoEncoder`, `AudioEncoder`, and `ImageEncoder` APIs are compiled. No tokio dependency is pulled in.
