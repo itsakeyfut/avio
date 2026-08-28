@@ -1,99 +1,115 @@
-# v0.18.0 — API Finalization
+# v0.18.0: Editing Model and GPU Rendering
 
-**Goal**: Freeze the public API surface across all crates, eliminate all remaining design debt, complete documentation and examples, and establish performance baselines — making the library ready for v1.0.0 declaration once real-world adoption has been validated.
+**Goal**: Make `avio` a **GPU-default video editing engine**. The engine composites **both preview
+and export on the GPU by default**, with automatic **CPU fallback** when no GPU adapter is present or
+the GPU path fails, matching how professional NLEs (Resolve, Premiere, Final Cut) work. Two capability
+axes support this: the `avio` editing model matures a further step, and the `ff-render` GPU primitive
+gains the foundation a real-time compositor needs. A bridge connects them so the engine's `Timeline`
+drives GPU compositing.
 
-**Prerequisite**: v0.17.0 complete.
+**Prerequisite**: v0.17.0 complete. The immutable-model redesign that gated GPU compositing (#1327) is
+closed.
 
-**Crates in scope**: All crates
+**Crates in scope**: `avio` (engine), `ff-render` (GPU compositing), `ff-preview` (preview sink),
+`ff-format` (high-bit-depth pixel formats), `ff-pipeline` (export path).
 
----
-
-## Requirements
-
-### API Freeze Preparation
-
-- All public enums and error types that may gain new variants in future versions carry `#[non_exhaustive]`.
-  - Applied to: `VideoCodec`, `AudioCodec`, `PixelFormat`, `SampleFormat`, `ChannelLayout`, `ColorSpace`, `HwAccel`, `GpuAccel`, `EncodeError`, `DecodeError`, `FilterError`, `StreamError`, `PreviewError`, `InterchangeError`.
-  - Excluded from: small, closed enums where exhaustive matching is part of the contract (e.g., `BitrateMode`, `H264Profile`, `BlendMode`).
-- Every public API that was superseded or renamed during v0.x carries `#[deprecated]` with a `/// Use [replacement] instead.` doc comment.
-- The MSRV is pinned to Rust 1.85.0 (minimum for edition 2024) and recorded in every crate's `[package] rust-version` field.
-- `Cargo.toml` `[package] edition = "2024"` is confirmed for all crates.
-- A breaking-change policy is documented in `CONTRIBUTING.md`: semver minor for additive changes, semver major for removals or signature changes, `#[deprecated]` with one minor-version grace period before removal.
-
-### Documentation
-
-- `#![warn(missing_docs)]` is enabled on all crates and produces zero warnings.
-- Every `pub` function, type, field, and variant has a doc comment.
-- Every primary API entry point has a `# Examples` section with a working, tested code snippet (`cargo test --doc`).
-- All `# Safety` sections on `unsafe fn` items and `unsafe impl` blocks are present and accurate.
-- `cargo doc --workspace --no-deps` produces zero warnings.
-- `docs.rs` renders all public items with no missing sections.
-
-### Cookbook Examples
-
-The following end-to-end examples are provided under the workspace `examples/` directory, each covering a distinct real-world use case:
-
-- `examples/transcode.rs` — re-encode a file to a different codec and container
-- `examples/thumbnails.rs` — extract thumbnails at regular intervals
-- `examples/sprite_sheet.rs` — generate a thumbnail sprite sheet for a video player scrub bar
-- `examples/filter_trim_scale.rs` — trim a clip to a time range and resize it
-- `examples/filter_overlay.rs` — composite a logo PNG over a video with opacity
-- `examples/two_pass_encode.rs` — two-pass H.264 encode for accurate bitrate targeting
-- `examples/metadata_chapters.rs` — read and write container metadata and chapter marks
-- `examples/subtitle_passthrough.rs` — copy a subtitle stream into a new output file
-- `examples/hls_output.rs` — package a video file as a static HLS stream
-- `examples/abr_ladder.rs` — produce a multi-rendition HLS ABR ladder
-- `examples/live_stream.rs` — ingest from RTSP and push to an RTMP server
-- `examples/color_grade.rs` — apply a 3D LUT and primary color correction
-- `examples/concat_clips.rs` — join multiple clips with a cross-dissolve transition
-- `examples/green_screen.rs` — chroma key composite over a background
-- `examples/keyframe_fade.rs` — animate opacity and position with Bezier easing
-- `examples/realtime_preview.rs` — drive a real-time preview loop using `ff-preview`
-- `examples/proxy_workflow.rs` — generate proxies, edit with them, export with originals
-- `examples/stabilize.rs` — two-pass video stabilization
-- `examples/mix_audio.rs` — mix a voice-over with background music, with ducking
-- `examples/export_fcpxml.rs` — export a clip list as FCPXML for Final Cut Pro
-- `examples/full_pipeline.rs` — decode → color grade → composite → encode end-to-end
-
-### Performance Benchmarks
-
-- `benches/decode_bench.rs` — 1080p decode throughput (fps) for H.264, H.265, AV1, ProRes.
-- `benches/encode_bench.rs` — 1080p encode throughput (fps) and file size for H.264, H.265, AV1.
-- `benches/filter_bench.rs` — processing time per frame for: scale, crop, overlay, 3D LUT, chroma key, blur.
-- `benches/preview_bench.rs` — `ff-preview` playback loop: frames delivered on time at 1080p/30.
-- `benches/animation_bench.rs` — keyframe interpolation throughput (evaluations/sec for a 100-keyframe track).
-- A baseline result table is committed to `benches/README.md` and updated with each release.
-
-### API Consistency Audit
-
-- The builder pattern is confirmed uniform across all crates: consuming builders (`self`), all validation in `build()`.
-- Error type hierarchy is audited against `docs/rules/error-handling.md`: no `anyhow` in library code, all FFmpeg errors wrapped with context.
-- Every `*Inner` type that may cross thread boundaries carries an explicit `unsafe impl Send` (and `unsafe impl Sync` where appropriate) with a `// SAFETY:` comment.
-- No `unwrap()` or `expect()` remains in library source (`src/`); only in tests and examples.
-- `cargo clippy --workspace -- -D warnings` is clean on stable Rust.
-- `cargo fmt --check` passes.
+**Out of scope (deferred to later milestones)**:
+- A per-clip retiming / segment model (freeze that extends clip length, speed ramps / time remap):
+  an independent subsystem with its own milestone.
+- Nested sequences / compound clips: their own milestone, and the natural substrate for interchange.
+- The richer GPU effect stack (LUT, blur, glow, curves, vignette, HSL, color wheels, motion blur) and
+  the HDR / color-science nodes (tone mapping, colour-space transform): these consume this milestone's
+  GPU foundation and land in later milestones (color science, and the render backlog).
+- Zero-copy GPU to hardware-encoder handoff on export: an optimisation after the readback path works.
 
 ---
 
-## Design Decisions
+## Requirements: a GPU-default rendering engine
 
-| Topic | Decision |
-|---|---|
-| `#[non_exhaustive]` scope | Error types and major enums; excluded from small closed enums where exhaustive matching is useful |
-| MSRV | Rust 1.85.0 — minimum for edition 2024 |
-| Benchmarks | criterion (already a dev-dep); results committed to repo |
-| Examples | Workspace root `examples/`; all examples compile in CI |
-| Doc tests | `cargo test --doc --workspace` runs all `# Examples` blocks in CI |
+### GPU-default compositing for preview and export
+
+- Preview and export composite on the GPU by default when a GPU adapter is available.
+- When no adapter is present, or the GPU path fails, the engine falls back to the existing CPU
+  compositor automatically, without the caller choosing a path.
+- Export composites on the GPU, reads the result back to a CPU frame, and hands it to the existing
+  encoder unchanged; the encoder is not altered by this milestone.
+- The choice between GPU and CPU is made per render session, not per node.
+
+### Preview equals export
+
+- For the effect set the GPU path supports, preview and export produce equivalent output within a
+  stated tolerance (exact cross-driver equality is not required).
+- The editing model no longer drops or statically approximates content that export renders but preview
+  does not: generated Text/Solid sources appear in preview, clip pan is applied, and per-frame
+  scale/rotation are evaluated where the model animates them.
+
+### Timeline drives GPU compositing
+
+- The engine's `Timeline`, through its existing model-to-scene derivation, maps to the GPU
+  compositor's layers, transforms, blends, masks, and colour grade.
+- The mapping is shared by the preview and export GPU paths.
+- The cross-crate decision (engine model driving the GPU primitive) is recorded as an ADR, and a
+  regression test fails if the GPU and CPU paths diverge beyond tolerance or the fallback does not
+  engage.
+
+## Requirements: `ff-render` GPU foundation
+
+### Steady-state allocation
+
+- Repeated frames reuse GPU textures rather than allocating per node or per layer, so a running
+  pipeline performs no GPU allocations per frame in steady state.
+
+### Multi-pass and multi-input execution
+
+- The graph executor honours a node's declared pass count and input count, so nodes that need more
+  than one pass or more than one input are driven correctly rather than assumed to be single-pass,
+  single-input.
+
+### High-bit-depth pipeline
+
+- When the input frame is 10- or 12-bit, the internal pipeline runs at a floating-point texture format
+  (`Rgba16Float`) so precision is not lost before any node runs, and the format propagates through the
+  texture pool and graph. This is the keystone the later colour-science nodes depend on.
+
+### Direct display path
+
+- A GPU-resident sink can present a composited frame without a GPU-to-CPU round trip, removing the
+  per-frame readback that dominates preview latency today.
+
+### Correct scaling and colour on ingest
+
+- The scale node produces the requested output dimensions (not merely a same-size blit), with a CPU
+  fallback path, so preview and proxy downscaling work.
+- Frame ingest into the compositor uses the GPU YUV upload path and applies a single, consistent
+  YUV-to-RGB conversion, resolving the current BT.601-versus-BT.709 inconsistency between the
+  compositor and the node path.
+
+## Requirements: `avio` editing-model maturity
+
+### Typed, re-editable effect parameters
+
+- A clip's effects are expressed as a typed, re-editable parameter model rather than an opaque
+  execution chain, so a host can present and edit individual parameters and keyframe them, and effects
+  can be enabled/disabled and reordered.
+
+### Uniform, identity-keyed automation
+
+- Track-level automation is keyed by track identity, not by track index, so reordering or removing a
+  track never misaligns automation, and clip-level and track-level automation share one uniform model.
+
+### Serialization completeness
+
+- A saved project round-trips completely: track-level audio effects persist and reload rather than
+  deserialising empty.
 
 ---
 
 ## Definition of Done
 
-- All requirements above fulfilled
-- `cargo doc --workspace --no-deps` emits zero warnings
-- All 21 cookbook examples compile and run successfully against sample media files in CI
-- `cargo test --doc --workspace` passes
-- Benchmark baseline recorded in `benches/README.md`
-- MSRV verified: `cargo +1.85.0 build --workspace` succeeds
-- `cargo clippy --workspace -- -D warnings` clean
-- `cargo fmt --check` clean
+- Preview and export composite on the GPU by default with automatic CPU fallback.
+- The GPU path covers `ff-render`'s implemented node set; unsupported effects fall back to CPU.
+- Preview equals export within tolerance for the supported set.
+- The editing model gains the typed effect-parameter model; retiming and nested sequences remain
+  deferred.
+- The GPU foundation (texture pool, multi-pass execution, high-bit-depth format, direct display) is in
+  place, unblocking the colour-science and effect-node work in later milestones.
