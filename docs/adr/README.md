@@ -17,9 +17,9 @@ standard. Copy [`adr-template.md`](./adr-template.md) to start one.
 | [0001](./0001-clip-and-track-identity.md) | Address clips and tracks by a document-scoped, monotonic `u64` id | accepted | unit tests in `crates/avio/src/edit.rs` (id set/unique, stability, not-found) |
 | [0002](./0002-per-clip-animation-in-the-model.md) | Carry all per-clip animation in the model; a primitive may static-evaluate what it cannot yet animate | accepted | derive unit tests in `crates/avio/src/derive.rs` (scale/rotation, pitch tracks flow; export == preview) |
 | [0003](./0003-ff-sys-safe-wrapper-layer.md) | Give ff-sys a curated RAII safe layer (owned `NonNull` newtypes, typed errors, localized `unsafe`) over the raw bindings | accepted | per-owned-type drop-once tests, `#![deny(unsafe_op_in_unsafe_fn)]` + CI clippy, and the no-raw-pointer guard `crates/ff-sys/tests/seal.rs` |
-| [0004](./0004-avio-engine-not-facade.md) | `avio` exposes only the editing engine and its model-facing types; drop the primitive-facade re-exports | proposed | not yet enforced (proposed); once implemented: public-API guard that no standalone primitive engine is re-exported, `avio-examples`/docs build on the engine surface, a `#[deprecated]` window |
+| [0004](./0004-avio-engine-not-facade.md) | `avio` exposes only the editing engine and its model-facing types; drop the primitive-facade re-exports | accepted | the primitive-facade re-exports removed from `crates/avio/src/lib.rs` (#1482-#1484), the `lib.rs` accessibility tests assert the kept engine surface, and `avio-examples`/docs build on it (a dedicated regression guard #1485 was declined as premature for a pre-1.0 crate) |
 
-**By status** - accepted: 0001, 0002, 0003 · proposed: 0004 · superseded: none
+**By status** - accepted: 0001, 0002, 0003, 0004 · proposed: none · superseded: none
 
 Records are numbered consecutively from `0001`.
 
