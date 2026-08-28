@@ -10,9 +10,9 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-pipeline = "0.16"
-ff-format = "0.16"  # VideoCodec, AudioCodec
-ff-encode = "0.16"  # BitrateMode
+ff-pipeline = "0.17"
+ff-format = "0.17"  # VideoCodec, AudioCodec
+ff-encode = "0.17"  # BitrateMode
 ```
 
 ## Building a Pipeline

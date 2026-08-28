@@ -68,12 +68,12 @@ Add the `avio` engine, or individual `ff-*` primitives:
 
 ```toml
 [dependencies]
-avio = "0.16"
+avio = "0.17"
 
 # Or pick individual primitives, without the engine
-ff-probe  = "0.16"
-ff-decode = "0.16"
-ff-encode = "0.16"
+ff-probe  = "0.17"
+ff-decode = "0.17"
+ff-encode = "0.17"
 ```
 
 All crates share a single workspace version and are released together in lockstep; see [Versioning](#versioning). FFmpeg 7.x or 8.x development libraries must be installed on your system.

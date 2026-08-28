@@ -11,6 +11,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.0] - 2026-08-28
+
+This release matures the `avio` editing model into a host-adoptable engine and hardens the `ff-*` primitive family. `avio` gains stable clip and track identity, a full command-based `Editor` with undo/redo, typed clip sources, markers, groups, and serde persistence, and it is now unconditionally the editing engine rather than a facade over the primitives (ADR-0004). Underneath, `ff-sys` grows a curated RAII safe layer of owned types and a typed error (ADR-0003), and the entire family migrates onto it, so no `ff-*` crate exposes raw FFmpeg pointers across its boundaries.
+
+### Added
+
+#### avio
+- Stable `ClipId` / `TrackId` and a first-class `Track` model; edit commands address clips and tracks by id ([#1416](https://github.com/itsakeyfut/avio/issues/1416))
+- Host-adoptable `Editor` with undo/redo, amend, grouping, and `Command::Batch` ([#1417](https://github.com/itsakeyfut/avio/issues/1417))
+- `SetClip` opaque patch command and wider command coverage ([#1418](https://github.com/itsakeyfut/avio/issues/1418))
+- `SplitClip` (razor) command ([#1419](https://github.com/itsakeyfut/avio/issues/1419))
+- `MoveClipToTrack` and atomic ripple-delete ([#1420](https://github.com/itsakeyfut/avio/issues/1420))
+- `RippleTrim` command (trim a clip and close the gap) ([#1454](https://github.com/itsakeyfut/avio/issues/1454))
+- Per-clip `scale` and `rotation` as first-class animatable fields ([#1421](https://github.com/itsakeyfut/avio/issues/1421))
+- Per-clip fit/fill framing mode against the canvas ([#1422](https://github.com/itsakeyfut/avio/issues/1422))
+- Per-clip audio pitch as an animatable field ([#1423](https://github.com/itsakeyfut/avio/issues/1423))
+- Track-level (pre-mix) audio effect chain and timeline-level loudness normalization ([#1424](https://github.com/itsakeyfut/avio/issues/1424), [#1446](https://github.com/itsakeyfut/avio/issues/1446))
+- Typed `ClipSource` with first-class text/title clips ([#1425](https://github.com/itsakeyfut/avio/issues/1425))
+- First-class timeline markers ([#1455](https://github.com/itsakeyfut/avio/issues/1455))
+- Clip linking / groups for audio-video sync ([#1456](https://github.com/itsakeyfut/avio/issues/1456))
+- `Timeline::validate()` structured diagnostics ([#1457](https://github.com/itsakeyfut/avio/issues/1457))
+- serde persistence of the editing document, including per-clip and timeline effect chains ([#1426](https://github.com/itsakeyfut/avio/issues/1426), [#1452](https://github.com/itsakeyfut/avio/issues/1452))
+
+#### ff-sys
+- Curated RAII safe layer (ADR-0003): owned `Frame` / `Packet`, RAII `CodecContext`, input and output `FormatContext`, `ResampleContext` / `ScaleContext`, and a hardware-acceleration device context, each holding a `NonNull` and freeing its resource once on `Drop` ([#1473](https://github.com/itsakeyfut/avio/issues/1473), [#1477](https://github.com/itsakeyfut/avio/issues/1477), [#1478](https://github.com/itsakeyfut/avio/issues/1478), [#1479](https://github.com/itsakeyfut/avio/issues/1479), [#1480](https://github.com/itsakeyfut/avio/issues/1480), [#1493](https://github.com/itsakeyfut/avio/issues/1493), [#1560](https://github.com/itsakeyfut/avio/issues/1560))
+- Typed `AvError` over FFmpeg's `c_int` return codes ([#1476](https://github.com/itsakeyfut/avio/issues/1476), [#1488](https://github.com/itsakeyfut/avio/issues/1488))
+- Safe send/receive drain-flush protocol on `CodecContext` ([#1486](https://github.com/itsakeyfut/avio/issues/1486))
+
+#### ff-filter
+- Text/title layer source primitive ([#1427](https://github.com/itsakeyfut/avio/issues/1427))
+- Solid/color source primitive ([#1428](https://github.com/itsakeyfut/avio/issues/1428))
+- High-quality rubberband pitch/time-stretch backend with graceful fallback ([#1429](https://github.com/itsakeyfut/avio/issues/1429))
+
+#### ff-preview
+- Apply per-clip audio pitch in the preview path ([#1443](https://github.com/itsakeyfut/avio/issues/1443))
+
+#### ff-render
+- GPU node test coverage ([#1432](https://github.com/itsakeyfut/avio/issues/1432))
+
+### Changed
+
+#### avio
+- `avio` is unconditionally the editing engine (ADR-0004): the editing model no longer sits behind a `pipeline` feature gate, and the standalone primitive-engine re-exports were removed so the public surface is the engine itself, not a facade over the primitives ([#1474](https://github.com/itsakeyfut/avio/issues/1474), [#1482](https://github.com/itsakeyfut/avio/issues/1482), [#1483](https://github.com/itsakeyfut/avio/issues/1483), [#1484](https://github.com/itsakeyfut/avio/issues/1484))
+
+#### ff-* family
+- The whole family migrated onto the `ff-sys` RAII safe layer and is now raw-pointer-free at its boundaries, retiring `free_context`-style manual teardown across ff-encode, ff-stream, ff-preview, ff-filter, ff-remux, ff-probe, ff-analysis, and ff-decode ([#1506](https://github.com/itsakeyfut/avio/issues/1506))
+- The owned types' `as_ptr` / `as_mut_ptr` accessors are sealed `pub(crate)`, guarded by drop-once and no-raw-pointer regression tests ([#1481](https://github.com/itsakeyfut/avio/issues/1481), [#1566](https://github.com/itsakeyfut/avio/issues/1566), [#1567](https://github.com/itsakeyfut/avio/issues/1567))
+
+#### ff-encode / ff-remux
+- Retire the crate-wide clippy-allow blocks ([#1430](https://github.com/itsakeyfut/avio/issues/1430))
+
+### Fixed
+
+#### ff-preview
+- Report a poisoned decode thread as a typed error instead of panicking ([#1431](https://github.com/itsakeyfut/avio/issues/1431))
+
+#### ff-filter
+- Atempo-based audio integration tests now run instead of always skipping ([#1312](https://github.com/itsakeyfut/avio/issues/1312))
+
+---
+
 ## [0.16.0] - 2026-08-18
 
 This release splits the project into an editing **engine** (`avio`) and a family of **model-free primitive libraries** (the `ff-*` crates). The editing model moves up into `avio`, the primitives are purified so they impose no editing vocabulary, all crates share one version (lockstep), and every crate is prepared for its first standalone crates.io publish. Two new primitive crates are carved out of the existing ones, and a shared error-classification contract is added across the family.

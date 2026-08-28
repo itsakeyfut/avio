@@ -10,7 +10,7 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-remux = "0.16"
+ff-remux = "0.17"
 ```
 
 FFmpeg 7.x or 8.x development libraries must be installed on your system.
