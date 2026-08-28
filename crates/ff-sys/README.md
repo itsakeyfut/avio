@@ -49,22 +49,28 @@ brew install ffmpeg
 | Linux    | pkg-config           | Dev packages (`-dev`) must be installed          |
 | macOS    | Homebrew, pkg-config | Auto-detects `/opt/homebrew` or `/usr/local`, falls back to pkg-config |
 
-## Wrapper Modules
+## Safe layer
 
-Alongside the raw bindgen output, `ff-sys` ships thin safe-wrapper modules that isolate the most error-prone FFmpeg call sequences:
+Alongside the raw bindgen output, `ff-sys` ships a hand-written safe layer that isolates the most error-prone FFmpeg call sequences. It is built from **owned RAII types**: each wraps a `NonNull<T>`, is neither `Copy` nor `Clone`, and frees its FFmpeg resource exactly once on `Drop`, so a leak or double-free is not expressible in safe code (ADR-0003):
 
-| Module       | Wraps                                      |
-|--------------|--------------------------------------------|
-| `avcodec`    | `AVCodecContext`, codec open/close         |
-| `avformat`   | `AVFormatContext`, demux/mux lifecycle     |
-| `swscale`    | `SwsContext`, pixel format conversion      |
-| `swresample` | `SwrContext`, sample format / channel layout conversion |
+| Owned type                         | Wraps                                                   |
+|------------------------------------|--------------------------------------------------------|
+| `Frame`                            | `AVFrame` (owned; drops once)                           |
+| `Packet`                           | `AVPacket` (owned; drops once)                          |
+| `CodecContext`                     | `AVCodecContext`, codec open/close + `send`/`receive` drain-flush |
+| `FormatContext`                    | `AVFormatContext`, demux/mux lifecycle                  |
+| `ScaleContext`                     | `SwsContext`, pixel-format conversion                   |
+| `ResampleContext`                  | `SwrContext`, sample-format / channel-layout conversion |
+| `HwDeviceContext`                  | Hardware-acceleration device context                    |
+| `AvError`                          | A typed error over FFmpeg's `c_int` return codes        |
 
-These modules are public (`pub mod`) but are meant for use by the higher-level `ff-*` crates rather than for direct consumption.
+The owned types expose **no raw pointers** across their public API: the `as_ptr` / `as_mut_ptr` accessors are `pub(crate)`, sealed so only the `ff-*` crates in this workspace reach the raw handle (guarded by `tests/seal.rs`, #1506). As a result the entire `ff-*` family is raw-pointer-free at its boundaries. Free functions grouped under the `avcodec`, `avformat`, `swscale`, and `swresample` modules cover the remaining stateless helpers.
+
+Everything here is public (`pub`) but meant for use by the higher-level `ff-*` crates rather than for direct consumption.
 
 ## Usage
 
-`ff-sys` is normally consumed transitively through the safe `ff-*` crates. A few of the thin wrappers are themselves safe, however, and can be called directly:
+`ff-sys` is normally consumed transitively through the safe `ff-*` crates. A few of the safe helpers are self-contained, however, and can be called directly:
 
 ```rust
 use ff_sys::{av_error_string, avformat, error_codes};
