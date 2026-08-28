@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use ff_filter::{
     AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, LayerSource,
-    ProxySource, RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
+    PitchAlgo, ProxySource, RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
@@ -355,6 +355,9 @@ pub(crate) fn audio_track(
         #[allow(clippy::cast_possible_truncation)]
         effects.push(FilterStep::PitchShift {
             semitones: pitch as f32,
+            // The model does not yet select a pitch backend; export uses the
+            // always-available signal path.
+            algo: PitchAlgo::Signal,
         });
     }
     if clip.fade_in > Duration::ZERO {
@@ -731,7 +734,7 @@ mod tests {
         let track = audio_track(&clip, 0, &no_anim(), None);
         assert!(track.effects.iter().any(|s| matches!(
             s,
-            FilterStep::PitchShift { semitones } if (semitones - 4.0).abs() < 1e-6
+            FilterStep::PitchShift { semitones, .. } if (semitones - 4.0).abs() < 1e-6
         )));
     }
 
@@ -745,7 +748,7 @@ mod tests {
         let track = audio_track(&clip, 0, &no_anim(), None);
         assert!(track.effects.iter().any(|s| matches!(
             s,
-            FilterStep::PitchShift { semitones } if (semitones - 5.0).abs() < 1e-6
+            FilterStep::PitchShift { semitones, .. } if (semitones - 5.0).abs() < 1e-6
         )));
     }
 

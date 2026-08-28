@@ -90,8 +90,8 @@ pub use ff_encode::{BitrateMode, EncodeError};
 // Clip::realtime_layer[_descriptor] returns, FilterError, and the EncoderConfig HwAccel setter.
 pub use ff_filter::{
     AnimatedValue, AnimationTrack, BlendMode, CompositeOp, DrawTextOptions, Easing, EqBand,
-    FilterError, FilterStep, HwAccel, Keyframe, RealtimeLayer, RealtimeLayerDescriptor, Rgb,
-    ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    FilterError, FilterStep, HwAccel, Keyframe, PitchAlgo, RealtimeLayer, RealtimeLayerDescriptor,
+    Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
 // editing model (unconditional)

@@ -135,6 +135,23 @@ pub enum YadifMode {
     FieldNospatial = 3,
 }
 
+/// Backend algorithm for the [`PitchShift`](super::FilterStep::PitchShift) and
+/// [`TimeStretch`](super::FilterStep::TimeStretch) steps.
+///
+/// Used with [`super::FilterGraph::pitch_shift_rubberband`] and
+/// [`super::FilterGraph::time_stretch_rubberband`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PitchAlgo {
+    /// Signal-processing path: `asetrate` + `atempo` (pitch) or `atempo`
+    /// (time-stretch). Always available, but shifts formants.
+    #[default]
+    Signal,
+    /// `FFmpeg`'s `rubberband` filter: formant-preserving and higher quality.
+    /// Requires an `FFmpeg` built `--enable-librubberband`; when the filter is
+    /// absent the graph build falls back to [`Signal`](Self::Signal).
+    Rubberband,
+}
+
 /// Transition type for the `xfade` cross-dissolve filter.
 ///
 /// Used with [`super::FilterGraphBuilder::xfade`].
