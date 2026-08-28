@@ -3,10 +3,13 @@ use std::sync::Arc;
 use crate::context::RenderContext;
 use crate::error::RenderError;
 use crate::nodes::RenderNode;
+use crate::pool::FrameScope;
 
 /// Execute all `nodes` on the `rgba` input and return the processed RGBA bytes.
 ///
-/// Allocates one pair of GPU textures per node — no texture pooling in Phase 1.
+/// Textures are drawn from the context's [`TexturePool`](crate::pool) via a
+/// [`FrameScope`], so a warmed-up pipeline allocates no textures per frame; the
+/// scope returns them all to the pool when it drops.
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_gpu(
     nodes: &[Box<dyn RenderNode>],
@@ -19,25 +22,26 @@ pub(super) fn run_gpu(
         return Ok(rgba.to_vec());
     }
 
-    // Upload the input frame to the initial GPU texture.
-    let input_tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("ff-render input"),
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let input_usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING;
+    let output_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::TEXTURE_BINDING;
 
+    // Acquire every texture for the frame up front, so the process loop below
+    // holds only shared borrows of the scope (further acquires would need
+    // `&mut`). The scope returns all of them to the pool when it drops.
+    let mut scope = FrameScope::new(&ctx.pool, &ctx.device);
+    let input_idx = scope.acquire(w, h, format, input_usage);
+    let output_idx: Vec<usize> = nodes
+        .iter()
+        .map(|_| scope.acquire(w, h, format, output_usage))
+        .collect();
+
+    // Upload the input frame to the initial GPU texture.
     ctx.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &input_tex,
+            texture: scope.get(input_idx),
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -56,28 +60,10 @@ pub(super) fn run_gpu(
     );
 
     // Run each node: output of one node is the input of the next.
-    let mut current_tex = input_tex;
-
-    for node in nodes {
-        let output_tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("ff-render node output"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-
-        node.process(&[&current_tex], &[&output_tex], ctx);
-        current_tex = output_tex;
+    let mut current_idx = input_idx;
+    for (node, &out_idx) in nodes.iter().zip(&output_idx) {
+        node.process(&[scope.get(current_idx)], &[scope.get(out_idx)], ctx);
+        current_idx = out_idx;
     }
 
     // Copy the final texture to a CPU-readable staging buffer.
@@ -98,7 +84,7 @@ pub(super) fn run_gpu(
         });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &current_tex,
+            texture: scope.get(current_idx),
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,

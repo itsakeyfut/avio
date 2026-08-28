@@ -1,4 +1,7 @@
+use std::sync::Mutex;
+
 use crate::error::RenderError;
+use crate::pool::TexturePool;
 
 /// Owns the wgpu device and queue used by the render pipeline.
 ///
@@ -7,13 +10,20 @@ use crate::error::RenderError;
 pub struct RenderContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Shared reuse pool for GPU textures, so the graph (and, later, the
+    /// compositor) avoid per-frame texture allocation.
+    pub(crate) pool: Mutex<TexturePool>,
 }
 
 impl RenderContext {
     /// Wrap an existing wgpu device (e.g. shared with the window renderer).
     #[must_use]
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        Self { device, queue }
+        Self {
+            device,
+            queue,
+            pool: Mutex::new(TexturePool::new()),
+        }
     }
 
     /// Initialise wgpu using the default (best available) backend.
@@ -73,6 +83,10 @@ impl RenderContext {
                 message: e.to_string(),
             })?;
 
-        Ok(Self { device, queue })
+        Ok(Self {
+            device,
+            queue,
+            pool: Mutex::new(TexturePool::new()),
+        })
     }
 }
