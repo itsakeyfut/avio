@@ -1,16 +1,15 @@
 //! Shared helpers for the avio editing verification scripts.
 //!
-//! Everything here goes through the public [`avio`] facade only, exactly as a
-//! downstream consumer would use it. The helpers cover the two things every
+//! These use the public [`avio`] engine surface (plus a few `ff-*` primitives for
+//! fixture synthesis), exactly as a downstream consumer would. The helpers cover the two things every
 //! script needs: obtaining an input clip (synthetic by default, `--input`
 //! override), and reporting pass/fail checks.
 
 use std::path::{Path, PathBuf};
 
-use avio::{
-    BitrateMode, PixelFormat, PooledBuffer, Rational, Timestamp, VideoCodec, VideoEncoder,
-    VideoFrame,
-};
+use avio::{BitrateMode, PixelFormat, Rational, Timestamp, VideoCodec, VideoFrame};
+use ff_common::PooledBuffer;
+use ff_encode::VideoEncoder;
 
 /// Convenience result type for the scripts (`fn main() -> BoxResult<()>`).
 pub type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -52,8 +51,7 @@ impl SynthSpec {
 /// Generates a synthetic video clip at `path`: a background hue that sweeps over
 /// time with a moving white scanline, so consecutive frames differ.
 ///
-/// Mirrors the proven pattern in `crates/ff-encode/examples/gen_bench_asset.rs`,
-/// but driven entirely through the `avio` facade.
+/// Mirrors the proven pattern in `crates/ff-encode/examples/gen_bench_asset.rs`.
 ///
 /// # Errors
 ///
