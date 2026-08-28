@@ -194,3 +194,52 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "wgpu"))]
+mod gpu_tests {
+    use super::{Arc, RenderContext, RenderGraph};
+    use crate::nodes::ColorGradeNode;
+
+    /// A headless GPU context, or `None` when no adapter is available (CI).
+    fn ctx() -> Option<Arc<RenderContext>> {
+        match futures::executor::block_on(RenderContext::init()) {
+            Ok(ctx) => Some(Arc::new(ctx)),
+            Err(_) => None,
+        }
+    }
+
+    fn alloc_count(ctx: &RenderContext) -> usize {
+        ctx.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .alloc_count()
+    }
+
+    #[test]
+    fn render_graph_should_not_allocate_textures_after_the_first_frame() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // Identity grade: a real GPU node so run_gpu acquires input + output.
+        let graph =
+            RenderGraph::new(Arc::clone(&ctx)).push(ColorGradeNode::new(0.0, 1.0, 1.0, 0.0, 0.0));
+        let (w, h) = (16u32, 16u32);
+        let rgba = vec![128u8; (w * h * 4) as usize];
+
+        graph.process_gpu(&rgba, w, h).expect("first frame");
+        let after_first = alloc_count(&ctx);
+        assert!(
+            after_first > 0,
+            "the first frame must allocate its textures; got {after_first}"
+        );
+
+        for _ in 0..3 {
+            graph.process_gpu(&rgba, w, h).expect("subsequent frame");
+        }
+        assert_eq!(
+            alloc_count(&ctx),
+            after_first,
+            "same-size frames must reuse pooled textures (steady state = 0 allocations/frame)"
+        );
+    }
+}

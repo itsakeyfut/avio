@@ -68,6 +68,8 @@ pub mod sink;
 pub mod compositor;
 #[cfg(feature = "wgpu")]
 pub mod context;
+#[cfg(feature = "wgpu")]
+mod pool;
 
 // Top-level re-exports
 
