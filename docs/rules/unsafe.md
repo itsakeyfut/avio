@@ -11,7 +11,12 @@
 - Every `unsafe` block and `unsafe impl` has a `// SAFETY:` comment stating why it is sound. An
   `unsafe` block with no such comment must be flagged in review.
 - The pure-Rust crates (`ff-format`, `ff-common`) contain **no `unsafe`**.
-- A change that adds or alters `unsafe` triggers Tier-2 review (`/code-review-deep`).
+- A change that adds or alters `unsafe` **logic** — ownership, reference counting, lifetime, or
+  concurrency — triggers Tier-2 review (`/code-review-deep`). But when the added `unsafe` is only a
+  guarded null-check (e.g. `avfilter_get_by_name(...).is_null()`) or an additive mirror of an
+  already-verified wrapper, and changes none of that logic, Tier-1 (`/code-review`) plus `cargo doc`
+  and a push-introspection test is enough — reserve Tier-2 for genuine soundness-logic changes (RAII
+  `Drop`/refcount) or non-obvious cross-crate FFI call paths.
 
 ## Lints
 
