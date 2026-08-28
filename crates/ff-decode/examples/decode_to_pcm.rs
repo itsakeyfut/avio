@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example decode_to_pcm --features decode -- \
+//! cargo run --example decode_to_pcm -- \
 //!   --input  audio.mp3       \
 //!   [--format f32|i16]       # output format (default: f32)
 //!   [--frames 5]             # number of frames to inspect (default: 5)

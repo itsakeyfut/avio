@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example video_effects --features pipeline -- \
+//! cargo run --example video_effects -- \
 //!   --input   input.mp4  \
 //!   --output  effect.mp4 \
 //!   --effect  fade-in    \

@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example decode_scaled --features decode -- --input input.mp4
+//! cargo run --example decode_scaled -- --input input.mp4
 //! ```
 
 use std::{path::Path, process};

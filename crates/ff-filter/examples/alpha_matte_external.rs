@@ -19,7 +19,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example alpha_matte_external --features "decode encode filter" -- \
+//! cargo run --example alpha_matte_external -- \
 //!   --fg foreground.mp4 --matte matte.mp4 --bg background.mp4 --output result.mp4
 //! ```
 

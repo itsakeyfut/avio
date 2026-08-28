@@ -9,12 +9,12 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example sprite_sheet --features encode -- \
+//! cargo run --example sprite_sheet --features preview-image -- \
 //!     --input  video.mp4        \
 //!     --output preview.png
 //!
 //! # Custom grid (5 columns × 4 rows, 160×90 px per frame):
-//! cargo run --example sprite_sheet --features encode -- \
+//! cargo run --example sprite_sheet --features preview-image -- \
 //!     --input       video.mp4   \
 //!     --output      preview.png \
 //!     --cols        5           \

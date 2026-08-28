@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example loudness --features decode,filter -- --input audio.mp3
-//! cargo run --example loudness --features decode,filter -- --input video.mp4
+//! cargo run --example loudness -- --input audio.mp3
+//! cargo run --example loudness -- --input video.mp4
 //! ```
 
 use std::process;

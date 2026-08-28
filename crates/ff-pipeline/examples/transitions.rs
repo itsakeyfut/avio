@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example transitions --features pipeline -- \
+//! cargo run --example transitions -- \
 //!   --input    clip_a.mp4   \
 //!   [--input-b clip_b.mp4]  \   # required for xfade
 //!   --output   out.mp4      \

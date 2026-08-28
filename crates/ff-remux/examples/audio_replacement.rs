@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_replacement --features encode -- \
+//! cargo run --example audio_replacement -- \
 //!     --video  original.mp4  \
 //!     --audio  new_audio.mp3 \
 //!     --output replaced.mp4

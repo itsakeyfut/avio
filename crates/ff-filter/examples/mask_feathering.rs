@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example mask_feathering --features "decode encode filter" -- \
+//! cargo run --example mask_feathering -- \
 //!   --input video.mp4 --radius 15 --output feathered.mp4 [--invert]
 //! ```
 //!

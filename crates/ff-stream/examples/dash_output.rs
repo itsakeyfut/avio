@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example dash_output --features stream -- \
+//! cargo run --example dash_output -- \
 //!   --input    input.mp4  \
 //!   --output   ./dash/    \
 //!   [--segment 4]          # segment duration in seconds (default: 4)

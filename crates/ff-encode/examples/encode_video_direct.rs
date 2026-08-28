@@ -15,7 +15,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example encode_video_direct --features "decode encode" -- \
+//! cargo run --example encode_video_direct -- \
 //!   --input   input.mp4   \
 //!   --output  output.mp4  \
 //!   [--preset medium]     # ultrafast | faster | fast | medium | slow | slower | veryslow

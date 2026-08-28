@@ -7,11 +7,11 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example quality_metrics --features decode,filter -- \
+//! cargo run --example quality_metrics -- \
 //!     --reference original.mp4 --distorted compressed.mp4
 //!
 //! # Compare a video against itself — should give SSIM ≈ 1.0 and PSNR = ∞
-//! cargo run --example quality_metrics --features decode,filter -- \
+//! cargo run --example quality_metrics -- \
 //!     --reference video.mp4 --distorted video.mp4
 //! ```
 

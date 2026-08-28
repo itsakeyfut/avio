@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example add_watermark --features pipeline -- \
+//! cargo run --example add_watermark -- \
 //!   --input     input.mp4   \
 //!   --watermark logo.png    \
 //!   --output    branded.mp4 \

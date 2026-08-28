@@ -17,7 +17,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_raw_dump --features decode -- \
+//! cargo run --example audio_raw_dump -- \
 //!   --input  audio.mp3        \
 //!   --output output.raw       \
 //!   [--frames 100]            # max frames to dump (default: all)

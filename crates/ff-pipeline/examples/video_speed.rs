@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example video_speed --features pipeline -- \
+//! cargo run --example video_speed -- \
 //!   --input   input.mp4   \
 //!   --output  out.mp4     \
 //!   --effect  speed       \

@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example waveform --features decode -- --input audio.mp3
-//! cargo run --example waveform --features decode -- --input audio.mp3 --interval-ms 50
+//! cargo run --example waveform -- --input audio.mp3
+//! cargo run --example waveform -- --input audio.mp3 --interval-ms 50
 //! ```
 
 use std::process;

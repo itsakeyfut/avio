@@ -19,7 +19,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example hdr10_encode --features "decode encode" -- \
+//! cargo run --example hdr10_encode -- \
 //!   --input    input.mp4     \
 //!   --output   output.mkv    \
 //!   [--max-cll  1000]        # MaxCLL in nits  (default: 1000)

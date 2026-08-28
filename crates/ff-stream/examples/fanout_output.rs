@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example fanout_output --features stream -- \
+//! cargo run --example fanout_output -- \
 //!   --input     input.mp4    \
 //!   --hls-dir   ./fanout-hls/ \
 //!   --dash-dir  ./fanout-dash/ \

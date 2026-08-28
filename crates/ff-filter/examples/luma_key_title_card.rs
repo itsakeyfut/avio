@@ -15,7 +15,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example luma_key_title_card --features "decode encode filter" -- \
+//! cargo run --example luma_key_title_card -- \
 //!   --title title.mp4 --bg background.mp4 --output result.mp4 \
 //!   [--threshold 0.9] [--tolerance 0.1] [--softness 0.0] [--invert]
 //! ```

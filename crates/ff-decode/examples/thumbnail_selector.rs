@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example thumbnail_selector --features decode -- --input video.mp4
-//! cargo run --example thumbnail_selector --features decode -- \
+//! cargo run --example thumbnail_selector -- --input video.mp4
+//! cargo run --example thumbnail_selector -- \
 //!     --input video.mp4 --interval-secs 10
 //! ```
 

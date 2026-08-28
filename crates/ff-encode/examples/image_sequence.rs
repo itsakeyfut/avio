@@ -19,13 +19,13 @@
 //!
 //! ```bash
 //! # Assemble PNGs into a video
-//! cargo run --example image_sequence --features "decode encode" -- \
+//! cargo run --example image_sequence -- \
 //!   --decode "frames/frame%04d.png" \
 //!   --output output.mp4 \
 //!   [--fps 25]
 //!
 //! # Extract video frames to PNGs
-//! cargo run --example image_sequence --features "decode encode" -- \
+//! cargo run --example image_sequence -- \
 //!   --encode input.mp4 \
 //!   --output "frames/frame%04d.png"
 //! ```

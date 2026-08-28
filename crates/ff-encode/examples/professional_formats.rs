@@ -16,7 +16,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example professional_formats --features "decode encode" -- \
+//! cargo run --example professional_formats -- \
 //!   --input   input.mp4       \
 //!   --output  output.mov      \
 //!   --codec   prores          # prores | dnxhd  (default: prores)

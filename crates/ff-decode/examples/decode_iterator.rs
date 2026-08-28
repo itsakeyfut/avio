@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example decode_iterator --features decode -- \
+//! cargo run --example decode_iterator -- \
 //!   --input input.mp4   \
 //!   [--image photo.png]  # optional: also decode a still image
 //! ```

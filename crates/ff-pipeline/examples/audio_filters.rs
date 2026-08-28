@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_filters --features pipeline -- \
+//! cargo run --example audio_filters -- \
 //!   --input   input.mp4     \
 //!   --output  filtered.mp4  \
 //!   --effect  volume        \

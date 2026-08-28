@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example subtitles --features pipeline -- \
+//! cargo run --example subtitles -- \
 //!   --input   input.mp4        \
 //!   --output  subtitled.mp4    \
 //!   --effect  srt              \

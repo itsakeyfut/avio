@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example srt_output --features "stream,srt" -- \
+//! cargo run --example srt_output --features srt -- \
 //!   --input   input.mp4                \
 //!   --url     srt://192.168.1.100:9000  \
 //!   [--bitrate 4000000]
@@ -28,7 +28,7 @@
 //! srt-live-transmit srt://:9000 file://con > /tmp/output.ts
 //!
 //! # In another terminal, push the stream:
-//! cargo run --example srt_output --features "stream,srt" -- \
+//! cargo run --example srt_output --features srt -- \
 //!   --input input.mp4  --url srt://127.0.0.1:9000
 //! ```
 

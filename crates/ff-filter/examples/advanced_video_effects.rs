@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example advanced_video_effects --features "decode encode filter" -- \
+//! cargo run --example advanced_video_effects -- \
 //!   --input   input.mp4  \
 //!   --output  out.mp4    \
 //!   --effect  film-grain

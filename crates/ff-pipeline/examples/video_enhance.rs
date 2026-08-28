@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example video_enhance --features pipeline -- \
+//! cargo run --example video_enhance -- \
 //!   --input    input.mp4    \
 //!   --output   enhanced.mp4 \
 //!   --effect   blur         \

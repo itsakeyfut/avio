@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example encode_with_progress --features "decode encode" -- \
+//! cargo run --example encode_with_progress -- \
 //!   --input       input.mp4   \
 //!   --output      output.mp4  \
 //!   [--max-frames 100]        # stop after N frames (default: encode all)

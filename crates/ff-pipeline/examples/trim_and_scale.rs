@@ -3,7 +3,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example trim_and_scale --features pipeline -- \
+//! cargo run --example trim_and_scale -- \
 //!   --input   input.mp4 \
 //!   --output  clip.mp4  \
 //!   --start   00:00:10  \

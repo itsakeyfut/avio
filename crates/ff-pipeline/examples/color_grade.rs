@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example color_grade --features pipeline -- \
+//! cargo run --example color_grade -- \
 //!   --input   input.mp4   \
 //!   --output  graded.mp4  \
 //!   --effect  eq          \

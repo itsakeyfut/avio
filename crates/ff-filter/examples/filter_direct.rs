@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example filter_direct --features "decode encode filter" -- \
+//! cargo run --example filter_direct -- \
 //!   --input  input.mp4  \
 //!   --output output.mp4
 //! ```

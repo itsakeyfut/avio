@@ -8,10 +8,10 @@
 //!
 //! ```bash
 //! # Video file
-//! cargo run --example decode_metadata --features decode -- --input video.mp4
+//! cargo run --example decode_metadata -- --input video.mp4
 //!
 //! # Audio-only file
-//! cargo run --example decode_metadata --features decode -- --input audio.mp3
+//! cargo run --example decode_metadata -- --input audio.mp3
 //! ```
 
 use std::process;

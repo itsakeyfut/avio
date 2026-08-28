@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example polygon_garbage_matte --features "decode encode filter" -- \
+//! cargo run --example polygon_garbage_matte -- \
 //!   --input video.mp4 --output masked.mp4 [--feather 8] [--invert]
 //! ```
 

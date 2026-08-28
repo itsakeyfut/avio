@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example multi_track_compose --features filter,pipeline -- \
+//! cargo run --example multi_track_compose -- \
 //!   --base    base.mp4       \
 //!   --overlay overlay.mp4   \
 //!   --output  composed.mp4  \

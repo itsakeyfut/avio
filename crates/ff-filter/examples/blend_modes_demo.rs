@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example blend_modes_demo --features "decode encode filter" -- \
+//! cargo run --example blend_modes_demo -- \
 //!   --base base.mp4 --top overlay.mp4 --mode multiply --opacity 1.0 \
 //!   --output result.mp4
 //! ```

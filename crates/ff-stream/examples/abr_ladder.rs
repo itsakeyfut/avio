@@ -3,7 +3,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example abr_ladder --features stream -- \
+//! cargo run --example abr_ladder -- \
 //!   --input   input.mp4 \
 //!   --output  ./abr/    \
 //!   [--format hls]      \

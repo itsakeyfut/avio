@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example hardware_decode --features decode -- \
+//! cargo run --example hardware_decode -- \
 //!   --input  input.mp4                                     \
 //!   [--accel nvdec|qsv|amf|videotoolbox|vaapi|auto|none]
 //! ```
