@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-21
 decision-makers: itsakeyfut
 ---
@@ -78,20 +78,25 @@ a role being removed.
 
 ### Confirmation
 
-`proposed`, so nothing enforces it yet. Once implemented, these guard it:
+Realized and `accepted`. What confirms it:
 
-* A public-API guard (a doc/`cargo public-api` snapshot, or a compile-time check)
-  that `avio`'s root exports name no standalone primitive-engine type
-  (`VideoDecoder` / `VideoEncoder` / `Pipeline` / `HlsOutput` / `PreviewPlayer` /
-  `RenderGraph` / …).
-* `avio-examples` and the docs build against the engine surface (`Timeline` /
-  `Clip` / `Editor` plus model-facing types) and import no primitive engine from
-  `avio`.
-* `avio-examples` builds after the re-exports are removed, importing the
-  primitives it needs from the `ff-*` crates directly.
+* The primitive-facade re-exports are gone from `crates/avio/src/lib.rs`: it exposes
+  only the editing engine (`Timeline` / `Clip` / `Editor` / `render`), the
+  `ff-format` / `ff-filter` value types the model speaks, `EncoderConfig` /
+  `Progress`, the preview `Scene` surface, and the `open` / analysis convenience
+  keeps. The `#[cfg(test)]` accessibility tests in `lib.rs` assert that kept surface,
+  so removing a kept type breaks them.
+* `avio-examples` and the docs build against the engine surface and import no
+  primitive engine from `avio`; a consumer that needs a primitive depends on the
+  `ff-*` crate directly (e.g. `avio-examples` reaches for `ff_decode` / `ff_encode` /
+  `ff_common` for the fixtures it synthesizes).
 
-Until the PRs land, this record is the only statement of the direction; the status
-is honest, not enforced.
+Delivered by #1482 (classified the re-exports), #1483 (made the model unconditional),
+and #1484 (relocated the primitive examples, then removed the facade). A dedicated
+public-API regression guard (#1485) was considered and declined: `avio` is still
+pre-1.0 and may legitimately re-export further `ff-*` types as it matures, so
+hard-enforcing "no primitive re-exports" is premature — reconsider once the public
+surface stabilizes.
 
 ### Consequences
 
@@ -142,13 +147,13 @@ is honest, not enforced.
 
 ## More Information
 
-* Code: `crates/avio/src/lib.rs` (the `pub use ff_*` re-export block across all
-  twelve primitives; the engine model exports `Clip` / `Timeline` / `Editor` /
-  `derive`; the `ff-format` re-exports the model API needs). `avio-examples`
-  exercises the facade today.
+* Code: `crates/avio/src/lib.rs` — after #1484 it re-exports only the engine surface
+  (the model `Clip` / `Timeline` / `Editor` / `derive`, the `ff-format` / `ff-filter`
+  value types the model speaks, `EncoderConfig` / `Progress`, the preview `Scene`
+  surface, and the `open` / analysis convenience keeps). `avio-examples` exercises
+  the engine surface.
 * Architecture: the engine/primitive separation (#1326) in
   `docs/specs/engine-and-primitives.md`.
 * Related: ADR-0003 (`ff-sys` curated safe layer) shares the "curated and
   opinionated, not general-purpose" philosophy. The re-export removal and the
-  engine-first README rewrite are the implementation, tracked separately (engine
-  maturity, v0.17.0+).
+  engine-first README rewrite landed across #1482-#1484 (v0.17.0).
