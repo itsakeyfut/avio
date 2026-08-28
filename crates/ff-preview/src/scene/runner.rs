@@ -1135,6 +1135,7 @@ impl SceneRunner {
                 .mul_f64(c.speed),
             in_point: c.in_point,
             speed: c.speed,
+            pitch: c.pitch,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let thread =

@@ -64,6 +64,9 @@ pub(super) struct ClipState {
     /// = none). Forwarded to the audio decode thread's fade envelope.
     pub(super) fade_in: Duration,
     pub(super) fade_out: Duration,
+    /// Per-clip audio pitch shift in semitones (`0.0` = none). Forwarded to the
+    /// audio decode thread.
+    pub(super) pitch: f64,
 }
 
 // TransitionState
@@ -201,6 +204,9 @@ pub(super) struct AudioFadeConfig {
     /// Playback speed multiplier (`1.0` = normal). When != 1.0, decoded samples are
     /// linearly resampled to compress/expand playback time without pitch preservation.
     pub(super) speed: f64,
+    /// Per-clip pitch shift in semitones (`0.0` = none). Applied duration-preserving
+    /// by the audio thread, before the speed resample.
+    pub(super) pitch: f64,
 }
 
 impl AudioFadeConfig {
@@ -210,6 +216,7 @@ impl AudioFadeConfig {
         clip_dur: Duration::ZERO,
         in_point: Duration::ZERO,
         speed: 1.0,
+        pitch: 0.0,
     };
 }
 
@@ -230,6 +237,8 @@ pub(super) struct AudioOnlyTrack {
     pub(super) clip_dur: Duration,
     /// Playback speed multiplier (`1.0` = normal), applied by resampling.
     pub(super) speed: f64,
+    /// Per-clip pitch shift in semitones (`0.0` = none), forwarded to the thread.
+    pub(super) pitch: f64,
     pub(super) handle: AudioTrackHandle,
     /// Audio gain (dB), static or automated (the 3-way-merged value). Applied to
     /// `handle`: a static value once at open, an animated one per-tick.
@@ -258,6 +267,7 @@ impl AudioOnlyTrack {
                 clip_dur: self.clip_dur,
                 in_point: self.in_point,
                 speed: self.speed,
+                pitch: self.pitch,
             },
         );
         self.cancel = Some(cancel);

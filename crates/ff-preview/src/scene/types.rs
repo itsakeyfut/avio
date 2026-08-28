@@ -82,6 +82,10 @@ pub struct ScenePlacement {
     /// Resolved audio gain (dB), static or animated. A static value is applied once at
     /// open; an animated one is evaluated per tick.
     pub volume: AnimatedValue<f64>,
+    /// Per-clip audio pitch shift in semitones (`0.0` = none). A set `pitch_track`
+    /// is evaluated at its `t=0` value (static, per ADR-0002); the preview applies
+    /// it duration-preserving, matching the export shift at the model level.
+    pub pitch: f64,
 }
 
 // SceneAudioTrack
@@ -116,4 +120,8 @@ pub struct SceneAudioPlacement {
     /// Resolved audio gain (dB), static or animated. A static value is applied once at
     /// open; an animated one is evaluated per tick.
     pub volume: AnimatedValue<f64>,
+    /// Per-clip audio pitch shift in semitones (`0.0` = none). A set `pitch_track`
+    /// is evaluated at its `t=0` value (static, per ADR-0002); the preview applies
+    /// it duration-preserving, matching the export shift at the model level.
+    pub pitch: f64,
 }

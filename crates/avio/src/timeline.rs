@@ -1051,6 +1051,8 @@ fn video_placement(
         // V1 clip audio has no dedicated audio-track counterpart in export (which
         // mixes only `audio_tracks`), so its volume is the per-clip merge only.
         volume: crate::derive::audio_volume(clip, 0, &HashMap::new()),
+        // The same shared derive as export, so preview pitch matches export.
+        pitch: crate::derive::audio_pitch(clip),
     }
 }
 
@@ -1076,6 +1078,8 @@ fn audio_placement(
         // The single derive: the volume 3-way merge (incl. the timeline
         // `audio_{idx}_volume` automation) reaches preview, matching export.
         volume: crate::derive::audio_volume(clip, track_idx, animations),
+        // The same shared derive as export, so preview pitch matches export.
+        pitch: crate::derive::audio_pitch(clip),
     }
 }
 
@@ -1333,6 +1337,27 @@ mod tests {
         assert!((audio.speed - 2.0).abs() < f64::EPSILON);
         // The neutral clip volume falls back to the timeline `audio_0_volume` automation.
         assert!(matches!(audio.volume, AnimatedValue::Track(_)));
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_carry_pitch() {
+        use ff_filter::{Easing, Keyframe};
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4").with_pitch(3.0)])
+            .audio_track(vec![Clip::new("a.mp3").with_pitch(1.0).with_pitch_track(
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 5.0, Easing::Linear)),
+            )])
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        // Video-clip audio carries the static per-clip pitch.
+        assert!((scene.video_tracks[0].placements[0].pitch - 3.0).abs() < f64::EPSILON);
+        // Audio-only clip: a set pitch_track wins over the static pitch, at t=0.
+        assert!((scene.audio_tracks[0].placements[0].pitch - 5.0).abs() < f64::EPSILON);
     }
 
     #[cfg(feature = "preview")]
