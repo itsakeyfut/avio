@@ -16,6 +16,7 @@
 // Open catalog: `FFmpeg`'s `tonemap` supports more operators than are exposed here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ToneMap {
     /// Hable (Uncharted 2) filmic tone mapping.
     ///
@@ -71,6 +72,7 @@ pub enum HwAccel {
 ///
 /// See [`super::FilterGraphBuilder::three_way_cc`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rgb {
     /// Red channel multiplier (neutral: `1.0`).
     pub r: f32,
@@ -95,6 +97,7 @@ impl Rgb {
 // Open catalog: `swscale` exposes more flags (neighbor, area, gauss, …) than these.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScaleAlgorithm {
     /// Fast bilinear interpolation (default). Good balance of speed and quality.
     Fast,
@@ -124,6 +127,7 @@ impl ScaleAlgorithm {
 ///
 /// Used with [`super::FilterGraphBuilder::yadif`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum YadifMode {
     /// Output one frame per frame (progressive output).
     Frame = 0,
@@ -141,6 +145,7 @@ pub enum YadifMode {
 /// Used with [`super::FilterGraph::pitch_shift_rubberband`] and
 /// [`super::FilterGraph::time_stretch_rubberband`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PitchAlgo {
     /// Signal-processing path: `asetrate` + `atempo` (pitch) or `atempo`
     /// (time-stretch). Always available, but shifts formants.
@@ -218,6 +223,7 @@ impl XfadeTransition {
 // Open catalog: more biquad band types (lowpass, highpass, notch, …) can be added.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EqBand {
     /// Low-shelf EQ: boosts or cuts all frequencies below `freq_hz`.
     ///
@@ -290,6 +296,7 @@ impl EqBand {
 ///
 /// Used with [`super::FilterGraphBuilder::drawtext`].
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DrawTextOptions {
     /// Text string (UTF-8). Special characters (`:`, `'`, `\`) are escaped automatically.
     pub text: String,

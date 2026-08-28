@@ -35,6 +35,7 @@ use std::fmt;
 /// - **High bit depth**: 10-bit formats for HDR content (Yuv420p10le, Yuv422p10le, Yuv444p10le, Yuva444p10le, P010le)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PixelFormat {
     // Packed RGB
     /// 24-bit RGB (8:8:8) - 3 bytes per pixel

@@ -32,6 +32,7 @@ use std::fmt;
 /// - **RGB**: Identity matrix for RGB/GBR content
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorSpace {
     /// ITU-R BT.709 — HD television matrix (most common for HD video)
     #[default]
@@ -162,6 +163,7 @@ impl fmt::Display for ColorSpace {
 /// - **Full**: Computer graphics, screenshots, game capture
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorRange {
     /// Limited/TV range (16-235 for Y, 16-240 for UV in 8-bit)
     #[default]
@@ -293,6 +295,7 @@ impl fmt::Display for ColorRange {
 /// - **BT.2020**: Wide color gamut for UHD/HDR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorPrimaries {
     /// ITU-R BT.709 primaries (same as sRGB, most common)
     #[default]
@@ -397,6 +400,7 @@ impl fmt::Display for ColorPrimaries {
 /// - **`Linear`**: Linear light, no gamma applied
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorTransfer {
     /// ITU-R BT.709 transfer characteristic (standard SDR)
     #[default]

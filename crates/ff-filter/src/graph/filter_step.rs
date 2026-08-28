@@ -34,6 +34,7 @@ pub(crate) fn escape_filter_path(path: &str) -> String {
 // matches must carry a `_` arm.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FilterStep {
     /// Convert video to a suitable pixel format from the given options.
     Format {
@@ -543,6 +544,11 @@ pub enum FilterStep {
     ///
     /// `Box<FilterGraphBuilder>` is used to break the otherwise-recursive type:
     /// `FilterStep` → `FilterGraphBuilder` → `Vec<FilterStep>`.
+    ///
+    /// Not serialized: this compositor-internal variant carries a
+    /// `FilterGraphBuilder` (which cannot round-trip serde), and it never appears
+    /// in the editing model's persisted effect chains.
+    #[cfg_attr(feature = "serde", serde(skip))]
     Blend {
         /// Filter pipeline for the top (foreground) layer.
         top: Box<FilterGraphBuilder>,
@@ -564,6 +570,9 @@ pub enum FilterStep {
     ///
     /// `Box<FilterGraphBuilder>` breaks the otherwise-recursive type, following
     /// the same pattern as [`FilterStep::Blend`].
+    ///
+    /// Not serialized (compositor-internal; see [`FilterStep::Blend`]).
+    #[cfg_attr(feature = "serde", serde(skip))]
     Composite {
         /// The Porter-Duff operator combining the two layers.
         op: CompositeOp,
@@ -633,6 +642,9 @@ pub enum FilterStep {
     ///
     /// `Box<FilterGraphBuilder>` breaks the otherwise-recursive type, following
     /// the same pattern as [`FilterStep::Blend`].
+    ///
+    /// Not serialized (compositor-internal; see [`FilterStep::Blend`]).
+    #[cfg_attr(feature = "serde", serde(skip))]
     AlphaMatte {
         /// Pipeline for the grayscale matte stream (slot 1).
         matte: Box<FilterGraphBuilder>,

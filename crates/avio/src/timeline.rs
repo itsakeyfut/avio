@@ -108,9 +108,8 @@ pub struct Timeline {
     /// ([`FilterStep::LoudnessNormalize`]). Per-track (pre-mix) effects are a
     /// separate feature (see issue #1446).
     ///
-    /// Not persisted by the `serde` feature yet: `FilterStep` is not serializable,
-    /// so this field is skipped and deserializes to an empty vec (see #1426).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Persisted by the `serde` feature (#1452). Compositor-internal steps
+    /// (`Blend` / `Composite` / `AlphaMatte`) are not serialized.
     pub(crate) audio_filter: Vec<FilterStep>,
 }
 
