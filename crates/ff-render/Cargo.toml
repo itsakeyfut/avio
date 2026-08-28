@@ -28,5 +28,12 @@ thiserror  = { workspace = true }
 version  = "30.0.0"
 optional = true
 
+[dev-dependencies]
+futures = { workspace = true }
+
+[[test]]
+name = "gpu_nodes"
+required-features = ["wgpu"]
+
 [lints]
 workspace = true
