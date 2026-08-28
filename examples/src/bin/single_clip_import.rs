@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use avio::VideoDecoder;
 use avio_examples::{BoxResult, Report, parse_args, resolve_input};
+use ff_decode::VideoDecoder;
 
 fn main() -> BoxResult<()> {
     let args = parse_args();

@@ -11,34 +11,13 @@ keywords = ["video", "audio", "ffmpeg", "codec", "async"]
 categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding", "api-bindings", "asynchronous"]
 
 [features]
-default = ["probe", "decode", "encode", "analysis", "hwaccel"]
-# The editing model is now unconditional (ff-decode/encode/filter/pipeline are
-# non-optional), so `decode` / `filter` / `pipeline` no longer gate a dependency.
-# The names are retained: they still gate the not-yet-removed facade primitives in
-# lib.rs and the `required-features` of the primitive examples (#1484 retires them).
-probe    = ["dep:ff-probe"]
-decode   = []
-# `decode` is retained so the analysis examples that also use a facade decoder
-# (`required-features = ["analysis"]`) still activate the `decode`-gated re-exports.
-analysis = ["dep:ff-analysis", "decode"]
-encode   = ["dep:ff-remux", "ff-encode/preview-image"]
-filter   = []
-# `pipeline` no longer gates a dependency (ff-pipeline is non-optional). The name and
-# its decode/encode/filter implication are retained so the not-yet-migrated primitive
-# examples (`required-features = ["pipeline"]`) still activate those facade re-exports.
-pipeline = ["decode", "encode", "filter"]
-stream   = ["dep:ff-stream", "pipeline"]
-# `preview` supplies ff-preview's `timeline` feature: the model's `to_scene` /
-# `TimelinePlayer` (preview-gated) derive a `Scene` and hand it to `ScenePlayer`.
-preview       = ["dep:ff-preview", "ff-preview/timeline"]
-preview-proxy = ["preview", "ff-preview/proxy"]
-render        = ["dep:ff-render", "preview"]
-render-gpu    = ["render", "ff-render/wgpu"]
-tokio         = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio", "ff-preview/tokio"]
-gpl      = ["ff-encode/gpl"]
-hwaccel  = ["ff-encode/hwaccel"]
-srt      = ["ff-decode/srt", "ff-stream/srt"]
-serde    = ["dep:serde", "ff-filter/serde", "ff-format/serde"]
+# avio is the editing engine: the model + probe + analysis are always present
+# (their crates are non-optional), so the only opt-in capabilities are these.
+default = ["hwaccel"]
+hwaccel = ["ff-encode/hwaccel"] # hardware-accelerated export
+gpl     = ["ff-encode/gpl"]     # GPL-only codecs (x264 / x265)
+preview = ["dep:ff-preview", "ff-preview/timeline"] # real-time TimelinePlayer / Scene
+serde   = ["dep:serde", "ff-filter/serde", "ff-format/serde"] # (de)serialize the model
 
 [package.metadata.docs.rs]
 all-features = true
@@ -49,19 +28,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 # (Timeline / Clip / Editor / derive / render) needs are non-optional.
 ff-format = { workspace = true }
 ff-common = { workspace = true }
+ff-probe    = { workspace = true }
 ff-decode   = { workspace = true }
 ff-encode   = { workspace = true }
 ff-filter   = { workspace = true }
 ff-pipeline = { workspace = true }
+ff-analysis = { workspace = true }
 thiserror   = { workspace = true }
 log         = { workspace = true }
-# Opt-in capabilities (and the not-yet-removed facade primitives, see #1484).
-ff-probe    = { workspace = true, optional = true }
-ff-analysis = { workspace = true, optional = true }
-ff-remux    = { workspace = true, optional = true }
-ff-stream   = { workspace = true, optional = true }
+# Opt-in: real-time preview and model (de)serialization.
 ff-preview  = { workspace = true, optional = true }
-ff-render   = { workspace = true, optional = true }
 serde       = { version = "1.0.228", features = ["derive"], optional = true }
 
 [[test]]
@@ -85,8 +61,6 @@ name = "timeline_render"
 path = "examples/transcode/timeline_render.rs"
 
 [dev-dependencies]
-futures = { workspace = true }
-tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
 # Used directly by the relocated editing-model integration tests
 # (tests/timeline_tests.rs, tests/composition_framerate.rs, tests/fixtures/).
 ff-format = { path = "../ff-format" }

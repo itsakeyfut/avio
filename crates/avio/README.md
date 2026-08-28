@@ -8,8 +8,6 @@ An editing engine for video and audio: build a `Timeline` of `Clip`s, edit it wi
 
 `avio` is the **editing engine** at the top of the `ff-*` crate family. It owns the editing model: an immutable `Timeline` of `Clip`s across video and audio tracks, the derivation that turns that model into rendered frames, and an `Editor` with undo/redo. The `ff-*` primitives it builds on (decode, encode, filter, analysis, remux, stream, preview, GPU render) stay model-free; for standalone primitive work, depend on those crates directly. See the [main repository](https://github.com/itsakeyfut/avio) for the full architecture.
 
-> `avio` still re-exports the primitive types as a convenience today, but that facade is being phased out; new code should reach the primitives through the `ff-*` crates. See [Working with the primitives directly](#working-with-the-primitives-directly).
-
 ## What is avio?
 
 avio is a **video editing engine**: you describe an edit as data and the engine renders it.
@@ -23,42 +21,27 @@ avio is a **video editing engine**: you describe an edit as data and the engine 
 
 ```toml
 [dependencies]
-# Editing engine: Timeline, Clip, Editor, and render (build, edit, export)
-avio = { version = "0.16", features = ["pipeline"] }
+# The editing engine: Timeline, Clip, Editor, render (build, edit, export).
+avio = "0.16"
 
-# With GPU compositing and real-time preview
-avio = { version = "0.16", features = ["pipeline", "render-gpu"] }
-
-# With HLS / DASH streaming output (implies pipeline)
-avio = { version = "0.16", features = ["stream"] }
+# With real-time preview:
+avio = { version = "0.16", features = ["preview"] }
 ```
 
-The editing model (`Timeline` / `Clip` / `Editor` / `render`) is enabled by the **`pipeline`** feature. The default build (`avio = "0.16"` gives `probe` + `decode` + `analysis` + `encode` + `hwaccel`) exposes the primitive re-exports only; that facade is being phased out (see [Working with the primitives directly](#working-with-the-primitives-directly)).
+The editing engine (`Timeline` / `Clip` / `Editor` / `render`), media probing (`open`), and analysis are always available — `cargo add avio` gives you the engine. For standalone primitive work (a raw decoder, encoder, pipeline, stream output, or the GPU compositor), depend on the `ff-*` crate directly (see [Working with the primitives directly](#working-with-the-primitives-directly)).
 
 The `ff-*` crates and `avio` share a single workspace version and are released together, so all versions move in lockstep; each is still a separate crate you can depend on on its own.
 
 ## Feature Flags
 
-The **`pipeline`** feature unlocks the editing model (`Timeline` / `Clip` / `Editor` / `render`); the other flags add engine capabilities by pulling in the primitive that backs each.
+The editing engine is always present; the flags add opt-in capabilities.
 
-| Feature         | Enables                                        | Default | Implies             |
-|-----------------|------------------------------------------------|---------|---------------------|
-| `probe`         | `ff-probe`, read-only media metadata           | yes     |                     |
-| `decode`        | `ff-decode`, video and audio decoding          | yes     |                     |
-| `analysis`      | `ff-analysis`, scene / silence / BPM / scopes  | yes     | `decode`            |
-| `encode`        | `ff-encode` + `ff-remux`, encoding and remux   | yes     |                     |
-| `hwaccel`       | hardware-accelerated encoders                  | yes     |                     |
-| `filter`        | `ff-filter`, filter graph operations           | no      |                     |
-| `pipeline`      | `ff-pipeline`, decode/filter/encode            | no      | `decode`, `encode`, `filter` |
-| `stream`        | `ff-stream`, HLS / DASH / live streaming       | no      | `pipeline`          |
-| `preview`       | `ff-preview`, real-time playback and seek      | no      |                     |
-| `preview-proxy` | proxy generation                               | no      | `preview`           |
-| `render`        | `ff-render`, GPU compositing pipeline          | no      | `preview`           |
-| `render-gpu`    | wgpu backend                                   | no      | `render`            |
-| `tokio`         | async wrappers for decode, encode, and preview | no      | `decode` + `encode` |
-| `gpl`           | GPL-licensed encoders                          | no      |                     |
-| `srt`           | SRT input/output                               | no      |                     |
-| `serde`         | `serde` derives for the model and filter types | no      | `pipeline`          |
+| Feature   | Enables                                             | Default |
+|-----------|-----------------------------------------------------|---------|
+| `hwaccel` | hardware-accelerated export                         | yes     |
+| `preview` | real-time `TimelinePlayer` and `Scene` types        | no      |
+| `serde`   | `serde` (de)serialization of the model              | no      |
+| `gpl`     | GPL-only codecs (x264 / x265)                       | no      |
 
 ## Quick Start
 

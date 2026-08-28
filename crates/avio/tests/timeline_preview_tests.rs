@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use avio::{Clip, FrameSink, PlayerEvent, PlayerHandle, Timeline, TimelinePlayer};
+use avio::{Clip, PlayerHandle, Timeline, TimelinePlayer};
+// `FrameSink` / `PlayerEvent` are ff-preview primitives (avio no longer re-exports
+// standalone preview types; it keeps only the TimelinePlayer engine surface).
+use ff_preview::{FrameSink, PlayerEvent};
 
 fn test_video_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")

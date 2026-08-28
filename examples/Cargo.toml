@@ -14,16 +14,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# Features mirror what avio-editor-demo enables, so this doubles as a
-# consumer-POV smoke test of that feature combination.
-avio = { path = "../crates/avio", features = [
-    "decode",
-    "encode",
-    "filter",
-    "pipeline",
-    "preview",
-    "preview-proxy",
-    "tokio",
-    "serde",
-] }
+# Consumer-POV smoke test of the avio editing engine. Enables the opt-in
+# capabilities avio-editor-demo uses (preview + serde).
+avio = { path = "../crates/avio", features = ["preview", "serde"] }
+# The scripts reach for a few ff-* primitives directly (probe a source, synthesize
+# fixture frames) the way a consumer would, since avio no longer re-exports them (ADR-0004).
+ff-decode = { path = "../crates/ff-decode" }
+ff-encode = { path = "../crates/ff-encode" }
+ff-common = { path = "../crates/ff-common" }
 tempfile = "3"
