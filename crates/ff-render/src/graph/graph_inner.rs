@@ -24,18 +24,29 @@ pub(super) fn run_gpu(
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let input_usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING;
+    // Outputs double as general-purpose scratch: `COPY_DST` lets a node (or test)
+    // fill a pass target via `write_texture`, `COPY_SRC` allows readback, and
+    // `TEXTURE_BINDING` lets a later node sample it. Harmless to render-only nodes.
     let output_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
         | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::COPY_DST
         | wgpu::TextureUsages::TEXTURE_BINDING;
 
     // Acquire every texture for the frame up front, so the process loop below
     // holds only shared borrows of the scope (further acquires would need
     // `&mut`). The scope returns all of them to the pool when it drops.
+    //
+    // Per node we allocate `pass_count()` output textures; the node writes its
+    // final result into the last one, which becomes the next node's input[0].
     let mut scope = FrameScope::new(&ctx.pool, &ctx.device);
     let input_idx = scope.acquire(w, h, format, input_usage);
-    let output_idx: Vec<usize> = nodes
+    let output_idx: Vec<Vec<usize>> = nodes
         .iter()
-        .map(|_| scope.acquire(w, h, format, output_usage))
+        .map(|node| {
+            (0..node.pass_count().max(1))
+                .map(|_| scope.acquire(w, h, format, output_usage))
+                .collect()
+        })
         .collect();
 
     // Upload the input frame to the initial GPU texture.
@@ -59,11 +70,28 @@ pub(super) fn run_gpu(
         },
     );
 
-    // Run each node: output of one node is the input of the next.
+    // Run each node. input[0] is the chained texture (the source frame for the
+    // first node, the previous node's final pass otherwise); input[1..] are the
+    // original source frame. Outputs are the node's `pass_count()` targets; the
+    // node's final pass, output_idx[last], becomes the next input[0].
     let mut current_idx = input_idx;
-    for (node, &out_idx) in nodes.iter().zip(&output_idx) {
-        node.process(&[scope.get(current_idx)], &[scope.get(out_idx)], ctx);
-        current_idx = out_idx;
+    for (node, passes) in nodes.iter().zip(&output_idx) {
+        let inputs: Vec<&wgpu::Texture> = (0..node.input_count())
+            .map(|i| {
+                if i == 0 {
+                    scope.get(current_idx)
+                } else {
+                    scope.get(input_idx)
+                }
+            })
+            .collect();
+        let outputs: Vec<&wgpu::Texture> = passes.iter().map(|&idx| scope.get(idx)).collect();
+        node.process(&inputs, &outputs, ctx);
+        // `passes` is always non-empty (`pass_count().max(1) >= 1`); the final
+        // pass becomes the next node's input[0].
+        if let Some(&last) = passes.last() {
+            current_idx = last;
+        }
     }
 
     // Copy the final texture to a CPU-readable staging buffer.
