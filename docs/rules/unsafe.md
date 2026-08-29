@@ -95,7 +95,7 @@ impl Drop for FilterGraphInner {
 
 ## FFmpeg call order
 
-The exact call order is specified per crate in `docs/crates/{name}/design.md` and is part of the
+The exact call order is specified per crate in `docs/specs/crates/{name}/design.md` and is part of the
 design (see [design.md](./design.md)). Deviating is a bug.
 
 ---

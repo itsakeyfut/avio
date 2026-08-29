@@ -16,5 +16,4 @@ This directory collects the conventions to follow when writing code across the a
 
 Design specs live in [`../specs/`](../specs/), and the rationale behind significant design and
 architecture decisions in [`../adr/`](../adr/) (Architecture Decision Records; see
-[when to write one](../adr/README.md#when-to-write-one)). Internal review-knowledge and process docs
-live in `docs/dev/`.
+[when to write one](../adr/README.md#when-to-write-one)).
