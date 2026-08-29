@@ -26,6 +26,7 @@ ff-preview = { workspace = true }
 ff-format  = { workspace = true }
 log        = { workspace = true }
 thiserror  = { workspace = true }
+image      = { workspace = true }
 
 [dependencies.wgpu]
 version  = "30.0.0"

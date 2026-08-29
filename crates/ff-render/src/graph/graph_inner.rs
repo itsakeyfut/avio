@@ -38,14 +38,21 @@ fn execute_nodes<'a>(
     // final result into the last one, which becomes the next node's input[0].
     let mut scope = FrameScope::new(&ctx.pool, &ctx.device);
     let input_idx = scope.acquire(w, h, format, input_usage);
-    let output_idx: Vec<Vec<usize>> = nodes
-        .iter()
-        .map(|node| {
-            (0..node.pass_count().max(1))
-                .map(|_| scope.acquire(w, h, format, output_usage))
-                .collect()
-        })
-        .collect();
+    // A node may resize (e.g. ScaleNode); thread the running size so each node's
+    // output targets — and thus the next node's input — are the right size.
+    // input[1..] (the original source) stays at the initial `w` x `h`.
+    let mut cur_w = w;
+    let mut cur_h = h;
+    let mut output_idx: Vec<Vec<usize>> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let (out_w, out_h) = node.output_dimensions(cur_w, cur_h);
+        let passes: Vec<usize> = (0..node.pass_count().max(1))
+            .map(|_| scope.acquire(out_w, out_h, format, output_usage))
+            .collect();
+        output_idx.push(passes);
+        cur_w = out_w;
+        cur_h = out_h;
+    }
 
     // Upload the 8-bit `rgba` frame to the initial GPU texture. Only valid for
     // an `Rgba8Unorm` working format: an HDR (`Rgba16Float`) graph is driven by a
@@ -123,9 +130,16 @@ pub(super) fn run_gpu(
     let (scope, current_idx) = execute_nodes(nodes, ctx, rgba, w, h, format);
     ctx.note_readback();
 
+    // Read back at the final texture's actual size — a node may have resized it
+    // (e.g. ScaleNode), so it can differ from the input `w` x `h`.
+    let (out_w, out_h) = {
+        let tex = scope.get(current_idx);
+        (tex.width(), tex.height())
+    };
+
     // Copy the final texture to a CPU-readable staging buffer.
-    let bytes_per_row_padded = align_up(w * bpp, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer_size = u64::from(bytes_per_row_padded) * u64::from(h);
+    let bytes_per_row_padded = align_up(out_w * bpp, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer_size = u64::from(bytes_per_row_padded) * u64::from(out_h);
 
     let staging_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("ff-render staging"),
@@ -155,8 +169,8 @@ pub(super) fn run_gpu(
             },
         },
         wgpu::Extent3d {
-            width: w,
-            height: h,
+            width: out_w,
+            height: out_h,
             depth_or_array_layers: 1,
         },
     );
@@ -185,10 +199,10 @@ pub(super) fn run_gpu(
         .map_err(|e| RenderError::Composite {
             message: format!("staging buffer get_mapped_range failed: {e}"),
         })?;
-    let mut out = Vec::with_capacity((w * h * bpp) as usize);
-    for y in 0..h as usize {
+    let mut out = Vec::with_capacity((out_w * out_h * bpp) as usize);
+    for y in 0..out_h as usize {
         let row_start = y * bytes_per_row_padded as usize;
-        let row_end = row_start + (w * bpp) as usize;
+        let row_end = row_start + (out_w * bpp) as usize;
         out.extend_from_slice(&raw[row_start..row_end]);
     }
     drop(raw);
@@ -218,12 +232,15 @@ pub(super) fn run_gpu_to_texture(
         .ok_or_else(|| RenderError::Composite {
             message: "no composited texture to display".to_string(),
         })?;
+    // The final texture may have been resized by a node (e.g. ScaleNode), so the
+    // handle reports the texture's actual dimensions rather than the input size.
+    let (out_w, out_h) = (texture.width(), texture.height());
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(TextureHandle {
         texture,
         view,
-        width: w,
-        height: h,
+        width: out_w,
+        height: out_h,
     })
 }
 
