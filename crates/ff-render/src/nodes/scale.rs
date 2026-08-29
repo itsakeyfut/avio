@@ -25,17 +25,20 @@ struct ScalePipeline {
 
 /// Resample a frame to a target resolution.
 ///
-/// In Phase 1 the GPU path renders into the output texture at whatever size
-/// it was allocated — the graph allocates same-size textures, so `ScaleNode`
-/// acts as a bilinear blit pass. Full dimension-changing support (variable
-/// output texture size) is a Phase 2 addition.
+/// The GPU path renders into a `width` x `height` output target (the executor
+/// allocates a differently sized target from [`output_dimensions`]) using the
+/// node's [`ScaleAlgorithm`] sampler, so it truly resizes rather than blitting
+/// same-size. The CPU path is exposed as [`scale_cpu`](Self::scale_cpu), which
+/// returns a new resized buffer (the in-place [`RenderNodeCpu::process_cpu`]
+/// cannot change dimensions, so it stays a no-op).
 ///
-/// The CPU path is a no-op; use an offline scaler (e.g. `image` crate) for
-/// CPU-side resizing.
+/// A `width` or `height` of `0` means "keep the input size" (passthrough).
+///
+/// [`output_dimensions`]: crate::nodes::RenderNode::output_dimensions
 pub struct ScaleNode {
-    /// Target width in pixels (used as metadata; output size depends on the graph).
+    /// Target width in pixels (`0` = keep input width).
     pub width: u32,
-    /// Target height in pixels.
+    /// Target height in pixels (`0` = keep input height).
     pub height: u32,
     /// Sampling algorithm.
     pub algorithm: ScaleAlgorithm,
@@ -54,6 +57,42 @@ impl ScaleNode {
             pipeline: std::sync::OnceLock::new(),
         }
     }
+
+    /// Output size for the given input size: the configured `width` x `height`,
+    /// or the input size when either is `0` (passthrough).
+    #[must_use]
+    pub fn target_size(&self, in_w: u32, in_h: u32) -> (u32, u32) {
+        if self.width == 0 || self.height == 0 {
+            (in_w, in_h)
+        } else {
+            (self.width, self.height)
+        }
+    }
+
+    /// Resize an RGBA frame on the CPU, returning `(pixels, out_w, out_h)`.
+    ///
+    /// `src` is `in_w` x `in_h` RGBA (`in_w * in_h * 4` bytes). The output is
+    /// [`target_size`](Self::target_size) at the node's [`ScaleAlgorithm`]
+    /// (Bilinear -> triangle, Bicubic -> Catmull-Rom, Lanczos -> Lanczos3). A
+    /// malformed `src` (wrong length) is returned unchanged.
+    #[must_use]
+    pub fn scale_cpu(&self, src: &[u8], in_w: u32, in_h: u32) -> (Vec<u8>, u32, u32) {
+        // A zero-dimension source has nothing to resample; return it as-is.
+        if in_w == 0 || in_h == 0 {
+            return (src.to_vec(), in_w, in_h);
+        }
+        let (out_w, out_h) = self.target_size(in_w, in_h);
+        let Some(img) = image::RgbaImage::from_raw(in_w, in_h, src.to_vec()) else {
+            return (src.to_vec(), in_w, in_h);
+        };
+        let filter = match self.algorithm {
+            ScaleAlgorithm::Bilinear => image::imageops::FilterType::Triangle,
+            ScaleAlgorithm::Bicubic => image::imageops::FilterType::CatmullRom,
+            ScaleAlgorithm::Lanczos => image::imageops::FilterType::Lanczos3,
+        };
+        let resized = image::imageops::resize(&img, out_w, out_h, filter);
+        (resized.into_raw(), out_w, out_h)
+    }
 }
 
 impl Default for ScaleNode {
@@ -66,8 +105,10 @@ impl Default for ScaleNode {
 
 impl RenderNodeCpu for ScaleNode {
     fn process_cpu(&self, _rgba: &mut [u8], _w: u32, _h: u32) {
-        // CPU-side resize is not implemented in Phase 1.
-        // Use an offline scaler (e.g. `image::imageops::resize`) for CPU paths.
+        // Resizing changes dimensions, which the in-place `process_cpu(&mut [u8])`
+        // signature cannot express (the buffer size is fixed). Use
+        // [`ScaleNode::scale_cpu`] for a real CPU resize; here it is a no-op so
+        // a ScaleNode in the CPU fallback chain passes the frame through.
     }
 }
 
@@ -166,6 +207,10 @@ impl ScaleNode {
 
 #[cfg(feature = "wgpu")]
 impl super::RenderNode for ScaleNode {
+    fn output_dimensions(&self, in_w: u32, in_h: u32) -> (u32, u32) {
+        self.target_size(in_w, in_h)
+    }
+
     fn process(
         &self,
         inputs: &[&wgpu::Texture],
@@ -247,5 +292,56 @@ mod tests {
     #[test]
     fn scale_algorithm_default_should_be_bilinear() {
         assert_eq!(ScaleAlgorithm::default(), ScaleAlgorithm::Bilinear);
+    }
+
+    #[test]
+    fn scale_cpu_should_resize_not_passthrough() {
+        // 4x2 frame: left half red, right half blue. Downscale to 2x2. A real
+        // resize yields a 2x2 buffer with a red-dominant left column and a
+        // blue-dominant right column; a no-op/passthrough would not change dims.
+        let node = ScaleNode::new(2, 2, ScaleAlgorithm::Bilinear);
+        let mut src = Vec::new();
+        for _y in 0..2 {
+            for x in 0..4 {
+                if x < 2 {
+                    src.extend_from_slice(&[255, 0, 0, 255]);
+                } else {
+                    src.extend_from_slice(&[0, 0, 255, 255]);
+                }
+            }
+        }
+
+        let (out, out_w, out_h) = node.scale_cpu(&src, 4, 2);
+        assert_eq!(
+            (out_w, out_h),
+            (2, 2),
+            "must resize to the requested dimensions"
+        );
+        assert_eq!(out.len(), 2 * 2 * 4, "output must be a 2x2 RGBA buffer");
+        assert_ne!(
+            out, src,
+            "output must differ from the input (not a passthrough)"
+        );
+        // Pixel (col, row) at index (row * 2 + col) * 4.
+        let left = &out[0..4]; // (0, 0)
+        let right = &out[4..8]; // (1, 0)
+        assert!(
+            left[0] > left[2],
+            "left column must stay red-dominant after resize; got {left:?}"
+        );
+        assert!(
+            right[2] > right[0],
+            "right column must stay blue-dominant after resize; got {right:?}"
+        );
+    }
+
+    #[test]
+    fn scale_cpu_zero_dimensions_should_passthrough() {
+        // A ScaleNode with width/height 0 keeps the input size.
+        let node = ScaleNode::new(0, 0, ScaleAlgorithm::Bilinear);
+        let src = vec![10u8, 20, 30, 255, 40, 50, 60, 255]; // 2x1 RGBA
+        let (out, out_w, out_h) = node.scale_cpu(&src, 2, 1);
+        assert_eq!((out_w, out_h), (2, 1), "0 dimensions keep the input size");
+        assert_eq!(out, src, "passthrough must return the input unchanged");
     }
 }

@@ -54,6 +54,16 @@ pub trait RenderNode: RenderNodeCpu {
         1
     }
 
+    /// Output dimensions this node produces given its input dimensions.
+    ///
+    /// Default: unchanged (`(in_w, in_h)`). A resampling node (e.g.
+    /// [`ScaleNode`]) overrides this so the executor allocates its output target
+    /// — and every following node's input — at the new size. All of a node's
+    /// `pass_count()` targets are allocated at this size.
+    fn output_dimensions(&self, in_w: u32, in_h: u32) -> (u32, u32) {
+        (in_w, in_h)
+    }
+
     /// Run the GPU render pass.
     ///
     /// `inputs` has `input_count()` textures: `inputs[0]` is the previous node's

@@ -468,6 +468,83 @@ mod gpu_tests {
         );
     }
 
+    #[test]
+    fn scale_gpu_should_produce_requested_dimensions() {
+        use crate::nodes::{ScaleAlgorithm, ScaleNode};
+
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (in_w, in_h) = (8u32, 8u32);
+        let (out_w, out_h) = (4u32, 2u32);
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(ScaleNode::new(
+            out_w,
+            out_h,
+            ScaleAlgorithm::Bilinear,
+        ));
+        let rgba = vec![128u8; (in_w * in_h * 4) as usize];
+
+        let handle = graph
+            .process_gpu_to_texture(&rgba, in_w, in_h)
+            .expect("scaled texture");
+        assert_eq!(
+            (handle.width, handle.height),
+            (out_w, out_h),
+            "handle must report the requested dimensions, not the input size"
+        );
+        assert_eq!(
+            (handle.texture.width(), handle.texture.height()),
+            (out_w, out_h),
+            "the GPU texture must be allocated at the requested dimensions"
+        );
+    }
+
+    #[test]
+    fn scale_gpu_downscale_solid_should_preserve_colour() {
+        use crate::nodes::{ScaleAlgorithm, ScaleNode};
+
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (in_w, in_h) = (8u32, 8u32);
+        let (out_w, out_h) = (2u32, 2u32);
+        let mut rgba = Vec::new();
+        for _ in 0..(in_w * in_h) {
+            rgba.extend_from_slice(&[200, 100, 50, 255]);
+        }
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(ScaleNode::new(
+            out_w,
+            out_h,
+            ScaleAlgorithm::Bilinear,
+        ));
+
+        let out = graph
+            .process_gpu(&rgba, in_w, in_h)
+            .expect("downscaled bytes");
+        assert_eq!(
+            out.len(),
+            (out_w * out_h * 4) as usize,
+            "readback must be at the scaled size (proves the resize happened)"
+        );
+        for px in out.chunks_exact(4) {
+            assert!(
+                (i32::from(px[0]) - 200).abs() <= 4,
+                "R must be preserved through downscale; got {}",
+                px[0]
+            );
+            assert!(
+                (i32::from(px[1]) - 100).abs() <= 4,
+                "G must be preserved; got {}",
+                px[1]
+            );
+            assert!(
+                (i32::from(px[2]) - 50).abs() <= 4,
+                "B must be preserved; got {}",
+                px[2]
+            );
+        }
+    }
+
     /// Decode an IEEE-754 half-float (as read back from an `Rgba16Float` target)
     /// to `f32`. Adequate for the [0, 1] RGB values these tests read.
     #[allow(clippy::cast_precision_loss)]
