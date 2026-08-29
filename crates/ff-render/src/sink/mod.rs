@@ -55,6 +55,29 @@ impl GpuFrameSink {
 
 impl FrameSink for GpuFrameSink {
     fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration) {
+        // Zero-copy path: when the downstream accepts a GPU frame, hand it the
+        // composited texture directly (no GPU-to-CPU readback). On failure, fall
+        // through to the readback path.
+        #[cfg(feature = "display")]
+        {
+            if self.downstream.accepts_gpu_frame() {
+                match self.graph.process_gpu_to_texture(rgba, width, height) {
+                    Ok(handle) => {
+                        self.downstream.push_frame_gpu(
+                            &handle.texture,
+                            &handle.view,
+                            handle.width,
+                            handle.height,
+                            pts,
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("GpuFrameSink zero-copy path failed, using readback error={e}");
+                    }
+                }
+            }
+        }
         #[cfg(feature = "wgpu")]
         {
             match self.graph.process_gpu(rgba, width, height) {
@@ -151,5 +174,104 @@ mod tests {
     fn gpu_frame_sink_should_be_send() {
         fn assert_send<T: Send>() {}
         assert_send::<GpuFrameSink>();
+    }
+}
+
+#[cfg(all(test, feature = "display"))]
+mod display_tests {
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Duration;
+
+    use ff_preview::FrameSink;
+
+    use super::GpuFrameSink;
+    use crate::context::RenderContext;
+    use crate::graph::RenderGraph;
+    use crate::nodes::ColorGradeNode;
+
+    /// A headless GPU context, or `None` when no adapter is available (CI).
+    fn ctx() -> Option<Arc<RenderContext>> {
+        match futures::executor::block_on(RenderContext::init()) {
+            Ok(ctx) => Some(Arc::new(ctx)),
+            Err(_) => None,
+        }
+    }
+
+    /// Downstream that accepts a GPU frame and records its dimensions.
+    struct GpuCapture(Arc<Mutex<Option<(u32, u32)>>>);
+    impl FrameSink for GpuCapture {
+        fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
+            unreachable!("the zero-copy path must not call the CPU push_frame");
+        }
+        fn accepts_gpu_frame(&self) -> bool {
+            true
+        }
+        fn push_frame_gpu(
+            &mut self,
+            _texture: &wgpu::Texture,
+            _view: &wgpu::TextureView,
+            width: u32,
+            height: u32,
+            _pts: Duration,
+        ) {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((width, height));
+        }
+    }
+
+    /// CPU-only downstream (default `accepts_gpu_frame() == false`).
+    struct CpuCapture(Arc<Mutex<bool>>);
+    impl FrameSink for CpuCapture {
+        fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        }
+    }
+
+    #[test]
+    fn gpu_sink_should_forward_a_texture_without_cpu_readback() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph =
+            RenderGraph::new(Arc::clone(&ctx)).push(ColorGradeNode::new(0.0, 1.0, 1.0, 0.0, 0.0));
+        let got = Arc::new(Mutex::new(None));
+        let mut sink = GpuFrameSink::new(graph, Box::new(GpuCapture(Arc::clone(&got))));
+
+        let (w, h) = (16u32, 16u32);
+        sink.push_frame(&vec![128u8; (w * h * 4) as usize], w, h, Duration::ZERO);
+
+        assert_eq!(
+            *got.lock().unwrap_or_else(PoisonError::into_inner),
+            Some((w, h)),
+            "the GPU downstream must receive the composited texture"
+        );
+        assert_eq!(
+            ctx.readback_count(),
+            0,
+            "the zero-copy display path must perform no GPU-to-CPU readback"
+        );
+    }
+
+    #[test]
+    fn gpu_sink_cpu_downstream_should_use_readback_path() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph =
+            RenderGraph::new(Arc::clone(&ctx)).push(ColorGradeNode::new(0.0, 1.0, 1.0, 0.0, 0.0));
+        let got = Arc::new(Mutex::new(false));
+        let mut sink = GpuFrameSink::new(graph, Box::new(CpuCapture(Arc::clone(&got))));
+
+        let (w, h) = (16u32, 16u32);
+        sink.push_frame(&vec![128u8; (w * h * 4) as usize], w, h, Duration::ZERO);
+
+        assert!(
+            *got.lock().unwrap_or_else(PoisonError::into_inner),
+            "a CPU-only downstream must receive a CPU frame"
+        );
+        assert_eq!(
+            ctx.readback_count(),
+            1,
+            "a CPU-only downstream falls back to the readback path (proves the counter moves)"
+        );
     }
 }

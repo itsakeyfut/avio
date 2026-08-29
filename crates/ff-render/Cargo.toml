@@ -17,6 +17,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 wgpu    = ["dep:wgpu"]
+# GPU-resident preview: hand the composited texture to the sink without a
+# GPU-to-CPU readback. Implies wgpu and enables ff-preview's matching path.
+display = ["wgpu", "ff-preview/display"]
 
 [dependencies]
 ff-preview = { workspace = true }

@@ -4,28 +4,23 @@ use crate::context::RenderContext;
 use crate::error::RenderError;
 use crate::nodes::RenderNode;
 use crate::pool::FrameScope;
+use crate::sink::TextureHandle;
 
-/// Execute all `nodes` on the `rgba` input and return the processed RGBA bytes.
+/// Acquire textures, upload the input, and run every node. Returns the scope
+/// (holding all frame textures) and the index of the final composited texture.
 ///
-/// Textures are drawn from the context's [`TexturePool`](crate::pool) via a
-/// [`FrameScope`], so a warmed-up pipeline allocates no textures per frame; the
-/// scope returns them all to the pool when it drops.
+/// Textures are drawn from the context's [`TexturePool`](crate::pool) via the
+/// returned [`FrameScope`]; how the final texture is consumed (read back, or
+/// taken out for display) is up to the caller, which owns the scope.
 #[allow(clippy::too_many_lines)]
-pub(super) fn run_gpu(
+fn execute_nodes<'a>(
     nodes: &[Box<dyn RenderNode>],
-    ctx: &Arc<RenderContext>,
+    ctx: &'a Arc<RenderContext>,
     rgba: &[u8],
     w: u32,
     h: u32,
     format: wgpu::TextureFormat,
-) -> Result<Vec<u8>, RenderError> {
-    if nodes.is_empty() {
-        return Ok(rgba.to_vec());
-    }
-
-    // Bytes per pixel of the working format: 8 for Rgba16Float (HDR), 4 for the
-    // 4-channel 8-bit default. Drives the input upload and the readback stride.
-    let bpp = bytes_per_pixel(format);
+) -> (FrameScope<'a>, usize) {
     let input_usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING;
     // Outputs double as general-purpose scratch: `COPY_DST` lets a node (or test)
     // fill a pass target via `write_texture`, `COPY_SRC` allows readback, and
@@ -103,6 +98,31 @@ pub(super) fn run_gpu(
         }
     }
 
+    (scope, current_idx)
+}
+
+/// Execute all `nodes` on the `rgba` input and return the processed RGBA bytes.
+///
+/// Reads the final texture back to system memory (a GPU-to-CPU copy per frame).
+/// For a zero-copy display path, use [`run_gpu_to_texture`] instead.
+pub(super) fn run_gpu(
+    nodes: &[Box<dyn RenderNode>],
+    ctx: &Arc<RenderContext>,
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+) -> Result<Vec<u8>, RenderError> {
+    if nodes.is_empty() {
+        return Ok(rgba.to_vec());
+    }
+
+    // Bytes per pixel of the working format: 8 for Rgba16Float (HDR), 4 for the
+    // 4-channel 8-bit default. Drives the readback stride.
+    let bpp = bytes_per_pixel(format);
+    let (scope, current_idx) = execute_nodes(nodes, ctx, rgba, w, h, format);
+    ctx.note_readback();
+
     // Copy the final texture to a CPU-readable staging buffer.
     let bytes_per_row_padded = align_up(w * bpp, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer_size = u64::from(bytes_per_row_padded) * u64::from(h);
@@ -175,6 +195,36 @@ pub(super) fn run_gpu(
     staging_buf.unmap();
 
     Ok(out)
+}
+
+/// Execute all `nodes` and hand the final composited texture to the caller as a
+/// [`TextureHandle`], **without** any GPU-to-CPU readback.
+///
+/// The texture is taken out of the pool (ownership transfers to the caller), so
+/// it stays valid for direct display; the graph's intermediate textures are
+/// returned to the pool. No staging buffer is mapped, so [`RenderContext`]'s
+/// readback counter is not incremented.
+pub(super) fn run_gpu_to_texture(
+    nodes: &[Box<dyn RenderNode>],
+    ctx: &Arc<RenderContext>,
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+) -> Result<TextureHandle, RenderError> {
+    let (scope, current_idx) = execute_nodes(nodes, ctx, rgba, w, h, format);
+    let texture = scope
+        .take(current_idx)
+        .ok_or_else(|| RenderError::Composite {
+            message: "no composited texture to display".to_string(),
+        })?;
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(TextureHandle {
+        texture,
+        view,
+        width: w,
+        height: h,
+    })
 }
 
 fn align_up(value: u32, alignment: u32) -> u32 {

@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::RenderError;
 use crate::pool::TexturePool;
@@ -13,6 +14,9 @@ pub struct RenderContext {
     /// Shared reuse pool for GPU textures, so the graph (and, later, the
     /// compositor) avoid per-frame texture allocation.
     pub(crate) pool: Mutex<TexturePool>,
+    /// Count of GPU-to-CPU readbacks performed (staging-buffer maps). The
+    /// zero-copy display path never increments this; tests assert it stays flat.
+    pub(crate) readback_count: AtomicU64,
 }
 
 impl RenderContext {
@@ -23,7 +27,19 @@ impl RenderContext {
             device,
             queue,
             pool: Mutex::new(TexturePool::new()),
+            readback_count: AtomicU64::new(0),
         }
+    }
+
+    /// Record one GPU-to-CPU readback (called from the staging-buffer path).
+    pub(crate) fn note_readback(&self) {
+        self.readback_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Number of GPU-to-CPU readbacks performed so far.
+    #[cfg(test)]
+    pub(crate) fn readback_count(&self) -> u64 {
+        self.readback_count.load(Ordering::Relaxed)
     }
 
     /// Initialise wgpu using the default (best available) backend.
@@ -87,6 +103,7 @@ impl RenderContext {
             device,
             queue,
             pool: Mutex::new(TexturePool::new()),
+            readback_count: AtomicU64::new(0),
         })
     }
 }
