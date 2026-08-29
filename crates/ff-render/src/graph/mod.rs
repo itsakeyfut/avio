@@ -41,6 +41,23 @@ pub struct RenderGraph {
     /// `None` when constructed via `new_cpu` — `process_gpu` will return an error.
     #[cfg(feature = "wgpu")]
     ctx: Option<Arc<RenderContext>>,
+    /// Working texture format for the GPU pipeline. `Rgba8Unorm` by default;
+    /// [`with_pixel_format`](Self::with_pixel_format) promotes it to `Rgba16Float`
+    /// for high-bit-depth input so precision is not lost before any node runs.
+    #[cfg(feature = "wgpu")]
+    internal_format: wgpu::TextureFormat,
+}
+
+/// Select the working GPU texture format for a source pixel format: `Rgba16Float`
+/// for high-bit-depth (10/12-bit) input, `Rgba8Unorm` otherwise.
+#[cfg(feature = "wgpu")]
+#[must_use]
+pub(crate) fn select_texture_format(pf: ff_format::PixelFormat) -> wgpu::TextureFormat {
+    if pf.is_high_bit_depth() {
+        wgpu::TextureFormat::Rgba16Float
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
 }
 
 impl RenderGraph {
@@ -56,6 +73,7 @@ impl RenderGraph {
             cpu_nodes: Vec::new(),
             gpu_nodes: Vec::new(),
             ctx: Some(ctx),
+            internal_format: wgpu::TextureFormat::Rgba8Unorm,
         }
     }
 
@@ -72,7 +90,40 @@ impl RenderGraph {
             gpu_nodes: Vec::new(),
             #[cfg(feature = "wgpu")]
             ctx: None,
+            #[cfg(feature = "wgpu")]
+            internal_format: wgpu::TextureFormat::Rgba8Unorm,
         }
+    }
+
+    /// Set the source pixel format so the GPU pipeline runs at the matching
+    /// working precision: high-bit-depth (10/12-bit) input promotes every
+    /// internal texture to `Rgba16Float`; 8-bit input stays `Rgba8Unorm`.
+    ///
+    /// The chosen format flows through the texture-pool key and every
+    /// intermediate target. For `Rgba16Float`, drive the graph with a
+    /// high-bit-depth source node (e.g. [`YuvUploadNode::new_high_bit_depth`]);
+    /// [`process_gpu`](Self::process_gpu) then returns raw `Rgba16Float` texels
+    /// (8 bytes/pixel) rather than 8-bit RGBA.
+    ///
+    /// [`YuvUploadNode::new_high_bit_depth`]: crate::nodes::YuvUploadNode::new_high_bit_depth
+    #[cfg(feature = "wgpu")]
+    #[must_use]
+    pub fn with_pixel_format(mut self, pf: ff_format::PixelFormat) -> Self {
+        self.internal_format = select_texture_format(pf);
+        self
+    }
+
+    /// The working GPU texture format ([`Rgba8Unorm`] by default,
+    /// [`Rgba16Float`] after [`with_pixel_format`](Self::with_pixel_format) with a
+    /// high-bit-depth format). Lets a caller interpret the byte layout of the
+    /// buffer [`process_gpu`](Self::process_gpu) returns.
+    ///
+    /// [`Rgba8Unorm`]: wgpu::TextureFormat::Rgba8Unorm
+    /// [`Rgba16Float`]: wgpu::TextureFormat::Rgba16Float
+    #[cfg(feature = "wgpu")]
+    #[must_use]
+    pub fn internal_format(&self) -> wgpu::TextureFormat {
+        self.internal_format
     }
 
     /// Append a GPU+CPU node to the chain.
@@ -114,6 +165,12 @@ impl RenderGraph {
     /// Requires the `wgpu` feature and a GPU context (created via [`new`](Self::new)).
     /// Returns [`RenderError::Composite`] if called on a CPU-only graph.
     ///
+    /// `rgba` is the 8-bit source frame and the returned buffer is 8-bit RGBA by
+    /// default. After [`with_pixel_format`](Self::with_pixel_format) selects an
+    /// `Rgba16Float` working format, `rgba` is ignored (the graph is driven by a
+    /// high-bit-depth source node) and the returned buffer is raw `Rgba16Float`
+    /// texels (8 bytes/pixel); see [`internal_format`](Self::internal_format).
+    ///
     /// # Errors
     ///
     /// Returns an error on GPU device failure or staging-buffer readback failure.
@@ -122,7 +179,7 @@ impl RenderGraph {
         let ctx = self.ctx.as_ref().ok_or_else(|| RenderError::Composite {
             message: "process_gpu called on a CPU-only RenderGraph (no RenderContext)".to_string(),
         })?;
-        graph_inner::run_gpu(&self.gpu_nodes, ctx, rgba, w, h)
+        graph_inner::run_gpu(&self.gpu_nodes, ctx, rgba, w, h, self.internal_format)
     }
 
     /// Run the CPU fallback pipeline: apply each node's `process_cpu` in order.
@@ -358,6 +415,122 @@ mod gpu_tests {
             alloc_count(&ctx),
             after_first,
             "same-size frames must reuse pooled textures (steady state = 0 allocations/frame)"
+        );
+    }
+
+    /// Decode an IEEE-754 half-float (as read back from an `Rgba16Float` target)
+    /// to `f32`. Adequate for the [0, 1] RGB values these tests read.
+    #[allow(clippy::cast_precision_loss)]
+    fn f16_to_f32(bits: u16) -> f32 {
+        let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exp = i32::from((bits >> 10) & 0x1f);
+        let frac = f32::from(bits & 0x3ff);
+        if exp == 0 {
+            sign * frac * 2f32.powi(-24)
+        } else if exp == 0x1f {
+            sign * f32::INFINITY
+        } else {
+            sign * (1.0 + frac / 1024.0) * 2f32.powi(exp - 15)
+        }
+    }
+
+    /// A plane of `count` little-endian `u16` samples all equal to `value`.
+    fn plane10(value: u16, count: usize) -> Vec<u8> {
+        value
+            .to_le_bytes()
+            .iter()
+            .copied()
+            .cycle()
+            .take(count * 2)
+            .collect()
+    }
+
+    #[test]
+    fn pipeline_should_select_rgba16float_for_10bit_input() {
+        use super::select_texture_format;
+        use ff_format::PixelFormat;
+
+        assert_eq!(
+            select_texture_format(PixelFormat::Yuv420p10le),
+            wgpu::TextureFormat::Rgba16Float,
+            "10-bit planar input must select Rgba16Float"
+        );
+        assert_eq!(
+            select_texture_format(PixelFormat::P010le),
+            wgpu::TextureFormat::Rgba16Float,
+            "10-bit semi-planar input must select Rgba16Float"
+        );
+        assert_eq!(
+            select_texture_format(PixelFormat::Yuv420p),
+            wgpu::TextureFormat::Rgba8Unorm,
+            "8-bit input must stay Rgba8Unorm"
+        );
+        assert_eq!(
+            select_texture_format(PixelFormat::Rgba),
+            wgpu::TextureFormat::Rgba8Unorm,
+            "8-bit RGBA input must stay Rgba8Unorm"
+        );
+        // The builder reflects the same choice (no adapter required).
+        assert_eq!(
+            RenderGraph::new_cpu()
+                .with_pixel_format(PixelFormat::Yuv420p10le)
+                .internal_format(),
+            wgpu::TextureFormat::Rgba16Float
+        );
+        assert_eq!(
+            RenderGraph::new_cpu()
+                .with_pixel_format(PixelFormat::Yuv420p)
+                .internal_format(),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+    }
+
+    #[test]
+    fn yuv_upload_should_preserve_10bit_precision_into_rgba16float() {
+        use ff_format::PixelFormat;
+
+        use crate::nodes::{YuvFormat, YuvUploadNode};
+
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (w, h) = (2u32, 2u32);
+
+        // Render one 10-bit luma value (neutral chroma) at Rgba16Float and return
+        // the read-back R channel as f32.
+        let render = |y10: u16| -> f32 {
+            let mut node = YuvUploadNode::new_high_bit_depth(YuvFormat::Yuv420p, w, h);
+            // 2×2 420p: 4 luma samples, 1 chroma sample; neutral chroma = 512.
+            node.set_planes(plane10(y10, 4), plane10(512, 1), plane10(512, 1));
+            let graph = RenderGraph::new(Arc::clone(&ctx))
+                .with_pixel_format(PixelFormat::Yuv420p10le)
+                .push(node);
+            // The 8-bit `rgba` arg is ignored for an Rgba16Float graph.
+            let out = graph.process_gpu(&[], w, h).expect("hdr frame");
+            assert_eq!(
+                out.len(),
+                (w * h * 8) as usize,
+                "Rgba16Float readback must be 8 bytes/pixel"
+            );
+            f16_to_f32(u16::from_le_bytes([out[0], out[1]]))
+        };
+
+        // Y = 512 and Y = 515 both round to 128 (0.502) in 8-bit, but differ by
+        // 3/1023 ≈ 0.0029 in 10-bit. Preserving that proves the pipeline ran at
+        // >8-bit precision (non-vacuous: an 8-bit path would make them identical).
+        let a = render(512);
+        let b = render(515);
+        assert!(
+            (a - 512.0 / 1023.0).abs() < 0.01,
+            "Y=512 must decode to ~0.5005; got {a}"
+        );
+        assert!(
+            (b - 515.0 / 1023.0).abs() < 0.01,
+            "Y=515 must decode to ~0.5034; got {b}"
+        );
+        assert!(
+            (b - a).abs() > 0.0015,
+            "10-bit precision must distinguish Y=512 from Y=515; got a={a} b={b}"
         );
     }
 }

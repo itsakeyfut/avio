@@ -39,6 +39,9 @@ pub struct YuvUploadNode {
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
+    /// `true` for 10-bit planar input (planes are little-endian `u16`, values in
+    /// `0..=1023`) rendered to an `Rgba16Float` target; `false` for 8-bit.
+    high_bit_depth: bool,
     y_plane: Vec<u8>,
     cb_plane: Vec<u8>,
     cr_plane: Vec<u8>,
@@ -46,8 +49,13 @@ pub struct YuvUploadNode {
     pipeline: std::sync::OnceLock<YuvPipeline>,
 }
 
+/// Neutral chroma value for 10-bit YUV (mid of the `0..=1023` range).
+const TEN_BIT_NEUTRAL_CHROMA: u16 = 512;
+/// Maximum 10-bit sample value.
+const TEN_BIT_MAX: f32 = 1023.0;
+
 impl YuvUploadNode {
-    /// Create a new node. Plane buffers are initialised to neutral values (Y = 0, Cb = Cr = 128).
+    /// Create a new 8-bit node. Plane buffers are initialised to neutral values (Y = 0, Cb = Cr = 128).
     #[must_use]
     pub fn new(format: YuvFormat, width: u32, height: u32) -> Self {
         let (cw, ch) = chroma_dims(format, width, height);
@@ -55,6 +63,7 @@ impl YuvUploadNode {
             format,
             width,
             height,
+            high_bit_depth: false,
             y_plane: vec![0u8; (width * height) as usize],
             cb_plane: vec![128u8; (cw * ch) as usize],
             cr_plane: vec![128u8; (cw * ch) as usize],
@@ -63,16 +72,47 @@ impl YuvUploadNode {
         }
     }
 
+    /// Create a new 10-bit planar node. Plane buffers hold little-endian `u16`
+    /// samples (values `0..=1023`) and render to an `Rgba16Float` target, so
+    /// 10-bit precision survives the upload. Neutral init: Y = 0, Cb = Cr = 512.
+    #[must_use]
+    pub fn new_high_bit_depth(format: YuvFormat, width: u32, height: u32) -> Self {
+        let (cw, ch) = chroma_dims(format, width, height);
+        Self {
+            format,
+            width,
+            height,
+            high_bit_depth: true,
+            y_plane: vec![0u8; (width * height * 2) as usize],
+            cb_plane: u16_le_plane(TEN_BIT_NEUTRAL_CHROMA, (cw * ch) as usize),
+            cr_plane: u16_le_plane(TEN_BIT_NEUTRAL_CHROMA, (cw * ch) as usize),
+            #[cfg(feature = "wgpu")]
+            pipeline: std::sync::OnceLock::new(),
+        }
+    }
+
     /// Replace the stored plane buffers.
     ///
-    /// Expected sizes for `width × height` at `format`:
-    /// - `y`:       `width × height` bytes
-    /// - `cb`, `cr`: `chroma_w × chroma_h` bytes (sub-sampled per [`YuvFormat`])
+    /// Expected sizes for `width × height` at `format`, per sample:
+    /// - 8-bit: 1 byte; 10-bit ([`new_high_bit_depth`](Self::new_high_bit_depth)): 2 bytes (little-endian `u16`)
+    /// - `y`:       `width × height` samples
+    /// - `cb`, `cr`: `chroma_w × chroma_h` samples (sub-sampled per [`YuvFormat`])
     pub fn set_planes(&mut self, y: Vec<u8>, cb: Vec<u8>, cr: Vec<u8>) {
         self.y_plane = y;
         self.cb_plane = cb;
         self.cr_plane = cr;
     }
+}
+
+/// Build a plane of `count` little-endian `u16` samples all equal to `value`.
+fn u16_le_plane(value: u16, count: usize) -> Vec<u8> {
+    value
+        .to_le_bytes()
+        .iter()
+        .copied()
+        .cycle()
+        .take(count * 2)
+        .collect()
 }
 
 impl Default for YuvUploadNode {
@@ -101,15 +141,26 @@ fn chroma_divs(format: YuvFormat) -> (u32, u32) {
 // CPU path
 
 impl RenderNodeCpu for YuvUploadNode {
+    fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32) {
+        if self.y_plane.is_empty() || self.width == 0 || self.height == 0 {
+            return;
+        }
+        if self.high_bit_depth {
+            self.process_cpu_10bit(rgba, w, h);
+        } else {
+            self.process_cpu_8bit(rgba, w, h);
+        }
+    }
+}
+
+impl YuvUploadNode {
+    /// CPU YCbCr→RGBA for 8-bit planar input (1 byte per sample).
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::many_single_char_names
     )]
-    fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32) {
-        if self.y_plane.is_empty() || self.width == 0 || self.height == 0 {
-            return;
-        }
+    fn process_cpu_8bit(&self, rgba: &mut [u8], w: u32, h: u32) {
         let (cw, _) = chroma_dims(self.format, self.width, self.height);
         let (x_div, y_div) = chroma_divs(self.format);
         let rows = h.min(self.height) as usize;
@@ -122,18 +173,56 @@ impl RenderNodeCpu for YuvUploadNode {
                 let ci = cy * cw as usize + cx;
                 let cb = f32::from(self.cb_plane[ci]) / 255.0 - 0.5;
                 let cr = f32::from(self.cr_plane[ci]) / 255.0 - 0.5;
-                // BT.601 full-range YCbCr → linear RGB.
-                let r = (y_val + 1.402 * cr).clamp(0.0, 1.0);
-                let g = (y_val - 0.344 * cb - 0.714 * cr).clamp(0.0, 1.0);
-                let b = (y_val + 1.772 * cb).clamp(0.0, 1.0);
-                let idx = (row * w as usize + col) * 4;
-                rgba[idx] = (r * 255.0 + 0.5) as u8;
-                rgba[idx + 1] = (g * 255.0 + 0.5) as u8;
-                rgba[idx + 2] = (b * 255.0 + 0.5) as u8;
-                rgba[idx + 3] = 255;
+                write_ycbcr_rgba(rgba, (row * w as usize + col) * 4, y_val, cb, cr);
             }
         }
     }
+
+    /// CPU YCbCr→RGBA for 10-bit planar input (little-endian `u16` samples,
+    /// values `0..=1023`). The CPU fallback still writes 8-bit RGBA, so it loses
+    /// precision the GPU `Rgba16Float` path preserves.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::many_single_char_names
+    )]
+    fn process_cpu_10bit(&self, rgba: &mut [u8], w: u32, h: u32) {
+        let (cw, _) = chroma_dims(self.format, self.width, self.height);
+        let (x_div, y_div) = chroma_divs(self.format);
+        let rows = h.min(self.height) as usize;
+        let cols = w.min(self.width) as usize;
+        for row in 0..rows {
+            for col in 0..cols {
+                let y_val =
+                    sample_u16_le(&self.y_plane, row * self.width as usize + col) / TEN_BIT_MAX;
+                let cx = col / x_div as usize;
+                let cy = row / y_div as usize;
+                let ci = cy * cw as usize + cx;
+                let cb = sample_u16_le(&self.cb_plane, ci) / TEN_BIT_MAX - 0.5;
+                let cr = sample_u16_le(&self.cr_plane, ci) / TEN_BIT_MAX - 0.5;
+                write_ycbcr_rgba(rgba, (row * w as usize + col) * 4, y_val, cb, cr);
+            }
+        }
+    }
+}
+
+/// Read the `i`-th little-endian `u16` sample of a plane as `f32`.
+fn sample_u16_le(plane: &[u8], i: usize) -> f32 {
+    let lo = plane[i * 2];
+    let hi = plane[i * 2 + 1];
+    f32::from(u16::from_le_bytes([lo, hi]))
+}
+
+/// BT.601 full-range YCbCr → RGBA, writing 4 bytes at `idx` (alpha = 255).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn write_ycbcr_rgba(rgba: &mut [u8], idx: usize, y_val: f32, cb: f32, cr: f32) {
+    let r = (y_val + 1.402 * cr).clamp(0.0, 1.0);
+    let g = (y_val - 0.344 * cb - 0.714 * cr).clamp(0.0, 1.0);
+    let b = (y_val + 1.772 * cb).clamp(0.0, 1.0);
+    rgba[idx] = (r * 255.0 + 0.5) as u8;
+    rgba[idx + 1] = (g * 255.0 + 0.5) as u8;
+    rgba[idx + 2] = (b * 255.0 + 0.5) as u8;
+    rgba[idx + 3] = 255;
 }
 
 // GPU path
@@ -146,9 +235,30 @@ impl YuvUploadNode {
             let device = &ctx.device;
             let (cw, ch) = chroma_dims(self.format, self.width, self.height);
 
+            // 10-bit planes are R16Uint (raw 0..1023) sampled as integers and
+            // divided by max_value in the shader, rendering to Rgba16Float so
+            // precision survives. R16Uint is a core format (unlike R16Unorm,
+            // which needs an optional device feature). 8-bit planes stay R8Unorm
+            // sampled as normalised floats, rendering to Rgba8Unorm.
+            let (plane_format, target_format, sample_type, shader_src) = if self.high_bit_depth {
+                (
+                    wgpu::TextureFormat::R16Uint,
+                    wgpu::TextureFormat::Rgba16Float,
+                    wgpu::TextureSampleType::Uint,
+                    include_str!("../shaders/yuv_upload_10bit.wgsl"),
+                )
+            } else {
+                (
+                    wgpu::TextureFormat::R8Unorm,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    include_str!("../shaders/yuv_upload.wgsl"),
+                )
+            };
+
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("YuvUpload shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/yuv_upload.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
             });
 
             let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -158,7 +268,7 @@ impl YuvUploadNode {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -168,7 +278,7 @@ impl YuvUploadNode {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -178,7 +288,7 @@ impl YuvUploadNode {
                         binding: 2,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -216,7 +326,7 @@ impl YuvUploadNode {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: target_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -229,7 +339,7 @@ impl YuvUploadNode {
                 cache: None,
             });
 
-            // Y luma plane (R8Unorm, full resolution).
+            // Y luma plane (full resolution).
             let y_tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("YuvUpload Y"),
                 size: wgpu::Extent3d {
@@ -240,12 +350,12 @@ impl YuvUploadNode {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format: plane_format,
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
 
-            // Cb chroma plane (R8Unorm, sub-sampled).
+            // Cb chroma plane (sub-sampled).
             let cb_tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("YuvUpload Cb"),
                 size: wgpu::Extent3d {
@@ -256,12 +366,12 @@ impl YuvUploadNode {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format: plane_format,
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
 
-            // Cr chroma plane (R8Unorm, sub-sampled).
+            // Cr chroma plane (sub-sampled).
             let cr_tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("YuvUpload Cr"),
                 size: wgpu::Extent3d {
@@ -272,7 +382,7 @@ impl YuvUploadNode {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format: plane_format,
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -322,6 +432,8 @@ impl super::RenderNode for YuvUploadNode {
         let pd = self.get_or_create_pipeline(ctx);
         let (cw, ch) = chroma_dims(self.format, self.width, self.height);
         let (x_div, y_div) = chroma_divs(self.format);
+        // Bytes per sample: 8-bit R8Unorm = 1, 10-bit R16Unorm = 2.
+        let bps = if self.high_bit_depth { 2 } else { 1 };
 
         // Upload Y luma plane.
         ctx.queue.write_texture(
@@ -334,7 +446,7 @@ impl super::RenderNode for YuvUploadNode {
             &self.y_plane,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(self.width),
+                bytes_per_row: Some(self.width * bps),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
@@ -355,7 +467,7 @@ impl super::RenderNode for YuvUploadNode {
             &self.cb_plane,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(cw),
+                bytes_per_row: Some(cw * bps),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
@@ -376,7 +488,7 @@ impl super::RenderNode for YuvUploadNode {
             &self.cr_plane,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(cw),
+                bytes_per_row: Some(cw * bps),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
@@ -386,9 +498,14 @@ impl super::RenderNode for YuvUploadNode {
             },
         );
 
-        // Write chroma sub-sampling divisors to the uniform buffer.
-        ctx.queue
-            .write_buffer(&pd.uniform_buf, 0, &pack_u32(&[x_div, y_div, 0, 0]));
+        // Uniforms: [chroma_x_div: u32, chroma_y_div: u32, max_value: f32, pad].
+        // max_value is the 10-bit shader's normalisation divisor (1023); the
+        // 8-bit shader ignores this slot (its plane samples are pre-normalised).
+        let mut uniforms = [0u8; 16];
+        uniforms[0..4].copy_from_slice(&x_div.to_le_bytes());
+        uniforms[4..8].copy_from_slice(&y_div.to_le_bytes());
+        uniforms[8..12].copy_from_slice(&TEN_BIT_MAX.to_le_bytes());
+        ctx.queue.write_buffer(&pd.uniform_buf, 0, &uniforms);
 
         let y_view = pd
             .y_tex
@@ -596,6 +713,29 @@ mod tests {
     }
 
     #[test]
+    fn yuv_upload_cpu_10bit_should_decode_u16_planes() {
+        // Y = 768 (10-bit) → 768/1023 ≈ 0.751 → grey ≈ 191. Neutral chroma 512.
+        // A byte-truncating misread of the little-endian u16 (low byte 0x00)
+        // would yield 0, so asserting ~191 proves the u16 decode (non-vacuous).
+        let mut node = YuvUploadNode::new_high_bit_depth(YuvFormat::Yuv420p, 2, 2);
+        node.set_planes(
+            u16_le_plane(768, 4),
+            u16_le_plane(512, 1),
+            u16_le_plane(512, 1),
+        );
+        let mut rgba = vec![0u8; 16];
+        node.process_cpu(&mut rgba, 2, 2);
+        for pixel in rgba.chunks_exact(4) {
+            let r = i32::from(pixel[0]);
+            assert!(
+                (r - 191).abs() <= 3,
+                "10-bit Y=768 must decode to ~191; got {r}"
+            );
+            assert_eq!(pixel[3], 255, "alpha must be opaque");
+        }
+    }
+
+    #[test]
     fn yuv_upload_node_variant_and_error_types_should_compile() {
         let _ = YuvFormat::Yuv420p;
         let _ = YuvFormat::Yuv422p;
@@ -603,11 +743,4 @@ mod tests {
         let _ = YuvUploadNode::new(YuvFormat::Yuv420p, 320, 240);
         let _ = YuvUploadNode::default();
     }
-}
-
-// helpers
-
-#[cfg(feature = "wgpu")]
-fn pack_u32(values: &[u32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }

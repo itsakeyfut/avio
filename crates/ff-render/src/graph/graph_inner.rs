@@ -17,12 +17,15 @@ pub(super) fn run_gpu(
     rgba: &[u8],
     w: u32,
     h: u32,
+    format: wgpu::TextureFormat,
 ) -> Result<Vec<u8>, RenderError> {
     if nodes.is_empty() {
         return Ok(rgba.to_vec());
     }
 
-    let format = wgpu::TextureFormat::Rgba8Unorm;
+    // Bytes per pixel of the working format: 8 for Rgba16Float (HDR), 4 for the
+    // 4-channel 8-bit default. Drives the input upload and the readback stride.
+    let bpp = bytes_per_pixel(format);
     let input_usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING;
     // Outputs double as general-purpose scratch: `COPY_DST` lets a node (or test)
     // fill a pass target via `write_texture`, `COPY_SRC` allows readback, and
@@ -49,26 +52,32 @@ pub(super) fn run_gpu(
         })
         .collect();
 
-    // Upload the input frame to the initial GPU texture.
-    ctx.queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: scope.get(input_idx),
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(w * 4),
-            rows_per_image: None,
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
+    // Upload the 8-bit `rgba` frame to the initial GPU texture. Only valid for
+    // an `Rgba8Unorm` working format: an HDR (`Rgba16Float`) graph is driven by a
+    // source node (e.g. `YuvUploadNode`, `input_count() == 0`) that supplies its
+    // own high-bit-depth pixels and ignores this seed, so the 8-bit upload — which
+    // would not fit an 8-bytes-per-pixel texture — is skipped.
+    if format == wgpu::TextureFormat::Rgba8Unorm {
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: scope.get(input_idx),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
 
     // Run each node. input[0] is the chained texture (the source frame for the
     // first node, the previous node's final pass otherwise); input[1..] are the
@@ -95,7 +104,7 @@ pub(super) fn run_gpu(
     }
 
     // Copy the final texture to a CPU-readable staging buffer.
-    let bytes_per_row_padded = align_up(w * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let bytes_per_row_padded = align_up(w * bpp, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer_size = u64::from(bytes_per_row_padded) * u64::from(h);
 
     let staging_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -156,10 +165,10 @@ pub(super) fn run_gpu(
         .map_err(|e| RenderError::Composite {
             message: format!("staging buffer get_mapped_range failed: {e}"),
         })?;
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    let mut out = Vec::with_capacity((w * h * bpp) as usize);
     for y in 0..h as usize {
         let row_start = y * bytes_per_row_padded as usize;
-        let row_end = row_start + (w * 4) as usize;
+        let row_end = row_start + (w * bpp) as usize;
         out.extend_from_slice(&raw[row_start..row_end]);
     }
     drop(raw);
@@ -170,4 +179,13 @@ pub(super) fn run_gpu(
 
 fn align_up(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
+}
+
+/// Bytes per pixel of a working texture format. `Rgba16Float` is 8 (four 16-bit
+/// half-floats); every other format the graph uses is 4-channel 8-bit (4 bytes).
+fn bytes_per_pixel(format: wgpu::TextureFormat) -> u32 {
+    match format {
+        wgpu::TextureFormat::Rgba16Float => 8,
+        _ => 4,
+    }
 }
