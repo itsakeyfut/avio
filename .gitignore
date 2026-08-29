@@ -28,22 +28,16 @@ Desktop.ini
 # Ignore build artifacts and lock files
 **/target/
 
-
 /Cargo.lock
 
-# Internal design docs (not for public repo)
-/docs/crates/
-/docs/dev/
-/docs/roadmap/tasks/
-
-# Claude Code — personal use only, not shared with contributors
+# Claude Code
 /CLAUDE.md
 /.claude/
 
-# Personal working notes (not shared with contributors)
+# Personal working notes
 /TODO.md
 
-# Private local media — drop your own files here to run avio during development
+# Private local media: drop your own files here to run avio during development
 /assets/private/*
 !/assets/private/.gitkeep
 !/assets/private/README.md

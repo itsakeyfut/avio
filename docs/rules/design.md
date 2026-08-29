@@ -66,7 +66,7 @@ avio is an **editing engine**; the `ff-*` family are **model-agnostic primitives
 
 ## 6. FFmpeg call order is part of the design
 
-The crate design docs (`docs/crates/{name}/design.md`) specify the exact FFmpeg call order.
+The crate design docs (`docs/specs/crates/{name}/design.md`) specify the exact FFmpeg call order.
 Deviating without a deliberate, documented reason is a bug, not a style choice.
 
 ---

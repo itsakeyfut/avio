@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 A design decision's rationale lives here and nowhere else. `docs/specs/**` and the
-per-crate `docs/crates/*/design.md` state the *outcome* and link to the record;
+per-crate `docs/specs/crates/*/design.md` state the *outcome* and link to the record;
 they do not repeat the reasoning.
 
 These records are written in **English** (like `docs/rules/`), because they
@@ -28,7 +28,7 @@ Records are numbered consecutively from `0001`.
 | Location | Holds | Does not hold |
 |---|---|---|
 | `docs/specs/**` | what the design is (architecture of record) | why it was chosen; links here instead |
-| `docs/crates/*/design.md` | per-crate design and the FFmpeg call order | why a cross-cutting decision was made |
+| `docs/specs/crates/*/design.md` | per-crate design and the FFmpeg call order | why a cross-cutting decision was made |
 | `docs/adr/**` | why a decision was chosen, when, and what would reverse it | type or signature detail; links to the specs |
 | `docs/rules/**` | what to do while implementing | how a decision was reached |
 | `docs/roadmap/**` | what to build next (capabilities) | how a decision was reached |

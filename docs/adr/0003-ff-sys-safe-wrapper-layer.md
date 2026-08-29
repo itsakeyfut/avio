@@ -156,7 +156,7 @@ Implemented across the RAII hardening track (#1477–#1506) and enforced by:
 * Rules this rests on: `docs/rules/unsafe.md` (`*_inner.rs` isolation, `// SAFETY:`),
   `docs/rules/design.md` (primitive scope / litmus).
 * Call order this would let types enforce later: the per-crate
-  `docs/crates/*/design.md` FFmpeg call-order sections, where deviating from the
+  `docs/specs/crates/*/design.md` FFmpeg call-order sections, where deviating from the
   specified order is a bug.
 * Related: the `ff-*` hardening track (v0.17.0). Follow-on, out of scope here:
   call-order typestate.
