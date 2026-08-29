@@ -56,9 +56,11 @@ pub trait RenderNode: RenderNodeCpu {
 
     /// Run the GPU render pass.
     ///
-    /// `inputs[i]` are the source textures (`len == input_count()`).
-    /// `outputs[i]` are pre-allocated `Rgba8Unorm` target textures
-    /// (`len == pass_count()`). Write the final result into `outputs[pass_count()-1]`.
+    /// `inputs` has `input_count()` textures: `inputs[0]` is the previous node's
+    /// final-pass output (or the source frame for the first node), and
+    /// `inputs[1..]` are the original source frame. `outputs` has `pass_count()`
+    /// pre-allocated `Rgba8Unorm` targets; write the final result into
+    /// `outputs[pass_count()-1]`, which the executor feeds to the next node.
     fn process(
         &self,
         inputs: &[&wgpu::Texture],

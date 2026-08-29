@@ -198,7 +198,7 @@ mod tests {
 #[cfg(all(test, feature = "wgpu"))]
 mod gpu_tests {
     use super::{Arc, RenderContext, RenderGraph};
-    use crate::nodes::ColorGradeNode;
+    use crate::nodes::{ColorGradeNode, RenderNode, RenderNodeCpu};
 
     /// A headless GPU context, or `None` when no adapter is available (CI).
     fn ctx() -> Option<Arc<RenderContext>> {
@@ -206,6 +206,124 @@ mod gpu_tests {
             Ok(ctx) => Some(Arc::new(ctx)),
             Err(_) => None,
         }
+    }
+
+    /// Fill a whole texture with a solid RGBA color via `write_texture`.
+    fn fill(ctx: &RenderContext, tex: &wgpu::Texture, color: [u8; 4]) {
+        let (w, h) = (tex.width(), tex.height());
+        let data: Vec<u8> = color
+            .iter()
+            .copied()
+            .cycle()
+            .take((w * h * 4) as usize)
+            .collect();
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    const COLOR_A: [u8; 4] = [10, 20, 30, 255];
+    const COLOR_B: [u8; 4] = [200, 150, 100, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const RED: [u8; 4] = [255, 0, 0, 255];
+
+    /// Two-pass node: writes COLOR_A into the first pass and COLOR_B into the
+    /// second. If the executor allocated only one output (ignoring `pass_count`)
+    /// it writes COLOR_A instead, so a readback of COLOR_B proves both passes ran.
+    struct TwoPassNode;
+    impl RenderNodeCpu for TwoPassNode {
+        fn process_cpu(&self, _rgba: &mut [u8], _w: u32, _h: u32) {}
+    }
+    impl RenderNode for TwoPassNode {
+        fn pass_count(&self) -> usize {
+            2
+        }
+        fn process(
+            &self,
+            _inputs: &[&wgpu::Texture],
+            outputs: &[&wgpu::Texture],
+            ctx: &RenderContext,
+        ) {
+            if outputs.len() >= 2 {
+                fill(ctx, outputs[0], COLOR_A);
+                fill(ctx, outputs[1], COLOR_B);
+            } else {
+                fill(ctx, outputs[0], COLOR_A);
+            }
+        }
+    }
+
+    /// Two-input node: writes GREEN when it receives both inputs, RED otherwise.
+    /// A readback of GREEN proves the executor passed `input_count()` inputs.
+    struct TwoInputNode;
+    impl RenderNodeCpu for TwoInputNode {
+        fn process_cpu(&self, _rgba: &mut [u8], _w: u32, _h: u32) {}
+    }
+    impl RenderNode for TwoInputNode {
+        fn input_count(&self) -> usize {
+            2
+        }
+        fn process(
+            &self,
+            inputs: &[&wgpu::Texture],
+            outputs: &[&wgpu::Texture],
+            ctx: &RenderContext,
+        ) {
+            let color = if inputs.len() == 2 { GREEN } else { RED };
+            fill(ctx, outputs[0], color);
+        }
+    }
+
+    #[test]
+    fn executor_should_run_a_two_pass_node_and_read_back_the_final_pass() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(TwoPassNode);
+        let (w, h) = (16u32, 16u32);
+        let rgba = vec![0u8; (w * h * 4) as usize];
+
+        let out = graph.process_gpu(&rgba, w, h).expect("two-pass frame");
+        assert_eq!(
+            &out[0..4],
+            &COLOR_B,
+            "the final pass (COLOR_B) must be read back; got {:?}",
+            &out[0..4]
+        );
+    }
+
+    #[test]
+    fn executor_should_feed_two_inputs_to_a_multi_input_node() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(TwoInputNode);
+        let (w, h) = (16u32, 16u32);
+        let rgba = vec![0u8; (w * h * 4) as usize];
+
+        let out = graph.process_gpu(&rgba, w, h).expect("two-input frame");
+        assert_eq!(
+            &out[0..4],
+            &GREEN,
+            "receiving two inputs must produce GREEN; got {:?}",
+            &out[0..4]
+        );
     }
 
     fn alloc_count(ctx: &RenderContext) -> usize {
