@@ -1,7 +1,7 @@
 use super::RenderNodeCpu;
 
 /// YUV sub-sampling format for [`YuvUploadNode`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum YuvFormat {
     /// Planar 4:2:0 — Y at full resolution; Cb/Cr at half width and height.
     #[default]
