@@ -32,6 +32,36 @@ pub trait FrameSink: Send {
     ///
     /// Implementations should flush any pending output here.
     fn flush(&mut self) {}
+
+    /// Whether this sink can receive a GPU-resident frame via
+    /// [`push_frame_gpu`](Self::push_frame_gpu). Default: `false` (CPU only).
+    ///
+    /// A GPU compositor queries this to decide whether it can hand off a
+    /// composited texture directly (no GPU-to-CPU readback) or must fall back to
+    /// the CPU [`push_frame`](Self::push_frame) path.
+    #[cfg(feature = "display")]
+    fn accepts_gpu_frame(&self) -> bool {
+        false
+    }
+
+    /// Receive a composited frame as a GPU texture, avoiding a GPU-to-CPU
+    /// readback. Only called when [`accepts_gpu_frame`](Self::accepts_gpu_frame)
+    /// returns `true`; the default ignores the frame.
+    ///
+    /// `texture` is a row-major RGBA texture (`view` is its default view) of
+    /// `width × height`. It is owned by the caller for the duration of the call;
+    /// a sink that needs it beyond the call must copy or clone it.
+    #[cfg(feature = "display")]
+    fn push_frame_gpu(
+        &mut self,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        pts: Duration,
+    ) {
+        let _ = (texture, view, width, height, pts);
+    }
 }
 
 // RgbaFrame / RgbaSink

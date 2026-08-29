@@ -127,6 +127,27 @@ impl<'a> FrameScope<'a> {
     pub(crate) fn get(&self, index: usize) -> &wgpu::Texture {
         &self.items[index].1
     }
+
+    /// Consume the scope, returning the texture at `index` to the caller and
+    /// releasing every other acquired texture back to the pool.
+    ///
+    /// The returned texture is **not** pooled: ownership transfers to the caller
+    /// (e.g. for zero-copy display), so it will not be handed out again until the
+    /// caller drops it. Returns `None` if `index` is out of range.
+    pub(crate) fn take(mut self, index: usize) -> Option<wgpu::Texture> {
+        // Empty `items` so the `Drop` below releases nothing (no double-return).
+        let items = std::mem::take(&mut self.items);
+        let mut pool = lock(self.pool);
+        let mut taken = None;
+        for (i, (key, texture)) in items.into_iter().enumerate() {
+            if i == index {
+                taken = Some(texture);
+            } else {
+                pool.release(key, texture);
+            }
+        }
+        taken
+    }
 }
 
 impl Drop for FrameScope<'_> {
@@ -148,6 +169,50 @@ mod tests {
             Ok(ctx) => Some(ctx.device),
             Err(_) => None,
         }
+    }
+
+    #[test]
+    fn frame_scope_take_should_not_return_taken_texture_to_pool() {
+        use std::sync::{Mutex, PoisonError};
+
+        let Some(device) = device() else {
+            return;
+        };
+        let pool = Mutex::new(TexturePool::new());
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING;
+
+        // Acquire two textures via a scope, take the first, drop the scope. Only
+        // the second (untaken) texture is released back to the pool.
+        {
+            let mut scope = super::FrameScope::new(&pool, &device);
+            let a = scope.acquire(16, 16, format, usage);
+            let _b = scope.acquire(16, 16, format, usage);
+            let taken = scope.take(a);
+            assert!(
+                taken.is_some(),
+                "take must return the texture at a valid index"
+            );
+        }
+
+        let mut guard = pool.lock().unwrap_or_else(PoisonError::into_inner);
+        let allocs = guard.alloc_count();
+        assert_eq!(allocs, 2, "the two scope acquires were pool misses");
+        // One texture is pooled (the untaken one): first acquire reuses it.
+        let reused = guard.acquire(&device, 16, 16, format, usage);
+        assert_eq!(
+            guard.alloc_count(),
+            allocs,
+            "the released texture must be reused, not allocated"
+        );
+        // The taken texture was NOT pooled, so a second acquire must allocate.
+        let _fresh = guard.acquire(&device, 16, 16, format, usage);
+        assert_eq!(
+            guard.alloc_count(),
+            allocs + 1,
+            "the taken texture was not returned to the pool, so this acquire allocates"
+        );
+        drop(reused);
     }
 
     #[test]

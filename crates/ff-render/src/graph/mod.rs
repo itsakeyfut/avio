@@ -182,6 +182,32 @@ impl RenderGraph {
         graph_inner::run_gpu(&self.gpu_nodes, ctx, rgba, w, h, self.internal_format)
     }
 
+    /// Run the GPU pipeline and return the composited frame as a GPU
+    /// [`TextureHandle`](crate::sink::TextureHandle), **without** a GPU-to-CPU
+    /// readback. Use this for zero-copy display; use [`process_gpu`](Self::process_gpu)
+    /// when the caller needs the pixels in system memory.
+    ///
+    /// The returned texture is owned by the caller (taken out of the pool) and
+    /// stays valid until dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::Composite`] if called on a CPU-only graph, or on
+    /// GPU device failure.
+    #[cfg(feature = "wgpu")]
+    pub fn process_gpu_to_texture(
+        &self,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<crate::sink::TextureHandle, RenderError> {
+        let ctx = self.ctx.as_ref().ok_or_else(|| RenderError::Composite {
+            message: "process_gpu_to_texture called on a CPU-only RenderGraph (no RenderContext)"
+                .to_string(),
+        })?;
+        graph_inner::run_gpu_to_texture(&self.gpu_nodes, ctx, rgba, w, h, self.internal_format)
+    }
+
     /// Run the CPU fallback pipeline: apply each node's `process_cpu` in order.
     ///
     /// Both CPU-only nodes (`push_cpu`) and GPU nodes (`push`, wgpu feature)
@@ -415,6 +441,30 @@ mod gpu_tests {
             alloc_count(&ctx),
             after_first,
             "same-size frames must reuse pooled textures (steady state = 0 allocations/frame)"
+        );
+    }
+
+    #[test]
+    fn process_gpu_to_texture_should_return_handle_of_input_dimensions() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph =
+            RenderGraph::new(Arc::clone(&ctx)).push(ColorGradeNode::new(0.0, 1.0, 1.0, 0.0, 0.0));
+        let (w, h) = (16u32, 16u32);
+        let rgba = vec![128u8; (w * h * 4) as usize];
+
+        let handle = graph
+            .process_gpu_to_texture(&rgba, w, h)
+            .expect("texture handle");
+        assert_eq!(handle.width, w, "handle width must match input");
+        assert_eq!(handle.height, h, "handle height must match input");
+        assert_eq!(handle.texture.width(), w, "GPU texture width must match");
+        assert_eq!(handle.texture.height(), h, "GPU texture height must match");
+        assert_eq!(
+            ctx.readback_count(),
+            0,
+            "the texture path must not read back to system memory"
         );
     }
 
