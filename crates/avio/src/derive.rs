@@ -14,7 +14,6 @@
 //! preview does not yet honour are the `derive(model, t)` unification target of
 //! #1351 (see `docs/specs/engine-and-primitives.md` §2.1).
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -25,21 +24,14 @@ use ff_filter::{
 use ff_format::ChannelLayout;
 
 use crate::clip::{Clip, ClipSource, FitMode};
+use crate::track::TrackAutomation;
 
-/// Resolves a track-level animation: `AnimatedValue::Track` when the map holds a
-/// track for `"{prefix}_{track_idx}_{prop}"`, else `Static(default)`.
-fn track_animation(
-    animations: &HashMap<String, AnimationTrack<f64>>,
-    prefix: &str,
-    track_idx: usize,
-    prop: &str,
-    default: f64,
-) -> AnimatedValue<f64> {
-    animations
-        .get(&format!("{prefix}_{track_idx}_{prop}"))
-        .map_or(AnimatedValue::Static(default), |t| {
-            AnimatedValue::Track(t.clone())
-        })
+/// Resolves a track-level automation slot: `AnimatedValue::Track` when the track
+/// carries an animation for the property, else `Static(default)`.
+fn track_anim(slot: Option<&AnimationTrack<f64>>, default: f64) -> AnimatedValue<f64> {
+    slot.map_or(AnimatedValue::Static(default), |t| {
+        AnimatedValue::Track(t.clone())
+    })
 }
 
 /// The per-clip video transform shared by the export [`VideoLayer`] and the
@@ -60,18 +52,14 @@ struct VideoTransform {
 
 /// Computes the shared [`VideoTransform`]: a per-clip keyframe track wins, then a
 /// static non-neutral value, then any timeline track-level animation.
-fn video_transform(
-    clip: &Clip,
-    track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
-) -> VideoTransform {
+fn video_transform(clip: &Clip, automation: &TrackAutomation) -> VideoTransform {
     #[allow(clippy::float_cmp)]
     let opacity = if let Some(track) = &clip.opacity_track {
         AnimatedValue::Track(track.clone())
     } else if clip.opacity != 1.0 {
         AnimatedValue::Static(f64::from(clip.opacity))
     } else {
-        track_animation(animations, "video", track_idx, "opacity", 1.0)
+        track_anim(automation.opacity.as_ref(), 1.0)
     };
     #[allow(clippy::float_cmp)]
     let x = if let Some(track) = &clip.x_track {
@@ -79,7 +67,7 @@ fn video_transform(
     } else if clip.x != 0.0 {
         AnimatedValue::Static(clip.x)
     } else {
-        track_animation(animations, "video", track_idx, "x", 0.0)
+        track_anim(automation.x.as_ref(), 0.0)
     };
     #[allow(clippy::float_cmp)]
     let y = if let Some(track) = &clip.y_track {
@@ -87,7 +75,7 @@ fn video_transform(
     } else if clip.y != 0.0 {
         AnimatedValue::Static(clip.y)
     } else {
-        track_animation(animations, "video", track_idx, "y", 0.0)
+        track_anim(automation.y.as_ref(), 0.0)
     };
     // The uniform per-clip `scale` drives both axes; a per-clip track wins, then a
     // static non-neutral value, then the per-axis timeline animation (kept
@@ -98,7 +86,7 @@ fn video_transform(
     } else if clip.scale != 1.0 {
         AnimatedValue::Static(clip.scale)
     } else {
-        track_animation(animations, "video", track_idx, "scale_x", 1.0)
+        track_anim(automation.scale_x.as_ref(), 1.0)
     };
     #[allow(clippy::float_cmp)]
     let scale_y = if let Some(track) = &clip.scale_track {
@@ -106,7 +94,7 @@ fn video_transform(
     } else if clip.scale != 1.0 {
         AnimatedValue::Static(clip.scale)
     } else {
-        track_animation(animations, "video", track_idx, "scale_y", 1.0)
+        track_anim(automation.scale_y.as_ref(), 1.0)
     };
     #[allow(clippy::float_cmp)]
     let rotation = if let Some(track) = &clip.rotation_track {
@@ -114,7 +102,7 @@ fn video_transform(
     } else if clip.rotation != 0.0 {
         AnimatedValue::Static(clip.rotation)
     } else {
-        track_animation(animations, "video", track_idx, "rotation", 0.0)
+        track_anim(automation.rotation.as_ref(), 0.0)
     };
     VideoTransform {
         opacity,
@@ -165,7 +153,7 @@ fn fit_step(clip: &Clip, cw: u32, ch: u32) -> Option<FilterStep> {
 pub(crate) fn video_layer(
     clip: &Clip,
     track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
+    automation: &TrackAutomation,
     canvas_width: u32,
     canvas_height: u32,
     prev_end: Option<f64>,
@@ -225,7 +213,7 @@ pub(crate) fn video_layer(
         ClipSource::Text(spec) => LayerSource::Text(spec.clone()),
         ClipSource::Solid(color) => LayerSource::Solid(*color),
     };
-    let transform = video_transform(clip, track_idx, animations);
+    let transform = video_transform(clip, automation);
     VideoLayer {
         source,
         proxy,
@@ -255,12 +243,11 @@ pub(crate) fn video_layer(
 /// backbone.
 pub(crate) fn realtime_descriptor(
     clip: &Clip,
-    track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
+    automation: &TrackAutomation,
     canvas_width: u32,
     canvas_height: u32,
 ) -> RealtimeLayerDescriptor {
-    let transform = video_transform(clip, track_idx, animations);
+    let transform = video_transform(clip, automation);
     // Frame to the canvas (same step as the export path) before the colour chain,
     // so preview and export share one framing interpretation.
     let mut effects = Vec::new();
@@ -282,19 +269,15 @@ pub(crate) fn realtime_descriptor(
 }
 
 /// The 3-way-merged audio volume (dB): a per-clip volume track wins, then a static
-/// non-zero `volume_db`, then the timeline `audio_{idx}_volume` automation. This is
+/// non-zero `volume_db`, then the track-level `volume` automation. This is
 /// the single interpretation the export [`audio_track`] and the preview audio
 /// projection ([`Timeline::to_scene`](crate::Timeline::to_scene)) share.
 #[allow(clippy::float_cmp)]
-pub(crate) fn audio_volume(
-    clip: &Clip,
-    track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
-) -> AnimatedValue<f64> {
+pub(crate) fn audio_volume(clip: &Clip, automation: &TrackAutomation) -> AnimatedValue<f64> {
     match &clip.volume_track {
         Some(track) => AnimatedValue::Track(track.clone()),
         None if clip.volume_db != 0.0 => AnimatedValue::Static(clip.volume_db),
-        None => track_animation(animations, "audio", track_idx, "volume", 0.0),
+        None => track_anim(automation.volume.as_ref(), 0.0),
     }
 }
 
@@ -315,11 +298,10 @@ pub(crate) fn audio_pitch(clip: &Clip) -> f64 {
 /// to compute the fade-out start offset (`None` = could not be determined).
 pub(crate) fn audio_track(
     clip: &Clip,
-    track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
+    automation: &TrackAutomation,
     fade_out_eff_dur: Option<Duration>,
 ) -> AudioTrack {
-    let volume = audio_volume(clip, track_idx, animations);
+    let volume = audio_volume(clip, automation);
     // Generated (Text/Solid) clips carry no audio and are skipped by the render's
     // audio loop before reaching here, so a File source is expected; the fallback
     // to an empty path is defensive only.
@@ -397,7 +379,7 @@ pub(crate) fn audio_track(
     AudioTrack {
         source: source_path,
         volume,
-        pan: track_animation(animations, "audio", track_idx, "pan", 0.0),
+        pan: track_anim(automation.pan.as_ref(), 0.0),
         effects,
         sample_rate: 48_000,
         channel_layout: ChannelLayout::Stereo,
@@ -411,8 +393,8 @@ mod tests {
 
     use super::*;
 
-    fn no_anim() -> HashMap<String, AnimationTrack<f64>> {
-        HashMap::new()
+    fn no_anim() -> TrackAutomation {
+        TrackAutomation::default()
     }
 
     // video_layer
@@ -528,13 +510,16 @@ mod tests {
 
     #[test]
     fn video_layer_neutral_opacity_should_fall_back_to_track_animation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_0_opacity".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            opacity: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                1.0,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp4"); // opacity defaults to 1.0 (neutral)
-        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
+        let layer = video_layer(&clip, 0, &automation, 1920, 1080, None, None);
         assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
     }
 
@@ -633,7 +618,7 @@ mod tests {
     fn realtime_descriptor_fit_fill_should_share_step_with_export() {
         // export == preview parity: both emit the same framing step.
         let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(matches!(
             d.effects.first(),
             Some(FilterStep::FillToAspect {
@@ -646,7 +631,7 @@ mod tests {
     #[test]
     fn realtime_descriptor_fit_none_should_emit_no_framing_step() {
         let clip = Clip::new("a.mp4"); // fit defaults to None
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(!d.effects.iter().any(|s| matches!(
             s,
             FilterStep::FillToAspect { .. }
@@ -659,7 +644,7 @@ mod tests {
     fn fit_step_should_be_skipped_when_canvas_is_zero() {
         // The canvas-less `Clip::realtime_layer_descriptor` passes 0×0.
         let clip = Clip::new("a.mp4").with_fit(FitMode::Fill);
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 0, 0);
+        let d = realtime_descriptor(&clip, &no_anim(), 0, 0);
         assert!(
             !d.effects
                 .iter()
@@ -674,14 +659,14 @@ mod tests {
         let mut clip = Clip::new("a.mp3").volume(-6.0);
         clip.volume_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear)));
-        let track = audio_track(&clip, 0, &no_anim(), None);
+        let track = audio_track(&clip, &no_anim(), None);
         assert!(matches!(track.volume, AnimatedValue::Track(_)));
     }
 
     #[test]
     fn audio_track_static_volume_db_should_be_static() {
         let clip = Clip::new("a.mp3").volume(-6.0);
-        let track = audio_track(&clip, 0, &no_anim(), None);
+        let track = audio_track(&clip, &no_anim(), None);
         assert!(matches!(track.volume, AnimatedValue::Static(v) if (v + 6.0).abs() < 1e-9));
     }
 
@@ -693,7 +678,7 @@ mod tests {
             .with_speed(2.0)
             .with_fade_in(Duration::from_millis(200))
             .with_fade_out(Duration::from_millis(300));
-        let track = audio_track(&clip, 0, &no_anim(), Some(Duration::from_secs(4)));
+        let track = audio_track(&clip, &no_anim(), Some(Duration::from_secs(4)));
         let kinds: Vec<&FilterStep> = track.effects.iter().collect();
         assert!(matches!(kinds[0], FilterStep::ATrim { .. }));
         assert!(matches!(kinds[1], FilterStep::AResetPts));
@@ -707,7 +692,7 @@ mod tests {
     fn audio_track_fade_out_should_skip_when_duration_not_greater() {
         let clip = Clip::new("a.mp3").with_fade_out(Duration::from_secs(5));
         // eff_dur (3s) <= fade_out (5s) -> skipped
-        let track = audio_track(&clip, 0, &no_anim(), Some(Duration::from_secs(3)));
+        let track = audio_track(&clip, &no_anim(), Some(Duration::from_secs(3)));
         assert!(
             !track
                 .effects
@@ -718,20 +703,23 @@ mod tests {
 
     #[test]
     fn audio_track_pan_should_come_from_track_animation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "audio_0_pan".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            pan: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.5,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp3");
-        let track = audio_track(&clip, 0, &anims, None);
+        let track = audio_track(&clip, &automation, None);
         assert!(matches!(track.pan, AnimatedValue::Track(_)));
     }
 
     #[test]
     fn audio_track_static_pitch_should_emit_pitch_shift() {
         let clip = Clip::new("a.mp3").with_pitch(4.0);
-        let track = audio_track(&clip, 0, &no_anim(), None);
+        let track = audio_track(&clip, &no_anim(), None);
         assert!(track.effects.iter().any(|s| matches!(
             s,
             FilterStep::PitchShift { semitones, .. } if (semitones - 4.0).abs() < 1e-6
@@ -745,7 +733,7 @@ mod tests {
         let clip = Clip::new("a.mp3").with_pitch(1.0).with_pitch_track(
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 5.0, Easing::Linear)),
         );
-        let track = audio_track(&clip, 0, &no_anim(), None);
+        let track = audio_track(&clip, &no_anim(), None);
         assert!(track.effects.iter().any(|s| matches!(
             s,
             FilterStep::PitchShift { semitones, .. } if (semitones - 5.0).abs() < 1e-6
@@ -755,7 +743,7 @@ mod tests {
     #[test]
     fn audio_track_zero_pitch_should_emit_no_pitch_shift() {
         let clip = Clip::new("a.mp3"); // pitch defaults to 0.0
-        let track = audio_track(&clip, 0, &no_anim(), None);
+        let track = audio_track(&clip, &no_anim(), None);
         assert!(
             !track
                 .effects
@@ -768,28 +756,34 @@ mod tests {
 
     #[test]
     fn audio_volume_should_fall_back_to_timeline_animation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "audio_0_volume".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            volume: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                -3.0,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp3"); // neutral volume_db, no volume_track
         assert!(matches!(
-            audio_volume(&clip, 0, &anims),
+            audio_volume(&clip, &automation),
             AnimatedValue::Track(_)
         ));
     }
 
     #[test]
     fn audio_volume_static_should_win_over_timeline() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "audio_0_volume".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            volume: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                -3.0,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp3").volume(-6.0);
         assert!(matches!(
-            audio_volume(&clip, 0, &anims),
+            audio_volume(&clip, &automation),
             AnimatedValue::Static(x) if (x + 6.0).abs() < 1e-9
         ));
     }
@@ -805,7 +799,7 @@ mod tests {
             .offset(Duration::from_secs(2))
             .with_speed(2.0)
             .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(!d.effects.iter().any(|s| matches!(
             s,
             FilterStep::Trim { .. }
@@ -820,23 +814,27 @@ mod tests {
     fn realtime_descriptor_should_carry_effect_chain() {
         let mut clip = Clip::new("a.mp4");
         clip.brightness = 0.5; // forces an Eq step in `video_effect_chain`
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(d.effects.iter().any(|s| matches!(s, FilterStep::Eq { .. })));
     }
 
     #[test]
     fn realtime_descriptor_should_pick_up_timeline_scale_and_rotation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_1_scale_x".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
-        );
-        anims.insert(
-            "video_1_rotation".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            scale_x: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.5,
+                Easing::Linear,
+            ))),
+            rotation: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                90.0,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp4");
-        let d = realtime_descriptor(&clip, 1, &anims, 1920, 1080);
+        let d = realtime_descriptor(&clip, &automation, 1920, 1080);
         assert!(matches!(d.scale_x, AnimatedValue::Track(_)));
         assert!(matches!(d.rotation, AnimatedValue::Track(_)));
         assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
@@ -844,27 +842,33 @@ mod tests {
 
     #[test]
     fn realtime_descriptor_opacity_should_fall_back_to_timeline_animation() {
-        // A neutral per-clip opacity (1.0) falls through to the timeline track.
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_0_opacity".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
-        );
+        // A neutral per-clip opacity (1.0) falls through to the track automation.
+        let automation = TrackAutomation {
+            opacity: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                1.0,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp4");
-        let d = realtime_descriptor(&clip, 0, &anims, 1920, 1080);
+        let d = realtime_descriptor(&clip, &automation, 1920, 1080);
         assert!(matches!(d.opacity, AnimatedValue::Track(_)));
     }
 
     #[test]
     fn realtime_descriptor_static_opacity_should_win_over_timeline() {
         // A per-clip static non-neutral opacity wins the 3-way merge.
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_0_opacity".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.2, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            opacity: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.2,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp4").with_opacity(0.5);
-        let d = realtime_descriptor(&clip, 0, &anims, 1920, 1080);
+        let d = realtime_descriptor(&clip, &automation, 1920, 1080);
         assert!(matches!(d.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
 
@@ -872,7 +876,7 @@ mod tests {
     fn realtime_descriptor_should_carry_composite_op() {
         let mut clip = Clip::new("a.mp4");
         clip.composite_op = CompositeOp::Under;
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(matches!(d.composite_op, CompositeOp::Under));
     }
 
@@ -898,29 +902,35 @@ mod tests {
 
     #[test]
     fn video_layer_neutral_scale_should_fall_back_to_timeline_animation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_0_scale_x".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            scale_x: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.5,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         let clip = Clip::new("a.mp4"); // scale defaults to 1.0 (neutral)
-        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
+        let layer = video_layer(&clip, 0, &automation, 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
-        // scale_y has no timeline animation -> the default static 1.0.
+        // scale_y has no track animation -> the default static 1.0.
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
     }
 
     #[test]
     fn video_layer_static_scale_should_win_over_timeline_animation() {
-        let mut anims = HashMap::new();
-        anims.insert(
-            "video_0_scale_x".to_string(),
-            AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.25, Easing::Linear)),
-        );
+        let automation = TrackAutomation {
+            scale_x: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.25,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
         // A per-clip static non-neutral scale wins the 3-way merge over the
-        // timeline `scale_x` animation.
+        // track-level `scale_x` animation.
         let clip = Clip::new("a.mp4").with_scale(0.5);
-        let layer = video_layer(&clip, 0, &anims, 1920, 1080, None, None);
+        let layer = video_layer(&clip, 0, &automation, 1920, 1080, None, None);
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
@@ -946,7 +956,7 @@ mod tests {
         // Preview uses the same `video_transform`, so per-clip scale/rotation reach
         // preview identically to export.
         let clip = Clip::new("a.mp4").with_scale(0.5).with_rotation(45.0);
-        let d = realtime_descriptor(&clip, 0, &no_anim(), 1920, 1080);
+        let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(matches!(d.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(d.rotation, AnimatedValue::Static(v) if (v - 45.0).abs() < 1e-9));

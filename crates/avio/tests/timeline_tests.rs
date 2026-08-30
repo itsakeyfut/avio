@@ -9,7 +9,7 @@ mod fixtures;
 
 use std::time::Duration;
 
-use avio::{Clip, EncoderConfig, Timeline, TimelineError, Track};
+use avio::{AudioProperty, Clip, EncoderConfig, Timeline, TimelineError, Track};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
 use ff_filter::FilterStep;
 use ff_filter::animation::{AnimationTrack, Easing};
@@ -563,9 +563,9 @@ fn timeline_with_volume_animation_should_encode_successfully() {
         .frame_rate(FPS)
         .video_track(vec![clip.clone()])
         .audio_track(vec![clip])
-        // "audio_0_volume" is the key used by TimelineBuilder for the first
-        // audio track's volume animation (format: "audio_{track_idx}_{prop}").
-        .audio_animation("audio_0_volume", vol_track)
+        // Volume automation on the first audio track (index 0), now keyed by
+        // the track itself rather than an "audio_{idx}_volume" string.
+        .audio_animation(0, AudioProperty::Volume, vol_track)
         .build()
     {
         Ok(t) => t,

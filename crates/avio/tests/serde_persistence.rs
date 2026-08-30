@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use avio::{
     AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Marker, Timeline,
-    XfadeTransition, apply,
+    VideoProperty, XfadeTransition, apply,
 };
 use ff_filter::{FilterStep, PitchAlgo};
 use ff_format::{Color, TextSpec};
@@ -48,7 +48,8 @@ fn sample_timeline() -> Timeline {
                 .volume(-6.0),
         ])
         .video_animation(
-            "video_1_scale_x",
+            1,
+            VideoProperty::ScaleX,
             AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
         )
         .build()
