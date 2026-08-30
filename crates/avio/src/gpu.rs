@@ -21,14 +21,15 @@
 use std::time::Duration;
 
 use ff_filter::{
-    AnimatedValue, BlendMode, CompositeOp, FilterStep, RealtimeLayerDescriptor, ScaleAlgorithm,
-    VideoLayer,
+    AnimatedValue, BlendMode, CompositeOp, FilterStep, RealtimeLayer, RealtimeLayerDescriptor,
+    ScaleAlgorithm, VideoLayer,
 };
 use ff_render::{BlendMode as RenderBlendMode, ScaleAlgorithm as RenderScaleAlgorithm};
 
 /// A derived layer the GPU mapping can read. Implemented for the export
-/// [`VideoLayer`] and the preview [`RealtimeLayerDescriptor`] so the mapping is one
-/// shared implementation.
+/// [`VideoLayer`], the preview [`RealtimeLayerDescriptor`], the runner's realized
+/// [`RealtimeLayer`], and `&T` for any of them (so a `&[&RealtimeLayer]` maps like a
+/// `&[RealtimeLayer]`), keeping the mapping one shared implementation.
 pub trait GpuLayerSource {
     /// Per-clip opacity animation.
     fn opacity(&self) -> &AnimatedValue<f64>;
@@ -110,6 +111,67 @@ impl GpuLayerSource for RealtimeLayerDescriptor {
     }
 }
 
+impl GpuLayerSource for RealtimeLayer {
+    fn opacity(&self) -> &AnimatedValue<f64> {
+        &self.opacity
+    }
+    fn x(&self) -> &AnimatedValue<f64> {
+        &self.x
+    }
+    fn y(&self) -> &AnimatedValue<f64> {
+        &self.y
+    }
+    fn scale_x(&self) -> &AnimatedValue<f64> {
+        &self.scale_x
+    }
+    fn scale_y(&self) -> &AnimatedValue<f64> {
+        &self.scale_y
+    }
+    fn rotation(&self) -> &AnimatedValue<f64> {
+        &self.rotation
+    }
+    fn blend_mode(&self) -> BlendMode {
+        self.blend_mode
+    }
+    fn composite_op(&self) -> CompositeOp {
+        self.composite_op
+    }
+    fn effects(&self) -> &[FilterStep] {
+        &self.effects
+    }
+}
+
+// So a `&[&L]` (e.g. the preview runner's borrowed layers) maps like a `&[L]`.
+impl<T: GpuLayerSource + ?Sized> GpuLayerSource for &T {
+    fn opacity(&self) -> &AnimatedValue<f64> {
+        (**self).opacity()
+    }
+    fn x(&self) -> &AnimatedValue<f64> {
+        (**self).x()
+    }
+    fn y(&self) -> &AnimatedValue<f64> {
+        (**self).y()
+    }
+    fn scale_x(&self) -> &AnimatedValue<f64> {
+        (**self).scale_x()
+    }
+    fn scale_y(&self) -> &AnimatedValue<f64> {
+        (**self).scale_y()
+    }
+    fn rotation(&self) -> &AnimatedValue<f64> {
+        (**self).rotation()
+    }
+    fn blend_mode(&self) -> BlendMode {
+        (**self).blend_mode()
+    }
+    fn composite_op(&self) -> CompositeOp {
+        (**self).composite_op()
+    }
+    fn effects(&self) -> &[FilterStep] {
+        (**self).effects()
+    }
+}
+
 /// A per-layer effect the GPU path can apply, mapped from a [`FilterStep`].
 /// `#[non_exhaustive]`: more kinds are added as node coverage grows.
 #[derive(Debug, Clone, PartialEq)]
@@ -148,15 +210,19 @@ pub enum GpuEffect {
 pub struct GpuLayerPlan {
     /// Compositing order (bottom to top); equals the layer's index.
     pub z_order: i32,
-    /// Horizontal offset in pixels.
+    // These carry the model's units unchanged: `x`/`y` are canvas **pixels** and
+    // `rotation` is **clockwise degrees**. `ff_render::LayerTransform` is UV-space and
+    // counter-clockwise radians, so an executor must convert (or fall back) rather
+    // than feed these straight in (see docs/specs/gpu-compositing-bridge.md).
+    /// Horizontal offset, in canvas pixels (model units).
     pub x: f32,
-    /// Vertical offset in pixels.
+    /// Vertical offset, in canvas pixels (model units).
     pub y: f32,
-    /// Horizontal scale factor.
+    /// Horizontal scale factor (`1.0` = no change).
     pub scale_x: f32,
-    /// Vertical scale factor.
+    /// Vertical scale factor (`1.0` = no change).
     pub scale_y: f32,
-    /// Rotation in the compositor's units.
+    /// Rotation in clockwise degrees (model units).
     pub rotation: f32,
     /// Layer opacity in `[0.0, 1.0]`.
     pub opacity: f32,
@@ -610,6 +676,32 @@ mod tests {
             map_scene(&[layer], (16, 16), Duration::ZERO),
             GpuMapping::Fallback(GpuFallback::UnsupportedCompositeOp(CompositeOp::Under))
         );
+    }
+
+    #[test]
+    fn map_scene_should_accept_realtime_layer_and_references() {
+        // The preview runner maps borrowed `RealtimeLayer`s (`&[&RealtimeLayer]`);
+        // the owned and borrowed forms must produce the same plan.
+        let desc = RealtimeLayerDescriptor {
+            effects: vec![FilterStep::Eq {
+                brightness: 0.5,
+                contrast: 1.0,
+                saturation: 1.0,
+            }],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let layer = RealtimeLayer::with_dimensions(desc, 8, 8, ff_format::PixelFormat::Rgba);
+        let owned = map_scene(std::slice::from_ref(&layer), (8, 8), Duration::ZERO);
+        let by_ref = map_scene(&[&layer], (8, 8), Duration::ZERO);
+        assert_eq!(owned, by_ref, "a &RealtimeLayer maps like a RealtimeLayer");
+        assert!(matches!(owned, GpuMapping::Gpu(_)));
     }
 
     #[test]

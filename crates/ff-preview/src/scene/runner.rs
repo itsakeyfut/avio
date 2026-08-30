@@ -24,6 +24,7 @@ use crate::playback::player::PlayerCommand;
 use crate::playback::sink::FrameSink;
 
 use super::audio_resampling::spawn_audio_track_thread;
+use super::compositor::PreviewCompositor;
 use super::inner;
 use super::state::{
     AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, TransitionState,
@@ -51,6 +52,9 @@ pub struct SceneRunner {
     pub(super) cmd_rx: mpsc::Receiver<PlayerCommand>,
     pub(super) event_tx: mpsc::SyncSender<PlayerEvent>,
     pub(super) sink: Option<Box<dyn FrameSink>>,
+    /// Optional injected GPU compositor, tried before the built-in CPU compositor.
+    /// `avio` supplies one over `ff-render`; `None` (the default) uses the CPU path.
+    pub(super) gpu_compositor: Option<Box<dyn PreviewCompositor>>,
     pub(super) current_pts: Arc<AtomicU64>,
     pub(super) paused: Arc<AtomicBool>,
     pub(super) stopped: Arc<AtomicBool>,
@@ -103,6 +107,18 @@ impl SceneRunner {
     /// Register the frame sink. Call before [`run`](Self::run).
     pub fn set_sink(&mut self, sink: Box<dyn FrameSink>) {
         self.sink = Some(sink);
+    }
+
+    /// Register an external GPU compositor tried before the built-in CPU path.
+    /// Call before [`run`](Self::run). `avio` supplies one over `ff-render`.
+    pub fn set_gpu_compositor(&mut self, compositor: Box<dyn PreviewCompositor>) {
+        self.gpu_compositor = Some(compositor);
+    }
+
+    /// Whether an external GPU compositor is registered (else the CPU path is used).
+    #[must_use]
+    pub fn has_gpu_compositor(&self) -> bool {
+        self.gpu_compositor.is_some()
     }
 
     /// Advances every overlay layer to the frame whose presentation time has
@@ -223,6 +239,40 @@ impl SceneRunner {
             });
             key.push((usize::MAX - 1, 0, lw, lh));
         }
+        // Build the decoded frame for every layer, in the same order as `specs`.
+        // Stamp each with the composite's timeline PTS so the graph's per-frame
+        // animation tick (in `push_video`) evaluates each layer's opacity track at
+        // the same time. Frames from `from_rgba` carry PTS 0 otherwise, and any
+        // registered `AnimationEntry` would be frozen at t=0.
+        let ts = Timestamp::from_duration(t, Rational::new(1, 1_000_000));
+        base_frame.set_timestamp(ts);
+        let mut frames = vec![base_frame];
+        for &(li, ow, oh) in overlays {
+            let mut vf =
+                VideoFrame::from_rgba(ow, oh, self.overlay_layers[li].rgba.clone()).ok()?;
+            vf.set_timestamp(ts);
+            frames.push(vf);
+        }
+        if let Some((lw, lh)) = lavfi_dims {
+            let rgba = self
+                .lavfi
+                .as_ref()
+                .map_or_else(Vec::new, |s| s.rgba.clone());
+            let mut vf = VideoFrame::from_rgba(lw, lh, rgba).ok()?;
+            vf.set_timestamp(ts);
+            frames.push(vf);
+        }
+
+        // Try the injected GPU compositor first; `None` falls through to the CPU
+        // compositor below (unsupported layer, no adapter, or a GPU error).
+        let gpu_canvas = self.canvas.unwrap_or((base_w, base_h));
+        if let Some(out) =
+            try_gpu_composite(self.gpu_compositor.as_mut(), &specs, &frames, gpu_canvas, t)
+        {
+            return Some(out);
+        }
+
+        // CPU compositor (cached, keyed by layer identity/size).
         if self.composer.is_none() || self.composer_key != key {
             self.composer = RealtimeComposer::with_canvas(&specs, self.canvas).ok();
             self.composer_key = if self.composer.is_some() {
@@ -232,33 +282,8 @@ impl SceneRunner {
             };
         }
         let composer = self.composer.as_mut()?;
-        // Stamp every pushed frame with the composite's timeline PTS so the graph's
-        // per-frame animation tick (in `push_video`) evaluates each layer's opacity
-        // track at the same time. Frames from `from_rgba` carry PTS 0 otherwise, and
-        // any registered `AnimationEntry` would be frozen at t=0.
-        let ts = Timestamp::from_duration(t, Rational::new(1, 1_000_000));
-        base_frame.set_timestamp(ts);
-        if composer.push_layer(0, &base_frame).is_err() {
-            return None;
-        }
-        for (slot, &(li, ow, oh)) in overlays.iter().enumerate() {
-            let mut vf =
-                VideoFrame::from_rgba(ow, oh, self.overlay_layers[li].rgba.clone()).ok()?;
-            vf.set_timestamp(ts);
-            if composer.push_layer(slot + 1, &vf).is_err() {
-                return None;
-            }
-        }
-        // Push the lavfi overlay last (topmost slot), reading its held rgba from the
-        // disjoint `lavfi` field (as the overlay loop reads `overlay_layers`).
-        if let Some((lw, lh)) = lavfi_dims {
-            let rgba = self
-                .lavfi
-                .as_ref()
-                .map_or_else(Vec::new, |s| s.rgba.clone());
-            let mut vf = VideoFrame::from_rgba(lw, lh, rgba).ok()?;
-            vf.set_timestamp(ts);
-            if composer.push_layer(overlays.len() + 1, &vf).is_err() {
+        for (slot, vf) in frames.iter().enumerate() {
+            if composer.push_layer(slot, vf).is_err() {
                 return None;
             }
         }
@@ -1163,5 +1188,91 @@ impl Drop for SceneRunner {
         if let Some(h) = self.active_audio_thread.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// Pairs each layer spec with its decoded frame and asks the injected GPU
+/// compositor to composite them, or returns `None` (no compositor, or the
+/// compositor declined) so the caller uses the CPU path. Split out of
+/// `composite_frame` so the seam is unit-testable without a full runner.
+fn try_gpu_composite(
+    gpu: Option<&mut Box<dyn PreviewCompositor>>,
+    specs: &[RealtimeLayer],
+    frames: &[VideoFrame],
+    canvas: (u32, u32),
+    t: Duration,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let gpu = gpu?;
+    let pairs: Vec<(&RealtimeLayer, &VideoFrame)> = specs.iter().zip(frames.iter()).collect();
+    gpu.composite(&pairs, canvas, t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `PreviewCompositor` that returns a fixed result, to drive the seam.
+    struct MockCompositor {
+        result: Option<(Vec<u8>, u32, u32)>,
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl PreviewCompositor for MockCompositor {
+        fn composite(
+            &mut self,
+            _layers: &[(&RealtimeLayer, &VideoFrame)],
+            _canvas: (u32, u32),
+            _t: Duration,
+        ) -> Option<(Vec<u8>, u32, u32)> {
+            self.calls.set(self.calls.get() + 1);
+            self.result.clone()
+        }
+    }
+
+    fn one_spec_and_frame() -> (Vec<RealtimeLayer>, Vec<VideoFrame>) {
+        let desc = ff_filter::RealtimeLayerDescriptor {
+            effects: Vec::new(),
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let spec = RealtimeLayer::with_dimensions(desc, 2, 2, PixelFormat::Rgba);
+        let frame = VideoFrame::from_rgba(2, 2, vec![0u8; 2 * 2 * 4]).expect("frame");
+        (vec![spec], vec![frame])
+    }
+
+    #[test]
+    fn try_gpu_composite_should_return_none_without_a_compositor() {
+        let (specs, frames) = one_spec_and_frame();
+        assert!(try_gpu_composite(None, &specs, &frames, (2, 2), Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn try_gpu_composite_should_use_the_compositor_result_when_some() {
+        let (specs, frames) = one_spec_and_frame();
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockCompositor {
+            result: Some((vec![1, 2, 3, 4], 1, 1)),
+            calls: std::cell::Cell::new(0),
+        });
+        let out = try_gpu_composite(Some(&mut gpu), &specs, &frames, (2, 2), Duration::ZERO);
+        assert_eq!(out, Some((vec![1, 2, 3, 4], 1, 1)));
+    }
+
+    #[test]
+    fn try_gpu_composite_should_return_none_when_the_compositor_declines() {
+        let (specs, frames) = one_spec_and_frame();
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockCompositor {
+            result: None,
+            calls: std::cell::Cell::new(0),
+        });
+        // A declining compositor yields None so the caller falls back to CPU.
+        assert!(
+            try_gpu_composite(Some(&mut gpu), &specs, &frames, (2, 2), Duration::ZERO).is_none()
+        );
     }
 }

@@ -382,6 +382,84 @@ fn blend_textures(
     submit_render_pass(ctx, pipeline, &bind_group, &out_view, "Compositor blend");
 }
 
+/// Reads an `Rgba8Unorm` texture back into a dense `w * h * 4` byte buffer,
+/// stripping the `COPY_BYTES_PER_ROW_ALIGNMENT` row padding wgpu requires for the
+/// copy. Records the readback on `ctx`.
+pub(crate) fn read_texture_rgba(
+    ctx: &RenderContext,
+    tex: &wgpu::Texture,
+    w: u32,
+    h: u32,
+) -> Result<Vec<u8>, RenderError> {
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let bpr = (w * 4 + align - 1) & !(align - 1);
+    let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("compositor readback"),
+        size: u64::from(bpr) * u64::from(h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("compositor readback"),
+        });
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bpr),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    ctx.queue.submit(std::iter::once(enc.finish()));
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        tx.send(r).ok();
+    });
+    ctx.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| RenderError::Composite {
+            message: format!("readback poll failed: {e}"),
+        })?;
+    rx.recv()
+        .map_err(|_| RenderError::Composite {
+            message: "readback map channel closed".to_string(),
+        })?
+        .map_err(|e| RenderError::Composite {
+            message: format!("readback map failed: {e}"),
+        })?;
+    let raw = slice
+        .get_mapped_range()
+        .map_err(|e| RenderError::Composite {
+            message: format!("readback mapped range failed: {e}"),
+        })?;
+    let row = (w * 4) as usize;
+    let mut out = Vec::with_capacity(row * h as usize);
+    for y in 0..h as usize {
+        let s = y * bpr as usize;
+        out.extend_from_slice(&raw[s..s + row]);
+    }
+    drop(raw);
+    staging.unmap();
+    ctx.note_readback();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,5 +703,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn composite_to_rgba_should_read_back_the_canvas_size_and_pixels() {
+        let Some(ctx) = gpu_ctx() else {
+            return;
+        };
+        let (w, h) = (4u32, 4u32);
+        // One opaque solid-red rgba layer filling the canvas.
+        let red = {
+            let mut px = Vec::with_capacity((w * h * 4) as usize);
+            for _ in 0..(w * h) {
+                px.extend_from_slice(&[200, 10, 10, 255]);
+            }
+            VideoFrame::from_rgba(w, h, px).expect("rgba frame")
+        };
+        let mut compositor = crate::Compositor::new(Arc::clone(&ctx), w, h);
+        let mut layers = vec![crate::FrameLayer {
+            frame: red,
+            transform: crate::LayerTransform::default(),
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
+            z_order: 0,
+        }];
+        let (rgba, out_w, out_h) = compositor
+            .composite_to_rgba(&mut layers)
+            .expect("composite_to_rgba");
+        assert_eq!((out_w, out_h), (w, h));
+        assert_eq!(rgba.len(), (w * h * 4) as usize, "dense w*h*4 readback");
+        // The composited RGB is the red layer over the black canvas (the alpha
+        // channel is a compositor detail; exact-pixel parity is Br5, RK-012).
+        assert!(
+            rgba[0] > 150 && rgba[1] < 60 && rgba[2] < 60,
+            "top-left is red"
+        );
     }
 }

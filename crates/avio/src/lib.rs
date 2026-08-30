@@ -107,6 +107,8 @@ mod effect;
 mod error;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(all(feature = "gpu", feature = "preview"))]
+mod gpu_preview;
 mod ids;
 mod marker;
 mod timeline;
@@ -122,6 +124,8 @@ pub use error::TimelineError;
 pub use gpu::{
     GpuEffect, GpuFallback, GpuLayerPlan, GpuLayerSource, GpuMapping, GpuScenePlan, map_scene,
 };
+#[cfg(all(feature = "gpu", feature = "preview"))]
+pub use gpu_preview::GpuPreviewCompositor;
 pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
 pub use timeline::{Timeline, TimelineBuilder};
@@ -141,8 +145,8 @@ pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 mod player;
 #[cfg(feature = "preview")]
 pub use ff_preview::{
-    PlayerHandle, PreviewError, Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement,
-    SceneRunner, SceneSource, SceneVideoTrack,
+    PlayerHandle, PreviewCompositor, PreviewError, Scene, SceneAudioPlacement, SceneAudioTrack,
+    ScenePlacement, SceneRunner, SceneSource, SceneVideoTrack,
 };
 #[cfg(feature = "preview")]
 pub use player::TimelinePlayer;

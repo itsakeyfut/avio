@@ -56,6 +56,6 @@ pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};
 
 #[cfg(feature = "timeline")]
 pub use scene::{
-    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer, SceneRunner,
-    SceneSource, SceneVideoTrack,
+    PreviewCompositor, Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, ScenePlayer,
+    SceneRunner, SceneSource, SceneVideoTrack,
 };

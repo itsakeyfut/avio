@@ -22,6 +22,7 @@
 //! interleaved stereo `f32` output.
 
 mod audio_resampling;
+mod compositor;
 mod inner;
 mod runner;
 mod runner_layout;
@@ -41,6 +42,7 @@ use crate::playback::decode_buffer::DecodeBuffer;
 use crate::playback::master_clock::MasterClock;
 use crate::playback::player_handle::PlayerHandle;
 
+pub use compositor::PreviewCompositor;
 pub use runner::SceneRunner;
 pub use types::{
     Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneSource, SceneVideoTrack,
@@ -584,6 +586,7 @@ impl ScenePlayer {
             cmd_rx,
             event_tx,
             sink: None,
+            gpu_compositor: None,
             current_pts: Arc::clone(&current_pts),
             paused: Arc::clone(&paused),
             stopped: Arc::clone(&stopped),
