@@ -18,8 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use ff_filter::{
-    AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, LayerSource,
-    PitchAlgo, ProxySource, RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
+    AnimatedValue, AnimationTrack, AudioTrack, BlendMode, CompositeOp, FilterStep, Keyframe,
+    LayerSource, PitchAlgo, ProxySource, RealtimeLayerDescriptor, ScaleAlgorithm, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
@@ -116,6 +116,80 @@ fn video_transform(clip: &Clip, automation: &TrackAutomation) -> VideoTransform 
     }
 }
 
+/// Multiplies every keyframe value by `dim`, converting a scale **factor** track
+/// into a **pixel** track for [`FilterStep::ScaleAnimated`] (which sizes in pixels,
+/// while the static compositor node uses `canvas * factor`). Timestamps and easing
+/// are preserved so the animation shape is unchanged.
+fn scale_track_pixels(track: &AnimationTrack<f64>, dim: u32) -> AnimationTrack<f64> {
+    let mut out = AnimationTrack::new();
+    for kf in track.keyframes() {
+        out = out.push(Keyframe::new(
+            kf.timestamp,
+            kf.value * f64::from(dim),
+            kf.easing.clone(),
+        ));
+    }
+    out
+}
+
+/// Maps a scale-factor [`AnimatedValue`] to pixels (`value * dim`), keeping the
+/// `Static`/`Track` shape.
+fn to_pixels(value: &AnimatedValue<f64>, dim: u32) -> AnimatedValue<f64> {
+    match value {
+        AnimatedValue::Static(v) => AnimatedValue::Static(v * f64::from(dim)),
+        AnimatedValue::Track(t) => AnimatedValue::Track(scale_track_pixels(t, dim)),
+    }
+}
+
+/// The per-frame geometry: when the merged scale or rotation is animated, returns the
+/// self-animating [`FilterStep::ScaleAnimated`]/[`RotateAnimated`] steps to splice
+/// into the effect chain plus the **neutralized** static scalars (`scale=1.0` /
+/// `rotation=0.0`) so the compositor's static transform node is skipped and the
+/// animation is applied once, per frame, identically in preview and export
+/// (ADR-0005). A non-animated axis returns no step and its scalar unchanged.
+fn animated_geometry(
+    transform: &VideoTransform,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> (
+    Vec<FilterStep>,
+    AnimatedValue<f64>,
+    AnimatedValue<f64>,
+    AnimatedValue<f64>,
+) {
+    let mut steps = Vec::new();
+    let mut scale_x = transform.scale_x.clone();
+    let mut scale_y = transform.scale_y.clone();
+    let mut rotation = transform.rotation.clone();
+
+    // Rotation is emitted BEFORE scale: `RotateAnimated` supersamples around a stable
+    // input size, so it must run on the un-scaled frame; an animated `ScaleAnimated`
+    // then varies the output size, which the downstream `overlay` handles. (Scale is
+    // uniform for the clip `scale`, so the two commute.)
+    if matches!(transform.rotation, AnimatedValue::Track(_)) {
+        steps.push(FilterStep::RotateAnimated {
+            // `angle` is degrees (matching the compositor's static rotate node).
+            angle: transform.rotation.clone(),
+            fill_color: "black".to_string(),
+        });
+        rotation = AnimatedValue::Static(0.0);
+    }
+    // Scale animates as a whole (both axes) whenever either axis is a track, so the
+    // single `ScaleAnimated` owns both dimensions and both scalars neutralize.
+    if matches!(transform.scale_x, AnimatedValue::Track(_))
+        || matches!(transform.scale_y, AnimatedValue::Track(_))
+    {
+        steps.push(FilterStep::ScaleAnimated {
+            width: to_pixels(&transform.scale_x, canvas_width),
+            height: to_pixels(&transform.scale_y, canvas_height),
+            algorithm: ScaleAlgorithm::Bicubic,
+        });
+        scale_x = AnimatedValue::Static(1.0);
+        scale_y = AnimatedValue::Static(1.0);
+    }
+    (steps, scale_x, scale_y, rotation)
+}
+
 /// Maps a clip's [`FitMode`] to the canvas-relative framing [`FilterStep`], or
 /// `None` for [`FitMode::None`] (native size, no framing). Shared by the export
 /// [`video_layer`] and preview [`realtime_descriptor`] paths so both frame a clip
@@ -178,6 +252,14 @@ pub(crate) fn video_layer(
     if (clip.speed - 1.0).abs() > 1e-9 {
         layer_effects.push(FilterStep::Speed { factor: clip.speed });
     }
+    // Per-frame scale/rotation: when the model animates them, splice self-animating
+    // steps here — after the temporal placement (`Trim`/`ResetPts`/`OffsetPts`/`Speed`),
+    // so the `t`-expression sees timeline time — and neutralize the static layer
+    // transform below to avoid double-application (ADR-0005).
+    let transform = video_transform(clip, automation);
+    let (geometry, scale_x, scale_y, rotation) =
+        animated_geometry(&transform, canvas_width, canvas_height);
+    layer_effects.extend(geometry);
     // Frame the source to the project canvas (cover/contain/stretch) before the
     // colour/effect chain; `FitMode::None` emits nothing (native size).
     if let Some(step) = fit_step(clip, canvas_width, canvas_height) {
@@ -213,15 +295,16 @@ pub(crate) fn video_layer(
         ClipSource::Text(spec) => LayerSource::Text(spec.clone()),
         ClipSource::Solid(color) => LayerSource::Solid(*color),
     };
-    let transform = video_transform(clip, automation);
     VideoLayer {
         source,
         proxy,
         x: transform.x,
         y: transform.y,
-        scale_x: transform.scale_x,
-        scale_y: transform.scale_y,
-        rotation: transform.rotation,
+        // Neutralized when scale/rotation is animated (the animation lives in
+        // `effects` as `ScaleAnimated`/`RotateAnimated`); unchanged when static.
+        scale_x,
+        scale_y,
+        rotation,
         opacity: transform.opacity,
         blend_mode: transform.blend_mode,
         composite_op: transform.composite_op,
@@ -248,9 +331,15 @@ pub(crate) fn realtime_descriptor(
     canvas_height: u32,
 ) -> RealtimeLayerDescriptor {
     let transform = video_transform(clip, automation);
+    // Per-frame scale/rotation: the same self-animating steps the export path emits.
+    // The preview runner stamps each pushed frame with the timeline PTS, so the
+    // `t`-expression evaluates at the same time as export (ADR-0005). Placed before
+    // the fit/colour chain, matching the export layer order.
+    let (geometry, scale_x, scale_y, rotation) =
+        animated_geometry(&transform, canvas_width, canvas_height);
+    let mut effects = geometry;
     // Frame to the canvas (same step as the export path) before the colour chain,
     // so preview and export share one framing interpretation.
-    let mut effects = Vec::new();
     if let Some(step) = fit_step(clip, canvas_width, canvas_height) {
         effects.push(step);
     }
@@ -260,9 +349,10 @@ pub(crate) fn realtime_descriptor(
         opacity: transform.opacity,
         x: transform.x,
         y: transform.y,
-        scale_x: transform.scale_x,
-        scale_y: transform.scale_y,
-        rotation: transform.rotation,
+        // Neutralized when animated (the animation lives in `effects`); else unchanged.
+        scale_x,
+        scale_y,
+        rotation,
         blend_mode: transform.blend_mode,
         composite_op: transform.composite_op,
     }
@@ -503,6 +593,92 @@ mod tests {
                 .effects
                 .iter()
                 .any(|s| matches!(s, FilterStep::XFade { .. }))
+        );
+    }
+
+    // Per-frame scale/rotation (ADR-0005)
+
+    #[test]
+    fn video_layer_animated_scale_should_emit_scale_animated_and_neutralize() {
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 1.5, Easing::Linear));
+        let clip = Clip::new("a.mp4").with_scale_track(track);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+
+        // The static layer transform is neutralized so the compositor's static scale
+        // node is skipped (no double-application).
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+
+        // The animation is carried as a self-animating ScaleAnimated with the factor
+        // track converted to pixels (factor × canvas).
+        let sa = layer
+            .effects
+            .iter()
+            .find(|s| matches!(s, FilterStep::ScaleAnimated { .. }));
+        let Some(FilterStep::ScaleAnimated { width, height, .. }) = sa else {
+            panic!(
+                "animated scale must emit ScaleAnimated, got {:?}",
+                layer.effects
+            );
+        };
+        assert!((width.value_at(Duration::ZERO) - 960.0).abs() < 1e-6); // 0.5 × 1920
+        assert!((height.value_at(Duration::ZERO) - 540.0).abs() < 1e-6); // 0.5 × 1080
+        assert!((width.value_at(Duration::from_secs(2)) - 2880.0).abs() < 1e-6); // 1.5 × 1920
+    }
+
+    #[test]
+    fn video_layer_animated_rotation_should_emit_rotate_animated_and_neutralize() {
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 90.0, Easing::Linear));
+        let clip = Clip::new("a.mp4").with_rotation_track(track);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+
+        assert!(matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
+        let ra = layer
+            .effects
+            .iter()
+            .find(|s| matches!(s, FilterStep::RotateAnimated { .. }));
+        let Some(FilterStep::RotateAnimated { angle, .. }) = ra else {
+            panic!(
+                "animated rotation must emit RotateAnimated, got {:?}",
+                layer.effects
+            );
+        };
+        // Degrees pass through unchanged (the compositor's rotate node converts).
+        assert!((angle.value_at(Duration::from_secs(1)) - 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn video_layer_static_scale_should_stay_on_the_layer() {
+        // AC2: a non-animated scale must NOT be routed through ScaleAnimated and must
+        // stay on the layer scalar, so the static render is unchanged.
+        let clip = Clip::new("a.mp4").with_scale(0.5);
+        let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
+        assert!(
+            !layer
+                .effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
+        );
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn realtime_descriptor_animated_scale_should_emit_scale_animated() {
+        // The preview path emits the same self-animating step as export (parity).
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 1.0, Easing::Linear));
+        let clip = Clip::new("a.mp4").with_scale_track(track);
+        let desc = realtime_descriptor(&clip, &no_anim(), 1280, 720);
+        assert!(matches!(desc.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        assert!(
+            desc.effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
         );
     }
 
@@ -897,9 +1073,21 @@ mod tests {
         };
         let clip = Clip::new("a.mp4");
         let d = realtime_descriptor(&clip, &automation, 1920, 1080);
-        assert!(matches!(d.scale_x, AnimatedValue::Track(_)));
-        assert!(matches!(d.rotation, AnimatedValue::Track(_)));
+        // Timeline scale/rotation animations are carried as self-animating steps and
+        // the scalars neutralize (ADR-0005), same as the export path.
+        assert!(matches!(d.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
         assert!(matches!(d.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        assert!(matches!(d.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
+        assert!(
+            d.effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
+        );
+        assert!(
+            d.effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::RotateAnimated { .. }))
+        );
     }
 
     #[test]
@@ -954,12 +1142,24 @@ mod tests {
 
     #[test]
     fn video_layer_scale_track_should_win_on_both_axes() {
+        // A per-clip scale track drives both axes. Post-ADR-0005 the animation is
+        // carried as a self-animating ScaleAnimated (factor × canvas) and the layer
+        // scalar neutralizes; both width and height reflect the 2.0 factor.
         let mut clip = Clip::new("a.mp4");
         clip.scale_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 2.0, Easing::Linear)));
         let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
-        assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
-        assert!(matches!(layer.scale_y, AnimatedValue::Track(_)));
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        let Some(FilterStep::ScaleAnimated { width, height, .. }) = layer
+            .effects
+            .iter()
+            .find(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
+        else {
+            panic!("expected ScaleAnimated, got {:?}", layer.effects);
+        };
+        assert!((width.value_at(Duration::ZERO) - 3840.0).abs() < 1e-6); // 2.0 × 1920
+        assert!((height.value_at(Duration::ZERO) - 2160.0).abs() < 1e-6); // 2.0 × 1080
     }
 
     #[test]
@@ -974,9 +1174,19 @@ mod tests {
         };
         let clip = Clip::new("a.mp4"); // scale defaults to 1.0 (neutral)
         let layer = video_layer(&clip, 0, &automation, 1920, 1080, None, None);
-        assert!(matches!(layer.scale_x, AnimatedValue::Track(_)));
-        // scale_y has no track animation -> the default static 1.0.
+        // The scale_x timeline animation is carried into ScaleAnimated's width; the
+        // un-animated scale_y axis maps to a static height (1.0 × canvas).
+        assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
+        let Some(FilterStep::ScaleAnimated { width, height, .. }) = layer
+            .effects
+            .iter()
+            .find(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
+        else {
+            panic!("expected ScaleAnimated, got {:?}", layer.effects);
+        };
+        assert!((width.value_at(Duration::ZERO) - 960.0).abs() < 1e-6); // 0.5 × 1920
+        assert!((height.value_at(Duration::ZERO) - 1080.0).abs() < 1e-6); // 1.0 × 1080
     }
 
     #[test]
@@ -1006,11 +1216,19 @@ mod tests {
 
     #[test]
     fn video_layer_rotation_track_should_win() {
+        // A per-clip rotation track is carried as a self-animating RotateAnimated and
+        // the layer scalar neutralizes (ADR-0005).
         let mut clip = Clip::new("a.mp4");
         clip.rotation_track =
             Some(AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 90.0, Easing::Linear)));
         let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
-        assert!(matches!(layer.rotation, AnimatedValue::Track(_)));
+        assert!(matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
+        assert!(
+            layer
+                .effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::RotateAnimated { .. }))
+        );
     }
 
     #[test]

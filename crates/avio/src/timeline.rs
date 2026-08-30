@@ -1198,11 +1198,12 @@ mod tests {
     #[cfg(feature = "preview")]
     #[test]
     fn to_scene_should_route_timeline_animations_into_the_preview_layer() {
-        use ff_filter::{AnimatedValue, Easing, Keyframe};
+        use ff_filter::{AnimatedValue, Easing, FilterStep, Keyframe};
 
         // Track 1 (overlay) gets timeline scale_x + rotation animations, and an opacity
         // animation the neutral clip should fall back to (the 3-way merge). The single
-        // derive must route all three into the preview placement's layer.
+        // derive must route all three into the preview placement's layer: opacity as an
+        // animated scalar, scale/rotation as self-animating effect steps (ADR-0005).
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
             .frame_rate(30.0)
@@ -1228,9 +1229,27 @@ mod tests {
 
         let scene = timeline.to_scene();
         let overlay = &scene.video_tracks[1].placements[0];
-        assert!(matches!(overlay.layer.scale_x, AnimatedValue::Track(_)));
-        assert!(matches!(overlay.layer.rotation, AnimatedValue::Track(_)));
+        // Opacity animates on the scalar (send_command); scale/rotation move to
+        // self-animating effect steps with a neutralized scalar.
         assert!(matches!(overlay.layer.opacity, AnimatedValue::Track(_)));
+        assert!(
+            matches!(overlay.layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9)
+        );
+        assert!(matches!(overlay.layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
+        assert!(
+            overlay
+                .layer
+                .effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::ScaleAnimated { .. }))
+        );
+        assert!(
+            overlay
+                .layer
+                .effects
+                .iter()
+                .any(|s| matches!(s, FilterStep::RotateAnimated { .. }))
+        );
     }
 
     #[cfg(feature = "preview")]

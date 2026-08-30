@@ -621,6 +621,141 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
     );
 }
 
+/// Verifies that a per-frame animated scale/rotation is evaluated each frame in the
+/// compositor (not frozen at `t=0`, ADR-0005): a white overlay pinned at the top-left
+/// grows from a corner square to full canvas, so the centre pixel goes from the black
+/// background to white across the clip. A `RotateAnimated` (0 -> 360 deg) rides the
+/// same layer so the rotated path is exercised (360 deg = identity at the last frame,
+/// leaving the centre covered).
+///
+/// Non-vacuous: a static-at-`t=0` collapse would keep the overlay at its initial 0.25
+/// size for every frame, so the centre would stay black and the assertion would fail.
+#[test]
+#[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
+fn compositor_should_evaluate_per_frame_scale_and_rotation() {
+    const W: u32 = 64;
+    const H: u32 = 64;
+    const FPS: f64 = 30.0;
+    const FRAMES: usize = 30;
+
+    let bg_path = test_output_path("scale_bg_64x64.mp4");
+    let layer_path = test_output_path("scale_layer_64x64.mp4");
+    let _bg_guard = FileGuard::new(bg_path.clone());
+    let _layer_guard = FileGuard::new(layer_path.clone());
+
+    // Background: black; overlay source: white.
+    if make_source_file(&bg_path, W, H, FPS, FRAMES, 16, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&layer_path, W, H, FPS, FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+
+    // Scale: 0.25×canvas -> 1.0×canvas (pixels); rotation: 0 -> 360 deg.
+    let end_pts = Duration::from_secs_f64((FRAMES as f64 - 1.0) / FPS);
+    let w_track = AnimationTrack::new()
+        .push(Keyframe::new(
+            Duration::ZERO,
+            0.25 * f64::from(W),
+            Easing::Linear,
+        ))
+        .push(Keyframe::new(end_pts, f64::from(W), Easing::Linear));
+    let h_track = AnimationTrack::new()
+        .push(Keyframe::new(
+            Duration::ZERO,
+            0.25 * f64::from(H),
+            Easing::Linear,
+        ))
+        .push(Keyframe::new(end_pts, f64::from(H), Easing::Linear));
+    let rot_track = AnimationTrack::new()
+        .push(Keyframe::new(Duration::ZERO, 0.0_f64, Easing::Linear))
+        .push(Keyframe::new(end_pts, 360.0_f64, Easing::Linear));
+
+    let mut composer = match MultiTrackComposer::new(W, H)
+        .add_layer(VideoLayer {
+            source: LayerSource::File(bg_path.clone()),
+            proxy: None,
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
+            blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
+            effects: vec![],
+        })
+        .add_layer(VideoLayer {
+            source: LayerSource::File(layer_path.clone()),
+            proxy: None,
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            // Neutral scalars: the animation lives in `effects` (ADR-0005).
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
+            blend_mode: ff_filter::BlendMode::Normal,
+            composite_op: ff_filter::CompositeOp::Over,
+            effects: vec![
+                FilterStep::RotateAnimated {
+                    angle: AnimatedValue::Track(rot_track),
+                    fill_color: "black".to_string(),
+                },
+                FilterStep::ScaleAnimated {
+                    width: AnimatedValue::Track(w_track),
+                    height: AnimatedValue::Track(h_track),
+                    algorithm: ff_filter::ScaleAlgorithm::Bicubic,
+                },
+            ],
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+
+    let cx = (W / 2) as usize;
+    let cy = (H / 2) as usize;
+    let mut lumas: Vec<f64> = Vec::with_capacity(FRAMES);
+    for i in 0..FRAMES {
+        composer.tick(Duration::from_secs_f64(i as f64 / FPS));
+        let frame = match composer.pull_video() {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                println!("Skipping: composer ended early at frame {i}");
+                return;
+            }
+            Err(e) => {
+                println!("Skipping: pull_video failed at frame {i}: {e}");
+                return;
+            }
+        };
+        if frame.width() != W || frame.height() != H {
+            println!("Skipping: unexpected dims at frame {i}");
+            return;
+        }
+        let stride = frame.stride(0).unwrap_or(W as usize);
+        let Some(y_plane) = frame.plane(0) else {
+            println!("Skipping: Y-plane unavailable at frame {i}");
+            return;
+        };
+        lumas.push(y_plane[cy * stride + cx] as f64);
+    }
+
+    let first = lumas[0];
+    let last = lumas[FRAMES - 1];
+    assert!(
+        last > first + 50.0,
+        "the centre pixel must brighten as the overlay scales up: frame 0 luma={first:.1} \
+         (small) vs frame {} luma={last:.1} (full) — a static-at-t=0 collapse would keep them equal",
+        FRAMES - 1
+    );
+}
+
 // Packed-F32 stereo audio frame with constant amplitude
 
 fn constant_amplitude_frame(amplitude: f32, samples: usize, sample_rate: u32) -> AudioFrame {
