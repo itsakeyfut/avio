@@ -122,6 +122,34 @@ impl GroupId {
     }
 }
 
+/// Stable identity of a [`ClipEffect`](crate::ClipEffect) within a
+/// [`Clip`](crate::Clip).
+///
+/// Assigned by the document (see the module docs); an effect built by the caller
+/// is [`UNSET`](EffectId::UNSET) until it is added via
+/// [`Command::AddEffect`](crate::Command::AddEffect) (or stamped by
+/// [`Timeline`](crate::Timeline) build). Effect ids are minted from a document-wide
+/// counter, so they are unique across all clips, not just within one clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EffectId(u64);
+
+impl EffectId {
+    /// The id of an effect that has not yet been added to a document.
+    pub const UNSET: EffectId = EffectId(0);
+
+    /// Whether this id has been assigned by a document (i.e. is not [`UNSET`](Self::UNSET)).
+    #[must_use]
+    pub fn is_set(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Mints an id from a raw counter value. Crate-internal (see `ClipId::from_raw`).
+    pub(crate) fn from_raw(value: u64) -> Self {
+        EffectId(value)
+    }
+}
+
 /// Which track list a [`TrackId`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

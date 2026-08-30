@@ -14,6 +14,7 @@ use ff_filter::{
 };
 use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
 
+use crate::effect::{ClipEffect, EffectKind, Param};
 use crate::error::TimelineError;
 use crate::ids::{ClipId, GroupId};
 
@@ -167,21 +168,6 @@ pub struct Clip {
     ///
     /// Defaults to `Duration::ZERO`.
     pub fade_out: Duration,
-    /// Per-clip brightness adjustment. Range: −1.0..=1.0. Default: 0.0 (no change).
-    ///
-    /// Applied via the `eq` video filter during `Timeline::render()`.
-    /// Neutral value (`0.0`) produces bit-identical output to the no-eq path.
-    pub brightness: f32,
-    /// Per-clip contrast adjustment. Range: 0.0..=3.0. Default: 1.0 (no change).
-    ///
-    /// Applied via the `eq` video filter during `Timeline::render()`.
-    /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
-    pub contrast: f32,
-    /// Per-clip saturation adjustment. Range: 0.0..=3.0. Default: 1.0 (no change).
-    ///
-    /// Applied via the `eq` video filter during `Timeline::render()`.
-    /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
-    pub saturation: f32,
     /// Per-clip overlay opacity applied when this clip is composited over a lower layer.
     /// Range: `0.0` (fully transparent) to `1.0` (fully opaque). Default: `1.0`.
     ///
@@ -305,6 +291,15 @@ pub struct Clip {
     /// Persisted by the `serde` feature (#1452). Compositor-internal steps
     /// (`Blend` / `Composite` / `AlphaMatte`) are not serialized.
     pub video_effects: Vec<FilterStep>,
+    /// Ordered, typed, re-editable per-clip video effects (#1458).
+    ///
+    /// The authoring layer above [`video_effects`](Self::video_effects): each
+    /// [`ClipEffect`] is an id-addressed [`EffectKind`] with individually
+    /// keyframable [`Param`](crate::Param)s, edited via the `*Effect` commands.
+    /// During derivation each enabled effect compiles to a [`FilterStep`] (see
+    /// [`video_effect_chain`](Self::video_effect_chain)), prepended before the
+    /// opaque `video_effects`. An empty vec (the default) is a no-op.
+    pub effects: Vec<ClipEffect>,
     /// Ordered per-clip audio filter steps applied to the clip's audio track.
     ///
     /// Applied during the audio mix after the built-in speed and fade steps,
@@ -373,9 +368,6 @@ impl Clip {
             pan: 0.0,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
-            brightness: 0.0,
-            contrast: 1.0,
-            saturation: 1.0,
             opacity: 1.0,
             opacity_track: None,
             x: 0.0,
@@ -392,6 +384,7 @@ impl Clip {
             speed: 1.0,
             proxy: None,
             video_effects: Vec::new(),
+            effects: Vec::new(),
             audio_effects: Vec::new(),
         }
     }
@@ -418,9 +411,10 @@ impl Clip {
     }
 
     /// Returns the pixel-domain video effect chain that `Timeline::render()`
-    /// applies to this clip's layer: the `eq` colour-correction step (included
-    /// only when brightness/contrast/saturation are non-neutral) followed by the
-    /// caller-attached [`video_effects`](Self::video_effects), in order.
+    /// applies to this clip's layer: each enabled typed [`effect`](Self::effects)
+    /// compiled to its [`FilterStep`] (a neutral `ColorCorrect` compiles to
+    /// nothing), followed by the caller-attached [`video_effects`](Self::video_effects),
+    /// in order.
     ///
     /// Temporal steps such as `Speed` are intentionally excluded — they affect
     /// timing, not a single frame's pixels. This is the exact list
@@ -446,14 +440,12 @@ impl Clip {
     #[must_use]
     pub fn video_effect_chain(&self) -> Vec<FilterStep> {
         let mut steps = Vec::new();
-        #[allow(clippy::float_cmp)]
-        let neutral = self.brightness == 0.0 && self.contrast == 1.0 && self.saturation == 1.0;
-        if !neutral {
-            steps.push(FilterStep::Eq {
-                brightness: self.brightness,
-                contrast: self.contrast,
-                saturation: self.saturation,
-            });
+        for effect in &self.effects {
+            if effect.enabled
+                && let Some(step) = effect.kind.to_filter_step()
+            {
+                steps.push(step);
+            }
         }
         steps.extend(self.video_effects.iter().cloned());
         steps
@@ -744,6 +736,11 @@ impl Clip {
 
     /// Sets per-clip color correction and returns the updated clip.
     ///
+    /// This is a builder convenience over the typed effect model: it sets (or
+    /// replaces) the clip's single [`EffectKind::ColorCorrect`](crate::EffectKind)
+    /// effect with constant parameters. To keyframe a channel or manage several
+    /// effects, use the `*Effect` edit commands instead.
+    ///
     /// The three parameters map directly to the `FFmpeg` `eq` filter:
     /// - `brightness`: −1.0..=1.0, where `0.0` is no change.
     /// - `contrast`:    0.0..=3.0, where `1.0` is no change.
@@ -757,20 +754,39 @@ impl Clip {
     ///
     /// ```
     /// use avio::Clip;
+    /// use ff_filter::FilterStep;
     ///
     /// let clip = Clip::new("scene.mp4").with_color_correction(0.1, 1.2, 0.9);
-    /// assert_eq!(clip.brightness, 0.1);
-    /// assert_eq!(clip.contrast, 1.2);
-    /// assert_eq!(clip.saturation, 0.9);
+    /// assert!(matches!(
+    ///     clip.video_effect_chain().as_slice(),
+    ///     [FilterStep::Eq { .. }]
+    /// ));
     /// ```
     #[must_use]
-    pub fn with_color_correction(self, brightness: f32, contrast: f32, saturation: f32) -> Self {
-        Self {
-            brightness,
-            contrast,
-            saturation,
-            ..self
+    pub fn with_color_correction(
+        mut self,
+        brightness: f32,
+        contrast: f32,
+        saturation: f32,
+    ) -> Self {
+        let kind = EffectKind::ColorCorrect {
+            brightness: Param::Const(f64::from(brightness)),
+            contrast: Param::Const(f64::from(contrast)),
+            saturation: Param::Const(f64::from(saturation)),
+        };
+        // A single color-correct effect is the builder's contract; replace an
+        // existing one in place (preserving its id/position) rather than stacking.
+        if let Some(existing) = self
+            .effects
+            .iter_mut()
+            .find(|e| matches!(e.kind, EffectKind::ColorCorrect { .. }))
+        {
+            existing.kind = kind;
+            existing.enabled = true;
+        } else {
+            self.effects.push(ClipEffect::new(kind));
         }
+        self
     }
 
     /// Sets the overlay opacity and returns the updated clip.
@@ -1196,18 +1212,75 @@ mod tests {
 
     #[test]
     fn clip_new_should_default_color_correction_to_neutral() {
+        // A fresh clip carries no effects, so its chain is empty (neutral).
         let clip = Clip::new("video.mp4");
-        assert_eq!(clip.brightness, 0.0);
-        assert_eq!(clip.contrast, 1.0);
-        assert_eq!(clip.saturation, 1.0);
+        assert!(clip.effects.is_empty());
+        assert!(clip.video_effect_chain().is_empty());
     }
 
     #[test]
-    fn clip_with_color_correction_should_set_fields() {
+    fn clip_with_color_correction_should_set_a_color_correct_effect() {
+        use crate::effect::{EffectKind, Param};
         let clip = Clip::new("scene.mp4").with_color_correction(0.1, 1.2, 0.9);
-        assert_eq!(clip.brightness, 0.1);
-        assert_eq!(clip.contrast, 1.2);
-        assert_eq!(clip.saturation, 0.9);
+        let [effect] = clip.effects.as_slice() else {
+            panic!("expected exactly one color-correct effect");
+        };
+        assert!(effect.enabled);
+        let EffectKind::ColorCorrect {
+            brightness,
+            contrast,
+            saturation,
+        } = &effect.kind
+        else {
+            panic!("expected a ColorCorrect effect");
+        };
+        assert_eq!(brightness.as_const(), Some(0.1_f32.into()));
+        assert_eq!(contrast.as_const(), Some(1.2_f32.into()));
+        assert_eq!(saturation.as_const(), Some(0.9_f32.into()));
+        assert!(matches!(brightness, Param::Const(_)));
+    }
+
+    #[test]
+    fn clip_with_color_correction_should_replace_existing_effect() {
+        let clip = Clip::new("scene.mp4")
+            .with_color_correction(0.1, 1.2, 0.9)
+            .with_color_correction(0.2, 1.0, 1.0);
+        assert_eq!(
+            clip.effects.len(),
+            1,
+            "the color-correct effect is replaced"
+        );
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::Eq { .. }]
+        ));
+    }
+
+    #[test]
+    fn video_effect_chain_should_surface_blur_and_animated_effects() {
+        use std::time::Duration;
+
+        use ff_filter::{Easing, Keyframe};
+
+        use crate::effect::{ClipEffect, EffectKind, Param};
+
+        // An animated parameter must reach the chain as the *Animated FilterStep
+        // variant, and Blur must map to GBlur — end-to-end through video_effect_chain
+        // (not just the isolated to_filter_step unit tests), in effects order.
+        let track = AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear));
+        let mut clip = Clip::new("v.mp4");
+        clip.effects.push(ClipEffect::new(EffectKind::Blur {
+            radius: Param::Const(2.0),
+        }));
+        clip.effects.push(ClipEffect::new(EffectKind::ColorCorrect {
+            brightness: Param::Animated(track),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+        }));
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::GBlur { .. }, FilterStep::EqAnimated { .. }]
+        ));
     }
 
     #[test]

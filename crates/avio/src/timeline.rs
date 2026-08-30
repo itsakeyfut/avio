@@ -20,7 +20,7 @@ use ff_format::{AudioFrame, ChannelLayout};
 use crate::clip::Clip;
 use crate::derive;
 use crate::error::TimelineError;
-use crate::ids::{ClipId, TrackId};
+use crate::ids::{ClipId, EffectId, TrackId};
 use crate::marker::Marker;
 use crate::track::{AudioProperty, Track, VideoProperty};
 use ff_pipeline::EncoderConfig;
@@ -75,6 +75,9 @@ pub struct Timeline {
     pub(crate) next_marker_id: u64,
     /// Next [`GroupId`](crate::GroupId) value to hand out (see `next_clip_id`).
     pub(crate) next_group_id: u64,
+    /// Next [`EffectId`](crate::EffectId) value to hand out (see `next_clip_id`).
+    /// Document-wide: effect ids are unique across all clips.
+    pub(crate) next_effect_id: u64,
     /// Editorial markers on the timeline. Metadata only — they do not affect
     /// derivation, render, or preview. Addressed by [`MarkerId`](crate::MarkerId).
     pub(crate) markers: Vec<Marker>,
@@ -238,6 +241,7 @@ impl Timeline {
             next_track_id: _,
             next_marker_id: _,
             next_group_id: _,
+            next_effect_id: _,
             markers: _,
             lavfi_overlay,
             audio_filter,
@@ -894,6 +898,7 @@ impl TimelineBuilder {
         // (`AddClip` / `AddTrack`) keep minting fresh, never-reused ids.
         let mut next_track_id: u64 = 1;
         let mut next_clip_id: u64 = 1;
+        let mut next_effect_id: u64 = 1;
         let mut video_tracks = self.video_tracks;
         let mut audio_tracks = self.audio_tracks;
         for track in video_tracks.iter_mut().chain(audio_tracks.iter_mut()) {
@@ -902,6 +907,10 @@ impl TimelineBuilder {
             for clip in &mut track.clips {
                 clip.id = ClipId::from_raw(next_clip_id);
                 next_clip_id += 1;
+                for effect in &mut clip.effects {
+                    effect.id = EffectId::from_raw(next_effect_id);
+                    next_effect_id += 1;
+                }
             }
         }
 
@@ -916,6 +925,7 @@ impl TimelineBuilder {
             next_track_id,
             next_marker_id: 1,
             next_group_id: 1,
+            next_effect_id,
             markers: Vec::new(),
             lavfi_overlay: self.lavfi_overlay,
             audio_filter: self.audio_filter,

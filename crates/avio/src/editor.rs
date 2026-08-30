@@ -14,7 +14,8 @@
 //! The id counters live here, outside the snapshotted `Timeline`, as a session
 //! high-water mark: an `undo` restores an older snapshot (and its older
 //! counters), so seating the high-water before each edit keeps a later
-//! `AddClip` / `AddTrack` from re-minting an id a discarded branch already used.
+//! `AddClip` / `AddTrack` / `AddEffect` from re-minting an id a discarded branch
+//! already used.
 //! This is what makes the "never reused" guarantee of ADR-0001
 //! (`docs/adr/0001-clip-and-track-identity.md`) hold across undo.
 
@@ -37,10 +38,11 @@ pub struct Editor {
     history: Vec<Timeline>,
     /// Index of the current version within `history`.
     cursor: usize,
-    /// Session high-water for the next clip/track id, never rewound by `undo`.
-    /// See the module docs.
+    /// Session high-water for the next clip/track/effect id, never rewound by
+    /// `undo`. See the module docs.
     next_clip_id: u64,
     next_track_id: u64,
+    next_effect_id: u64,
     /// An in-progress coalesced gesture, or `None`. See [`Editor::begin_group`].
     group: Option<Group>,
 }
@@ -63,11 +65,13 @@ impl Editor {
     pub fn new(initial: Timeline) -> Self {
         let next_clip_id = initial.next_clip_id;
         let next_track_id = initial.next_track_id;
+        let next_effect_id = initial.next_effect_id;
         Self {
             history: vec![initial],
             cursor: 0,
             next_clip_id,
             next_track_id,
+            next_effect_id,
             group: None,
         }
     }
@@ -89,9 +93,11 @@ impl Editor {
         let mut seed = self.current().clone();
         seed.next_clip_id = self.next_clip_id;
         seed.next_track_id = self.next_track_id;
+        seed.next_effect_id = self.next_effect_id;
         let next = crate::edit::apply(&seed, command)?;
         self.next_clip_id = next.next_clip_id;
         self.next_track_id = next.next_track_id;
+        self.next_effect_id = next.next_effect_id;
         Ok(next)
     }
 
@@ -139,6 +145,7 @@ impl Editor {
     pub fn replace_current(&mut self, timeline: Timeline) {
         self.next_clip_id = self.next_clip_id.max(timeline.next_clip_id);
         self.next_track_id = self.next_track_id.max(timeline.next_track_id);
+        self.next_effect_id = self.next_effect_id.max(timeline.next_effect_id);
         if let Some(g) = &mut self.group {
             g.working = timeline;
             g.dirty = true;
@@ -428,6 +435,32 @@ mod tests {
     }
 
     #[test]
+    fn editor_should_not_reuse_effect_ids_across_undo() {
+        use crate::effect::{EffectKind, Param};
+        let mut ed = Editor::new(timeline(30.0));
+        let clip = ed.current().video_tracks()[0].clips[0].id;
+        let kind = || EffectKind::ColorCorrect {
+            brightness: Param::Const(0.5),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+        };
+        ed.apply(&Command::AddEffect { clip, kind: kind() })
+            .unwrap();
+        let first = ed.current().video_tracks()[0].clips[0].effects[0].id;
+        // Discard that edit; without the session high-water for effect ids the
+        // counter would rewind and re-mint `first` for a different effect.
+        ed.undo().unwrap();
+        let after = ed
+            .apply(&Command::AddEffect { clip, kind: kind() })
+            .unwrap();
+        let second = after.video_tracks()[0].clips[0].effects[0].id;
+        assert_ne!(
+            first, second,
+            "an effect id used by a discarded branch must not be reused"
+        );
+    }
+
+    #[test]
     fn editor_apply_batch_should_be_one_undo_step() {
         let mut ed = Editor::new(timeline(30.0));
         let track = ed.current().video_tracks()[0].id;
@@ -589,7 +622,7 @@ mod tests {
         let mut ed = Editor::new(timeline(30.0));
         let id = ed.current().video_tracks()[0].clips[0].id;
         let mut patch = Clip::new("patched.mp4");
-        patch.brightness = 0.5;
+        patch.scale = 1.5;
         ed.apply(&Command::SetClip {
             clip: id,
             value: Box::new(patch),

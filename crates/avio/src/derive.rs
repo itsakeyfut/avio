@@ -731,7 +731,8 @@ mod tests {
             .offset(Duration::from_secs(2))
             .with_speed(2.0)
             .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
-        clip.brightness = 0.5; // makes `video_effect_chain` emit a trailing Eq step
+        // A non-neutral color-correct effect makes `video_effect_chain` emit a trailing Eq step.
+        clip = clip.with_color_correction(0.5, 1.0, 1.0);
         let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, Some(10.0), None);
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Trim { .. }));
@@ -795,8 +796,10 @@ mod tests {
 
     #[test]
     fn video_layer_fit_should_sit_after_speed_and_before_effect_chain() {
-        let mut clip = Clip::new("a.mp4").with_speed(2.0).with_fit(FitMode::Fill);
-        clip.brightness = 0.5; // trailing Eq via `video_effect_chain`
+        let clip = Clip::new("a.mp4")
+            .with_speed(2.0)
+            .with_fit(FitMode::Fill)
+            .with_color_correction(0.5, 1.0, 1.0); // trailing Eq via `video_effect_chain`
         let layer = video_layer(&clip, 0, &no_anim(), 1920, 1080, None, None);
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Speed { .. }));
@@ -1050,8 +1053,7 @@ mod tests {
 
     #[test]
     fn realtime_descriptor_should_carry_effect_chain() {
-        let mut clip = Clip::new("a.mp4");
-        clip.brightness = 0.5; // forces an Eq step in `video_effect_chain`
+        let clip = Clip::new("a.mp4").with_color_correction(0.5, 1.0, 1.0); // forces an Eq step in `video_effect_chain`
         let d = realtime_descriptor(&clip, &no_anim(), 1920, 1080);
         assert!(d.effects.iter().any(|s| matches!(s, FilterStep::Eq { .. })));
     }

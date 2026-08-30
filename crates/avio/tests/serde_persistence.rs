@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use avio::{
-    AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Marker, Timeline,
-    Track, VideoProperty, XfadeTransition, apply,
+    AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, EffectKind, Keyframe, Marker,
+    Param, Timeline, Track, VideoProperty, XfadeTransition, apply,
 };
 use ff_filter::{FilterStep, PitchAlgo};
 use ff_format::{Color, TextSpec};
@@ -184,6 +184,65 @@ fn clip_effects_should_round_trip_through_serde() {
         ),
         "the PitchShift algo backend survives the round-trip"
     );
+}
+
+#[test]
+fn clip_typed_effects_should_round_trip_through_serde() {
+    // #1458: the typed effect model (ClipEffect / EffectKind / Param) and the
+    // document's next_effect_id counter persist. Build via `apply` so effect ids
+    // are stamped, then round-trip the whole timeline.
+    let base = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .video_track(vec![Clip::new("v.mp4")])
+        .build()
+        .unwrap();
+    let clip = base.video_tracks()[0].clips[0].id;
+    let doc = apply(
+        &base,
+        &Command::Batch(vec![
+            Command::AddEffect {
+                clip,
+                kind: EffectKind::ColorCorrect {
+                    brightness: Param::Const(0.25),
+                    contrast: Param::Const(1.1),
+                    saturation: Param::Const(0.9),
+                },
+            },
+            Command::AddEffect {
+                clip,
+                kind: EffectKind::Blur {
+                    radius: Param::Const(3.0),
+                },
+            },
+        ]),
+    )
+    .unwrap();
+
+    let json = serde_json::to_string(&doc).unwrap();
+    let back: Timeline = serde_json::from_str(&json).unwrap();
+
+    // Value-level equality catches the counter and any field drift; Param carries
+    // no PartialEq, so the field assertions below use `matches!` on the Const values.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(
+        v1, v2,
+        "the typed effect model must round-trip through serde"
+    );
+
+    let effects = &back.video_tracks()[0].clips[0].effects;
+    assert_eq!(effects.len(), 2, "both effects survive the load");
+    assert!(effects[0].id.is_set() && effects[1].id.is_set());
+    assert!(matches!(
+        &effects[0].kind,
+        EffectKind::ColorCorrect { brightness: Param::Const(b), .. } if (*b - 0.25).abs() < 1e-9
+    ));
+    assert!(matches!(
+        &effects[1].kind,
+        EffectKind::Blur { radius: Param::Const(r) } if (*r - 3.0).abs() < 1e-9
+    ));
 }
 
 #[test]
