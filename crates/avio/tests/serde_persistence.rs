@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use avio::{
     AnimationTrack, BlendMode, Clip, ClipSource, Command, Easing, Keyframe, Marker, Timeline,
-    VideoProperty, XfadeTransition, apply,
+    Track, VideoProperty, XfadeTransition, apply,
 };
 use ff_filter::{FilterStep, PitchAlgo};
 use ff_format::{Color, TextSpec};
@@ -217,6 +217,55 @@ fn timeline_audio_filter_should_round_trip_through_serde() {
         v1, v2,
         "timeline audio_filter must round-trip through serde"
     );
+}
+
+#[test]
+fn timeline_track_audio_effects_should_round_trip_through_serde() {
+    // #1592: `Track.audio_effects` was `#[serde(skip)]`, so a saved project dropped
+    // its track-level (pre-mix) audio chain on reload. It now persists like the
+    // timeline-level `audio_filter` and the per-clip `Clip.audio_effects`.
+    let track = Track::new(vec![Clip::new("music.mp3")]).audio_effects(vec![
+        FilterStep::Volume(-6.0),
+        FilterStep::PitchShift {
+            semitones: 3.0,
+            algo: PitchAlgo::Signal,
+        },
+    ]);
+    let original = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .audio_track_with(track)
+        .build()
+        .unwrap();
+
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(
+        json.contains("audio_effects") && json.contains("PitchShift"),
+        "the track audio_effects chain must be serialized: {json}"
+    );
+    let back: Timeline = serde_json::from_str(&json).unwrap();
+
+    // A dropped chain would make the re-serialized Value differ from the original.
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+    assert_eq!(v1, v2, "track audio_effects must round-trip through serde");
+
+    // Non-vacuous: the chain and its variant payloads survive (empty before the fix).
+    let effects = &back.audio_tracks()[0].audio_effects;
+    assert_eq!(
+        effects.len(),
+        2,
+        "both track audio effects survive the round-trip (previously dropped by serde(skip))"
+    );
+    assert!(matches!(effects[0], FilterStep::Volume(v) if (v + 6.0).abs() < 1e-9));
+    assert!(matches!(
+        effects[1],
+        FilterStep::PitchShift {
+            algo: PitchAlgo::Signal,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -131,10 +131,11 @@ pub struct Track {
     /// than one clip. An empty chain (the default) is a no-op and leaves the
     /// audio path unchanged. Ignored for video tracks (they carry no audio).
     ///
-    /// Not persisted by the `serde` feature yet: `FilterStep` is not
-    /// serializable, so this field is skipped and deserializes to an empty vec
-    /// (mirroring [`Clip::audio_effects`](crate::Clip::audio_effects)).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Persisted by the `serde` feature (#1452), like
+    /// [`Clip::audio_effects`](crate::Clip::audio_effects) and
+    /// [`Timeline::audio_filter`](crate::Timeline). The compositor-internal
+    /// `FilterStep` variants (`Blend` / `Composite` / `AlphaMatte`) are not
+    /// serialized, but an audio chain never contains them.
     pub audio_effects: Vec<FilterStep>,
     /// Typed, id-addressed track-level automation (see [`TrackAutomation`]).
     /// Empty by default; set via the `with_*_animation` builders or
