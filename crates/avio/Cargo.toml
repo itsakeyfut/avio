@@ -18,6 +18,10 @@ hwaccel = ["ff-encode/hwaccel"] # hardware-accelerated export
 gpl     = ["ff-encode/gpl"]     # GPL-only codecs (x264 / x265)
 preview = ["dep:ff-preview", "ff-preview/timeline"] # real-time TimelinePlayer / Scene
 serde   = ["dep:serde", "ff-filter/serde", "ff-format/serde"] # (de)serialize the model
+# GPU compositing bridge: map the derived scene to ff-render's GPU compositor
+# (#1365). Off by default so wgpu stays optional for headless / export-only builds;
+# Br3 extends this with "ff-render/display" for the zero-copy preview path.
+gpu     = ["dep:ff-render", "ff-render/wgpu"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -36,8 +40,9 @@ ff-pipeline = { workspace = true }
 ff-analysis = { workspace = true }
 thiserror   = { workspace = true }
 log         = { workspace = true }
-# Opt-in: real-time preview and model (de)serialization.
+# Opt-in: real-time preview, model (de)serialization, and the GPU bridge.
 ff-preview  = { workspace = true, optional = true }
+ff-render   = { workspace = true, optional = true }
 serde       = { version = "1.0.228", features = ["derive"], optional = true }
 
 [[test]]

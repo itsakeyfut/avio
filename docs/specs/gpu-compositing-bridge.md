@@ -55,8 +55,8 @@ The bridge maps from `avio`'s existing derived layer types; it introduces no new
 Per composited frame:
 
 1. For each layer, in `z_order` (bottom to top), apply the layer's **mappable spatial effect steps** to its
-   decoded source frame with a per-layer `ff_render::RenderGraph` (`ColorGradeNode`, `ScaleNode`, keying/mask
-   nodes, ...). A layer with no mappable effects passes its decoded frame through unchanged.
+   decoded source frame with a per-layer `ff_render::RenderGraph` (v1: `ColorGradeNode`, `ScaleNode`; more as
+   coverage grows, #1630). A layer with no mappable effects passes its decoded frame through unchanged.
 2. Wrap each processed frame in an `ff_render::FrameLayer { frame: VideoFrame, transform: LayerTransform{ x,
    y, scale_x, scale_y, rotation }, blend_mode: ff_render::BlendMode, opacity: f32, z_order: i32 }`.
 3. `ff_render::Compositor::composite(&mut [FrameLayer]) -> wgpu::Texture` composites the z-ordered stack (it
@@ -83,24 +83,26 @@ textures) is a later optimization, out of scope for the bridge.
 
 `ff-render`'s node set covers a subset of `avio`'s derived vocabulary. A derived construct either maps to a
 node or forces CPU fallback for the whole frame (see below). The mapping **never silently drops** an
-unsupported step.
+unsupported step. The table is the **v1** state (Br2, `avio::gpu::map_scene`); broadening the covered set is
+tracked in **#1630**.
 
-| Derived construct (source) | ff-render node / field | If unsupported |
+| Derived construct (source) | v1 mapping | Status |
 |---|---|---|
-| `x`/`y`/`scale`/`rotation` transform | `FrameLayer.transform: LayerTransform` (and `TransformNode`) | (always supported) |
-| `opacity` | `FrameLayer.opacity` | (always supported) |
-| `blend_mode: ff_filter::BlendMode` (39) | `ff_render::BlendMode` -- the **intersection** of the two enums is what maps: `Normal, Multiply, Screen, Overlay, SoftLight, HardLight, ColorDodge, ColorBurn, Difference, Exclusion, Add, Subtract, Darken, Lighten` | any `ff_filter` mode outside that set -> **fallback**. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
-| `composite_op: Over`/`Under` | `OverlayNode` / `AlphaMatteNode` (src-over) | `In`/`Out`/`Atop`/`Xor` -> **fallback** |
-| `FilterStep::Eq` / `EqAnimated` (colour, from `EffectKind::ColorCorrect`) | `ColorGradeNode { brightness, contrast, saturation, temperature, tint }` | animated params evaluate at frame `t` |
-| other colour steps: `Hue`, `Curves`, `Gamma`, `Vignette`, `WhiteBalance`, `ColorBalanceAnimated`, `ThreeWayCC`, `ParametricEq` | (no node) | **fallback** |
-| fit / resize `FilterStep::Scale` / `FitToAspect` / `FillToAspect` | `ScaleNode { width, height, algorithm }` (GPU uses a linear filter for all algorithms) | -- |
-| `FilterStep::ScaleAnimated` / `RotateAnimated` (animated geometry) | evaluate at frame `t` -> `LayerTransform` / `ScaleNode` | -- |
-| xfade linear crossfade (duration only) | `CrossfadeNode { factor, to_rgba, to_w, to_h }` | xfade **kinds** (wipe/slide/dissolve/...) -> **fallback** (CPU renders them today) |
-| `FilterStep::ChromaKey` | `ChromaKeyNode { key_color, tolerance, softness }` | `ColorKey`, `SpillSuppress` -> **fallback** |
-| shape / luma masks (`RectMask`->shape, luma) | `ShapeMaskNode` / `LumaMaskNode` | `FeatherMask`, `PolygonMatte` -> **fallback** |
-| `FilterStep::AlphaMatte` | `AlphaMatteNode` | -- |
-| YUV upload of a planar source | `YuvUploadNode` (`Yuv420p`/`422p`/`444p`, **BT.601** matrix) | -- |
-| everything else (`Blur`/`GBlur`, `Lut3d`, `NoiseReduce`, `Raw`, ...) | (no node) | **fallback** |
+| `x`/`y`/`scale`/`rotation` transform | evaluated at frame `t` -> the layer's `LayerTransform` scalars | **covered** (all layers) |
+| `opacity` | evaluated at `t` -> `FrameLayer.opacity` | **covered** (all layers) |
+| `blend_mode: ff_filter::BlendMode` (39) | `ff_render::BlendMode`, the **intersection** of the two enums: `Normal, Multiply, Screen, Overlay, SoftLight, HardLight, ColorDodge, ColorBurn, Difference, Exclusion, Add, Subtract, Darken, Lighten` | **covered** for those 14; any other -> **fallback**. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
+| `composite_op: Over` | plain top-over-bottom composite | **covered** |
+| `FilterStep::Eq` (from a const `EffectKind::ColorCorrect`) | `GpuEffect::ColorGrade` -> `ColorGradeNode { brightness, contrast, saturation, temperature=0, tint=0 }` | **covered** |
+| `FilterStep::EqAnimated` | `ColorGrade` (params at `t`) **only when gamma is neutral at `t`** (ff-render ColorGrade has no gamma) | **covered** (gamma-neutral); non-neutral gamma -> **fallback** |
+| plain `FilterStep::Scale { width, height, algorithm }` | `GpuEffect::Scale` -> `ScaleNode` (ff-render uses a linear filter for all algorithms; `Fast` maps to `Bilinear`) | **covered** |
+| temporal steps: `Trim` / `ResetPts` / `OffsetPts` / `Speed` | skipped (decode-scheduling, applied upstream) | **skipped** (not a fallback) |
+| `composite_op: Under`/`In`/`Out`/`Atop`/`Xor` | -- | **fallback** (#1630) |
+| other colour: `Hue`, `Curves`, `Gamma`, `Vignette`, `WhiteBalance`, `ColorBalanceAnimated`, `ThreeWayCC`, `ParametricEq` | -- | **fallback** (#1630) |
+| `FitToAspect` / `FillToAspect` (fit with pad/crop) | -- | **fallback** (#1630; `ScaleNode` is a plain resize) |
+| animated geometry `ScaleAnimated` / `RotateAnimated` | -- | **fallback** (#1630; ADR-0005 neutralizes the scalar, so v1 falls back rather than lose the animation) |
+| xfade (`XFade`, any kind) | -- | **fallback** (#1630; needs the 2-input `CrossfadeNode`) |
+| keying / masks: `ChromaKey`, `ColorKey`, `AlphaMatte`, `LumaKey`, `RectMask`, `FeatherMask`, ... | -- | **fallback** (#1630; `ChromaKey` needs a colour-string parser, masks need 2-input wiring) |
+| everything else (`GBlur`, `Lut3d`, `NoiseReduce`, `Raw`, ...) | -- | **fallback** (#1630) |
 
 **Known ff-render gaps to design around:** `YuvUploadNode` uses a **BT.601** conversion only (no BT.709
 selection), and `ScaleNode`'s Bicubic/Lanczos fall back to a linear filter on the GPU. These are `ff-render`

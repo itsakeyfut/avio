@@ -105,6 +105,8 @@ mod edit;
 mod editor;
 mod effect;
 mod error;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod ids;
 mod marker;
 mod timeline;
@@ -116,6 +118,10 @@ pub use edit::{ClipProperty, Command, EditError, apply};
 pub use editor::Editor;
 pub use effect::{ClipEffect, EffectKind, Param};
 pub use error::TimelineError;
+#[cfg(feature = "gpu")]
+pub use gpu::{
+    GpuEffect, GpuFallback, GpuLayerPlan, GpuLayerSource, GpuMapping, GpuScenePlan, map_scene,
+};
 pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
 pub use timeline::{Timeline, TimelineBuilder};
