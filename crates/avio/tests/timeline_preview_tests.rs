@@ -196,3 +196,74 @@ fn timeline_runner_seek_should_deliver_seek_completed_event() {
         "SeekCompleted must be delivered within 3 seconds of seek"
     );
 }
+
+#[test]
+#[ignore = "requires the color filter; run with -- --include-ignored"]
+fn timeline_runner_should_render_and_advance_generated_solid_sources() {
+    // #1615: a scene made only of generated (Solid) clips — a base and an overlay —
+    // must render through the real runner and, crucially, ADVANCE: the held frames
+    // carry a synthetic per-frame PTS, so V1 honours the clip duration and the overlay
+    // `sync_overlays` loop terminates (a fixed PTS would stall V1 / spin the overlay).
+    use std::sync::{Arc, Mutex};
+
+    use avio::Color;
+
+    struct PtsSink {
+        pts: Arc<Mutex<Vec<Duration>>>,
+        handle: PlayerHandle,
+    }
+    impl FrameSink for PtsSink {
+        fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, pts: Duration) {
+            let mut log = self
+                .pts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            log.push(pts);
+            if log.len() >= 12 {
+                self.handle.stop();
+            }
+        }
+    }
+
+    let timeline = Timeline::builder()
+        .canvas(64, 48)
+        .frame_rate(30.0)
+        .video_track(vec![
+            Clip::solid(Color::rgb(20, 40, 200)).trim(Duration::ZERO, Duration::from_secs(1)),
+        ])
+        .video_track(vec![
+            Clip::solid(Color::rgb(200, 40, 20)).trim(Duration::ZERO, Duration::from_secs(1)),
+        ])
+        .build()
+        .expect("timeline build failed");
+
+    let (mut runner, handle) = match TimelinePlayer::open(&timeline) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("skipping: open failed: {e}");
+            return;
+        }
+    };
+
+    let pts = Arc::new(Mutex::new(Vec::<Duration>::new()));
+    runner.set_sink(Box::new(PtsSink {
+        pts: Arc::clone(&pts),
+        handle: handle.clone(),
+    }));
+    // If this returns, `sync_overlays` did not spin forever on the held overlay.
+    let _ = runner.run();
+
+    let pts = pts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pts.is_empty() {
+        println!("skipping: color filter unavailable (no generated frames rendered)");
+        return;
+    }
+    // The composited PTS must advance (V1 held source is not frozen at t=0).
+    assert!(
+        pts.last() > pts.first(),
+        "generated-source playback PTS must advance: {:?}",
+        &pts[..pts.len().min(6)]
+    );
+}

@@ -42,13 +42,147 @@ use crate::playback::master_clock::MasterClock;
 use crate::playback::player_handle::PlayerHandle;
 
 pub use runner::SceneRunner;
-pub use types::{Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneVideoTrack};
+pub use types::{
+    Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneSource, SceneVideoTrack,
+};
 
 use audio_resampling::spawn_audio_track_thread;
-use ff_filter::{AnimatedValue, XfadeTransition};
+use ff_filter::{AnimatedValue, SolidSource, TextSource, XfadeTransition};
+use ff_format::VideoFrame;
 use state::{
-    AudioFadeConfig, AudioOnlyTrack, ClipState, LavfiOverlayState, OverlayLayer, db_to_linear,
+    AudioFadeConfig, AudioOnlyTrack, ClipState, ClipVideoSource, LavfiOverlayState, OverlayLayer,
+    db_to_linear,
 };
+
+/// Resolves the canvas size for generated (solid/text) sources: the explicit scene
+/// canvas, else the first file placement's video size, else `(0, 0)` (no file to
+/// size from, so a generated source renders nothing).
+fn resolve_canvas_dims(scene: &Scene) -> (u32, u32) {
+    if let Some(dims) = scene.canvas {
+        return dims;
+    }
+    for track in &scene.video_tracks {
+        for p in &track.placements {
+            if let Some(path) = p.source.as_file()
+                && let Ok(info) = ff_probe::open(path)
+                && let Some(v) = info.primary_video()
+            {
+                return (v.width(), v.height());
+            }
+        }
+    }
+    (0, 0)
+}
+
+/// Builds the constant held frame for a generated source (pulled once via
+/// `ff-filter`'s `SolidSource` / `TextSource`, the same `color` / `drawtext` filters
+/// export uses), or `None` when unavailable — e.g. the filters are missing on a
+/// minimal `FFmpeg` (RK-002), so the clip renders nothing rather than failing `open`.
+fn generated_held_frame(source: &SceneSource, cw: u32, ch: u32, fps: f64) -> Option<VideoFrame> {
+    if cw == 0 || ch == 0 {
+        log::warn!("generated source has no canvas size to render into, cw={cw} ch={ch}");
+        return None;
+    }
+    let pulled = match source {
+        SceneSource::Solid(color) => {
+            SolidSource::new(*color, cw, ch, fps).map(|mut s| pull_first(&mut s))
+        }
+        SceneSource::Text(spec) => {
+            TextSource::new(spec, cw, ch, fps).map(|mut s| pull_first(&mut s))
+        }
+        SceneSource::File(_) => return None,
+    };
+    match pulled {
+        Ok(Some(frame)) => Some(frame),
+        Ok(None) => {
+            log::warn!("generated source produced no frame; rendering nothing");
+            None
+        }
+        Err(e) => {
+            log::warn!("generated source unavailable, rendering nothing, error={e}");
+            None
+        }
+    }
+}
+
+/// The timeline span of a generated clip, from its `out_point` (a generated source is
+/// infinite, so `out_point` bounds it — mirroring the export-side
+/// `GeneratedSourceNeedsDuration`). Warns and yields zero when unbounded.
+fn generated_span(out_point: Option<Duration>, in_pt: Duration) -> Duration {
+    if let Some(op) = out_point {
+        op.saturating_sub(in_pt)
+    } else {
+        log::warn!(
+            "generated clip has no out_point; preview shows zero duration (bound it with a trim)"
+        );
+        Duration::ZERO
+    }
+}
+
+/// Opens the per-clip video source: a decoding [`DecodeBuffer`] seeked to `in_pt`
+/// for a file, or a constant [`Held`](ClipVideoSource::Held) frame (built at
+/// `cw`x`ch`) for a generated source.
+fn open_clip_video_source(
+    source: &SceneSource,
+    in_pt: Duration,
+    cw: u32,
+    ch: u32,
+    fps: f64,
+) -> Result<ClipVideoSource, PreviewError> {
+    match source.as_file() {
+        Some(path) => {
+            let mut buf = DecodeBuffer::open(path).build()?;
+            if in_pt > Duration::ZERO {
+                buf.seek(in_pt)?;
+            }
+            Ok(ClipVideoSource::File(buf))
+        }
+        None => Ok(ClipVideoSource::held(
+            generated_held_frame(source, cw, ch, fps),
+            in_pt,
+            fps,
+        )),
+    }
+}
+
+/// The file path of a source (empty for a generated one) — the `ClipState.source`
+/// field, used only to spawn an audio thread (a generated clip has no audio).
+fn source_path(source: &SceneSource) -> PathBuf {
+    source
+        .as_file()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default()
+}
+
+/// Pulls the first frame from a freshly built generated source, retrying while the
+/// graph is still priming (`Ok(None)`). Returns `None` on error or if the source
+/// never yields a frame.
+fn pull_first<S: GeneratedPull>(source: &mut S) -> Option<VideoFrame> {
+    for _ in 0..16 {
+        match source.pull() {
+            Ok(Some(frame)) => return Some(frame),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Shared `pull` shape of the generated frame sources so [`pull_first`] can retry
+/// either.
+trait GeneratedPull {
+    fn pull(&mut self) -> Result<Option<VideoFrame>, ff_filter::FilterError>;
+}
+impl GeneratedPull for SolidSource {
+    fn pull(&mut self) -> Result<Option<VideoFrame>, ff_filter::FilterError> {
+        SolidSource::pull(self)
+    }
+}
+impl GeneratedPull for TextSource {
+    fn pull(&mut self) -> Result<Option<VideoFrame>, ff_filter::FilterError> {
+        TextSource::pull(self)
+    }
+}
 
 // -- Constants --
 
@@ -84,7 +218,7 @@ impl ScenePlayer {
     #[allow(clippy::too_many_lines)]
     pub fn open(scene: &Scene) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
         struct ProbeResult {
-            source: PathBuf,
+            source: SceneSource,
             in_pt: Duration,
             clip_dur: Duration,
             offset: Duration,
@@ -109,6 +243,8 @@ impl ScenePlayer {
         }
 
         let fps = scene.fps.max(1.0);
+        // Canvas size for generated (solid/text) sources, which have no file to probe.
+        let canvas = resolve_canvas_dims(scene);
         let clip_list = &v_tracks[0].placements;
 
         // Phase 1: probe all clips
@@ -118,27 +254,36 @@ impl ScenePlayer {
 
         for p in clip_list {
             let in_pt = p.in_point;
-            let info = ff_probe::open(&p.source)?;
             let speed = p.speed;
 
-            // `in_point` is pre-resolved (defaulted to zero) in the Scene, so this
-            // equals the old `match (in_point, out_point)` for all four cases.
-            let unscaled_dur = p.out_point.map_or_else(
-                || info.duration().saturating_sub(in_pt),
-                |op| op.saturating_sub(in_pt),
-            );
+            // A file clip is probed; a generated (solid/text) clip is sized from the
+            // canvas, bounded by its `out_point`, and carries no audio.
+            let (video_w, video_h, unscaled_dur, has_audio) = if let Some(path) = p.source.as_file()
+            {
+                let info = ff_probe::open(path)?;
+                let dur = p.out_point.map_or_else(
+                    || info.duration().saturating_sub(in_pt),
+                    |op| op.saturating_sub(in_pt),
+                );
+                let (w, h) = info
+                    .primary_video()
+                    .map_or((0, 0), |v| (v.width(), v.height()));
+                (w, h, dur, info.has_audio())
+            } else {
+                (
+                    canvas.0,
+                    canvas.1,
+                    generated_span(p.out_point, in_pt),
+                    false,
+                )
+            };
             let clip_dur = if (speed - 1.0).abs() < 1e-9 {
                 unscaled_dur
             } else {
                 unscaled_dur.div_f64(speed)
             };
 
-            let has_audio = info.has_audio();
             has_any_audio |= has_audio;
-
-            let (video_w, video_h) = info
-                .primary_video()
-                .map_or((0, 0), |v| (v.width(), v.height()));
 
             probes.push(ProbeResult {
                 source: p.source.clone(),
@@ -185,10 +330,7 @@ impl ScenePlayer {
             let timeline_start = p.offset;
             let timeline_end = timeline_start + p.clip_dur;
 
-            let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
-            if p.in_pt > Duration::ZERO {
-                decode_buf.seek(p.in_pt)?;
-            }
+            let decode_buf = open_clip_video_source(&p.source, p.in_pt, p.video_w, p.video_h, fps)?;
 
             // Apply a static V1 audio gain once at open; an animated gain is driven
             // per-tick by the runner.
@@ -242,18 +384,23 @@ impl ScenePlayer {
             let mut layer_clips: Vec<ClipState> = Vec::new();
             for p in &layer.placements {
                 let in_pt = p.in_point;
-                let info = ff_probe::open(&p.source)?;
-                let clip_dur = p.out_point.map_or_else(
-                    || info.duration().saturating_sub(in_pt),
-                    |op| op.saturating_sub(in_pt),
-                );
+                // File clip: probe. Generated (solid/text) clip: canvas-sized, bounded
+                // by `out_point`, no audio.
+                let (clip_dur, has_audio) = match p.source.as_file() {
+                    Some(path) => {
+                        let info = ff_probe::open(path)?;
+                        let dur = p.out_point.map_or_else(
+                            || info.duration().saturating_sub(in_pt),
+                            |op| op.saturating_sub(in_pt),
+                        );
+                        (dur, info.has_audio())
+                    }
+                    None => (generated_span(p.out_point, in_pt), false),
+                };
                 let timeline_start = p.offset;
                 let timeline_end = timeline_start + clip_dur;
-                let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
-                if in_pt > Duration::ZERO {
-                    decode_buf.seek(in_pt)?;
-                }
-                if info.has_audio() {
+                let decode_buf = open_clip_video_source(&p.source, in_pt, canvas.0, canvas.1, fps)?;
+                if has_audio {
                     let mixer_ref = mixer_arc
                         .get_or_insert_with(|| Arc::new(Mutex::new(AudioMixer::new(48_000))));
                     let handle = mixer_ref
@@ -274,7 +421,7 @@ impl ScenePlayer {
                         handle.set_pan(pan0 as f32);
                     }
                     audio_only_tracks.push(AudioOnlyTrack {
-                        source: p.source.clone(),
+                        source: source_path(&p.source),
                         timeline_start,
                         timeline_end,
                         in_point: in_pt,
@@ -398,7 +545,8 @@ impl ScenePlayer {
             .is_some_and(|c| c.timeline_start == Duration::ZERO);
         let (initial_audio_cancel, initial_audio_thread) = if first_clip_at_origin {
             if let Some(handle) = clip_states.first().and_then(|c| c.audio_track.clone()) {
-                let source = clip_states[0].source.clone();
+                // The first V1 clip has audio, so it is a file source; derive its path.
+                let source = source_path(&clip_states[0].source);
                 let in_pt = clip_states[0].in_point;
                 let clip0_speed = clip_states[0].speed;
                 let clip0_pitch = clip_states[0].pitch;
@@ -484,6 +632,65 @@ impl ScenePlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_canvas_dims_should_prefer_explicit_canvas_then_fall_back() {
+        let scene = |canvas| Scene {
+            fps: 30.0,
+            canvas,
+            lavfi_overlay: None,
+            video_tracks: vec![],
+            audio_tracks: vec![],
+        };
+        // An explicit canvas wins.
+        assert_eq!(
+            resolve_canvas_dims(&scene(Some((1920, 1080)))),
+            (1920, 1080)
+        );
+        // No explicit canvas and no file placement to size from -> (0, 0), so a
+        // generated source renders nothing rather than guessing.
+        assert_eq!(resolve_canvas_dims(&scene(None)), (0, 0));
+    }
+
+    #[test]
+    #[ignore = "requires the color/drawtext filters; run with -- --include-ignored"]
+    fn preview_should_render_text_and_solid_sources() {
+        use ff_format::{Color, TextSpec};
+
+        // #1615: a generated source's held frame is built via `SolidSource` /
+        // `TextSource` — the same `color` / `drawtext` filters export uses — so preview
+        // matches export. Probe-gated (RK-002): the filters are absent on a minimal
+        // FFmpeg, so `generated_held_frame` returns `None` and the test skips.
+        let red = Color::rgb(200, 30, 40);
+        let Some(frame) = generated_held_frame(&SceneSource::Solid(red), 16, 16, 30.0) else {
+            println!("Skipping: color filter unavailable");
+            return;
+        };
+        assert_eq!((frame.width(), frame.height()), (16, 16));
+        let Some(plane) = frame.plane(0) else {
+            println!("Skipping: no rgba plane");
+            return;
+        };
+        let stride = frame.stride(0).unwrap_or(16 * 4);
+        // Centre pixel (8, 8) in the rgba plane must be ~red (non-vacuous: an empty
+        // path would render nothing).
+        let off = 8 * stride + 8 * 4;
+        let (r, g, b) = (plane[off], plane[off + 1], plane[off + 2]);
+        assert!(
+            r.abs_diff(200) <= 6 && g.abs_diff(30) <= 6 && b.abs_diff(40) <= 6,
+            "solid centre pixel must be ~red, got ({r}, {g}, {b})"
+        );
+
+        // Text: the `color`→`drawtext` path must at least produce a canvas-sized frame
+        // where the drawtext filter is available.
+        if let Some(tf) =
+            generated_held_frame(&SceneSource::Text(TextSpec::new("Hi")), 64, 32, 30.0)
+        {
+            assert_eq!((tf.width(), tf.height()), (64, 32));
+        } else {
+            println!("Skipping text: drawtext filter unavailable");
+        }
+    }
 
     // blend_rgba delegate
 

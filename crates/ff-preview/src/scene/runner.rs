@@ -423,16 +423,20 @@ impl SceneRunner {
                 }
             }
 
-            // Error events from active clip
+            // Error events from active clip (a generated held source has no channel).
             {
                 let active = self.active;
-                while let Ok(msg) = self.clips[active].decode_buf.error_events().try_recv() {
-                    let _ = self.event_tx.try_send(PlayerEvent::Error(msg));
+                if let Some(rx) = self.clips[active].decode_buf.error_events() {
+                    while let Ok(msg) = rx.try_recv() {
+                        let _ = self.event_tx.try_send(PlayerEvent::Error(msg));
+                    }
                 }
             }
             let trans_next = self.transition.as_ref().map(|tp| tp.next_idx);
-            if let Some(next_idx) = trans_next {
-                while let Ok(msg) = self.clips[next_idx].decode_buf.error_events().try_recv() {
+            if let Some(next_idx) = trans_next
+                && let Some(rx) = self.clips[next_idx].decode_buf.error_events()
+            {
+                while let Ok(msg) = rx.try_recv() {
                     let _ = self.event_tx.try_send(PlayerEvent::Error(msg));
                 }
             }
@@ -1121,7 +1125,13 @@ impl SceneRunner {
         handle.clear(); // discard stale samples
 
         let c = &self.clips[clip_idx];
-        let source = c.source.clone();
+        // Only a file source reaches here (a generated clip has no `audio_track`,
+        // so the guard above returns early); derive its path for the audio thread.
+        let source = c
+            .source
+            .as_file()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
         // V1 clip audio honours its own fades + speed (the A-track path already does).
         // `clip_dur` must be the SOURCE-time span (the resampler multiplies it by
         // `1/speed` to get timeline time, as the A-tracks feed `out-in` source span);

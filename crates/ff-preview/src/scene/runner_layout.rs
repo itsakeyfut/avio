@@ -46,9 +46,8 @@ impl SceneRunner {
                 return Err(PreviewError::Ffmpeg {
                     code: -1,
                     message: format!(
-                        "V1 clip[{i}] source mismatch: runner={} timeline={}",
-                        self.clips[i].source.display(),
-                        p.source.display(),
+                        "V1 clip[{i}] source mismatch: runner={:?} timeline={:?}",
+                        self.clips[i].source, p.source,
                     ),
                 });
             }
