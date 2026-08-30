@@ -7,7 +7,29 @@ use std::time::Duration;
 use crate::error::PreviewError;
 
 use super::runner::SceneRunner;
-use super::types::Scene;
+use super::state::ClipVideoSource;
+use super::types::{Scene, SceneSource};
+
+/// Rebuilds a generated clip's held frame when the resolved canvas size changed: a
+/// held frame is rendered *at* the canvas size, so a live resize leaves it stale
+/// (a decoded file is canvas-independent, so `held_frame_dims` is `None` and it is
+/// skipped). Rebuilt via [`ClipVideoSource::held`] so the synthetic advancing PTS
+/// is preserved (RK-019). A `(0, 0)` canvas (no size to render into) is a no-op.
+fn rebuild_held_on_resize(
+    decode_buf: &mut ClipVideoSource,
+    source: &SceneSource,
+    in_pt: Duration,
+    canvas: (u32, u32),
+    fps: f64,
+) {
+    if canvas != (0, 0)
+        && let Some(dims) = decode_buf.held_frame_dims()
+        && dims != canvas
+    {
+        let frame = super::generated_held_frame(source, canvas.0, canvas.1, fps);
+        *decode_buf = ClipVideoSource::held(frame, in_pt, fps);
+    }
+}
 
 impl SceneRunner {
     /// Update clip positions in place from a new [`Scene`] without stopping the
@@ -53,6 +75,10 @@ impl SceneRunner {
             }
         }
 
+        // Canvas size for rebuilding generated held frames on a live resize.
+        let canvas = super::resolve_canvas_dims(scene);
+        let fps = scene.fps.max(1.0);
+
         // Update V1 clip positions
         for (i, p) in v_tracks[0].placements.iter().enumerate() {
             let new_speed = p.speed;
@@ -78,6 +104,13 @@ impl SceneRunner {
             self.clips[i].speed = new_speed;
             self.clips[i].xfade_dur = p.xfade_dur;
             self.clips[i].xfade_kind = p.xfade_kind;
+            rebuild_held_on_resize(
+                &mut self.clips[i].decode_buf,
+                &p.source,
+                p.in_point,
+                canvas,
+                fps,
+            );
         }
 
         // Update overlay layers (V2+)
@@ -97,6 +130,13 @@ impl SceneRunner {
                         layer.clips[j].timeline_end = p.offset + new_dur;
                         layer.clips[j].in_point = p.in_point;
                         layer.clips[j].out_point = p.out_point;
+                        rebuild_held_on_resize(
+                            &mut layer.clips[j].decode_buf,
+                            &p.source,
+                            p.in_point,
+                            canvas,
+                            fps,
+                        );
                     }
                 }
             }
@@ -137,5 +177,85 @@ impl SceneRunner {
         self.seek_timeline(resume_pts)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use ff_filter::{AnimatedValue, BlendMode, CompositeOp, RealtimeLayerDescriptor};
+    use ff_format::Color;
+
+    use super::super::ScenePlayer;
+    use super::super::types::{Scene, ScenePlacement, SceneSource, SceneVideoTrack};
+    use super::*;
+
+    /// A minimal one-clip Solid `Scene` at `w`x`h` (a generated V1 base clip).
+    fn solid_scene(w: u32, h: u32) -> Scene {
+        let layer = RealtimeLayerDescriptor {
+            effects: vec![],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let placement = ScenePlacement {
+            source: SceneSource::Solid(Color::rgb(20, 40, 200)),
+            offset: Duration::ZERO,
+            in_point: Duration::ZERO,
+            out_point: Some(Duration::from_secs(2)),
+            speed: 1.0,
+            xfade_dur: Duration::ZERO,
+            xfade_kind: None,
+            opacity: 1.0,
+            layer,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+            volume: AnimatedValue::Static(0.0),
+            pitch: 0.0,
+            pan: AnimatedValue::Static(0.0),
+        };
+        Scene {
+            fps: 30.0,
+            canvas: Some((w, h)),
+            lavfi_overlay: None,
+            video_tracks: vec![SceneVideoTrack {
+                placements: vec![placement],
+            }],
+            audio_tracks: vec![],
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the color filter; run with -- --include-ignored"]
+    fn layout_update_should_rebuild_generated_held_frame_on_canvas_resize() {
+        // #1619: a live canvas resize of an already-open generated clip must rebuild
+        // its held frame at the new size. Probe-gated (RK-002): the color filter is
+        // absent on a minimal FFmpeg, so open yields no held frame and the test skips.
+        let (mut runner, _handle) = match ScenePlayer::open(&solid_scene(16, 16)) {
+            Ok(rh) => rh,
+            Err(e) => {
+                println!("skipping: open failed: {e}");
+                return;
+            }
+        };
+        if runner.clips[0].decode_buf.held_frame_dims() != Some((16, 16)) {
+            println!("skipping: color filter unavailable (no held frame at open)");
+            return;
+        }
+        // Same Solid colour, new canvas -> the source-equality check passes, so the
+        // in-place fast path runs and must rebuild the stale held frame.
+        runner
+            .update_layout_in_place(&solid_scene(32, 32), Duration::ZERO)
+            .expect("in-place update should succeed for the same source");
+        assert_eq!(
+            runner.clips[0].decode_buf.held_frame_dims(),
+            Some((32, 32)),
+            "the generated held frame must be rebuilt at the new canvas size"
+        );
     }
 }
