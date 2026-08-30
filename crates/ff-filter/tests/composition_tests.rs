@@ -771,6 +771,136 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
     );
 }
 
+/// Per-channel RMS of interleaved packed-F32 stereo samples (`[L0, R0, L1, R1, ...]`).
+/// Returns `(left_rms, right_rms)`.
+fn stereo_rms_bytes(raw: &[u8]) -> (f64, f64) {
+    let n = raw.len() / 4;
+    let sample = |i: usize| {
+        let b = [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2], raw[i * 4 + 3]];
+        f32::from_le_bytes(b) as f64
+    };
+    let (mut l_sq, mut r_sq, mut lc, mut rc) = (0.0, 0.0, 0usize, 0usize);
+    for i in 0..n {
+        let s = sample(i);
+        if i % 2 == 0 {
+            l_sq += s * s;
+            lc += 1;
+        } else {
+            r_sq += s * s;
+            rc += 1;
+        }
+    }
+    let l = if lc > 0 {
+        (l_sq / lc as f64).sqrt()
+    } else {
+        0.0
+    };
+    let r = if rc > 0 {
+        (r_sq / rc as f64).sqrt()
+    } else {
+        0.0
+    };
+    (l, r)
+}
+
+/// Verifies that a static clip pan on an `AudioTrack` is applied by the export
+/// mixer: a full-left pan (`-1.0`) attenuates the right channel to silence
+/// (linear stereo balance), so left-channel RMS dominates.
+#[test]
+#[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
+fn export_mixer_should_apply_clip_pan() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHANNELS: u32 = 2;
+    const FRAME_SAMPLES: usize = 1024;
+    const AUDIO_FRAMES: usize = 30;
+
+    let src_path = test_output_path("pan_apply_src.m4a");
+    let _src_guard = FileGuard::new(src_path.clone());
+
+    let mut enc = match AudioEncoder::create(&src_path)
+        .audio(SAMPLE_RATE, CHANNELS)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            println!("Skipping: AudioEncoder::build failed: {e}");
+            return;
+        }
+    };
+    for _ in 0..AUDIO_FRAMES {
+        let frame = constant_amplitude_frame(0.5, FRAME_SAMPLES, SAMPLE_RATE);
+        if let Err(e) = enc.push(&frame) {
+            println!("Skipping: source push failed: {e}");
+            return;
+        }
+    }
+    if let Err(e) = enc.finish() {
+        println!("Skipping: source encoder finish failed: {e}");
+        return;
+    }
+
+    let mut mixer = match MultiTrackAudioMixer::new(SAMPLE_RATE, ChannelLayout::Stereo)
+        .add_track(AudioTrack {
+            source: src_path.clone(),
+            volume: AnimatedValue::Static(0.0),
+            pan: AnimatedValue::Static(-1.0), // full left
+            effects: vec![],
+            sample_rate: SAMPLE_RATE,
+            channel_layout: ChannelLayout::Stereo,
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackAudioMixer::build failed: {e}");
+            return;
+        }
+    };
+
+    let mut left = 0.0;
+    let mut right = 0.0;
+    let mut chunk_pts = Duration::ZERO;
+    let chunk_duration = Duration::from_secs_f64(FRAME_SAMPLES as f64 / SAMPLE_RATE as f64);
+    let mut chunks = 0usize;
+    loop {
+        mixer.tick(chunk_pts);
+        match mixer.pull_audio() {
+            Ok(Some(frame)) => {
+                let (l, r) = match frame.format() {
+                    // Packed interleaved F32: [L, R, L, R, ...] in plane 0.
+                    SampleFormat::F32 => frame.plane(0).map_or((0.0, 0.0), stereo_rms_bytes),
+                    // Planar (e.g. F32p from `amix`): plane 0 = left, plane 1 = right.
+                    _ => {
+                        let l = frame.plane(0).map_or(0.0, rms_bytes);
+                        let r = frame.plane(1).map_or(0.0, rms_bytes);
+                        (l, r)
+                    }
+                };
+                left += l;
+                right += r;
+                chunks += 1;
+                chunk_pts += chunk_duration;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                println!("Skipping: pull_audio failed: {e}");
+                return;
+            }
+        }
+    }
+
+    if chunks < 5 || left <= 0.0 {
+        println!("Skipping: too few audio chunks ({chunks}) or no left signal ({left:.6})");
+        return;
+    }
+    assert!(
+        left > right * 8.0,
+        "full-left pan must attenuate the right channel: left RMS sum ({left:.6}) \
+         must be > 8× right RMS sum ({right:.6})"
+    );
+}
+
 /// Verifies that frames pulled from `MultiTrackComposer` always have `yuv420p` format,
 /// regardless of FFmpeg's internal format negotiation.
 ///

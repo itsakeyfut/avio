@@ -1010,6 +1010,8 @@ fn video_placement(
         volume: crate::derive::audio_volume(clip, &crate::track::TrackAutomation::default()),
         // The same shared derive as export, so preview pitch matches export.
         pitch: crate::derive::audio_pitch(clip),
+        // The pan 3-way merge, same shared derive as export.
+        pan: crate::derive::audio_pan(clip, &crate::track::TrackAutomation::default()),
     }
 }
 
@@ -1036,6 +1038,8 @@ fn audio_placement(
         volume: crate::derive::audio_volume(clip, automation),
         // The same shared derive as export, so preview pitch matches export.
         pitch: crate::derive::audio_pitch(clip),
+        // The pan 3-way merge (incl. the track-level `pan` automation), matching export.
+        pan: crate::derive::audio_pan(clip, automation),
     }
 }
 
@@ -1316,6 +1320,36 @@ mod tests {
         assert!((scene.video_tracks[0].placements[0].pitch - 3.0).abs() < f64::EPSILON);
         // Audio-only clip: a set pitch_track wins over the static pitch, at t=0.
         assert!((scene.audio_tracks[0].placements[0].pitch - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_carry_clip_pan() {
+        use ff_filter::{Easing, Keyframe};
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4").pan(-0.4)])
+            .audio_track(vec![Clip::new("a.mp3")]) // center clip pan
+            .audio_animation(
+                0,
+                AudioProperty::Pan,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.6, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+        let scene = timeline.to_scene();
+        // Video-clip audio carries the static per-clip pan.
+        assert!(matches!(
+            scene.video_tracks[0].placements[0].pan,
+            AnimatedValue::Static(x) if (x + 0.4).abs() < 1e-9
+        ));
+        // Audio-only clip: the center clip pan falls back to the track's pan automation.
+        assert!(matches!(
+            scene.audio_tracks[0].placements[0].pan,
+            AnimatedValue::Track(_)
+        ));
     }
 
     #[cfg(feature = "preview")]

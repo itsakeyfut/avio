@@ -86,6 +86,11 @@ pub struct ScenePlacement {
     /// is evaluated at its `t=0` value (static, per ADR-0002); the preview applies
     /// it duration-preserving, matching the export shift at the model level.
     pub pitch: f64,
+    /// Resolved stereo pan (`-1.0` left .. `+1.0` right, `0.0` center), static or
+    /// animated. Applied once at open at its `t=0` value; per-sample pan automation
+    /// is a deferred capability, so an animated pan uses its initial value (matching
+    /// the export mixer).
+    pub pan: AnimatedValue<f64>,
 }
 
 // SceneAudioTrack
@@ -124,4 +129,9 @@ pub struct SceneAudioPlacement {
     /// is evaluated at its `t=0` value (static, per ADR-0002); the preview applies
     /// it duration-preserving, matching the export shift at the model level.
     pub pitch: f64,
+    /// Resolved stereo pan (`-1.0` left .. `+1.0` right, `0.0` center), static or
+    /// animated. Applied once at open at its `t=0` value; per-sample pan automation
+    /// is a deferred capability, so an animated pan uses its initial value (matching
+    /// the export mixer).
+    pub pan: AnimatedValue<f64>,
 }

@@ -198,6 +198,16 @@ impl ScenePlayer {
             {
                 handle.set_volume(db_to_linear(*db));
             }
+            // Apply pan once at open at its `t=0` value (an animated pan uses its
+            // initial value, matching the export mixer).
+            if let Some(handle) = &audio_track_handles[i] {
+                let pan0 = clip_list[i].pan.value_at(Duration::ZERO);
+                if pan0 != 0.0 {
+                    // `set_pan` clamps to [-1.0, 1.0], so the f32 narrowing is safe.
+                    #[allow(clippy::cast_possible_truncation)]
+                    handle.set_pan(pan0 as f32);
+                }
+            }
             clip_states.push(ClipState {
                 source: p.source.clone(),
                 decode_buf,
@@ -254,6 +264,14 @@ impl ScenePlayer {
                         && *db != 0.0
                     {
                         handle.set_volume(db_to_linear(*db));
+                    }
+                    // Apply pan once at open at its `t=0` value (an animated pan uses
+                    // its initial value, matching the export mixer).
+                    let pan0 = p.pan.value_at(Duration::ZERO);
+                    if pan0 != 0.0 {
+                        // `set_pan` clamps to [-1.0, 1.0], so the f32 narrowing is safe.
+                        #[allow(clippy::cast_possible_truncation)]
+                        handle.set_pan(pan0 as f32);
                     }
                     audio_only_tracks.push(AudioOnlyTrack {
                         source: p.source.clone(),
@@ -328,6 +346,14 @@ impl ScenePlayer {
                     && *db != 0.0
                 {
                     handle.set_volume(db_to_linear(*db));
+                }
+                // Apply pan once at open at its `t=0` value (an animated pan uses its
+                // initial value, matching the export mixer).
+                let pan0 = p.pan.value_at(Duration::ZERO);
+                if pan0 != 0.0 {
+                    // `set_pan` clamps to [-1.0, 1.0], so the f32 narrowing is safe.
+                    #[allow(clippy::cast_possible_truncation)]
+                    handle.set_pan(pan0 as f32);
                 }
                 audio_only_tracks.push(AudioOnlyTrack {
                     source: p.source.clone(),

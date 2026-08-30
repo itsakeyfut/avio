@@ -1583,6 +1583,52 @@ pub(super) unsafe fn build_audio_mix(
             }
         }
 
+        // Static stereo pan (balance): center is a unity passthrough, so a `pan`
+        // filter is inserted only when the pan is off-center. `l_gain`/`r_gain`
+        // attenuate the opposite channel linearly; an animated pan is not applied
+        // per sample (warned above) and uses its initial value. The value is
+        // clamped to [-1.0, 1.0] to match the preview mixer's `set_pan` and avoid
+        // a negative (phase-inverting) gain from an out-of-range track animation.
+        {
+            let pan_pos = track.pan.value_at(Duration::ZERO).clamp(-1.0, 1.0);
+            if pan_pos.abs() > 1e-6 {
+                let l_gain = (1.0 - pan_pos).min(1.0);
+                let r_gain = (1.0 + pan_pos).min(1.0);
+                let node_name = format!("audio_{idx}_pan");
+                let pan_filter = ff_sys::avfilter_get_by_name(c"pan".as_ptr());
+                if pan_filter.is_null() {
+                    bail!(graph, "filter not found: pan");
+                }
+                let Ok(pan_name) = CString::new(node_name.as_str()) else {
+                    bail!(graph, "CString::new failed for pan name");
+                };
+                let Ok(pan_args) = CString::new(format!("stereo|c0={l_gain}*c0|c1={r_gain}*c1"))
+                else {
+                    bail!(graph, "CString::new failed for pan args");
+                };
+                let mut pan_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut pan_ctx,
+                    pan_filter,
+                    pan_name.as_ptr(),
+                    pan_args.as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("failed to create pan filter track={idx} code={ret}")
+                    );
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, pan_ctx, 0);
+                if ret < 0 {
+                    bail!(graph, format!("link failed: →pan track={idx}"));
+                }
+                chain_end = pan_ctx;
+            }
+        }
+
         // Per-track effects chain
         for (eff_idx, step) in track.effects.iter().enumerate() {
             let combined_idx = idx * 1000 + eff_idx;
