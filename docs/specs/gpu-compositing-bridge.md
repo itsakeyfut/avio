@@ -63,19 +63,29 @@ Per composited frame:
    sorts by `z_order`, ingests each layer -- planar YUV via `YuvUploadNode`, packed RGB CPU-side -- applies its
    `TransformNode`, and blends).
 4. Deliver the result:
-   - **export:** read the texture back to a CPU `VideoFrame` and hand it to the **existing encoder unchanged**
-     (composite -> readback -> encoder). Zero-copy GPU->encoder is deferred.
+   - **export (Br4 v1):** the GPU export composites each output frame with the shared `GpuCompositor` (the same
+     executor and identity/aspect gate as preview), reads it back with `Compositor::composite_to_rgba`, and
+     pushes the `rgba` `VideoFrame` to the **existing encoder unchanged** (the encoder's own sws converts
+     `rgba` -> `yuv420p`). `MultiTrackComposer` fuses decode and composite and never exposes a per-layer frame,
+     so the GPU export cannot drive it; `avio::gpu_export` runs its own deterministic per-source decode loop
+     (`ff_decode::VideoDecoder` per clip, decoded straight to `rgba`, one frame per output frame at
+     `t = frame_idx / fps`). Eligibility is a **whole-export** decision (`avio::gpu_export::eligible_track`): v1
+     covers a single active video track of contiguous hard cuts at unity speed whose every clip is a file source
+     mapping to an identity, canvas-aspect GPU layer; anything else -- or no adapter, or `render_forcing_cpu` --
+     keeps the whole export on `MultiTrackComposer`. Multi-track / overlay GPU export and zero-copy
+     GPU->encoder are deferred.
    - **preview (Br3 v1):** `Compositor::composite_to_rgba` (composite + readback) -> the existing
      `FrameSink::push_frame`, so any sink works. The GPU compositor is injected into `ff_preview`'s runner via
      the `PreviewCompositor` seam (the runner cannot depend on `ff-render` directly); the runner tries it per
      frame and falls back to the CPU compositor on `None`. **Deferred:** the zero-copy `push_frame_gpu` /
      `GpuFrameSink` / `display`-feature path (hand a `wgpu::Texture` to the sink without readback).
 
-   **Br3 v1 layer coverage:** the GPU preview path renders only layers that need no geometric placement -- an
-   identity transform and a frame whose aspect matches the canvas. A non-identity transform (the model's
-   pixel/degree units do not yet map to the compositor's UV-space/radian `LayerTransform`) or an aspect
-   mismatch (the compositor stretches to the canvas where the CPU path letterboxes) falls back to CPU per
-   frame. Correct GPU transforms and letterboxing, with GPU-vs-CPU parity tests, are Br5.
+   **v1 layer coverage (Br3 preview / Br4 export, shared core):** the GPU path renders only layers that need no
+   geometric placement -- an identity transform and a frame whose aspect matches the canvas. A non-identity
+   transform (the model's pixel/degree units do not yet map to the compositor's UV-space/radian
+   `LayerTransform`) or an aspect mismatch (the compositor stretches to the canvas where the CPU path
+   letterboxes) falls back to CPU -- per frame in preview, and by making the timeline ineligible (whole-export
+   CPU fallback) in export. Correct GPU transforms and letterboxing, with GPU-vs-CPU parity tests, are Br5.
 
 `ff_render::Compositor::new` and `RenderGraph::new` both take an `Arc<RenderContext>`; the bridge builds one
 `RenderContext` per session (`RenderContext::init().await`, or `RenderContext::new(device, queue)` to share a

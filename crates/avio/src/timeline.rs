@@ -168,7 +168,25 @@ impl Timeline {
         output: impl AsRef<Path>,
         config: EncoderConfig,
     ) -> Result<(), TimelineError> {
-        self.render_with_progress(output, config, |_| true)
+        self.render_inner(output, config, |_| true, false)
+    }
+
+    /// Like [`render`](Self::render) but forces the CPU `MultiTrackComposer` export
+    /// path, bypassing the GPU export even when an adapter is available.
+    ///
+    /// This is the force-CPU override of the GPU-default export; the output is
+    /// identical in shape to [`render`](Self::render). Without the `gpu` feature it
+    /// is behaviourally identical to [`render`](Self::render).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`render`](Self::render).
+    pub fn render_forcing_cpu(
+        self,
+        output: impl AsRef<Path>,
+        config: EncoderConfig,
+    ) -> Result<(), TimelineError> {
+        self.render_inner(output, config, |_| true, true)
     }
 
     /// Renders the timeline to an output file, invoking `on_progress` after
@@ -213,6 +231,38 @@ impl Timeline {
         output: impl AsRef<Path>,
         config: EncoderConfig,
         on_progress: impl Fn(&Progress) -> bool + Send,
+    ) -> Result<(), TimelineError> {
+        self.render_inner(output, config, on_progress, false)
+    }
+
+    /// Like [`render_with_progress`](Self::render_with_progress) but forces the CPU
+    /// `MultiTrackComposer` export path (the force-CPU override of the GPU-default
+    /// export). Without the `gpu` feature it is identical to
+    /// [`render_with_progress`](Self::render_with_progress).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`render_with_progress`](Self::render_with_progress).
+    pub fn render_with_progress_forcing_cpu(
+        self,
+        output: impl AsRef<Path>,
+        config: EncoderConfig,
+        on_progress: impl Fn(&Progress) -> bool + Send,
+    ) -> Result<(), TimelineError> {
+        self.render_inner(output, config, on_progress, true)
+    }
+
+    /// The shared export driver behind the four public `render*` entry points:
+    /// builds the video composition, audio mix, and encoder, then drains them.
+    /// `force_cpu` bypasses the GPU export path (see
+    /// [`render_forcing_cpu`](Self::render_forcing_cpu)); it is a no-op difference
+    /// without the `gpu` feature.
+    fn render_inner(
+        self,
+        output: impl AsRef<Path>,
+        config: EncoderConfig,
+        on_progress: impl Fn(&Progress) -> bool + Send,
+        force_cpu: bool,
     ) -> Result<(), TimelineError> {
         let output = output.as_ref();
 
@@ -289,9 +339,41 @@ impl Timeline {
             }
         }
 
-        // 2. Build video composition graph.
+        // GPU export decision (Br4, #1627): an eligible single-track hard-cut
+        // timeline with an available adapter composites on the GPU; otherwise the CPU
+        // MultiTrackComposer path below runs unchanged. Decided here so the CPU
+        // composition graph is not built when the GPU export path will run. No
+        // adapter, force-CPU, or an ineligible timeline all fall back to CPU.
+        #[cfg(feature = "gpu")]
+        let gpu_export: Option<(usize, crate::gpu_compositor::GpuCompositor)> = if force_cpu {
+            None
+        } else {
+            crate::gpu_export::eligible_track(
+                &video_tracks,
+                lavfi_overlay.as_deref(),
+                any_video_solo,
+                (canvas_width, canvas_height),
+                frame_rate,
+            )
+            .and_then(|idx| crate::gpu_compositor::GpuCompositor::new().map(|core| (idx, core)))
+        };
+
+        // The CPU composition graph is skipped when the GPU export path will run.
+        let build_cpu_video = {
+            #[cfg(feature = "gpu")]
+            {
+                gpu_export.is_none()
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                let _ = force_cpu;
+                true
+            }
+        };
+
+        // 2. Build video composition graph (CPU path).
         let mut video_graph = None;
-        if !video_tracks.is_empty() {
+        if build_cpu_video && !video_tracks.is_empty() {
             // Per-track end-offset (seconds) of the last clip, used to compute
             // the xfade `offset` arg when the next clip has a transition.
             let mut prev_end_by_track: HashMap<usize, f64> = HashMap::new();
@@ -452,33 +534,42 @@ impl Timeline {
 
         let start = Instant::now();
 
-        // 6. Drain video graph → encoder.
-        //    tick() must be called before each pull so that animation entries
-        //    registered on the graph update the filter parameters for that frame.
-        //    on_progress is invoked after each push; returning false cancels.
-        if let Some(mut vgraph) = video_graph {
-            let mut video_idx: u32 = 0;
-            loop {
-                #[allow(clippy::cast_precision_loss)]
-                // frame index fits comfortably in f64 mantissa
-                let pts = Duration::from_secs_f64(f64::from(video_idx) / frame_rate);
-                vgraph.tick(pts);
-                match vgraph.pull_video().map_err(TimelineError::Filter)? {
-                    Some(frame) => {
-                        encoder.push_video(&frame).map_err(TimelineError::Encode)?;
-                        video_idx = video_idx.saturating_add(1);
-                        let progress = Progress {
-                            frames_processed: u64::from(video_idx),
-                            total_frames,
-                            elapsed: start.elapsed(),
-                        };
-                        if !on_progress(&progress) {
-                            return Err(TimelineError::Cancelled);
-                        }
-                    }
-                    None => break,
-                }
-            }
+        // 6. Drain video → encoder: the GPU export path when eligible, else the CPU
+        //    composition graph. Both push to the same unchanged encoder.
+        #[cfg(feature = "gpu")]
+        if let Some((idx, mut core)) = gpu_export {
+            log::info!("export compositor path=gpu");
+            crate::gpu_export::drain_video_gpu(
+                &video_tracks[idx],
+                (canvas_width, canvas_height),
+                frame_rate,
+                &mut encoder,
+                &mut core,
+                &on_progress,
+                start,
+                total_frames,
+            )?;
+        } else if let Some(vgraph) = video_graph {
+            log::info!("export compositor path=cpu");
+            drain_composited_graph(
+                vgraph,
+                &mut encoder,
+                &on_progress,
+                start,
+                total_frames,
+                frame_rate,
+            )?;
+        }
+        #[cfg(not(feature = "gpu"))]
+        if let Some(vgraph) = video_graph {
+            drain_composited_graph(
+                vgraph,
+                &mut encoder,
+                &on_progress,
+                start,
+                total_frames,
+                frame_rate,
+            )?;
         }
 
         // 7. Drain audio graph → (optional master bus) → encoder.
@@ -561,6 +652,42 @@ impl Timeline {
         );
         Ok(())
     }
+}
+
+/// Drains a built CPU composition [`FilterGraph`] to the encoder (the historical
+/// export video loop). `tick()` runs before each pull so per-frame animation entries
+/// update the filter parameters; `on_progress` is invoked after each push and
+/// returning `false` cancels with [`TimelineError::Cancelled`].
+fn drain_composited_graph(
+    mut vgraph: FilterGraph,
+    encoder: &mut VideoEncoder,
+    on_progress: &(impl Fn(&Progress) -> bool + Send),
+    start: Instant,
+    total_frames: Option<u64>,
+    frame_rate: f64,
+) -> Result<(), TimelineError> {
+    let mut video_idx: u32 = 0;
+    loop {
+        #[allow(clippy::cast_precision_loss)] // frame index fits comfortably in f64 mantissa
+        let pts = Duration::from_secs_f64(f64::from(video_idx) / frame_rate);
+        vgraph.tick(pts);
+        match vgraph.pull_video().map_err(TimelineError::Filter)? {
+            Some(frame) => {
+                encoder.push_video(&frame).map_err(TimelineError::Encode)?;
+                video_idx = video_idx.saturating_add(1);
+                let progress = Progress {
+                    frames_processed: u64::from(video_idx),
+                    total_frames,
+                    elapsed: start.elapsed(),
+                };
+                if !on_progress(&progress) {
+                    return Err(TimelineError::Cancelled);
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(())
 }
 
 /// Resolves a clip's effective duration for a fade-out start offset, probing the

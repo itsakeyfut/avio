@@ -1,104 +1,38 @@
-//! GPU preview compositor: the executor half of the bridge (Br3, #1626).
+//! GPU preview adapter over the shared compositing core (Br3, #1626).
 //!
-//! Implements `ff_preview::PreviewCompositor` over `ff-render`, so the preview
-//! runner can composite on the GPU by default and fall back to its built-in CPU
-//! compositor automatically. Per frame it maps the runner's layers with
-//! [`map_scene`](crate::gpu::map_scene), executes each layer's `ColorGrade`/`Scale`
-//! effects with an `ff_render::RenderGraph`, composites the stack with
-//! `ff_render::Compositor`, and reads the result back to rgba. Any unsupported layer
-//! (`map_scene` fallback) or GPU error returns `None`, so the runner uses the CPU
-//! path for that frame (never a panic, never a partial result).
-//!
-//! v1 scope: the GPU path renders only layers that need no geometric placement (an
-//! identity transform and a frame whose aspect matches the canvas). Non-identity
-//! transforms and letterbox cases fall back to CPU, because the compositor's
-//! UV-space transform + stretch-to-canvas model does not yet match the CPU
-//! compositor's native-overlay + pad model; closing that with parity tests is Br5.
-//! Known v1 inefficiencies (deferred with the zero-copy work): a decoded frame is
-//! deep-copied per no-effect layer, and the readback allocates a staging buffer per
-//! frame.
+//! Wraps [`GpuCompositor`](crate::gpu_compositor::GpuCompositor) as an
+//! `ff_preview::PreviewCompositor`, so the preview runner composites on the GPU by
+//! default and falls back to its built-in CPU compositor when the core returns `None`
+//! (an unsupported layer, no adapter, or a GPU error). All the compositing logic and
+//! the v1 identity/aspect gate live in the shared core; this file only adapts the
+//! preview layer type.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use ff_filter::RealtimeLayer;
 use ff_format::VideoFrame;
 use ff_preview::PreviewCompositor;
-use ff_render::{
-    ColorGradeNode, Compositor, FrameLayer, LayerTransform, RenderContext, RenderGraph, ScaleNode,
-};
 
-use crate::gpu::{GpuEffect, GpuLayerPlan, GpuMapping, map_scene};
+use crate::gpu_compositor::GpuCompositor;
 
-/// Composites preview frames on the GPU, falling back to `None` (the runner's CPU
-/// path) on unsupported content or any GPU error.
+/// Preview adapter over [`GpuCompositor`]: composites the runner's layers on the GPU,
+/// falling back to `None` (the runner's CPU path) on unsupported content or a GPU error.
 pub struct GpuPreviewCompositor {
-    ctx: Arc<RenderContext>,
-    /// Compositor cached for its target canvas; rebuilt when the canvas changes.
-    compositor: Option<(Compositor, (u32, u32))>,
+    core: GpuCompositor,
 }
 
 impl GpuPreviewCompositor {
-    /// Initialises a GPU context (best available adapter). Returns `None` when no
-    /// adapter is available, so the caller keeps the CPU compositor. Logs the
-    /// selected path once (lifecycle, not per frame).
+    /// Initialises the GPU core, or `None` when no adapter is available (so the
+    /// runner keeps its CPU compositor). Logs the selected path once (lifecycle).
     #[must_use]
     pub fn new() -> Option<Self> {
-        match RenderContext::init_blocking() {
-            Ok(ctx) => {
-                log::info!("preview compositor path=gpu");
-                Some(Self {
-                    ctx: Arc::new(ctx),
-                    compositor: None,
-                })
-            }
-            Err(e) => {
-                log::info!("preview compositor path=cpu reason={e}");
-                None
-            }
+        if let Some(core) = GpuCompositor::new() {
+            log::info!("preview compositor path=gpu");
+            Some(Self { core })
+        } else {
+            log::info!("preview compositor path=cpu");
+            None
         }
-    }
-
-    /// Applies a layer's mappable effects to its rgba frame via a `RenderGraph`, or
-    /// returns the frame unchanged when it has none. `None` on a GPU error.
-    fn apply_effects(&self, plan: &GpuLayerPlan, frame: &VideoFrame) -> Option<VideoFrame> {
-        if plan.effects.is_empty() {
-            return Some(frame.clone());
-        }
-        let (in_w, in_h) = (frame.width(), frame.height());
-        let rgba = frame.to_rgba()?;
-        let mut graph = RenderGraph::new(self.ctx.clone());
-        // A `Scale` node resizes the frame; track the output dimensions so the
-        // read-back buffer is wrapped at the right size.
-        let (mut out_w, mut out_h) = (in_w, in_h);
-        for effect in &plan.effects {
-            graph = match effect {
-                GpuEffect::ColorGrade {
-                    brightness,
-                    contrast,
-                    saturation,
-                    temperature,
-                    tint,
-                } => graph.push(ColorGradeNode::new(
-                    *brightness,
-                    *contrast,
-                    *saturation,
-                    *temperature,
-                    *tint,
-                )),
-                GpuEffect::Scale {
-                    width,
-                    height,
-                    algorithm,
-                } => {
-                    out_w = *width;
-                    out_h = *height;
-                    graph.push(ScaleNode::new(*width, *height, *algorithm))
-                }
-            };
-        }
-        let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
-        VideoFrame::from_rgba(out_w, out_h, out).ok()
     }
 }
 
@@ -109,69 +43,8 @@ impl PreviewCompositor for GpuPreviewCompositor {
         canvas: (u32, u32),
         t: Duration,
     ) -> Option<(Vec<u8>, u32, u32)> {
-        // Map the layers to a GPU plan; an unsupported layer falls back to CPU.
-        let refs: Vec<&RealtimeLayer> = layers.iter().map(|(l, _)| *l).collect();
-        let plan = match map_scene(&refs, canvas, t) {
-            GpuMapping::Gpu(plan) => plan,
-            GpuMapping::Fallback(_) => return None,
-        };
-
-        // Execute each layer's effects, then wrap it as a compositor FrameLayer.
-        let mut frame_layers = Vec::with_capacity(plan.layers.len());
-        for (lp, (_, frame)) in plan.layers.iter().zip(layers.iter()) {
-            // v1 renders only layers that need no geometric placement. The model's
-            // transform is in canvas pixels / clockwise degrees, while the
-            // compositor's `LayerTransform` is UV-space / counter-clockwise radians,
-            // and the compositor stretches each layer to the canvas (no letterbox),
-            // whereas the CPU compositor overlays at native size and pads. Matching
-            // those exactly is parity work (Br5), so a non-identity transform falls
-            // back to CPU here rather than render wrong output.
-            if !is_identity_transform(lp) {
-                return None;
-            }
-            let processed = self.apply_effects(lp, frame)?;
-            // Same reason: the compositor would stretch a differently-shaped frame to
-            // fill the canvas, which the CPU path letterboxes instead. Only a frame
-            // whose aspect matches the canvas composites without distortion.
-            if u64::from(processed.width()) * u64::from(canvas.1)
-                != u64::from(processed.height()) * u64::from(canvas.0)
-            {
-                return None;
-            }
-            frame_layers.push(FrameLayer {
-                frame: processed,
-                transform: LayerTransform::default(),
-                blend_mode: lp.blend_mode,
-                opacity: lp.opacity,
-                z_order: lp.z_order,
-            });
-        }
-
-        // Composite (rebuilding the cached compositor if the canvas changed) and
-        // read back to rgba. A GPU error becomes `None` (CPU fallback).
-        let rebuild = match &self.compositor {
-            Some((_, cached)) => *cached != canvas,
-            None => true,
-        };
-        if rebuild {
-            self.compositor = Some((
-                Compositor::new(self.ctx.clone(), canvas.0, canvas.1),
-                canvas,
-            ));
-        }
-        let (compositor, _) = self.compositor.as_mut()?;
-        compositor.composite_to_rgba(&mut frame_layers).ok()
+        self.core.composite(layers, canvas, t)
     }
-}
-
-/// Whether a plan layer's transform is the identity (no translate / scale / rotate),
-/// within a small tolerance. Non-identity transforms fall back to CPU in v1.
-fn is_identity_transform(lp: &GpuLayerPlan) -> bool {
-    lp.x.abs() < 1e-6
-        && lp.y.abs() < 1e-6
-        && (lp.scale_x - 1.0).abs() < 1e-6
-        && (lp.scale_y - 1.0).abs() < 1e-6
-        && lp.rotation.abs() < 1e-6
 }
 
 #[cfg(test)]

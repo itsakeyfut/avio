@@ -107,6 +107,10 @@ mod effect;
 mod error;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod gpu_compositor;
+#[cfg(feature = "gpu")]
+mod gpu_export;
 #[cfg(all(feature = "gpu", feature = "preview"))]
 mod gpu_preview;
 mod ids;
@@ -124,6 +128,8 @@ pub use error::TimelineError;
 pub use gpu::{
     GpuEffect, GpuFallback, GpuLayerPlan, GpuLayerSource, GpuMapping, GpuScenePlan, map_scene,
 };
+#[cfg(feature = "gpu")]
+pub use gpu_compositor::GpuCompositor;
 #[cfg(all(feature = "gpu", feature = "preview"))]
 pub use gpu_preview::GpuPreviewCompositor;
 pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
