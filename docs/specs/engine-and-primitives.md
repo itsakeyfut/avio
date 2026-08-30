@@ -177,6 +177,16 @@ export's `xfade` is CPU. **Deferred:** the geometric/mosaic kinds (`fadegrays`, 
 `pixelize`) fall back to the linear fade; exact fidelity for those and GPU-default compositing (export +
 preview) are tracked in #1365.
 
+### 2.2 GPU-default compositing bridge (#1365)
+
+The v0.18.0 bridge adds a **third compositor path**: `ff-render`'s GPU compositor, made the default for both
+preview and export with automatic CPU fallback (the two CPU compositors above stay the correctness reference).
+The mapping from the derived layer set (`VideoLayer` / `RealtimeLayerDescriptor`) to `ff-render`'s
+`Compositor` / `RenderGraph` lives in a `gpu`-gated `avio` module, and fallback is whole-frame (a frame runs on
+CPU when any layer uses a step with no GPU node, or no adapter is present). Rationale:
+[ADR-0007](../adr/0007-gpu-compositing-bridge.md); mapping contract:
+[`gpu-compositing-bridge.md`](./gpu-compositing-bridge.md).
+
 ## 3. Boundary principle (model vs primitive)
 
 **Litmus:** does this type/function need to know **TIME, TRACK, CLIP, EDIT, or HISTORY** to do
