@@ -9,10 +9,91 @@
 //! output (see [`Track::is_active`]); `lock` and `name` are authoring metadata the
 //! derivation ignores.
 
-use ff_filter::FilterStep;
+use ff_filter::{AnimationTrack, FilterStep};
 
 use crate::clip::Clip;
 use crate::ids::TrackId;
+
+/// A video-layer property that a [`TrackAutomation`] can animate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoProperty {
+    /// Horizontal position.
+    X,
+    /// Vertical position.
+    Y,
+    /// Horizontal scale.
+    ScaleX,
+    /// Vertical scale.
+    ScaleY,
+    /// Rotation.
+    Rotation,
+    /// Opacity.
+    Opacity,
+}
+
+/// An audio-track property that a [`TrackAutomation`] can animate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioProperty {
+    /// Volume in dB.
+    Volume,
+    /// Stereo pan.
+    Pan,
+}
+
+/// Typed, per-property track-level automation.
+///
+/// Held by [`Track::automation`], it re-keys the old `"{video|audio}_{index}_{prop}"`
+/// string map by track *identity*: because the automation lives on the track,
+/// reordering or removing a track carries or drops its automation with it.
+/// This mirrors the per-property clip-level tracks on [`Clip`](crate::Clip)
+/// (`opacity_track`, `x_track`, …) so clip and track automation share one model.
+///
+/// Video tracks use the video properties (`opacity`/`x`/`y`/`scale_x`/`scale_y`/
+/// `rotation`); audio tracks use `volume`/`pan`. Unused properties stay `None`.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TrackAutomation {
+    /// Opacity animation (video).
+    pub opacity: Option<AnimationTrack<f64>>,
+    /// Horizontal-position animation (video).
+    pub x: Option<AnimationTrack<f64>>,
+    /// Vertical-position animation (video).
+    pub y: Option<AnimationTrack<f64>>,
+    /// Horizontal-scale animation (video).
+    pub scale_x: Option<AnimationTrack<f64>>,
+    /// Vertical-scale animation (video).
+    pub scale_y: Option<AnimationTrack<f64>>,
+    /// Rotation animation (video).
+    pub rotation: Option<AnimationTrack<f64>>,
+    /// Volume animation (audio, dB).
+    pub volume: Option<AnimationTrack<f64>>,
+    /// Pan animation (audio).
+    pub pan: Option<AnimationTrack<f64>>,
+}
+
+impl TrackAutomation {
+    /// Sets the animation for a video property.
+    pub fn set_video(&mut self, property: VideoProperty, animation: AnimationTrack<f64>) {
+        let slot = match property {
+            VideoProperty::X => &mut self.x,
+            VideoProperty::Y => &mut self.y,
+            VideoProperty::ScaleX => &mut self.scale_x,
+            VideoProperty::ScaleY => &mut self.scale_y,
+            VideoProperty::Rotation => &mut self.rotation,
+            VideoProperty::Opacity => &mut self.opacity,
+        };
+        *slot = Some(animation);
+    }
+
+    /// Sets the animation for an audio property.
+    pub fn set_audio(&mut self, property: AudioProperty, animation: AnimationTrack<f64>) {
+        let slot = match property {
+            AudioProperty::Volume => &mut self.volume,
+            AudioProperty::Pan => &mut self.pan,
+        };
+        *slot = Some(animation);
+    }
+}
 
 /// An ordered list of [`Clip`]s and its editorial state.
 ///
@@ -55,6 +136,11 @@ pub struct Track {
     /// (mirroring [`Clip::audio_effects`](crate::Clip::audio_effects)).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub audio_effects: Vec<FilterStep>,
+    /// Typed, id-addressed track-level automation (see [`TrackAutomation`]).
+    /// Empty by default; set via the `with_*_animation` builders or
+    /// [`TimelineBuilder`](crate::TimelineBuilder)'s `video_animation` /
+    /// `audio_animation`. Persisted by the `serde` feature.
+    pub automation: TrackAutomation,
 }
 
 impl Track {
@@ -73,6 +159,7 @@ impl Track {
             lock: false,
             clips,
             audio_effects: Vec::new(),
+            automation: TrackAutomation::default(),
         }
     }
 
@@ -116,6 +203,62 @@ impl Track {
     #[must_use]
     pub fn audio_effects(mut self, steps: Vec<FilterStep>) -> Self {
         self.audio_effects = steps;
+        self
+    }
+
+    /// Sets the track-level opacity animation (video).
+    #[must_use]
+    pub fn with_opacity_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.opacity = Some(animation);
+        self
+    }
+
+    /// Sets the track-level horizontal-position animation (video).
+    #[must_use]
+    pub fn with_x_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.x = Some(animation);
+        self
+    }
+
+    /// Sets the track-level vertical-position animation (video).
+    #[must_use]
+    pub fn with_y_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.y = Some(animation);
+        self
+    }
+
+    /// Sets the track-level horizontal-scale animation (video).
+    #[must_use]
+    pub fn with_scale_x_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.scale_x = Some(animation);
+        self
+    }
+
+    /// Sets the track-level vertical-scale animation (video).
+    #[must_use]
+    pub fn with_scale_y_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.scale_y = Some(animation);
+        self
+    }
+
+    /// Sets the track-level rotation animation (video).
+    #[must_use]
+    pub fn with_rotation_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.rotation = Some(animation);
+        self
+    }
+
+    /// Sets the track-level volume animation (audio, dB).
+    #[must_use]
+    pub fn with_volume_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.volume = Some(animation);
+        self
+    }
+
+    /// Sets the track-level pan animation (audio).
+    #[must_use]
+    pub fn with_pan_animation(mut self, animation: AnimationTrack<f64>) -> Self {
+        self.automation.pan = Some(animation);
         self
     }
 
@@ -168,5 +311,43 @@ mod tests {
             track.audio_effects[0],
             FilterStep::Volume(v) if (v - (-6.0)).abs() < 1e-9
         ));
+    }
+
+    #[test]
+    fn new_track_should_have_empty_automation() {
+        let a = TrackAutomation::default();
+        assert!(a.opacity.is_none() && a.x.is_none() && a.volume.is_none() && a.pan.is_none());
+    }
+
+    #[test]
+    fn with_animation_builders_should_set_each_property() {
+        let track = Track::new(vec![])
+            .with_opacity_animation(AnimationTrack::new())
+            .with_x_animation(AnimationTrack::new())
+            .with_y_animation(AnimationTrack::new())
+            .with_scale_x_animation(AnimationTrack::new())
+            .with_scale_y_animation(AnimationTrack::new())
+            .with_rotation_animation(AnimationTrack::new())
+            .with_volume_animation(AnimationTrack::new())
+            .with_pan_animation(AnimationTrack::new());
+        let a = &track.automation;
+        assert!(a.opacity.is_some(), "opacity set");
+        assert!(a.x.is_some() && a.y.is_some(), "position set");
+        assert!(a.scale_x.is_some() && a.scale_y.is_some(), "scale set");
+        assert!(a.rotation.is_some(), "rotation set");
+        assert!(a.volume.is_some() && a.pan.is_some(), "audio set");
+    }
+
+    #[test]
+    fn set_video_and_set_audio_should_target_the_right_slot() {
+        let mut a = TrackAutomation::default();
+        a.set_video(VideoProperty::ScaleY, AnimationTrack::new());
+        a.set_audio(AudioProperty::Pan, AnimationTrack::new());
+        assert!(a.scale_y.is_some(), "set_video hits scale_y");
+        assert!(a.pan.is_some(), "set_audio hits pan");
+        assert!(
+            a.scale_x.is_none() && a.volume.is_none(),
+            "no other slot touched"
+        );
     }
 }

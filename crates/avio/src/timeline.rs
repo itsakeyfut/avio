@@ -22,7 +22,7 @@ use crate::derive;
 use crate::error::TimelineError;
 use crate::ids::{ClipId, TrackId};
 use crate::marker::Marker;
-use crate::track::Track;
+use crate::track::{AudioProperty, Track, VideoProperty};
 use ff_pipeline::EncoderConfig;
 use ff_pipeline::Progress;
 use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
@@ -78,18 +78,6 @@ pub struct Timeline {
     /// Editorial markers on the timeline. Metadata only — they do not affect
     /// derivation, render, or preview. Addressed by [`MarkerId`](crate::MarkerId).
     pub(crate) markers: Vec<Marker>,
-    /// Animation tracks for video layer properties.
-    ///
-    /// Key format: `"video_{track_index}_{property}"`, e.g. `"video_0_opacity"`.
-    ///
-    /// Supported properties: `x`, `y`, `scale_x`, `scale_y`, `rotation`, `opacity`.
-    pub(crate) video_animations: HashMap<String, AnimationTrack<f64>>,
-    /// Animation tracks for audio track properties.
-    ///
-    /// Key format: `"audio_{track_index}_{property}"`, e.g. `"audio_1_volume"`.
-    ///
-    /// Supported properties: `volume`, `pan`.
-    pub(crate) audio_animations: HashMap<String, AnimationTrack<f64>>,
     /// Optional `lavfi` filtergraph string composited as the topmost video layer.
     ///
     /// When set, a [`VideoLayer`] whose source is
@@ -183,10 +171,10 @@ impl Timeline {
     /// Renders the timeline to an output file, invoking `on_progress` after
     /// each encoded video frame.
     ///
-    /// Animation tracks registered via [`TimelineBuilder::video_animation`] and
-    /// [`TimelineBuilder::audio_animation`] are forwarded to the corresponding
+    /// Track-level automation (see [`Track::automation`](crate::Track::automation),
+    /// set via [`TimelineBuilder::video_animation`] / [`TimelineBuilder::audio_animation`])
+    /// is forwarded to the corresponding
     /// [`VideoLayer`] / [`AudioTrack`](ff_filter::AudioTrack) fields before the filter graphs are built.
-    /// Unrecognised animation keys are ignored and logged as `warn!`.
     ///
     /// `on_progress` receives a [`Progress`] reference after every video frame.
     /// Returning `false` cancels the render and returns
@@ -251,8 +239,6 @@ impl Timeline {
             next_marker_id: _,
             next_group_id: _,
             markers: _,
-            video_animations,
-            audio_animations,
             lavfi_overlay,
             audio_filter,
         } = self;
@@ -299,32 +285,7 @@ impl Timeline {
             }
         }
 
-        // 2. Warn on unrecognised animation keys.
-        let valid_video_props = ["x", "y", "scale_x", "scale_y", "rotation", "opacity"];
-        for key in video_animations.keys() {
-            let parts: Vec<&str> = key.splitn(3, '_').collect();
-            let ok = parts.len() == 3
-                && parts[0] == "video"
-                && parts[1].parse::<usize>().is_ok()
-                && valid_video_props.contains(&parts[2]);
-            if !ok {
-                log::warn!("unknown animation key key={key}");
-            }
-        }
-
-        let valid_audio_props = ["volume", "pan"];
-        for key in audio_animations.keys() {
-            let parts: Vec<&str> = key.splitn(3, '_').collect();
-            let ok = parts.len() == 3
-                && parts[0] == "audio"
-                && parts[1].parse::<usize>().is_ok()
-                && valid_audio_props.contains(&parts[2]);
-            if !ok {
-                log::warn!("unknown animation key key={key}");
-            }
-        }
-
-        // 3. Build video composition graph.
+        // 2. Build video composition graph.
         let mut video_graph = None;
         if !video_tracks.is_empty() {
             // Per-track end-offset (seconds) of the last clip, used to compute
@@ -338,7 +299,8 @@ impl Timeline {
                 MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
             // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in
             // this list) contribute no layers. The enumerate index is preserved so
-            // the timeline animation keys (`video_{idx}_*`) still line up.
+            // the per-track cross-fade offset bookkeeping (`prev_end_by_track`)
+            // stays aligned; track-level automation now lives on the track itself.
             for (track_idx, track) in video_tracks.iter().enumerate() {
                 if !track.is_active(any_video_solo) {
                     continue;
@@ -373,7 +335,7 @@ impl Timeline {
                     composer = composer.add_layer(derive::video_layer(
                         clip,
                         track_idx,
-                        &video_animations,
+                        &track.automation,
                         canvas_width,
                         canvas_height,
                         prev_end,
@@ -437,7 +399,7 @@ impl Timeline {
         if has_audio && !has_track_effects {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
             // Honor mute/solo/enabled: an inactive audio track is silent.
-            for (track_idx, track) in audio_tracks.iter().enumerate() {
+            for track in &audio_tracks {
                 if !track.is_active(any_audio_solo) {
                     continue;
                 }
@@ -449,8 +411,7 @@ impl Timeline {
                     }
                     mixer = mixer.add_track(derive::audio_track(
                         clip,
-                        track_idx,
-                        &audio_animations,
+                        &track.automation,
                         audio_fade_out_eff_dur(clip),
                     ));
                 }
@@ -566,7 +527,7 @@ impl Timeline {
         } else if has_track_effects {
             // Per-track path: each track's audio is sub-mixed and run through its
             // own push/pull effect graph (so a two-pass step fires), then summed.
-            let mixed = mix_tracks_with_effects(&audio_tracks, any_audio_solo, &audio_animations)?;
+            let mixed = mix_tracks_with_effects(&audio_tracks, any_audio_solo)?;
             // Consume `mixed` by value so each frame drops right after it is pushed
             // downstream, freeing the mix buffer as we go (the master bus keeps its
             // own copy for a two-pass step, so holding `mixed` too would double it).
@@ -645,10 +606,9 @@ fn drain_source_audio(graph: &mut FilterGraph) -> Result<Vec<AudioFrame>, Timeli
 fn mix_tracks_with_effects(
     audio_tracks: &[Track],
     any_audio_solo: bool,
-    audio_animations: &HashMap<String, AnimationTrack<f64>>,
 ) -> Result<Vec<AudioFrame>, TimelineError> {
     let mut track_buffers: Vec<Vec<AudioFrame>> = Vec::new();
-    for (track_idx, track) in audio_tracks.iter().enumerate() {
+    for track in audio_tracks {
         if !track.is_active(any_audio_solo) {
             continue;
         }
@@ -661,8 +621,7 @@ fn mix_tracks_with_effects(
             }
             sub = sub.add_track(derive::audio_track(
                 clip,
-                track_idx,
-                audio_animations,
+                &track.automation,
                 audio_fade_out_eff_dur(clip),
             ));
             has_clip = true;
@@ -747,8 +706,6 @@ pub struct TimelineBuilder {
     frame_rate: Option<f64>,
     video_tracks: Vec<Track>,
     audio_tracks: Vec<Track>,
-    video_animations: HashMap<String, AnimationTrack<f64>>,
-    audio_animations: HashMap<String, AnimationTrack<f64>>,
     /// See [`TimelineBuilder::lavfi_overlay`].
     lavfi_overlay: Option<String>,
     /// See [`TimelineBuilder::audio_filter`].
@@ -770,8 +727,6 @@ impl TimelineBuilder {
             frame_rate: None,
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
-            video_animations: HashMap::new(),
-            audio_animations: HashMap::new(),
             lavfi_overlay: None,
             audio_filter: Vec::new(),
         }
@@ -834,36 +789,48 @@ impl TimelineBuilder {
         }
     }
 
-    /// Registers a video-layer animation track.
+    /// Sets a video-layer animation on the video track at `track_index` (its
+    /// position among the video tracks added so far).
     ///
-    /// Key format: `"video_{track_index}_{property}"`, e.g. `"video_0_opacity"`.
-    ///
-    /// Supported properties: `x`, `y`, `scale_x`, `scale_y`, `rotation`, `opacity`.
-    /// Unrecognised keys are stored but emit `log::warn!` during [`Timeline::render()`].
+    /// The animation is stored on the [`Track`] itself (see
+    /// [`TrackAutomation`](crate::TrackAutomation)), so it stays with that track
+    /// through reordering or removal. Add the video track first; an out-of-range
+    /// `track_index` is ignored with a `log::warn!`.
     #[must_use]
-    pub fn video_animation(self, key: impl Into<String>, track: AnimationTrack<f64>) -> Self {
-        let mut video_animations = self.video_animations;
-        video_animations.insert(key.into(), track);
-        Self {
-            video_animations,
-            ..self
+    pub fn video_animation(
+        mut self,
+        track_index: usize,
+        property: VideoProperty,
+        animation: AnimationTrack<f64>,
+    ) -> Self {
+        if let Some(track) = self.video_tracks.get_mut(track_index) {
+            track.automation.set_video(property, animation);
+        } else {
+            log::warn!("video_animation ignored: no video track at index={track_index}");
         }
+        self
     }
 
-    /// Registers an audio-track animation track.
+    /// Sets an audio-track animation on the audio track at `track_index` (its
+    /// position among the audio tracks added so far).
     ///
-    /// Key format: `"audio_{track_index}_{property}"`, e.g. `"audio_0_volume"`.
-    ///
-    /// Supported properties: `volume`, `pan`.
-    /// Unrecognised keys are stored but emit `log::warn!` during [`Timeline::render()`].
+    /// The animation is stored on the [`Track`] itself (see
+    /// [`TrackAutomation`](crate::TrackAutomation)), so it stays with that track
+    /// through reordering or removal. Add the audio track first; an out-of-range
+    /// `track_index` is ignored with a `log::warn!`.
     #[must_use]
-    pub fn audio_animation(self, key: impl Into<String>, track: AnimationTrack<f64>) -> Self {
-        let mut audio_animations = self.audio_animations;
-        audio_animations.insert(key.into(), track);
-        Self {
-            audio_animations,
-            ..self
+    pub fn audio_animation(
+        mut self,
+        track_index: usize,
+        property: AudioProperty,
+        animation: AnimationTrack<f64>,
+    ) -> Self {
+        if let Some(track) = self.audio_tracks.get_mut(track_index) {
+            track.automation.set_audio(property, animation);
+        } else {
+            log::warn!("audio_animation ignored: no audio track at index={track_index}");
         }
+        self
     }
 
     /// Sets an `FFmpeg` `lavfi` filtergraph string that is composited as the topmost
@@ -950,8 +917,6 @@ impl TimelineBuilder {
             next_marker_id: 1,
             next_group_id: 1,
             markers: Vec::new(),
-            video_animations: self.video_animations,
-            audio_animations: self.audio_animations,
             lavfi_overlay: self.lavfi_overlay,
             audio_filter: self.audio_filter,
         })
@@ -1007,9 +972,8 @@ impl TimelineBuilder {
 #[cfg(feature = "preview")]
 fn video_placement(
     clip: &Clip,
-    track_idx: usize,
     is_base: bool,
-    animations: &HashMap<String, AnimationTrack<f64>>,
+    automation: &crate::track::TrackAutomation,
     canvas_width: u32,
     canvas_height: u32,
 ) -> ff_preview::ScenePlacement {
@@ -1038,30 +1002,23 @@ fn video_placement(
         // The single derive: preview and export build their video layers from the
         // same `avio::derive`, so the timeline-level animations (scale/rotation and
         // the opacity/x/y track-level fallbacks) reach the preview too.
-        layer: crate::derive::realtime_descriptor(
-            clip,
-            track_idx,
-            animations,
-            canvas_width,
-            canvas_height,
-        ),
+        layer: crate::derive::realtime_descriptor(clip, automation, canvas_width, canvas_height),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
         // V1 clip audio has no dedicated audio-track counterpart in export (which
         // mixes only `audio_tracks`), so its volume is the per-clip merge only.
-        volume: crate::derive::audio_volume(clip, 0, &HashMap::new()),
+        volume: crate::derive::audio_volume(clip, &crate::track::TrackAutomation::default()),
         // The same shared derive as export, so preview pitch matches export.
         pitch: crate::derive::audio_pitch(clip),
     }
 }
 
 /// Projects one audio-only clip into a [`SceneAudioPlacement`](ff_preview::SceneAudioPlacement).
-/// `track_idx` is the audio track index; `animations` the timeline `audio_animations`.
+/// `automation` is the audio track's [`TrackAutomation`](crate::track::TrackAutomation).
 #[cfg(feature = "preview")]
 fn audio_placement(
     clip: &Clip,
-    track_idx: usize,
-    animations: &HashMap<String, AnimationTrack<f64>>,
+    automation: &crate::track::TrackAutomation,
 ) -> ff_preview::SceneAudioPlacement {
     ff_preview::SceneAudioPlacement {
         source: clip
@@ -1074,9 +1031,9 @@ fn audio_placement(
         speed: clip.speed.max(0.01),
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
-        // The single derive: the volume 3-way merge (incl. the timeline
-        // `audio_{idx}_volume` automation) reaches preview, matching export.
-        volume: crate::derive::audio_volume(clip, track_idx, animations),
+        // The single derive: the volume 3-way merge (incl. the track-level
+        // `volume` automation) reaches preview, matching export.
+        volume: crate::derive::audio_volume(clip, automation),
         // The same shared derive as export, so preview pitch matches export.
         pitch: crate::derive::audio_pitch(clip),
     }
@@ -1095,7 +1052,7 @@ impl Timeline {
     pub fn to_scene(&self) -> ff_preview::Scene {
         // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in the
         // list) project no placements, but keep their slot so the base-track
-        // (index 0) rule and the `video_{idx}_*` animation keys stay aligned.
+        // (index 0) rule stays aligned; track-level automation lives on the track.
         let any_video_solo = self.video_tracks.iter().any(|t| t.solo);
         let video_tracks = self
             .video_tracks
@@ -1109,9 +1066,8 @@ impl Timeline {
                         .map(|clip| {
                             video_placement(
                                 clip,
-                                track_idx,
                                 track_idx == 0,
-                                &self.video_animations,
+                                &track.automation,
                                 self.canvas_width,
                                 self.canvas_height,
                             )
@@ -1127,13 +1083,12 @@ impl Timeline {
         let audio_tracks = self
             .audio_tracks
             .iter()
-            .enumerate()
-            .map(|(track_idx, track)| ff_preview::SceneAudioTrack {
+            .map(|track| ff_preview::SceneAudioTrack {
                 placements: if track.is_active(any_audio_solo) {
                     track
                         .clips
                         .iter()
-                        .map(|clip| audio_placement(clip, track_idx, &self.audio_animations))
+                        .map(|clip| audio_placement(clip, &track.automation))
                         .collect()
                 } else {
                     Vec::new()
@@ -1250,15 +1205,18 @@ mod tests {
             .video_track(vec![Clip::new("base.mp4")])
             .video_track(vec![Clip::new("overlay.mp4")])
             .video_animation(
-                "video_1_scale_x",
+                1,
+                VideoProperty::ScaleX,
                 AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
             )
             .video_animation(
-                "video_1_rotation",
+                1,
+                VideoProperty::Rotation,
                 AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 45.0, Easing::Linear)),
             )
             .video_animation(
-                "video_1_opacity",
+                1,
+                VideoProperty::Opacity,
                 AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 1.0, Easing::Linear)),
             )
             .build()
@@ -1326,7 +1284,8 @@ mod tests {
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3").with_speed(2.0)]) // neutral volume
             .audio_animation(
-                "audio_0_volume",
+                0,
+                AudioProperty::Volume,
                 AnimationTrack::new().push(Keyframe::new(Duration::ZERO, -3.0, Easing::Linear)),
             )
             .build()
@@ -1334,7 +1293,7 @@ mod tests {
         let scene = timeline.to_scene();
         let audio = &scene.audio_tracks[0].placements[0];
         assert!((audio.speed - 2.0).abs() < f64::EPSILON);
-        // The neutral clip volume falls back to the timeline `audio_0_volume` automation.
+        // The neutral clip volume falls back to the audio track's `volume` automation.
         assert!(matches!(audio.volume, AnimatedValue::Track(_)));
     }
 
@@ -1555,12 +1514,14 @@ mod tests {
             .canvas(1920, 1080)
             .frame_rate(30.0)
             .video_track(vec![Clip::new("video.mp4")])
-            .video_animation("video_0_opacity", track)
+            .video_animation(0, VideoProperty::Opacity, track)
             .build()
             .unwrap();
 
-        assert_eq!(timeline.video_animations.len(), 1);
-        assert!(timeline.video_animations.contains_key("video_0_opacity"));
+        assert!(
+            timeline.video_tracks[0].automation.opacity.is_some(),
+            "the opacity animation lives on the track"
+        );
     }
 
     #[test]
@@ -1580,11 +1541,131 @@ mod tests {
             .canvas(1920, 1080)
             .frame_rate(30.0)
             .audio_track(vec![Clip::new("audio.mp4")])
-            .audio_animation("audio_0_volume", track)
+            .audio_animation(0, AudioProperty::Volume, track)
             .build()
             .unwrap();
 
-        assert_eq!(timeline.audio_animations.len(), 1);
-        assert!(timeline.audio_animations.contains_key("audio_0_volume"));
+        assert!(
+            timeline.audio_tracks[0].automation.volume.is_some(),
+            "the volume animation lives on the track"
+        );
+    }
+
+    #[test]
+    fn reordering_tracks_should_not_misalign_automation() {
+        use ff_filter::{Easing, Keyframe};
+
+        // Track 0 carries an opacity animation; track 1 does not.
+        let mut timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .video_track(vec![Clip::new("b.mp4")])
+            .video_animation(
+                0,
+                VideoProperty::Opacity,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+
+        // Reorder the two tracks. With index-keyed automation this would misalign;
+        // with on-track automation the animation moves with its track.
+        timeline.video_tracks.swap(0, 1);
+
+        assert!(
+            timeline.video_tracks[1].automation.opacity.is_some(),
+            "the animated track keeps its automation after reordering"
+        );
+        assert!(
+            timeline.video_tracks[0].automation.opacity.is_none(),
+            "the un-animated track gains no automation after reordering"
+        );
+    }
+
+    #[test]
+    fn removing_a_track_should_drop_only_its_automation() {
+        use crate::{Command, apply};
+        use ff_filter::{Easing, Keyframe};
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .video_track(vec![Clip::new("b.mp4")])
+            .video_animation(
+                0,
+                VideoProperty::Opacity,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+            )
+            .video_animation(
+                1,
+                VideoProperty::Rotation,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 45.0, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+
+        let removed = timeline.video_tracks[0].id;
+        let kept_rotation_present = timeline.video_tracks[1].automation.rotation.is_some();
+        let out = apply(&timeline, &Command::RemoveTrack { track: removed }).unwrap();
+
+        assert_eq!(out.video_tracks.len(), 1, "one track removed");
+        assert!(
+            out.video_tracks[0].automation.rotation.is_some() && kept_rotation_present,
+            "the surviving track keeps its own automation"
+        );
+        assert!(
+            out.video_tracks[0].automation.opacity.is_none(),
+            "the removed track's automation is gone (only its automation dropped)"
+        );
+    }
+
+    #[test]
+    fn video_animation_out_of_range_index_should_be_ignored() {
+        use ff_filter::{Easing, Keyframe};
+
+        // Only one video track exists; addressing index 5 must be ignored (a
+        // warn, not a panic) and leave no automation behind.
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .video_animation(
+                5,
+                VideoProperty::Opacity,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+        assert!(
+            timeline.video_tracks[0].automation.opacity.is_none(),
+            "an out-of-range track_index sets no automation"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn track_automation_should_round_trip_through_serde() {
+        use ff_filter::{Easing, Keyframe};
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("a.mp4")])
+            .video_animation(
+                0,
+                VideoProperty::Opacity,
+                AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear)),
+            )
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&timeline).unwrap();
+        let back: Timeline = serde_json::from_str(&json).unwrap();
+        assert!(
+            back.video_tracks[0].automation.opacity.is_some(),
+            "track automation must survive a serde round-trip"
+        );
     }
 }

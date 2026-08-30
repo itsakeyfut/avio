@@ -117,7 +117,7 @@ pub use error::TimelineError;
 pub use ids::{ClipId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
 pub use timeline::{Timeline, TimelineBuilder};
-pub use track::Track;
+pub use track::{AudioProperty, Track, TrackAutomation, VideoProperty};
 pub use validate::TimelineIssue;
 
 // `Timeline::render` takes an `EncoderConfig` and reports `Progress`.

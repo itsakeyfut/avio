@@ -5,10 +5,6 @@
 //! references) before rendering. It is purely informational: it performs no I/O,
 //! never opens source files, and does not block [`Timeline::render`] on its own.
 
-use std::collections::HashMap;
-
-use ff_filter::AnimationTrack;
-
 use crate::clip::Clip;
 use crate::edit::clip_footprint;
 use crate::ids::{ClipId, TrackId};
@@ -17,7 +13,7 @@ use crate::track::Track;
 
 /// A single problem found by [`Timeline::validate`].
 ///
-/// Each variant names the offending [`ClipId`] / [`TrackId`] (or animation key)
+/// Each variant names the offending [`ClipId`] / [`TrackId`]
 /// and the cause. This is informational, not an error: a timeline may render even
 /// with issues present.
 #[non_exhaustive]
@@ -61,12 +57,6 @@ pub enum TimelineIssue {
         /// The offending clip.
         clip: ClipId,
     },
-    /// An animation-map key is malformed, or targets a track index that does not
-    /// exist (so the animation reaches no layer).
-    UnknownAnimationKey {
-        /// The offending key.
-        key: String,
-    },
 }
 
 impl Timeline {
@@ -98,20 +88,8 @@ impl Timeline {
         for track in self.video_tracks.iter().chain(self.audio_tracks.iter()) {
             check_track(track, &mut issues);
         }
-        check_animation_keys(
-            "video",
-            &self.video_animations,
-            self.video_tracks.len(),
-            &["x", "y", "scale_x", "scale_y", "rotation", "opacity"],
-            &mut issues,
-        );
-        check_animation_keys(
-            "audio",
-            &self.audio_animations,
-            self.audio_tracks.len(),
-            &["volume", "pan"],
-            &mut issues,
-        );
+        // Track-level automation is typed and lives on the track itself, so it can
+        // no longer target a non-existent track or use a malformed key.
         issues
     }
 }
@@ -179,34 +157,12 @@ fn check_overlaps(track: &Track, issues: &mut Vec<TimelineIssue>) {
     }
 }
 
-/// Flags animation keys that do not match `{prefix}_{track_index}_{property}`, or
-/// whose track index is out of range for the current track count.
-fn check_animation_keys(
-    prefix: &str,
-    animations: &HashMap<String, AnimationTrack<f64>>,
-    track_count: usize,
-    valid_props: &[&str],
-    issues: &mut Vec<TimelineIssue>,
-) {
-    for key in animations.keys() {
-        let parts: Vec<&str> = key.splitn(3, '_').collect();
-        let idx = parts.get(1).and_then(|p| p.parse::<usize>().ok());
-        let ok = parts.len() == 3
-            && parts[0] == prefix
-            && idx.is_some_and(|i| i < track_count)
-            && valid_props.contains(&parts[2]);
-        if !ok {
-            issues.push(TimelineIssue::UnknownAnimationKey { key: key.clone() });
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::time::Duration;
 
-    use ff_filter::{AnimationTrack, XfadeTransition};
+    use ff_filter::XfadeTransition;
     use ff_format::Color;
 
     use super::*;
@@ -358,32 +314,6 @@ mod tests {
             track: t.video_tracks()[0].id,
             clip: id,
         }));
-    }
-
-    #[test]
-    fn validate_should_detect_unknown_animation_key() {
-        // "bogus" is malformed; "video_9_x" targets a non-existent track index.
-        let t = base(vec![
-            Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
-        ])
-        .video_animation("bogus", AnimationTrack::new())
-        .video_animation("video_9_x", AnimationTrack::new())
-        .video_animation("video_0_x", AnimationTrack::new()) // valid
-        .build()
-        .unwrap();
-        let issues = t.validate();
-        assert!(issues.contains(&TimelineIssue::UnknownAnimationKey {
-            key: "bogus".into()
-        }));
-        assert!(issues.contains(&TimelineIssue::UnknownAnimationKey {
-            key: "video_9_x".into()
-        }));
-        assert!(
-            !issues.contains(&TimelineIssue::UnknownAnimationKey {
-                key: "video_0_x".into()
-            }),
-            "a valid, in-range key is not flagged"
-        );
     }
 
     #[test]

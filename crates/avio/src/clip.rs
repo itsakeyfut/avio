@@ -530,13 +530,13 @@ impl Clip {
     #[must_use]
     pub fn realtime_layer_descriptor(&self) -> RealtimeLayerDescriptor {
         // One code path: the per-clip descriptor is the shared derive with no
-        // timeline-level animations (track index 0, empty map) — so a per-clip
+        // track-level automation (an empty `TrackAutomation`) — so a per-clip
         // keyframe or static value still applies, and the shape matches the export
         // `VideoLayer`.
         // No timeline canvas here, so `fit` is not applied (the derive skips the
         // framing step for a zero canvas); a canvas-aware descriptor comes from
         // `Timeline::to_scene`.
-        crate::derive::realtime_descriptor(self, 0, &std::collections::HashMap::new(), 0, 0)
+        crate::derive::realtime_descriptor(self, &crate::track::TrackAutomation::default(), 0, 0)
     }
 
     /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
