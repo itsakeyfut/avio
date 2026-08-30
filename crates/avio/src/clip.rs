@@ -141,6 +141,15 @@ pub struct Clip {
     /// **timeline-global** time. Takes precedence over the static
     /// [`pitch`](Self::pitch) when set. Defaults to `None`.
     pub pitch_track: Option<AnimationTrack<f64>>,
+    /// Per-clip stereo **pan** position applied during audio mixing: `-1.0` is full
+    /// left, `+1.0` is full right, `0.0` is center.
+    ///
+    /// This value is independent of any track-level pan automation. When non-zero
+    /// the clip's own pan overrides the track-level value; set to `0.0` to defer to
+    /// the track level. Values outside `[-1.0, 1.0]` are clamped by [`pan`](Self::pan).
+    ///
+    /// Defaults to `0.0` (center).
+    pub pan: f64,
     /// Audio fade-in duration at the start of the clip (`Duration::ZERO` = no fade).
     ///
     /// When non-zero, a linear ramp from silence to the clip's volume level is
@@ -361,6 +370,7 @@ impl Clip {
             volume_track: None,
             pitch: 0.0,
             pitch_track: None,
+            pan: 0.0,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
             brightness: 0.0,
@@ -635,6 +645,28 @@ impl Clip {
     pub fn with_volume_track(self, track: AnimationTrack<f64>) -> Self {
         Self {
             volume_track: Some(track),
+            ..self
+        }
+    }
+
+    /// Sets the per-clip stereo **pan** and returns the updated clip.
+    ///
+    /// `-1.0` is full left, `+1.0` is full right, `0.0` is center. The value is
+    /// clamped to `[-1.0, 1.0]`. When non-zero this overrides the track-level pan
+    /// automation for this clip during mixing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use avio::Clip;
+    ///
+    /// let clip = Clip::new("narration.wav").pan(0.5);
+    /// assert_eq!(clip.pan, 0.5);
+    /// ```
+    #[must_use]
+    pub fn pan(self, pan: f64) -> Self {
+        Self {
+            pan: pan.clamp(-1.0, 1.0),
             ..self
         }
     }
@@ -1114,6 +1146,19 @@ mod tests {
     fn clip_volume_positive_should_set_volume_db() {
         let clip = Clip::new("audio.wav").volume(3.0);
         assert_eq!(clip.volume_db, 3.0);
+    }
+
+    #[test]
+    fn clip_new_should_default_pan_to_center() {
+        let clip = Clip::new("audio.wav");
+        assert_eq!(clip.pan, 0.0);
+    }
+
+    #[test]
+    fn clip_pan_setter_should_clamp() {
+        assert_eq!(Clip::new("audio.wav").pan(2.0).pan, 1.0);
+        assert_eq!(Clip::new("audio.wav").pan(-3.0).pan, -1.0);
+        assert_eq!(Clip::new("audio.wav").pan(0.5).pan, 0.5);
     }
 
     #[test]

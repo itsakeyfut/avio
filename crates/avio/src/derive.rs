@@ -281,6 +281,20 @@ pub(crate) fn audio_volume(clip: &Clip, automation: &TrackAutomation) -> Animate
     }
 }
 
+/// The 3-way-merged audio pan (`-1.0` left .. `+1.0` right): a non-zero static
+/// `Clip.pan` wins, then the track-level `pan` automation, else center (`0.0`).
+/// Mirrors [`audio_volume`] and is shared by the export [`audio_track`] and the
+/// preview projection ([`Timeline::to_scene`](crate::Timeline::to_scene)) so they
+/// cannot diverge.
+#[allow(clippy::float_cmp)]
+pub(crate) fn audio_pan(clip: &Clip, automation: &TrackAutomation) -> AnimatedValue<f64> {
+    if clip.pan != 0.0 {
+        AnimatedValue::Static(clip.pan)
+    } else {
+        track_anim(automation.pan.as_ref(), 0.0)
+    }
+}
+
 /// The per-clip pitch (semitones): a set `pitch_track` evaluated at its `t=0`
 /// value, else the static `Clip.pitch`. Per-sample pitch automation is a deferred
 /// primitive capability (see ADR-0002). Shared by the export [`audio_track`] and
@@ -379,7 +393,7 @@ pub(crate) fn audio_track(
     AudioTrack {
         source: source_path,
         volume,
-        pan: track_anim(automation.pan.as_ref(), 0.0),
+        pan: audio_pan(clip, automation),
         effects,
         sample_rate: 48_000,
         channel_layout: ChannelLayout::Stereo,
@@ -785,6 +799,54 @@ mod tests {
         assert!(matches!(
             audio_volume(&clip, &automation),
             AnimatedValue::Static(x) if (x + 6.0).abs() < 1e-9
+        ));
+    }
+
+    // audio_pan (shared 3-way merge)
+
+    #[test]
+    fn audio_pan_should_prefer_static_clip_pan() {
+        // A non-zero static clip pan wins over the track-level pan animation.
+        let automation = TrackAutomation {
+            pan: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                -0.5,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
+        let clip = Clip::new("a.mp3").pan(0.8);
+        assert!(matches!(
+            audio_pan(&clip, &automation),
+            AnimatedValue::Static(x) if (x - 0.8).abs() < 1e-9
+        ));
+    }
+
+    #[test]
+    fn audio_pan_should_fall_back_to_track_animation() {
+        let automation = TrackAutomation {
+            pan: Some(AnimationTrack::new().push(Keyframe::new(
+                Duration::ZERO,
+                0.5,
+                Easing::Linear,
+            ))),
+            ..Default::default()
+        };
+        let clip = Clip::new("a.mp3"); // center pan, no clip pan
+        assert!(matches!(
+            audio_pan(&clip, &automation),
+            AnimatedValue::Track(_)
+        ));
+    }
+
+    #[test]
+    fn audio_track_should_apply_clip_pan() {
+        // A clip pan reaches the mixer struct's `pan` field (previously discarded).
+        let clip = Clip::new("a.mp3").pan(0.8);
+        let track = audio_track(&clip, &no_anim(), None);
+        assert!(matches!(
+            track.pan,
+            AnimatedValue::Static(x) if (x - 0.8).abs() < 1e-9
         ));
     }
 
