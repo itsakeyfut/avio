@@ -7,17 +7,116 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ff_filter::{AnimatedValue, LavfiSource, RealtimeLayerDescriptor, XfadeTransition};
-use ff_format::VideoFrame;
+use ff_format::{Rational, Timestamp, VideoFrame};
 
 use crate::audio::AudioTrackHandle;
+use crate::error::PreviewError;
 use crate::playback::SwsRgbaConverter;
-use crate::playback::decode_buffer::DecodeBuffer;
+use crate::playback::decode_buffer::{DecodeBuffer, FrameResult};
 
 use super::audio_resampling::spawn_audio_track_thread;
+
+// ClipVideoSource
+
+/// The per-clip video source the runner pulls frames from: a decoded media file,
+/// or a **held** constant frame for a generated (solid/text) source.
+///
+/// A generated source renders the *same* pixels for its whole timeline span (a solid
+/// fill, or static drawtext), so the pixels are pulled once at open (via `ff-filter`'s
+/// `SolidSource` / `TextSource`) and held. But the runner drives clip progression off
+/// each frame's own PTS (out-point / due-frame checks in `runner.rs` and
+/// `sync_overlays`), so a fixed PTS would stall the timeline (V1) or spin forever
+/// (overlays). The held source therefore stamps each returned frame with a synthetic,
+/// monotonically advancing PTS (stepped by `1/fps`), and `seek` resets that cursor —
+/// exactly the PTS behaviour of a real decoding source. The enum mirrors the subset of
+/// the [`DecodeBuffer`] surface the runner uses, so the compositing loop is unchanged.
+pub(super) enum ClipVideoSource {
+    /// A decoding media file.
+    File(DecodeBuffer),
+    /// A generated source: the constant pixels (`None` when the generator was
+    /// unavailable — e.g. the `color`/`drawtext` filters are missing — so it renders
+    /// nothing rather than failing `open`), plus the synthetic-PTS cursor and step.
+    Held {
+        frame: Option<VideoFrame>,
+        next_pts: Duration,
+        step: Duration,
+    },
+}
+
+/// Microsecond time base for the synthetic held-frame PTS (matching the runner's
+/// own frame stamping).
+fn micros_timestamp(pts: Duration) -> Timestamp {
+    Timestamp::from_duration(pts, Rational::new(1, 1_000_000))
+}
+
+impl ClipVideoSource {
+    /// Builds a held generated source that stamps frames at `1/fps` starting from
+    /// `start_pts` (the clip's `in_point`).
+    pub(super) fn held(frame: Option<VideoFrame>, start_pts: Duration, fps: f64) -> Self {
+        Self::Held {
+            frame,
+            next_pts: start_pts,
+            step: Duration::from_secs_f64(1.0 / fps.max(1.0)),
+        }
+    }
+
+    /// Next frame. A `Held` source returns its constant pixels stamped with the next
+    /// synthetic PTS (so the runner's PTS-driven progression advances), or `Eof` when
+    /// it has no frame.
+    pub(super) fn pop_frame(&mut self) -> FrameResult {
+        match self {
+            Self::File(buf) => buf.pop_frame(),
+            Self::Held {
+                frame: Some(frame),
+                next_pts,
+                step,
+            } => {
+                let mut out = frame.clone();
+                out.set_timestamp(micros_timestamp(*next_pts));
+                *next_pts = next_pts.saturating_add(*step);
+                FrameResult::Frame(out)
+            }
+            Self::Held { frame: None, .. } => FrameResult::Eof,
+        }
+    }
+
+    /// Seeks a file source; for a held source, resets the synthetic-PTS cursor so the
+    /// next frame is stamped at `target_pts` (the runner seeks on clip activation).
+    pub(super) fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
+        match self {
+            Self::File(buf) => buf.seek(target_pts),
+            Self::Held { next_pts, .. } => {
+                *next_pts = target_pts;
+                Ok(())
+            }
+        }
+    }
+
+    /// Coarse seek for a file source; resets the held cursor like [`seek`](Self::seek).
+    pub(super) fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
+        match self {
+            Self::File(buf) => buf.seek_coarse(target_pts),
+            Self::Held { next_pts, .. } => {
+                *next_pts = target_pts;
+                Ok(())
+            }
+        }
+    }
+
+    /// The decode error channel for a file source; `None` for a held source (no
+    /// background decode, so no errors).
+    pub(super) fn error_events(&self) -> Option<&Receiver<String>> {
+        match self {
+            Self::File(buf) => Some(buf.error_events()),
+            Self::Held { .. } => None,
+        }
+    }
+}
 
 /// Converts a gain in dB to a linear amplitude multiplier for the mixer.
 #[allow(clippy::cast_possible_truncation)]
@@ -28,9 +127,12 @@ pub(super) fn db_to_linear(db: f64) -> f32 {
 // ClipState
 
 pub(super) struct ClipState {
-    /// Source file path — needed to spawn audio threads on clip transition.
-    pub(super) source: PathBuf,
-    pub(super) decode_buf: DecodeBuffer,
+    /// The clip's video source (file or generated). Used to spawn the audio thread
+    /// on clip transition (only a `File` source has audio) and to detect a source
+    /// change on a positional re-layout.
+    pub(super) source: super::types::SceneSource,
+    /// The clip's video source: a decoding file, or a generated held frame.
+    pub(super) decode_buf: ClipVideoSource,
     /// Global timeline position where this clip starts.
     pub(super) timeline_start: Duration,
     /// Global timeline position where this clip ends.
@@ -304,6 +406,48 @@ mod tests {
         );
         assert!((db_to_linear(6.0) - 1.995).abs() < 1e-3, "+6 dB ≈ 1.995");
         assert!(db_to_linear(-120.0) < 1e-5, "very quiet ≈ 0");
+    }
+
+    #[test]
+    fn held_source_should_return_injected_frame_with_advancing_pts() {
+        // #1615 (RK-013 injection): the held-frame routing is deterministic without
+        // FFmpeg. The pixels are constant, but the PTS must advance by 1/fps each pull
+        // (the runner drives clip progression off the frame PTS — a fixed PTS would
+        // stall V1 / spin overlays forever). `seek` resets the cursor.
+        let frame = VideoFrame::from_rgba(2, 3, vec![10u8; 2 * 3 * 4]).unwrap();
+        let mut src = ClipVideoSource::held(Some(frame), Duration::ZERO, 30.0);
+
+        let step = Duration::from_secs_f64(1.0 / 30.0);
+        for i in 0..3u32 {
+            let FrameResult::Frame(f) = src.pop_frame() else {
+                panic!("a held source must return its constant frame every pull");
+            };
+            assert_eq!((f.width(), f.height()), (2, 3), "pixels are constant");
+            let want = step * i;
+            let got = f.timestamp().as_duration();
+            assert!(
+                got.abs_diff(want) < Duration::from_micros(1),
+                "held PTS must advance by 1/fps: pull {i} want {want:?} got {got:?}"
+            );
+        }
+
+        // Seek resets the cursor: the next frame is stamped at the seek target.
+        assert!(src.seek(Duration::from_secs(5)).is_ok());
+        let FrameResult::Frame(f) = src.pop_frame() else {
+            panic!("expected a frame after seek");
+        };
+        assert!(
+            f.timestamp().as_duration().abs_diff(Duration::from_secs(5)) < Duration::from_micros(1)
+        );
+        assert!(src.seek_coarse(Duration::from_secs(1)).is_ok());
+        assert!(
+            src.error_events().is_none(),
+            "a held source has no decode error channel"
+        );
+
+        // A held source with no frame (generator unavailable) is end-of-stream.
+        let mut empty = ClipVideoSource::held(None, Duration::ZERO, 30.0);
+        assert!(matches!(empty.pop_frame(), FrameResult::Eof));
     }
 
     #[test]

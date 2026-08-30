@@ -9,10 +9,40 @@
 //! every edit needs no re-probe and behaviour is preserved. An engine derives a
 //! `Scene` from its own editing model; `Scene` is the only input the runner accepts.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ff_filter::{AnimatedValue, RealtimeLayerDescriptor, XfadeTransition};
+use ff_format::{Color, TextSpec};
+
+// SceneSource
+
+/// The video source backing a [`ScenePlacement`]: a decoded media file, or a
+/// generated (solid-colour / text) source rendered without a file — the preview
+/// counterpart of the engine's `ClipSource`. Generated sources are produced by
+/// `ff-filter`'s `SolidSource` / `TextSource` (the same `color` / `drawtext`
+/// filters the export path uses), so preview matches export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneSource {
+    /// A decoded media file at this path.
+    File(PathBuf),
+    /// A solid-colour fill for the whole canvas.
+    Solid(Color),
+    /// A text/title overlay rendered by `drawtext`.
+    Text(TextSpec),
+}
+
+impl SceneSource {
+    /// The file path when this is a [`File`](Self::File) source, else `None`
+    /// (a generated source has no path). Used by the file-only open path.
+    #[must_use]
+    pub fn as_file(&self) -> Option<&Path> {
+        match self {
+            Self::File(path) => Some(path.as_path()),
+            Self::Solid(_) | Self::Text(_) => None,
+        }
+    }
+}
 
 // Scene
 
@@ -52,8 +82,8 @@ pub struct SceneVideoTrack {
 /// clip duration when `out_point` is `None`) is done by the runner at open time.
 #[derive(Debug, Clone)]
 pub struct ScenePlacement {
-    /// Source media path.
-    pub source: PathBuf,
+    /// Video source: a media file, or a generated (solid/text) source.
+    pub source: SceneSource,
     /// Global timeline position where this placement starts.
     pub offset: Duration,
     /// Source-file PTS at which playback starts (`Clip::in_point`, defaulted to zero).

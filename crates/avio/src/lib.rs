@@ -134,7 +134,7 @@ mod player;
 #[cfg(feature = "preview")]
 pub use ff_preview::{
     PlayerHandle, PreviewError, Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement,
-    SceneRunner, SceneVideoTrack,
+    SceneRunner, SceneSource, SceneVideoTrack,
 };
 #[cfg(feature = "preview")]
 pub use player::TimelinePlayer;

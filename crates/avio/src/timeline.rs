@@ -986,12 +986,13 @@ fn video_placement(
     // actual xfade kind; overlays force no transition (matching the compositor).
     let xfade_kind = if is_base { clip.transition } else { None };
     ff_preview::ScenePlacement {
-        // Preview compositing of generated (Text/Solid) sources is deferred; a
-        // non-file clip projects an empty path (the preview runner renders nothing).
-        source: clip
-            .source_path()
-            .map(Path::to_path_buf)
-            .unwrap_or_default(),
+        // File clips decode; generated (Text/Solid) clips are rendered by the runner
+        // via ff-filter's SolidSource/TextSource (the same filters export uses).
+        source: match &clip.source {
+            crate::clip::ClipSource::File(path) => ff_preview::SceneSource::File(path.clone()),
+            crate::clip::ClipSource::Text(spec) => ff_preview::SceneSource::Text(spec.clone()),
+            crate::clip::ClipSource::Solid(color) => ff_preview::SceneSource::Solid(*color),
+        },
         offset: clip.offset,
         in_point: clip.in_point.unwrap_or(Duration::ZERO),
         out_point: clip.out_point,
@@ -1156,7 +1157,9 @@ mod tests {
         assert_eq!(scene.audio_tracks.len(), 1);
 
         let base = &scene.video_tracks[0].placements[0];
-        assert_eq!(base.source.to_str(), Some("a.mp4"));
+        assert!(
+            matches!(&base.source, ff_preview::SceneSource::File(p) if p.to_str() == Some("a.mp4"))
+        );
         assert_eq!(base.offset, Duration::from_millis(500));
         assert_eq!(base.in_point, Duration::from_secs(1));
         assert_eq!(base.out_point, Some(Duration::from_secs(3)));
@@ -1368,6 +1371,39 @@ mod tests {
         assert!(matches!(
             scene.audio_tracks[0].placements[0].pan,
             AnimatedValue::Track(_)
+        ));
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn to_scene_should_project_text_and_solid_as_scene_source() {
+        use ff_format::{Color, TextSpec};
+
+        // #1615: generated (Text/Solid) clips project as SceneSource variants (not an
+        // empty path) so the runner renders them; File clips stay File; timeline order
+        // is preserved.
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("base.mp4"),
+                Clip::text(TextSpec::new("Title")).trim(Duration::ZERO, Duration::from_secs(2)),
+                Clip::solid(Color::rgb(255, 0, 0)).trim(Duration::ZERO, Duration::from_secs(1)),
+            ])
+            .build()
+            .unwrap();
+        let placements = &timeline.to_scene().video_tracks[0].placements;
+        assert!(matches!(
+            &placements[0].source,
+            ff_preview::SceneSource::File(p) if p.to_str() == Some("base.mp4")
+        ));
+        assert!(matches!(
+            &placements[1].source,
+            ff_preview::SceneSource::Text(spec) if spec.text == "Title"
+        ));
+        assert!(matches!(
+            &placements[2].source,
+            ff_preview::SceneSource::Solid(c) if *c == Color::rgb(255, 0, 0)
         ));
     }
 
