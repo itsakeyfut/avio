@@ -116,6 +116,19 @@ impl ClipVideoSource {
             Self::Held { .. } => None,
         }
     }
+
+    /// The dimensions of a generated source's held frame (its rendered size), or
+    /// `None` for a file source or an unavailable generator. Used to detect a canvas
+    /// resize: a held frame is rendered at the canvas size, so stale dimensions mean
+    /// it must be rebuilt (a decoded file is canvas-independent, hence `None`).
+    pub(super) fn held_frame_dims(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Held {
+                frame: Some(frame), ..
+            } => Some((frame.width(), frame.height())),
+            Self::File(_) | Self::Held { frame: None, .. } => None,
+        }
+    }
 }
 
 /// Converts a gain in dB to a linear amplitude multiplier for the mixer.
@@ -448,6 +461,22 @@ mod tests {
         // A held source with no frame (generator unavailable) is end-of-stream.
         let mut empty = ClipVideoSource::held(None, Duration::ZERO, 30.0);
         assert!(matches!(empty.pop_frame(), FrameResult::Eof));
+    }
+
+    #[test]
+    fn held_frame_dims_should_report_held_size_and_none_when_empty() {
+        // #1619: the resize rebuild keys off the held frame's rendered size.
+        let frame = VideoFrame::from_rgba(2, 3, vec![0u8; 2 * 3 * 4]).unwrap();
+        assert_eq!(
+            ClipVideoSource::held(Some(frame), Duration::ZERO, 30.0).held_frame_dims(),
+            Some((2, 3))
+        );
+        // No held frame (generator unavailable) — same arm a `File` source takes — so
+        // it reports `None` and the resize rebuild skips it (a file is canvas-independent).
+        assert_eq!(
+            ClipVideoSource::held(None, Duration::ZERO, 30.0).held_frame_dims(),
+            None
+        );
     }
 
     #[test]
