@@ -18,7 +18,8 @@ use ff_filter::BlendMode;
 use thiserror::Error;
 
 use crate::clip::Clip;
-use crate::ids::{ClipId, GroupId, MarkerId, TrackId, TrackKind};
+use crate::effect::{ClipEffect, EffectKind};
+use crate::ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 use crate::marker::Marker;
 use crate::timeline::Timeline;
 use crate::track::Track;
@@ -226,6 +227,53 @@ pub enum Command {
         /// Frames per second.
         fps: f64,
     },
+    /// Append a typed effect to a clip's ordered effect list (assigned a fresh
+    /// [`EffectId`]). The effect starts enabled.
+    AddEffect {
+        /// Clip to add the effect to.
+        clip: ClipId,
+        /// The typed effect to append.
+        kind: EffectKind,
+    },
+    /// Remove the effect with id `effect` from clip `clip`.
+    RemoveEffect {
+        /// Clip owning the effect.
+        clip: ClipId,
+        /// Effect to remove.
+        effect: EffectId,
+    },
+    /// Replace the [`EffectKind`] of the effect with id `effect` on clip `clip`.
+    ///
+    /// This is how a parameter is set: the host sends the updated typed kind. The
+    /// effect's id, position, and enabled state are preserved.
+    SetEffectKind {
+        /// Clip owning the effect.
+        clip: ClipId,
+        /// Effect to update.
+        effect: EffectId,
+        /// The replacement kind (carrying the new parameters).
+        kind: EffectKind,
+    },
+    /// Enable or disable the effect with id `effect` on clip `clip`. A disabled
+    /// effect is kept in the list (position and parameters preserved) but skipped
+    /// during derivation.
+    SetEffectEnabled {
+        /// Clip owning the effect.
+        clip: ClipId,
+        /// Effect to toggle.
+        effect: EffectId,
+        /// New enabled state.
+        enabled: bool,
+    },
+    /// Reorder a clip's effects. `order` must be a permutation of the clip's
+    /// current effect ids (same set, no additions or omissions); otherwise the
+    /// command fails with [`EditError::EffectNotFound`] and changes nothing.
+    ReorderEffects {
+        /// Clip whose effects are reordered.
+        clip: ClipId,
+        /// The effect ids in their new order.
+        order: Vec<EffectId>,
+    },
     /// Apply several commands as one atomic edit (and, through [`Editor`](crate::Editor),
     /// one undo step).
     ///
@@ -256,6 +304,16 @@ pub enum EditError {
     MarkerNotFound {
         /// The id that resolved to no marker.
         id: MarkerId,
+    },
+    /// An effect command named an effect id that clip `clip` does not carry (also
+    /// used when a [`Command::ReorderEffects`] `order` is not a permutation of the
+    /// clip's current effect ids).
+    #[error("no effect with id {id:?} on clip {clip:?}")]
+    EffectNotFound {
+        /// The clip that was searched.
+        clip: ClipId,
+        /// The effect id that resolved to no effect.
+        id: EffectId,
     },
     /// A [`Command::SetClip`] value carries an id that names a different clip.
     #[error("clip id mismatch: expected {expected:?}, value has {found:?}")]
@@ -314,6 +372,9 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             // `GroupClips` (an incoming group id would be a stale, document-scoped
             // value, like the clip's own id which is re-stamped above).
             new_clip.group = None;
+            // A caller-built clip may carry effects with UNSET (or stale) ids;
+            // re-stamp them so effect ids stay document-unique and addressable.
+            stamp_effect_ids(&mut new_clip, &mut next.next_effect_id);
             let tr =
                 find_track_mut(&mut next, *track).ok_or(EditError::TrackNotFound { id: *track })?;
             tr.clips.push(new_clip);
@@ -369,15 +430,23 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                     found: value.id,
                 });
             }
-            let target =
-                find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            // Re-stamp the patch's effects before installing it: a caller-built
+            // value may carry effects with UNSET or foreign ids (as with `AddClip`),
+            // so mint fresh document-unique ids to keep them addressable.
+            let mut counter = next.next_effect_id;
             let mut new_value = (**value).clone();
             new_value.id = *clip; // preserve identity
+            stamp_effect_ids(&mut new_value, &mut counter);
+            let target =
+                find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
             *target = new_value;
+            next.next_effect_id = counter;
         }
         Command::SplitClip { clip, at } => {
-            // Reserve a fresh id for the right half before borrowing the tracks.
+            // Reserve a fresh clip id and copy the effect counter out before
+            // borrowing the tracks (the counter is written back after the borrow).
             let right_id = ClipId::from_raw(next.next_clip_id);
+            let mut effect_counter = next.next_effect_id;
             let (clips, idx) = find_clip_track_mut(&mut next, *clip)
                 .ok_or(EditError::ClipNotFound { id: *clip })?;
             let (left, mut right) =
@@ -386,9 +455,13 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                     at: *at,
                 })?;
             right.id = right_id;
+            // The right half is a fresh clip; its cloned effects must get fresh ids
+            // (the left half keeps the original clip and its effect ids).
+            stamp_effect_ids(&mut right, &mut effect_counter);
             clips[idx] = left;
             clips.insert(idx + 1, right);
             next.next_clip_id += 1;
+            next.next_effect_id = effect_counter;
         }
         Command::MoveClipToTrack { clip, to, offset } => {
             // Verify the destination exists before removing the clip, so a bad
@@ -528,6 +601,77 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             }
             next.frame_rate = *fps;
         }
+        Command::AddEffect { clip, kind } => {
+            // Reserve a fresh id before the mutable clip borrow (as `AddClip` does).
+            let id = EffectId::from_raw(next.next_effect_id);
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            c.effects.push(ClipEffect {
+                id,
+                enabled: true,
+                kind: kind.clone(),
+            });
+            next.next_effect_id += 1;
+        }
+        Command::RemoveEffect { clip, effect } => {
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let idx = c.effects.iter().position(|e| e.id == *effect).ok_or(
+                EditError::EffectNotFound {
+                    clip: *clip,
+                    id: *effect,
+                },
+            )?;
+            c.effects.remove(idx);
+        }
+        Command::SetEffectKind { clip, effect, kind } => {
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let e = c.effects.iter_mut().find(|e| e.id == *effect).ok_or(
+                EditError::EffectNotFound {
+                    clip: *clip,
+                    id: *effect,
+                },
+            )?;
+            e.kind = kind.clone();
+        }
+        Command::SetEffectEnabled {
+            clip,
+            effect,
+            enabled,
+        } => {
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let e = c.effects.iter_mut().find(|e| e.id == *effect).ok_or(
+                EditError::EffectNotFound {
+                    clip: *clip,
+                    id: *effect,
+                },
+            )?;
+            e.enabled = *enabled;
+        }
+        Command::ReorderEffects { clip, order } => {
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            // `order` must be a permutation of the current effect ids. Draining the
+            // taken list as we consume `order` rejects unknown ids and duplicates
+            // (a second reference finds nothing left); a non-empty remainder means
+            // `order` omitted some effect. Any failure returns before assigning, so
+            // the discarded `next` leaves the input timeline unchanged.
+            let mut remaining = std::mem::take(&mut c.effects);
+            let mut reordered = Vec::with_capacity(order.len());
+            for id in order {
+                let pos = remaining.iter().position(|e| e.id == *id).ok_or(
+                    EditError::EffectNotFound {
+                        clip: *clip,
+                        id: *id,
+                    },
+                )?;
+                reordered.push(remaining.remove(pos));
+            }
+            if let Some(leftover) = remaining.first() {
+                return Err(EditError::EffectNotFound {
+                    clip: *clip,
+                    id: leftover.id,
+                });
+            }
+            c.effects = reordered;
+        }
         Command::Batch(commands) => {
             // Apply each sub-command to the accumulating timeline. On failure `?`
             // returns and `next` is dropped, so the input timeline is unchanged
@@ -538,6 +682,17 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
         }
     }
     Ok(next)
+}
+
+/// Stamps fresh, never-reused document ids onto a clip's effects, advancing
+/// `next_id`. Used when a clip enters the document (`AddClip`) or a fresh clip is
+/// created from an existing one (`SplitClip`'s right half), so effect ids stay
+/// document-unique even for caller-built or cloned effects.
+fn stamp_effect_ids(clip: &mut Clip, next_id: &mut u64) {
+    for effect in &mut clip.effects {
+        effect.id = EffectId::from_raw(*next_id);
+        *next_id += 1;
+    }
 }
 
 fn tracks_mut(timeline: &mut Timeline, kind: TrackKind) -> &mut Vec<Track> {
@@ -1226,7 +1381,7 @@ mod tests {
         // A wholesale patch: a different source and several fields at once, none of
         // which have a dedicated `ClipProperty` command.
         let mut patch = Clip::new("patched.mp4");
-        patch.brightness = 0.5;
+        patch.scale = 1.5;
         patch.fade_in = Duration::from_secs(1);
         patch.speed = 2.0;
         let out = apply(
@@ -1242,7 +1397,7 @@ mod tests {
             c.source_path().and_then(std::path::Path::to_str),
             Some("patched.mp4")
         );
-        assert!((c.brightness - 0.5).abs() < f32::EPSILON);
+        assert!((c.scale - 1.5).abs() < f64::EPSILON);
         assert_eq!(c.fade_in, Duration::from_secs(1));
         assert!((c.speed - 2.0).abs() < f64::EPSILON);
         assert_eq!(c.id, id, "SetClip preserves the clip id");
@@ -1383,7 +1538,7 @@ mod tests {
     #[test]
     fn apply_split_clip_should_preserve_properties_on_both_halves() {
         let mut clip = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(10));
-        clip.brightness = 0.5;
+        clip.scale = 1.5;
         clip.volume_db = -6.0;
         let (t, id) = split_setup(clip);
         let out = apply(
@@ -1395,7 +1550,7 @@ mod tests {
         )
         .unwrap();
         for c in &out.video_tracks()[0].clips {
-            assert!((c.brightness - 0.5).abs() < f32::EPSILON);
+            assert!((c.scale - 1.5).abs() < f64::EPSILON);
             assert!((c.volume_db + 6.0).abs() < f64::EPSILON);
         }
     }
@@ -1555,7 +1710,7 @@ mod tests {
     #[test]
     fn apply_move_clip_to_track_should_preserve_id_and_properties() {
         let mut clip = Clip::new("a.mp4");
-        clip.brightness = 0.5;
+        clip.scale = 1.5;
         let t = Timeline::builder()
             .canvas(1920, 1080)
             .frame_rate(30.0)
@@ -1577,7 +1732,7 @@ mod tests {
         assert!(out.video_tracks()[0].clips.is_empty());
         let moved = &out.video_tracks()[1].clips[0];
         assert_eq!(moved.id, clip_id, "the id is preserved across the move");
-        assert!((moved.brightness - 0.5).abs() < f32::EPSILON);
+        assert!((moved.scale - 1.5).abs() < f64::EPSILON);
         assert_eq!(moved.offset, Duration::from_secs(5));
     }
 
@@ -2392,5 +2547,333 @@ mod tests {
             g,
             "the right half inherits the group"
         );
+    }
+
+    // --- typed effect commands (#1458) ---
+
+    fn color_correct(brightness: f64) -> EffectKind {
+        use crate::effect::Param;
+        EffectKind::ColorCorrect {
+            brightness: Param::Const(brightness),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+        }
+    }
+
+    fn blur(radius: f64) -> EffectKind {
+        use crate::effect::Param;
+        EffectKind::Blur {
+            radius: Param::Const(radius),
+        }
+    }
+
+    /// The effect ids on clip `i` of the first video track, in order.
+    fn effect_ids(t: &Timeline, i: usize) -> Vec<EffectId> {
+        t.video_tracks()[0].clips[i]
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect()
+    }
+
+    #[test]
+    fn apply_add_effect_should_append_with_a_fresh_id() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::AddEffect {
+                clip: id,
+                kind: color_correct(0.5),
+            },
+        )
+        .unwrap();
+        let effects = &out.video_tracks()[0].clips[0].effects;
+        assert_eq!(effects.len(), 1);
+        assert!(effects[0].id.is_set(), "the effect gets a document id");
+        assert!(effects[0].enabled);
+        // A second add mints a distinct id and appends after the first.
+        let out2 = apply(
+            &out,
+            &Command::AddEffect {
+                clip: id,
+                kind: blur(3.0),
+            },
+        )
+        .unwrap();
+        let ids = effect_ids(&out2, 0);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "each effect id is unique");
+    }
+
+    #[test]
+    fn apply_add_effect_to_missing_clip_should_err() {
+        let t = timeline_with(1);
+        let err = apply(
+            &t,
+            &Command::AddEffect {
+                clip: ClipId::UNSET,
+                kind: color_correct(0.5),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::ClipNotFound { .. }));
+    }
+
+    #[test]
+    fn apply_remove_effect_should_drop_the_addressed_effect() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::AddEffect {
+                clip: id,
+                kind: color_correct(0.5),
+            },
+        )
+        .unwrap();
+        let eff = effect_ids(&out, 0)[0];
+        let out = apply(
+            &out,
+            &Command::RemoveEffect {
+                clip: id,
+                effect: eff,
+            },
+        )
+        .unwrap();
+        assert!(out.video_tracks()[0].clips[0].effects.is_empty());
+    }
+
+    #[test]
+    fn apply_remove_effect_with_unknown_id_should_err() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let err = apply(
+            &t,
+            &Command::RemoveEffect {
+                clip: id,
+                effect: EffectId::UNSET,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::EffectNotFound { .. }));
+    }
+
+    #[test]
+    fn apply_set_effect_kind_should_replace_params_and_keep_id() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::AddEffect {
+                clip: id,
+                kind: color_correct(0.5),
+            },
+        )
+        .unwrap();
+        let eff = effect_ids(&out, 0)[0];
+        let out = apply(
+            &out,
+            &Command::SetEffectKind {
+                clip: id,
+                effect: eff,
+                kind: blur(2.0),
+            },
+        )
+        .unwrap();
+        let e = &out.video_tracks()[0].clips[0].effects[0];
+        assert_eq!(e.id, eff, "the id is preserved across a kind change");
+        assert!(matches!(e.kind, EffectKind::Blur { .. }));
+    }
+
+    #[test]
+    fn apply_set_effect_enabled_should_toggle_and_drop_from_chain() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::AddEffect {
+                clip: id,
+                kind: color_correct(0.5),
+            },
+        )
+        .unwrap();
+        let eff = effect_ids(&out, 0)[0];
+        // Non-neutral color correction contributes an Eq step while enabled.
+        assert_eq!(out.video_tracks()[0].clips[0].video_effect_chain().len(), 1);
+        let out = apply(
+            &out,
+            &Command::SetEffectEnabled {
+                clip: id,
+                effect: eff,
+                enabled: false,
+            },
+        )
+        .unwrap();
+        let c = &out.video_tracks()[0].clips[0];
+        assert!(!c.effects[0].enabled);
+        assert!(
+            c.video_effect_chain().is_empty(),
+            "a disabled effect is skipped in derivation but kept in the list"
+        );
+    }
+
+    #[test]
+    fn apply_set_clip_should_stamp_effect_ids_on_the_patch() {
+        // A SetClip patch built with `with_color_correction` carries an effect with
+        // an UNSET id; installing it must mint a real, addressable document id.
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let patch = Clip::new("patched.mp4").with_color_correction(0.5, 1.0, 1.0);
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip: id,
+                value: Box::new(patch),
+            },
+        )
+        .unwrap();
+        let effects = &out.video_tracks()[0].clips[0].effects;
+        assert_eq!(effects.len(), 1);
+        assert!(
+            effects[0].id.is_set(),
+            "the patch's effect gets a fresh document id"
+        );
+    }
+
+    #[test]
+    fn apply_add_clip_should_stamp_effect_ids_on_a_caller_built_clip() {
+        // A clip built with `with_color_correction` carries an effect with an UNSET
+        // id; adding it must mint a real, document-unique id so it is addressable.
+        let t = timeline_with(1);
+        let track = track0(&t);
+        let clip = Clip::new("built.mp4").with_color_correction(0.5, 1.0, 1.0);
+        let out = apply(
+            &t,
+            &Command::AddClip {
+                track,
+                clip: Box::new(clip),
+            },
+        )
+        .unwrap();
+        let added = out.video_tracks()[0].clips.last().unwrap();
+        assert_eq!(added.effects.len(), 1);
+        assert!(
+            added.effects[0].id.is_set(),
+            "the caller-built effect gets a document id"
+        );
+    }
+
+    #[test]
+    fn apply_split_clip_should_remint_right_half_effect_ids() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let with_effect = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::TrimClip {
+                    clip: id,
+                    in_point: Some(Duration::ZERO),
+                    out_point: Some(Duration::from_secs(10)),
+                },
+                Command::AddEffect {
+                    clip: id,
+                    kind: color_correct(0.5),
+                },
+            ]),
+        )
+        .unwrap();
+        let left_effect = effect_ids(&with_effect, 0)[0];
+        let out = apply(
+            &with_effect,
+            &Command::SplitClip {
+                clip: id,
+                at: Duration::from_secs(4),
+            },
+        )
+        .unwrap();
+        let clips = &out.video_tracks()[0].clips;
+        assert_eq!(clips.len(), 2);
+        let left = clips[0].effects[0].id;
+        let right = clips[1].effects[0].id;
+        assert_eq!(
+            left, left_effect,
+            "the left half keeps the original effect id"
+        );
+        assert_ne!(
+            left, right,
+            "the right half's cloned effect is re-minted (document-unique)"
+        );
+    }
+
+    #[test]
+    fn apply_reorder_effects_should_apply_a_permutation() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddEffect {
+                    clip: id,
+                    kind: color_correct(0.5),
+                },
+                Command::AddEffect {
+                    clip: id,
+                    kind: blur(3.0),
+                },
+            ]),
+        )
+        .unwrap();
+        let ids = effect_ids(&out, 0);
+        let out = apply(
+            &out,
+            &Command::ReorderEffects {
+                clip: id,
+                order: vec![ids[1], ids[0]],
+            },
+        )
+        .unwrap();
+        assert_eq!(effect_ids(&out, 0), vec![ids[1], ids[0]]);
+    }
+
+    #[test]
+    fn apply_reorder_effects_with_non_permutation_should_err_and_not_change() {
+        let t = timeline_with(1);
+        let id = clip_id(&t, 0);
+        let out = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddEffect {
+                    clip: id,
+                    kind: color_correct(0.5),
+                },
+                Command::AddEffect {
+                    clip: id,
+                    kind: blur(3.0),
+                },
+            ]),
+        )
+        .unwrap();
+        let ids = effect_ids(&out, 0);
+        // An order that omits one id (not a full permutation) is rejected.
+        let err = apply(
+            &out,
+            &Command::ReorderEffects {
+                clip: id,
+                order: vec![ids[0]],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::EffectNotFound { .. }));
+        // An order naming an unknown id is rejected too.
+        let err = apply(
+            &out,
+            &Command::ReorderEffects {
+                clip: id,
+                order: vec![ids[0], ids[1], EffectId::UNSET],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::EffectNotFound { .. }));
     }
 }
