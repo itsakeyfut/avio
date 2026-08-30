@@ -148,6 +148,28 @@ impl Compositor {
         };
         graph.composite(&self.ctx, layers, self.width, self.height)
     }
+
+    /// Composite `layers` and read the result back to a dense `rgba` buffer
+    /// (`width * height * 4` bytes, `Rgba8Unorm`), returning `(rgba, width, height)`.
+    ///
+    /// A convenience over [`composite`](Self::composite) for callers that need the
+    /// pixels on the CPU (e.g. handing a frame to an encoder or a CPU frame sink).
+    /// Prefer [`composite`](Self::composite) plus the zero-copy display path when a
+    /// GPU-resident texture is enough.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError`](crate::error::RenderError) on composite failure or if
+    /// the GPU-to-CPU readback fails.
+    pub fn composite_to_rgba(
+        &mut self,
+        layers: &mut [FrameLayer],
+    ) -> Result<(Vec<u8>, u32, u32), crate::error::RenderError> {
+        let texture = self.composite(layers)?;
+        let rgba =
+            compositor_inner::read_texture_rgba(&self.ctx, &texture, self.width, self.height)?;
+        Ok((rgba, self.width, self.height))
+    }
 }
 
 #[cfg(test)]

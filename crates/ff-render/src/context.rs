@@ -54,6 +54,19 @@ impl RenderContext {
         Self::init_with_backend(wgpu::Backends::all()).await
     }
 
+    /// Blocking wrapper over [`init`](Self::init) for synchronous callers.
+    ///
+    /// The preview runner and the export path are synchronous, so the block-on
+    /// executor is kept here in the GPU crate; callers stay executor-agnostic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::DeviceCreation`] if no suitable adapter is found or
+    /// the device request fails.
+    pub fn init_blocking() -> Result<Self, RenderError> {
+        futures::executor::block_on(Self::init())
+    }
+
     /// Initialise wgpu with an explicit backend set.
     ///
     /// Useful in CI where only `wgpu::Backends::GL` may be available.

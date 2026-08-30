@@ -45,11 +45,55 @@ impl TimelinePlayer {
     /// clip's source, opens a decode buffer per V1 clip, and builds the audio
     /// mixer.
     ///
+    /// With the `gpu` feature, the runner composites on the GPU by default when an
+    /// adapter is available, falling back to the CPU compositor automatically when
+    /// it is not (or per frame on unsupported content / a GPU error). Use
+    /// [`open_forcing_cpu`](Self::open_forcing_cpu) to keep the CPU path even when a
+    /// GPU is present.
+    ///
     /// # Errors
     ///
     /// Returns [`PreviewError`] when the scene has no video tracks, a source file
     /// cannot be opened, or a clip cannot be probed.
     pub fn open(timeline: &Timeline) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
-        ScenePlayer::open(&timeline.to_scene())
+        Self::open_inner(timeline, false)
     }
+
+    /// Open `timeline` forcing the CPU compositor even when a GPU adapter is
+    /// available (deterministic playback / testing).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`open`](Self::open).
+    pub fn open_forcing_cpu(
+        timeline: &Timeline,
+    ) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
+        Self::open_inner(timeline, true)
+    }
+
+    fn open_inner(
+        timeline: &Timeline,
+        force_cpu: bool,
+    ) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
+        let (mut runner, handle) = ScenePlayer::open(&timeline.to_scene())?;
+        Self::attach_gpu_compositor(&mut runner, force_cpu);
+        Ok((runner, handle))
+    }
+
+    /// Attaches the GPU compositor when the `gpu` feature is built, an adapter is
+    /// available, and CPU is not forced. A no-op otherwise (the runner uses its
+    /// built-in CPU compositor).
+    #[cfg(feature = "gpu")]
+    fn attach_gpu_compositor(runner: &mut SceneRunner, force_cpu: bool) {
+        if force_cpu {
+            log::info!("preview compositor path=cpu reason=forced");
+            return;
+        }
+        if let Some(gpu) = crate::gpu_preview::GpuPreviewCompositor::new() {
+            runner.set_gpu_compositor(Box::new(gpu));
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn attach_gpu_compositor(_runner: &mut SceneRunner, _force_cpu: bool) {}
 }
