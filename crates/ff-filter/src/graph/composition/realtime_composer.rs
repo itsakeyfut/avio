@@ -352,6 +352,63 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_with_glow_animated_compound_effect_should_build() {
+        // `GlowAnimated` dispatches to the same compound builder (`add_glow_step`) as
+        // `Glow`, using its `Duration::ZERO` values. This drives that dispatch through
+        // `add_and_link_step` for real (the args-only unit test does not). Same
+        // probe-gate as the static Glow test: skip where FFmpeg has no filters.
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        let layer = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::GlowAnimated {
+                threshold: AnimatedValue::Static(0.6),
+                radius: AnimatedValue::Static(4.0),
+                intensity: AnimatedValue::Static(0.5),
+            }],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let mut composer = RealtimeComposer::new(&[layer])
+            .expect("GlowAnimated compound step must dispatch and build once filters exist");
+        let frame = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn base_layer_with_raw_effect_should_build() {
         // #1376: `FilterStep::Raw` (the arbitrary-avfilter escape hatch) must work as a
         // per-layer effect through the realtime (preview) compositor's `add_and_link_step`

@@ -567,6 +567,24 @@ mod tests {
     }
 
     #[test]
+    fn glow_animated_static_should_render_the_zero_time_compound() {
+        use crate::animation::AnimatedValue;
+        let step = FilterStep::GlowAnimated {
+            threshold: AnimatedValue::Static(0.8_f64),
+            radius: AnimatedValue::Static(10.0_f64),
+            intensity: AnimatedValue::Static(0.8_f64),
+        };
+        assert_eq!(step.filter_name(), "split");
+        // Same compound args as the static Glow at these values.
+        let args = step.args();
+        assert!(
+            args.contains("0.8/0") && args.contains("sigma=10"),
+            "{args}"
+        );
+        assert!(args.contains("all_opacity=0.8"), "{args}");
+    }
+
+    #[test]
     fn glow_threshold_above_one_should_be_clamped() {
         let step = FilterStep::Glow {
             threshold: 1.1,
