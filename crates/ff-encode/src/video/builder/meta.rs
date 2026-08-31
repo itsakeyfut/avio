@@ -40,6 +40,20 @@ impl VideoEncoderBuilder {
         self
     }
 
+    /// Relocate the `moov` atom to the front of MP4/MOV output (`movflags=+faststart`).
+    ///
+    /// This makes the file playable via progressive download / streaming before it
+    /// is fully fetched, the standard requirement for web-delivered files. It has no
+    /// effect on non-MP4/MOV containers or on fragmented MP4 (which already streams
+    /// via its own movflags). Because `FFmpeg` relocates the atom by rewriting the
+    /// file at finalize, faststart adds a second pass over the output, so it is not
+    /// free for very large files.
+    #[must_use]
+    pub fn faststart(mut self) -> Self {
+        self.faststart = true;
+        self
+    }
+
     /// Embed a metadata tag in the output container.
     ///
     /// Calls `av_dict_set` on `AVFormatContext->metadata` before the header
@@ -134,6 +148,14 @@ mod tests {
             .video(640, 480, 30.0)
             .two_pass();
         assert!(builder.two_pass);
+    }
+
+    #[test]
+    fn faststart_flag_should_be_stored_in_builder() {
+        let builder = VideoEncoderBuilder::new(PathBuf::from("output.mp4"))
+            .video(640, 480, 30.0)
+            .faststart();
+        assert!(builder.faststart);
     }
 
     #[test]

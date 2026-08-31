@@ -69,6 +69,27 @@ impl OutputContainer {
         }
     }
 
+    /// Guess the container from a file path's extension.
+    ///
+    /// Mirrors [`default_extension`](Self::default_extension) in reverse and is
+    /// case-insensitive. Returns `None` for an unknown or missing extension. The
+    /// `mp4` extension maps to progressive [`Mp4`](Self::Mp4), never fragmented
+    /// [`FMp4`](Self::FMp4), which must be selected explicitly.
+    #[must_use]
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        match ext.as_str() {
+            "mp4" | "m4v" => Some(Self::Mp4),
+            "webm" => Some(Self::WebM),
+            "mkv" => Some(Self::Mkv),
+            "avi" => Some(Self::Avi),
+            "mov" => Some(Self::Mov),
+            "flac" => Some(Self::Flac),
+            "ogg" => Some(Self::Ogg),
+            _ => None,
+        }
+    }
+
     /// Returns `true` if this container is fragmented MP4.
     ///
     /// When `true`, the encoder applies
@@ -77,6 +98,18 @@ impl OutputContainer {
     #[must_use]
     pub const fn is_fragmented(self) -> bool {
         matches!(self, Self::FMp4)
+    }
+
+    /// Returns `true` if this container supports the `+faststart` movflag.
+    ///
+    /// `faststart` (moving the `moov` atom to the front for progressive
+    /// download) is specific to the `mp4`/`mov` muxers, so it applies only to
+    /// [`Mp4`](Self::Mp4) and [`Mov`](Self::Mov). Fragmented MP4
+    /// ([`FMp4`](Self::FMp4)) already streams and uses its own movflags, so it
+    /// is excluded.
+    #[must_use]
+    pub const fn supports_faststart(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mov)
     }
 }
 
@@ -125,5 +158,39 @@ mod tests {
         assert!(OutputContainer::FMp4.is_fragmented());
         assert!(!OutputContainer::Mp4.is_fragmented());
         assert!(!OutputContainer::Mkv.is_fragmented());
+    }
+
+    #[test]
+    fn from_path_should_map_known_extensions_case_insensitively() {
+        use std::path::Path;
+        assert_eq!(
+            OutputContainer::from_path(Path::new("out.mp4")),
+            Some(OutputContainer::Mp4)
+        );
+        // Case-insensitive, and `mp4` is progressive Mp4 (never FMp4).
+        assert_eq!(
+            OutputContainer::from_path(Path::new("OUT.MP4")),
+            Some(OutputContainer::Mp4)
+        );
+        assert_eq!(
+            OutputContainer::from_path(Path::new("clip.mov")),
+            Some(OutputContainer::Mov)
+        );
+        assert_eq!(
+            OutputContainer::from_path(Path::new("clip.mkv")),
+            Some(OutputContainer::Mkv)
+        );
+        assert_eq!(OutputContainer::from_path(Path::new("clip.xyz")), None);
+        assert_eq!(OutputContainer::from_path(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn supports_faststart_should_be_true_for_mp4_and_mov() {
+        assert!(OutputContainer::Mp4.supports_faststart());
+        assert!(OutputContainer::Mov.supports_faststart());
+        // Fragmented MP4 streams already and uses its own movflags.
+        assert!(!OutputContainer::FMp4.supports_faststart());
+        assert!(!OutputContainer::WebM.supports_faststart());
+        assert!(!OutputContainer::Mkv.supports_faststart());
     }
 }

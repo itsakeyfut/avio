@@ -147,6 +147,8 @@ pub(super) struct VideoEncoderConfig {
     /// Binary attachments: (raw data, MIME type, filename).
     pub(super) attachments: Vec<(Vec<u8>, String, String)>,
     pub(super) container: Option<crate::OutputContainer>,
+    /// Relocate the `moov` atom to the front for progressive MP4/MOV playback.
+    pub(super) faststart: bool,
 }
 
 impl VideoEncoderInner {
@@ -260,7 +262,12 @@ impl VideoEncoderInner {
                     })?;
                 }
 
-                Self::apply_movflags(&mut encoder.format_ctx, config.container);
+                Self::apply_movflags(
+                    &mut encoder.format_ctx,
+                    config.container,
+                    &config.path,
+                    config.faststart,
+                );
                 Self::apply_metadata(&mut encoder.format_ctx, &config.metadata);
                 Self::apply_chapters(&mut encoder.format_ctx, &config.chapters);
                 encoder

@@ -36,6 +36,8 @@ mod video;
 ///     .preset(Preset::Medium)
 ///     .build()?;
 /// ```
+// A builder aggregates many independent output toggles; the bool count is inherent.
+#[allow(clippy::struct_excessive_bools)]
 pub struct VideoEncoderBuilder {
     pub(crate) path: PathBuf,
     pub(crate) container: Option<OutputContainer>,
@@ -52,6 +54,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) progress_callback: Option<Box<dyn EncodeProgressCallback>>,
     pub(crate) two_pass: bool,
+    pub(crate) faststart: bool,
     pub(crate) metadata: Vec<(String, String)>,
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
@@ -88,6 +91,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
                 &self.progress_callback.as_ref().map(|_| "<callback>"),
             )
             .field("two_pass", &self.two_pass)
+            .field("faststart", &self.faststart)
             .field("metadata", &self.metadata)
             .field("chapters", &self.chapters)
             .field("subtitle_passthrough", &self.subtitle_passthrough)
@@ -122,6 +126,7 @@ impl VideoEncoderBuilder {
             audio_bitrate: None,
             progress_callback: None,
             two_pass: false,
+            faststart: false,
             metadata: Vec::new(),
             chapters: Vec::new(),
             subtitle_passthrough: None,
@@ -603,6 +608,7 @@ impl VideoEncoder {
             color_primaries: builder.color_primaries,
             attachments: builder.attachments,
             container: builder.container,
+            faststart: builder.faststart,
         };
 
         // Create the inner encoder when at least one of video or audio is
@@ -874,6 +880,7 @@ mod tests {
                 color_primaries: None,
                 attachments: Vec::new(),
                 container: None,
+                faststart: false,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

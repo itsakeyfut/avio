@@ -123,7 +123,12 @@ impl VideoEncoderInner {
             .open_io(&output_path)
             .map_err(|_| EncodeError::CannotCreateFile { path: output_path })?;
 
-        Self::apply_movflags(&mut self.format_ctx, config.container);
+        Self::apply_movflags(
+            &mut self.format_ctx,
+            config.container,
+            &config.path,
+            config.faststart,
+        );
         Self::apply_metadata(&mut self.format_ctx, &config.metadata);
         Self::apply_chapters(&mut self.format_ctx, &config.chapters);
         self.format_ctx
