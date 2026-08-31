@@ -198,6 +198,24 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::UnsharpAnimated {
+                luma_strength,
+                chroma_strength,
+            } = step
+            {
+                let l0 = luma_strength.value_at(Duration::ZERO);
+                let c0 = chroma_strength.value_at(Duration::ZERO);
+                if !(-1.5..=1.5).contains(&l0) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsharp luma_strength {l0} out of range [-1.5, 1.5]"),
+                    });
+                }
+                if !(-1.5..=1.5).contains(&c0) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsharp chroma_strength {c0} out of range [-1.5, 1.5]"),
+                    });
+                }
+            }
             if let FilterStep::EqAnimated {
                 brightness,
                 contrast,

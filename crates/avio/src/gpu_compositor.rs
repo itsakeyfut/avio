@@ -31,7 +31,7 @@ use std::time::Duration;
 use ff_format::VideoFrame;
 use ff_render::{
     ColorGradeNode, Compositor, FrameLayer, GaussianBlurNode, LayerTransform, RenderContext,
-    RenderGraph, ScaleNode,
+    RenderGraph, ScaleNode, SharpenNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -162,6 +162,10 @@ impl GpuCompositor {
                 }
                 // Blur preserves the frame dimensions, so out_w/out_h are unchanged.
                 GpuEffect::Blur { sigma } => graph.push(GaussianBlurNode::new(*sigma)),
+                // Sharpen preserves the frame dimensions too.
+                GpuEffect::Sharpen { radius, strength } => {
+                    graph.push(SharpenNode::new(*radius, *strength))
+                }
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;

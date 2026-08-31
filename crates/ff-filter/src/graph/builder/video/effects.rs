@@ -74,6 +74,30 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Sharpen or blur via unsharp mask with an optionally animated amount.
+    ///
+    /// Unlike [`gblur_animated`](Self::gblur_animated), no animation entry is
+    /// registered: `FFmpeg`'s `unsharp` has no runtime-settable parameter, so on the
+    /// `libavfilter` path the `Duration::ZERO` value renders statically (the GPU
+    /// bridge animates it per frame instead).
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if either
+    /// value evaluates outside `[−1.5, 1.5]` at `Duration::ZERO`.
+    #[must_use]
+    pub fn unsharp_animated(
+        mut self,
+        luma_strength: AnimatedValue<f64>,
+        chroma_strength: AnimatedValue<f64>,
+    ) -> Self {
+        self.steps.push(FilterStep::UnsharpAnimated {
+            luma_strength,
+            chroma_strength,
+        });
+        self
+    }
+
     /// Apply High Quality 3D (`hqdn3d`) noise reduction.
     ///
     /// Typical values: `luma_spatial=4.0`, `chroma_spatial=3.0`,
@@ -513,6 +537,38 @@ mod tests {
                 "reason should mention sigma: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn unsharp_animated_static_value_should_produce_correct_args() {
+        let step = FilterStep::UnsharpAnimated {
+            luma_strength: AnimatedValue::Static(1.0_f64),
+            chroma_strength: AnimatedValue::Static(0.5_f64),
+        };
+        assert_eq!(step.filter_name(), "unsharp");
+        let args = step.args();
+        assert!(
+            args.contains("luma_amount=1") && args.contains("chroma_amount=0.5"),
+            "args must carry the ZERO-time amounts: {args}"
+        );
+        assert!(
+            args.contains("luma_msize_x=5"),
+            "args must set the mask size: {args}"
+        );
+    }
+
+    #[test]
+    fn unsharp_animated_with_luma_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .unsharp_animated(
+                AnimatedValue::Static(2.0_f64),
+                AnimatedValue::Static(0.0_f64),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for luma > 1.5, got {result:?}"
+        );
     }
 
     #[test]

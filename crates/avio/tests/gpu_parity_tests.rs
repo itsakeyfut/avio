@@ -40,6 +40,10 @@ use ff_preview::FrameSink;
 const TOL_PASSTHROUGH_MEAN: f64 = 2.0; // identity passthrough: pixel-exact here
 const TOL_COLOR_GRADE_MEAN: f64 = 20.0; // GPU ColorGradeNode vs FFmpeg `eq`: ~6.6 here
 const TOL_BLUR_MEAN: f64 = 20.0; // GPU GaussianBlurNode vs FFmpeg `gblur`: ~9.0 here (different kernels)
+// GPU SharpenNode (RGB, fixed sigma) vs FFmpeg `unsharp` (luma-only, 5x5): ~0.7 here
+// (effect vs input ~7.9). Grey-calibrated: the test image is achromatic (R=G=B), where
+// an all-RGB node and a luma-only filter coincide; colored edges would diverge more.
+const TOL_SHARPEN_MEAN: f64 = 5.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -254,6 +258,66 @@ fn blur_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_BLUR_MEAN,
         "GPU and CPU blur diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn sharpen_gpu_should_match_cpu_within_tolerance() {
+    // Sharpen parity: GPU SharpenNode (map_scene maps `Unsharp`, luma-only, fixed
+    // sigma) vs the CPU `unsharp` filter (YUV, 5x5). The algorithms differ, so a
+    // loose calibrated tolerance. Double-gated (adapter + filters).
+    //
+    // A *mid-tone* checkerboard (90/160, not 0/255): a pure black/white board is
+    // saturated, so an unsharp overshoot clamps and the effect is a no-op (a vacuous
+    // test). Mid-tone edges have headroom, so sharpening visibly overshoots them and
+    // a GPU that did not sharpen would diverge (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let mut mid = vec![0u8; (w * h * 4) as usize];
+    for (i, px) in mid.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let x = i as u32 % w;
+        let y = i as u32 / w;
+        let v = if (x / 8 + y / 8) % 2 == 0 {
+            90u8
+        } else {
+            160u8
+        };
+        *px = [v, v, v, 255];
+    }
+    let input = mid.clone();
+    let frame = VideoFrame::from_rgba(w, h, mid).unwrap();
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Unsharp {
+            luma_strength: 0.8,
+            chroma_strength: 0.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported sharpen layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "sharpen GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the sharpen must actually change the frame, so a GPU that
+    // silently skipped it would fail here even though the flat regions match the CPU.
+    assert!(
+        effect > 1.0,
+        "the GPU sharpen must visibly alter the mid-tone edges; got {effect}"
+    );
+    assert!(
+        mean <= TOL_SHARPEN_MEAN,
+        "GPU and CPU sharpen diverged beyond tolerance: mean={mean}"
     );
 }
 

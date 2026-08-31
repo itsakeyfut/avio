@@ -59,7 +59,8 @@ impl Param {
 /// A typed effect that a clip can carry. `#[non_exhaustive]`: more kinds are added
 /// over time, so external matchers must include a `_` arm.
 ///
-/// The v1 curated set is [`ColorCorrect`](Self::ColorCorrect) and [`Blur`](Self::Blur).
+/// The v1 curated set is [`ColorCorrect`](Self::ColorCorrect), [`Blur`](Self::Blur),
+/// and [`Sharpen`](Self::Sharpen).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -80,6 +81,17 @@ pub enum EffectKind {
     Blur {
         /// Blur radius (standard deviation). Must be ≥ 0.0.
         radius: Param,
+    },
+    /// Unsharp-mask sharpen (the `unsharp` filter on the CPU path,
+    /// `ff_render::SharpenNode` on the GPU).
+    ///
+    /// A single luma sharpening amount in `[−1.5, 1.5]` (negative blurs). Because
+    /// `FFmpeg`'s `unsharp` has no runtime-settable parameter, an animated `amount`
+    /// animates on the GPU-default path but renders its `t = 0` value on the CPU
+    /// fallback.
+    Sharpen {
+        /// Sharpening amount (luma). Range −1.5..=1.5 (neutral: 0.0).
+        amount: Param,
     },
 }
 
@@ -134,6 +146,20 @@ impl EffectKind {
                 Param::Const(v) => FilterStep::GBlur { sigma: *v as f32 },
                 Param::Animated(_) => FilterStep::GBlurAnimated {
                     sigma: radius.to_animated(),
+                },
+            }),
+            // Sharpen maps to `unsharp` (chroma left neutral): the GPU
+            // `SharpenNode` is a luma-style unsharp mask. An animated amount
+            // becomes `UnsharpAnimated` (which the GPU animates per frame; the CPU
+            // renders its `t = 0` value, `unsharp` having no runtime parameter).
+            EffectKind::Sharpen { amount } => Some(match amount {
+                Param::Const(v) => FilterStep::Unsharp {
+                    luma_strength: *v as f32,
+                    chroma_strength: 0.0,
+                },
+                Param::Animated(_) => FilterStep::UnsharpAnimated {
+                    luma_strength: amount.to_animated(),
+                    chroma_strength: AnimatedValue::Static(0.0),
                 },
             }),
         }
@@ -249,6 +275,34 @@ mod tests {
         assert!(matches!(
             kind.to_filter_step(),
             Some(FilterStep::GBlurAnimated { .. })
+        ));
+    }
+
+    #[test]
+    fn sharpen_const_should_compile_to_unsharp_with_neutral_chroma() {
+        let kind = EffectKind::Sharpen {
+            amount: Param::Const(1.0),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Unsharp {
+                luma_strength,
+                chroma_strength,
+            } => {
+                assert!((luma_strength - 1.0).abs() < 1e-6);
+                assert!((chroma_strength - 0.0).abs() < 1e-6, "chroma stays neutral");
+            }
+            other => panic!("expected Unsharp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sharpen_animated_should_compile_to_unsharp_animated() {
+        let kind = EffectKind::Sharpen {
+            amount: Param::Animated(animated_track()),
+        };
+        assert!(matches!(
+            kind.to_filter_step(),
+            Some(FilterStep::UnsharpAnimated { .. })
         ));
     }
 }

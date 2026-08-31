@@ -301,6 +301,20 @@ pub enum FilterStep {
         /// Chroma (colour) sharpening/blurring amount. Range: −1.5 – 1.5.
         chroma_strength: f32,
     },
+    /// Unsharp mask with an optionally animated luma/chroma amount.
+    ///
+    /// Arguments are evaluated at [`Duration::ZERO`] for the graph build. Unlike
+    /// [`GBlurAnimated`](Self::GBlurAnimated), `FFmpeg`'s `unsharp` exposes **no
+    /// runtime-settable parameter** (verified against the pinned 7.1/8.0 source),
+    /// so it cannot be driven by `send_command` and it has no per-frame expression.
+    /// On the CPU (`libavfilter`) path it therefore renders the `Duration::ZERO`
+    /// value statically; the GPU path animates it by re-evaluating per frame.
+    UnsharpAnimated {
+        /// Luma amount. Evaluated to −1.5 – 1.5 at `Duration::ZERO`.
+        luma_strength: AnimatedValue<f64>,
+        /// Chroma amount. Evaluated to −1.5 – 1.5 at `Duration::ZERO`.
+        chroma_strength: AnimatedValue<f64>,
+    },
     /// High Quality 3D noise reduction (`hqdn3d`).
     ///
     /// Typical values: `luma_spatial=4.0`, `chroma_spatial=3.0`,
@@ -1129,6 +1143,7 @@ impl FilterStep {
             Self::PolygonMatte { .. } => "geq",
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
+            Self::UnsharpAnimated { .. } => "unsharp",
             Self::ScaleAnimated { .. } => "scale",
             Self::RotateAnimated { .. } => "rotate",
             Self::MotionBlur { .. } => "tblend",
@@ -1653,6 +1668,19 @@ impl FilterStep {
             Self::GBlurAnimated { sigma } => {
                 let s0 = sigma.value_at(Duration::ZERO);
                 format!("sigma={s0}")
+            }
+            Self::UnsharpAnimated {
+                luma_strength,
+                chroma_strength,
+            } => {
+                // No `eval=frame` / `send_command`: `unsharp` has no runtime param,
+                // so the CPU path renders the `Duration::ZERO` value statically.
+                let l0 = luma_strength.value_at(Duration::ZERO);
+                let c0 = chroma_strength.value_at(Duration::ZERO);
+                format!(
+                    "luma_msize_x=5:luma_msize_y=5:luma_amount={l0}:\
+                     chroma_msize_x=5:chroma_msize_y=5:chroma_amount={c0}"
+                )
             }
             Self::ScaleAnimated {
                 width,
