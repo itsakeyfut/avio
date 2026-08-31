@@ -3,6 +3,7 @@ pub mod color_grade;
 pub mod composite;
 pub mod crossfade;
 pub mod film_grain;
+pub mod glow;
 pub mod overlay;
 pub mod scale;
 pub mod upload;
@@ -16,6 +17,7 @@ pub use composite::{
 };
 pub use crossfade::CrossfadeNode;
 pub use film_grain::FilmGrainNode;
+pub use glow::GlowNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
 pub use upload::{YuvFormat, YuvUploadNode};
