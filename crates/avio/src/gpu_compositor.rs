@@ -31,8 +31,8 @@ use std::time::Duration;
 use ff_format::VideoFrame;
 use ff_render::{
     ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode, FrameLayer,
-    GaussianBlurNode, GlowNode, HslNode, LayerTransform, RenderContext, RenderGraph, ScaleNode,
-    SharpenNode, VignetteNode,
+    GaussianBlurNode, GlowNode, HslNode, LayerTransform, LutNode, RenderContext, RenderGraph,
+    ScaleNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -217,10 +217,26 @@ impl GpuCompositor {
                     saturation,
                     lightness,
                 } => graph.push(HslNode::new(*hue_shift, *saturation, *lightness)),
+                // Lut preserves the frame dimensions too. A file the LutNode cannot
+                // load (missing, malformed, or an unsupported extension) makes the
+                // whole frame fall back to CPU rather than render wrong output (RK-020).
+                GpuEffect::Lut { path } => graph.push(load_lut(path)?),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
         VideoFrame::from_rgba(out_w, out_h, out).ok()
+    }
+}
+
+/// Loads a `LutNode` from a `.cube` or `.3dl` file, or `None` when the extension is
+/// unsupported or the file cannot be loaded. A `None` makes the layer fall back to
+/// the CPU path (RK-020) rather than render wrong output.
+fn load_lut(path: &str) -> Option<LutNode> {
+    let p = std::path::Path::new(path);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("cube") => LutNode::from_cube(p).ok(),
+        Some(ext) if ext.eq_ignore_ascii_case("3dl") => LutNode::from_3dl(p).ok(),
+        _ => None,
     }
 }
 

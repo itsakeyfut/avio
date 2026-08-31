@@ -75,6 +75,11 @@ const TOL_CURVES_MEAN: f64 = 8.0;
 // Tested on a colour gradient (RK-022) where the hue/saturation shift moves every
 // channel.
 const TOL_HSL_MEAN: f64 = 20.0;
+// LUT: GPU LutNode vs the CPU `lut3d` filter, both trilinear over the same .cube
+// grid, so they agree almost exactly: ~0.27 here (effect vs input ~10, max 1). The
+// RK-005-verified axis order matches FFmpeg's, so a transposition would push the
+// mean to tens. Tested on a colour gradient (RK-022) with a per-channel-shifting LUT.
+const TOL_LUT_MEAN: f64 = 4.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -676,6 +681,73 @@ fn hsl_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_HSL_MEAN,
         "GPU and CPU HSL diverged beyond tolerance: mean={mean}"
+    );
+}
+
+/// Writes a size-`n` `.cube` LUT to a temp file whose grid applies `shift(r,g,b)`
+/// (each output channel in `[0, 1]`), returning the path. Red-fastest order (the
+/// `.cube` convention).
+fn write_cube(n: usize, shift: impl Fn(f32, f32, f32) -> [f32; 3]) -> std::path::PathBuf {
+    let last = (n - 1) as f32;
+    let mut s = format!("LUT_3D_SIZE {n}\n");
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let o = shift(r as f32 / last, g as f32 / last, b as f32 / last);
+                s.push_str(&format!("{} {} {}\n", o[0], o[1], o[2]));
+            }
+        }
+    }
+    let path = std::env::temp_dir().join(format!("avio_parity_{}.cube", std::process::id()));
+    std::fs::write(&path, s).expect("write temp cube");
+    path
+}
+
+#[test]
+fn lut_gpu_should_match_cpu_within_tolerance() {
+    // LUT parity: GPU LutNode (map_scene maps `Lut3d`) vs the CPU `lut3d` filter,
+    // both loading the same .cube and interpolating trilinearly. Double-gated
+    // (adapter + filters). A colour gradient (RK-022) with a per-channel-shifting
+    // LUT; the LUT changes the frame, so a GPU that skipped it would diverge
+    // (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    // A gentle per-channel curve: lift red, keep green, pull blue.
+    let path = write_cube(17, |r, g, b| [(r * 1.1).min(1.0), g, (b * 0.85).max(0.0)]);
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Lut3d {
+            path: path.to_string_lossy().into_owned(),
+        }],
+    );
+    let result = (|| {
+        let mut gpu = GpuCompositor::new()?; // no adapter
+        let cpu = cpu_composite(&layer, &frame, (w, h))?; // filters unavailable
+        let gpu_out = gpu_composite(&mut gpu, &layer, &frame, (w, h))
+            .expect("a supported Lut layer must composite on the GPU");
+        Some((cpu, gpu_out))
+    })();
+    let _ = std::fs::remove_file(&path);
+    let Some((cpu, gpu_out)) = result else {
+        return; // adapter or filters unavailable
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "lut GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the LUT must actually change the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU LUT must visibly change the frame; got {effect}"
+    );
+    assert!(
+        mean <= TOL_LUT_MEAN,
+        "GPU and CPU LUT diverged beyond tolerance: mean={mean}"
     );
 }
 
