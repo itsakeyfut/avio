@@ -395,6 +395,18 @@ mod tests {
         assert_eq!(args, "alls=0:c0s=0:c1s=0:allf=t");
     }
 
+    #[test]
+    fn film_grain_animated_static_should_render_the_zero_time_strength() {
+        use crate::animation::AnimatedValue;
+        let step = FilterStep::FilmGrainAnimated {
+            luma_strength: AnimatedValue::Static(20.0_f64),
+            chroma_strength: AnimatedValue::Static(5.0_f64),
+        };
+        assert_eq!(step.filter_name(), "noise");
+        // Renders the same static args as FilmGrain; the pattern stays temporal.
+        assert_eq!(step.args(), "alls=20:c0s=5:c1s=5:allf=t");
+    }
+
     // lens_profile
 
     #[test]

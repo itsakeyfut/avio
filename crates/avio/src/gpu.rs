@@ -225,6 +225,16 @@ pub enum GpuEffect {
         /// Falloff width. Fixed to `DEFAULT_VIGNETTE_FEATHER`.
         feather: f32,
     },
+    /// `ff_render::FilmGrainNode` (temporal grain).
+    FilmGrain {
+        /// Luma grain amplitude (the `noise` strength mapped to the node's scale).
+        luma_strength: f32,
+        /// Chroma grain amplitude (the `noise` strength mapped to the node's scale).
+        chroma_strength: f32,
+        /// Per-frame seed. Derived from the frame time so the grain varies each frame
+        /// (the CPU path uses the `noise` filter's own `allf=t` temporal seed).
+        frame_index: u32,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -238,6 +248,11 @@ const DEFAULT_SHARPEN_RADIUS: f32 = 1.0;
 /// varies. The parity tolerance absorbs the profile difference.
 const DEFAULT_VIGNETTE_RADIUS: f32 = 0.5;
 const DEFAULT_VIGNETTE_FEATHER: f32 = 0.5;
+
+/// Maps the `noise` filter's `[0, 100]` strength to the GPU [`ff_render::FilmGrainNode`]
+/// grain amplitude. Calibrated so a given strength produces a comparable grain
+/// standard deviation on both paths (the parity test compares that, not pixels).
+const NODE_GRAIN_SCALE: f32 = 0.0042;
 
 /// One layer of a [`GpuScenePlan`]: the transform / blend / opacity the
 /// `ff_render::Compositor` needs, plus the per-layer effect nodes to run before
@@ -481,6 +496,18 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                 })
             }
         }
+        FilterStep::FilmGrain {
+            luma_strength,
+            chroma_strength,
+        } => film_grain_step(*luma_strength, *chroma_strength, t),
+        FilterStep::FilmGrainAnimated {
+            luma_strength,
+            chroma_strength,
+        } => film_grain_step(
+            luma_strength.value_at(t) as f32,
+            chroma_strength.value_at(t) as f32,
+            t,
+        ),
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
@@ -509,6 +536,23 @@ fn map_blend_mode(mode: BlendMode) -> Option<RenderBlendMode> {
         // No ff-render equivalent. `_` is required: `BlendMode` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
         _ => return None,
+    })
+}
+
+/// Classifies a film-grain step: a zero strength is a no-op (`Skip`); otherwise it
+/// maps the `noise` `[0, 100]` strength to the node's amplitude and derives a
+/// per-frame seed from the frame time so the grain varies each frame.
+// `as_millis` fits a u32 for any realistic clip time; the grain only needs the seed
+// to differ between frames, so wrapping is harmless.
+#[allow(clippy::cast_possible_truncation)]
+fn film_grain_step(luma_strength: f32, chroma_strength: f32, t: Duration) -> StepClass {
+    if luma_strength <= 0.0 && chroma_strength <= 0.0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::FilmGrain {
+        luma_strength: luma_strength * NODE_GRAIN_SCALE,
+        chroma_strength: chroma_strength * NODE_GRAIN_SCALE,
+        frame_index: t.as_millis() as u32,
     })
 }
 
@@ -863,6 +907,86 @@ mod tests {
         assert_eq!(
             map_scene(&[layer], (16, 16), Duration::ZERO),
             GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_film_grain_with_per_frame_seed() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::FilmGrain {
+            luma_strength: 20.0,
+            chroma_strength: 5.0,
+        }];
+        // Two distinct frame times must yield distinct grain seeds (no sticking).
+        let plan_a = gpu(map_scene(
+            &[TestLayer {
+                effects: layer.effects.clone(),
+                ..TestLayer::identity()
+            }],
+            (16, 16),
+            Duration::from_millis(0),
+        ));
+        let plan_b = gpu(map_scene(&[layer], (16, 16), Duration::from_millis(100)));
+        let [
+            GpuEffect::FilmGrain {
+                luma_strength,
+                frame_index: fa,
+                ..
+            },
+        ] = plan_a.layers[0].effects.as_slice()
+        else {
+            panic!("film grain must map to a single FilmGrain effect");
+        };
+        let [
+            GpuEffect::FilmGrain {
+                frame_index: fb, ..
+            },
+        ] = plan_b.layers[0].effects.as_slice()
+        else {
+            panic!("film grain must map to a single FilmGrain effect");
+        };
+        assert!(
+            *luma_strength > 0.0,
+            "the noise strength maps to a node amplitude"
+        );
+        assert_ne!(
+            fa, fb,
+            "distinct frame times must give distinct grain seeds"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_skip_zero_strength_film_grain() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::FilmGrain {
+            luma_strength: 0.0,
+            chroma_strength: 0.0,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert!(
+            plan.layers[0].effects.is_empty(),
+            "zero-strength grain is a no-op and is skipped"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_evaluate_animated_film_grain_at_t() {
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 10.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 30.0, Easing::Linear));
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::FilmGrainAnimated {
+            luma_strength: AnimatedValue::Track(track),
+            chroma_strength: AnimatedValue::Static(0.0),
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::from_secs(1)));
+        let [GpuEffect::FilmGrain { luma_strength, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("animated film grain must map to a single FilmGrain effect");
+        };
+        // amount at t=1s is ~20 (noise scale); scaled to the node amplitude.
+        assert!(
+            (luma_strength - 20.0 * NODE_GRAIN_SCALE).abs() < 1e-4,
+            "animated strength at t=1s should be ~20*scale; got {luma_strength}"
         );
     }
 
