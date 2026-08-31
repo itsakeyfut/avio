@@ -14,7 +14,7 @@ pub mod transition;
 pub mod upload;
 pub mod vignette;
 
-pub use blur::{GaussianBlurNode, SharpenNode};
+pub use blur::{GaussianBlurNode, MotionBlurNode, SharpenNode};
 pub use color_grade::ColorGradeNode;
 pub use color_wheels::ColorWheelsNode;
 pub use composite::{

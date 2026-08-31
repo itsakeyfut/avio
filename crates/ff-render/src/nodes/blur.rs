@@ -6,6 +6,8 @@
 //! CPU fallback ([`RenderNodeCpu`]) that uses the same discrete kernel with
 //! clamp-to-edge, so the GPU and CPU paths agree within tolerance.
 
+use std::cell::RefCell;
+
 use super::RenderNodeCpu;
 
 /// Maximum number of 1D kernel taps (matches the shader's fixed loop bound and the
@@ -575,6 +577,238 @@ fn pack_blur_uniforms(direction: [f32; 2], tap_count: u32, weights: &[f32; 16]) 
     b
 }
 
+// MotionBlurNode
+
+/// GPU-native motion blur via exponential-decay accumulation.
+///
+/// Each frame the node blends the current frame with a persistent accumulation of
+/// the previous output: `out = mix(current, prev, prev_weight)`, then keeps `out`
+/// as the next frame's `prev`. `prev_weight` grows with `shutter_angle`
+/// (`0` = no blur, `180` = standard film blur) and `sub_frames` (2–8; more = more
+/// persistence, i.e. a smoother/longer trail). The node is **stateful**: the trail
+/// builds up only across successive `process` / `process_cpu` calls on the *same*
+/// node instance (a fresh node per frame never accumulates).
+pub struct MotionBlurNode {
+    /// Shutter angle in degrees `[0, 360]`. 0 = no blur, 180 = standard film blur.
+    pub shutter_angle: f32,
+    /// Accumulated sub-frame count (clamped to `2..=8`); higher = smoother trail.
+    pub sub_frames: u8,
+    /// Previous output with its `(width, height)`, retained across frames for the
+    /// CPU path. The dimensions reset the accumulation on a size change, matching
+    /// the GPU path (a same-byte-length reshape would otherwise blend garbage).
+    cpu_prev: RefCell<Option<(Vec<u8>, u32, u32)>>,
+    #[cfg(feature = "wgpu")]
+    gpu: RefCell<Option<MotionBlurGpu>>,
+}
+
+impl MotionBlurNode {
+    /// Creates a motion-blur node.
+    #[must_use]
+    pub fn new(shutter_angle: f32, sub_frames: u8) -> Self {
+        Self {
+            shutter_angle,
+            sub_frames,
+            cpu_prev: RefCell::new(None),
+            #[cfg(feature = "wgpu")]
+            gpu: RefCell::new(None),
+        }
+    }
+
+    /// The weight applied to the accumulated `prev` frame. `shutter = 0` yields
+    /// `0` (no blur) for any `sub_frames`; `sub_frames` (clamped `2..=8`) scales the
+    /// retention from `0.5×` (2) to `1.0×` (8) of the shutter fraction.
+    fn prev_weight(&self) -> f32 {
+        let alpha = (self.shutter_angle / 360.0).clamp(0.0, 1.0);
+        let sub = self.sub_frames.clamp(2, 8);
+        let g = 0.5 + 0.5 * (f32::from(sub - 2) / 6.0);
+        (alpha * g).clamp(0.0, 1.0)
+    }
+}
+
+impl RenderNodeCpu for MotionBlurNode {
+    fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32) {
+        let mut prev = self.cpu_prev.borrow_mut();
+        match prev.as_mut() {
+            Some((p, pw, ph)) if *pw == w && *ph == h && p.len() == rgba.len() => {
+                let weight = self.prev_weight();
+                for (cur, prv) in rgba.iter_mut().zip(p.iter()) {
+                    *cur = lerp_u8(f32::from(*cur), f32::from(*prv), weight);
+                }
+                // Reuse the retained buffer's allocation for the new output.
+                p.copy_from_slice(rgba);
+            }
+            // First frame (or a size change): no blur; seed the accumulation.
+            _ => *prev = Some((rgba.to_vec(), w, h)),
+        }
+    }
+}
+
+/// Linear interpolation `a + (b - a) * t`, rounded to the nearest byte.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn lerp_u8(a: f32, b: f32, t: f32) -> u8 {
+    (a + (b - a) * t + 0.5).clamp(0.0, 255.0) as u8
+}
+
+#[cfg(feature = "wgpu")]
+struct MotionBlurGpu {
+    render_pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    uniform_buf: wgpu::Buffer,
+    prev: wgpu::Texture,
+    dims: (u32, u32),
+    initialized: bool,
+}
+
+#[cfg(feature = "wgpu")]
+fn build_motion_blur_gpu(device: &wgpu::Device, w: u32, h: u32) -> MotionBlurGpu {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("MotionBlur shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/motion_blur.wgsl").into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("MotionBlur BGL"),
+        entries: &[
+            texture_entry(0),
+            texture_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let render_pipeline = fullscreen_pipeline(device, &shader, &bgl, "MotionBlur");
+    let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("MotionBlur uniforms"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let prev = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("MotionBlur prev"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    MotionBlurGpu {
+        render_pipeline,
+        bind_group_layout: bgl,
+        uniform_buf,
+        prev,
+        dims: (w, h),
+        initialized: false,
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl super::RenderNode for MotionBlurNode {
+    fn process(
+        &self,
+        inputs: &[&wgpu::Texture],
+        outputs: &[&wgpu::Texture],
+        ctx: &crate::context::RenderContext,
+    ) {
+        let Some(current) = inputs.first() else {
+            log::warn!("MotionBlurNode::process called with no inputs");
+            return;
+        };
+        let Some(output) = outputs.first() else {
+            log::warn!("MotionBlurNode::process called with no outputs");
+            return;
+        };
+        let (w, h) = (current.width(), current.height());
+
+        let mut state = self.gpu.borrow_mut();
+        if state.as_ref().is_none_or(|s| s.dims != (w, h)) {
+            *state = Some(build_motion_blur_gpu(&ctx.device, w, h));
+        }
+        let Some(st) = state.as_mut() else {
+            return; // unreachable: set to `Some` just above
+        };
+
+        // The first frame has no accumulated history, so render the current frame
+        // unblended (weight 0) and seed `prev` from the output below.
+        let weight = if st.initialized {
+            self.prev_weight()
+        } else {
+            0.0
+        };
+        let mut uniform = [0u8; 16];
+        uniform[0..4].copy_from_slice(&weight.to_le_bytes());
+        ctx.queue.write_buffer(&st.uniform_buf, 0, &uniform);
+
+        let cur_view = current.create_view(&wgpu::TextureViewDescriptor::default());
+        let prev_view = st.prev.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MotionBlur BG"),
+            layout: &st.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&cur_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&prev_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: st.uniform_buf.as_entire_binding(),
+                },
+            ],
+        });
+        run_fullscreen(
+            ctx,
+            &st.render_pipeline,
+            &bind_group,
+            &out_view,
+            "MotionBlur pass",
+        );
+
+        // Copy this frame's output into `prev` for the next call.
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("MotionBlur accumulate"),
+            });
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: output,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &st.prev,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        st.initialized = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +927,62 @@ mod tests {
             "sharpen must widen the edge step; before={before} after={after}"
         );
     }
+
+    #[test]
+    fn motion_blur_node_should_be_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<MotionBlurNode>();
+    }
+
+    #[test]
+    fn motion_blur_first_frame_should_be_unchanged() {
+        let node = MotionBlurNode::new(180.0, 4);
+        let original = vec![200u8, 150, 100, 255];
+        let mut rgba = original.clone();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, original, "the first frame has no history, so no blur");
+    }
+
+    #[test]
+    fn motion_blur_shutter_zero_should_be_no_blur() {
+        let node = MotionBlurNode::new(0.0, 4);
+        let mut white = vec![255u8, 255, 255, 255];
+        node.process_cpu(&mut white, 1, 1); // seed prev = white
+        let mut black = vec![0u8, 0, 0, 255];
+        node.process_cpu(&mut black, 1, 1);
+        assert_eq!(
+            &black[0..3],
+            &[0, 0, 0],
+            "shutter=0 keeps only the current frame (no blur)"
+        );
+    }
+
+    #[test]
+    fn motion_blur_should_leave_a_trail() {
+        let node = MotionBlurNode::new(180.0, 4);
+        let mut white = vec![255u8, 255, 255, 255];
+        node.process_cpu(&mut white, 1, 1); // seed prev = white
+        let mut black = vec![0u8, 0, 0, 255];
+        node.process_cpu(&mut black, 1, 1);
+        assert!(
+            black[0] > 0,
+            "the white frame must leave a fading trail on the black frame; got {}",
+            black[0]
+        );
+    }
+
+    #[test]
+    fn motion_blur_sub_frames_out_of_range_should_clamp() {
+        // sub_frames below 2 clamps to 2, above 8 clamps to 8, so their weights
+        // match the boundary values.
+        let below = MotionBlurNode::new(180.0, 1).prev_weight();
+        let at_two = MotionBlurNode::new(180.0, 2).prev_weight();
+        let above = MotionBlurNode::new(180.0, 20).prev_weight();
+        let at_eight = MotionBlurNode::new(180.0, 8).prev_weight();
+        assert!((below - at_two).abs() < 1e-6, "sub_frames<2 clamps to 2");
+        assert!((above - at_eight).abs() < 1e-6, "sub_frames>8 clamps to 8");
+        assert!(at_two < at_eight, "more sub_frames retains more of prev");
+    }
 }
 
 #[cfg(all(test, feature = "wgpu"))]
@@ -788,5 +1078,65 @@ mod gpu_tests {
             after > before,
             "GPU sharpen must widen the edge step; before={before} after={after}"
         );
+    }
+
+    #[test]
+    fn motion_blur_gpu_should_leave_a_trail() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // Accumulate across two process_gpu calls on the SAME graph instance.
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(MotionBlurNode::new(180.0, 4));
+        let white = vec![255u8, 255, 255, 255];
+        let black = vec![0u8, 0, 0, 255];
+        graph
+            .process_gpu(&white, 1, 1)
+            .expect("gpu motion blur frame 1");
+        let out = graph
+            .process_gpu(&black, 1, 1)
+            .expect("gpu motion blur frame 2");
+        assert!(
+            out[0] > 0,
+            "the white frame must leave a trail on the black frame; got {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn motion_blur_gpu_first_frame_should_be_unchanged() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // The first GPU call has no history, so weight is forced to 0: output == input.
+        let frame = vec![200u8, 150, 100, 255];
+        let out = RenderGraph::new(Arc::clone(&ctx))
+            .push(MotionBlurNode::new(180.0, 4))
+            .process_gpu(&frame, 1, 1)
+            .expect("gpu motion blur frame 1");
+        for i in 0..4 {
+            assert!(
+                (i32::from(out[i]) - i32::from(frame[i])).abs() <= 1,
+                "the first GPU frame must be unblended at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_blur_gpu_shutter_zero_should_be_no_blur() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let graph = RenderGraph::new(Arc::clone(&ctx)).push(MotionBlurNode::new(0.0, 4));
+        let white = vec![255u8, 255, 255, 255];
+        let black = vec![0u8, 0, 0, 255];
+        graph
+            .process_gpu(&white, 1, 1)
+            .expect("gpu motion blur frame 1");
+        let out = graph
+            .process_gpu(&black, 1, 1)
+            .expect("gpu motion blur frame 2");
+        for i in 0..3 {
+            assert!(out[i] <= 2, "shutter=0 must keep the current frame at {i}");
+        }
     }
 }
