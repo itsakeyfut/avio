@@ -91,6 +91,10 @@ closed.
 - A clip's effects are expressed as a typed, re-editable parameter model rather than an opaque
   execution chain, so a host can present and edit individual parameters and keyframe them, and effects
   can be enabled/disabled and reordered.
+- Each numeric parameter can carry its own keyframe animation, and a host can introspect an effect's
+  kind, parameters, ranges, and defaults.
+- The typed effect stack round-trips completely through serialization, and the existing `FilterStep`
+  clip effects migrate onto the typed model without changing rendered output.
 
 ### Uniform, identity-keyed automation
 
@@ -101,6 +105,36 @@ closed.
 
 - A saved project round-trips completely: track-level audio effects persist and reload rather than
   deserialising empty.
+
+## Requirements: GPU effect stack
+
+The GPU foundation and the derive-to-ff-render mapping carry a real effect stack, each effect with a
+CPU fallback and GPU/CPU parity within tolerance for the supported set.
+
+- Colour and tone: LUT (3D `.cube`/`.3dl`), curves, HSL, colour wheels (lift/gamma/gain), vignette,
+  film grain, and a typed colour grade (brightness/contrast/saturation/temperature/tint).
+- Blur and detail: Gaussian blur, sharpen, glow, motion blur.
+- Masks and keying: chroma key, luma mask, shape mask (rect/ellipse/polygon).
+- Transitions on the GPU: dissolve (crossfade), wipe, dip-to-colour, on both preview and the export path.
+- Compositing: the full photographic blend-mode set and the Porter-Duff composite operators run on the
+  wgpu compositor, with a reference-image regression suite.
+- The GPU export path handles cross-clip transitions, frame-rate conform, and letterboxing (the cases
+  the v1 bridge gated to CPU), and a GPU-resident sink can deliver a texture without a readback.
+
+Each effect is expressed as a typed clip effect (above), mapped once (shared by preview and export),
+and covered by a per-effect parity test with a calibrated tolerance.
+
+## Requirements: FFmpeg primitive hardening
+
+The `ff-*` primitives gain the escape hatches and I/O plumbing a production engine needs.
+
+- FFmpeg's `av_log` is bridged into the Rust `log` facade.
+- Custom AVIO I/O is driven from Rust `Read`/`Write`/`Seek` callbacks.
+- A bitstream-filter (`av_bsf`) path keeps stream-copy remux correct.
+- Progressive MP4/MOV output can request `+faststart`.
+- Codec private options pass through (`av_opt`), and a string filter-graph escape hatch sits alongside
+  the typed filter API.
+- `unsafe` is confined to `*_inner` modules across `ff-filter` / `ff-stream` / `ff-analysis`.
 
 ---
 
@@ -113,3 +147,8 @@ closed.
   deferred.
 - The GPU foundation (texture pool, multi-pass execution, high-bit-depth format, direct display) is in
   place, unblocking the colour-science and effect-node work in later milestones.
+- The GPU effect stack (colour/tone, blur/detail, masks/keying, transitions, blend modes) renders on
+  the GPU with CPU fallback and per-effect GPU/CPU parity; each effect is a typed, keyframeable clip
+  effect. Advanced colour science (tone mapping, colour-space transform, ACES/Log) stays in v0.20.0.
+- The `ff-*` primitives gain the hardening escape hatches (av_log bridge, custom AVIO, av_bsf,
+  +faststart, av_opt passthrough, string filter hatch, unsafe confinement).
