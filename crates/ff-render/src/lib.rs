@@ -81,7 +81,7 @@ pub use graph::RenderGraph;
 pub use nodes::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, ColorWheelsNode,
     CrossfadeNode, CurvesNode, FilmGrainNode, GaussianBlurNode, GlowNode, HslNode, LumaMaskNode,
-    OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode, SharpenNode,
+    LutNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode, SharpenNode,
     TransformNode, VignetteNode, YuvFormat, YuvUploadNode,
 };
 pub use sink::GpuFrameSink;
