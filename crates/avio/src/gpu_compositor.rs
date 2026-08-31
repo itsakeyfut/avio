@@ -30,8 +30,9 @@ use std::time::Duration;
 
 use ff_format::VideoFrame;
 use ff_render::{
-    ColorGradeNode, ColorWheelsNode, Compositor, FilmGrainNode, FrameLayer, GaussianBlurNode,
-    GlowNode, LayerTransform, RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
+    ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode, FrameLayer,
+    GaussianBlurNode, GlowNode, LayerTransform, RenderContext, RenderGraph, ScaleNode, SharpenNode,
+    VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -197,6 +198,18 @@ impl GpuCompositor {
                     *shadows_lift,
                     *midtones_gamma,
                     *highlights_gain,
+                )),
+                // Curves preserves the frame dimensions too.
+                GpuEffect::Curves {
+                    master,
+                    red,
+                    green,
+                    blue,
+                } => graph.push(CurvesNode::new(
+                    master.clone(),
+                    red.clone(),
+                    green.clone(),
+                    blue.clone(),
                 )),
             };
         }

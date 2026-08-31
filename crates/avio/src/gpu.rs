@@ -254,6 +254,17 @@ pub enum GpuEffect {
         /// Highlights gain (neutral 1.0) per channel `[R, G, B]`.
         highlights_gain: [f32; 3],
     },
+    /// `ff_render::CurvesNode` (per-channel tone curves).
+    Curves {
+        /// Master curve control points `[input, output]` (applied to every channel).
+        master: Vec<[f32; 2]>,
+        /// Red channel curve control points.
+        red: Vec<[f32; 2]>,
+        /// Green channel curve control points.
+        green: Vec<[f32; 2]>,
+        /// Blue channel curve control points.
+        blue: Vec<[f32; 2]>,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -558,6 +569,20 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             };
             let l = at(lift);
             color_wheels_step([l[0] - 1.0, l[1] - 1.0, l[2] - 1.0], at(gamma), at(gain))
+        }
+        // An all-empty set of curves is the identity, so skip it (no-op).
+        FilterStep::Curves { master, r, g, b } => {
+            if master.is_empty() && r.is_empty() && g.is_empty() && b.is_empty() {
+                StepClass::Skip
+            } else {
+                let pts = |c: &[(f32, f32)]| c.iter().map(|&(x, y)| [x, y]).collect::<Vec<_>>();
+                StepClass::Effect(GpuEffect::Curves {
+                    master: pts(master),
+                    red: pts(r),
+                    green: pts(g),
+                    blue: pts(b),
+                })
+            }
         }
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
@@ -1180,6 +1205,39 @@ mod tests {
         assert!(
             plan.layers[0].effects.is_empty(),
             "a neutral three-way corrector is a no-op and is skipped"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_curves_with_array_points() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Curves {
+            master: vec![(0.0, 0.0), (0.5, 0.7), (1.0, 1.0)],
+            r: vec![],
+            g: vec![],
+            b: vec![],
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        let [GpuEffect::Curves { master, red, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("curves must map to a single Curves effect");
+        };
+        assert_eq!(master.as_slice(), [[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]);
+        assert!(red.is_empty(), "an empty per-channel curve stays empty");
+    }
+
+    #[test]
+    fn map_scene_should_skip_empty_curves() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Curves {
+            master: vec![],
+            r: vec![],
+            g: vec![],
+            b: vec![],
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert!(
+            plan.layers[0].effects.is_empty(),
+            "an all-empty Curves is a no-op and is skipped"
         );
     }
 
