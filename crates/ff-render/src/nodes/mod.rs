@@ -2,9 +2,11 @@ pub mod blur;
 pub mod color_grade;
 pub mod composite;
 pub mod crossfade;
+pub mod film_grain;
 pub mod overlay;
 pub mod scale;
 pub mod upload;
+pub mod vignette;
 
 pub use blur::{GaussianBlurNode, SharpenNode};
 pub use color_grade::ColorGradeNode;
@@ -13,9 +15,11 @@ pub use composite::{
     TransformNode,
 };
 pub use crossfade::CrossfadeNode;
+pub use film_grain::FilmGrainNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
 pub use upload::{YuvFormat, YuvUploadNode};
+pub use vignette::VignetteNode;
 
 // RenderNodeCpu
 
