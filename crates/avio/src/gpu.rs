@@ -265,6 +265,15 @@ pub enum GpuEffect {
         /// Blue channel curve control points.
         blue: Vec<[f32; 2]>,
     },
+    /// `ff_render::HslNode` (hue / saturation / lightness adjustment).
+    Hsl {
+        /// Hue rotation in degrees.
+        hue_shift: f32,
+        /// Saturation multiplier (neutral `1.0`).
+        saturation: f32,
+        /// Lightness offset (neutral `0.0`).
+        lightness: f32,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -584,6 +593,20 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                 })
             }
         }
+        FilterStep::Hsl {
+            hue,
+            saturation,
+            lightness,
+        } => hsl_step(*hue, *saturation, *lightness),
+        FilterStep::HslAnimated {
+            hue,
+            saturation,
+            lightness,
+        } => hsl_step(
+            hue.value_at(t) as f32,
+            saturation.value_at(t) as f32,
+            lightness.value_at(t) as f32,
+        ),
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
@@ -663,6 +686,21 @@ fn glow_step(threshold: f32, radius: f32, intensity: f32) -> StepClass {
         threshold,
         radius,
         intensity,
+    })
+}
+
+/// Classifies an HSL step: a fully neutral adjustment is a no-op (`Skip`);
+/// otherwise it maps straight to the GPU node (hue degrees / saturation multiplier
+/// / lightness offset already in the node's convention).
+#[allow(clippy::float_cmp)]
+fn hsl_step(hue_shift: f32, saturation: f32, lightness: f32) -> StepClass {
+    if hue_shift == 0.0 && saturation == 1.0 && lightness == 0.0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::Hsl {
+        hue_shift,
+        saturation,
+        lightness,
     })
 }
 
