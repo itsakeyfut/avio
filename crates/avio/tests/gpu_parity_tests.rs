@@ -44,6 +44,11 @@ const TOL_BLUR_MEAN: f64 = 20.0; // GPU GaussianBlurNode vs FFmpeg `gblur`: ~9.0
 // (effect vs input ~7.9). Grey-calibrated: the test image is achromatic (R=G=B), where
 // an all-RGB node and a luma-only filter coincide; colored edges would diverge more.
 const TOL_SHARPEN_MEAN: f64 = 5.0;
+// GPU VignetteNode (smoothstep radius/feather) vs FFmpeg `vignette` (cos^4 angle):
+// different darkening profiles, so a loose calibrated tolerance (~21 here; effect vs
+// input ~56, so a skipped vignette diverges past this). Tested on a colored gradient
+// (RK-022): vignette scales every channel equally, so it is color-consistent.
+const TOL_VIGNETTE_MEAN: f64 = 45.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -318,6 +323,55 @@ fn sharpen_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_SHARPEN_MEAN,
         "GPU and CPU sharpen diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn vignette_gpu_should_match_cpu_within_tolerance() {
+    // Vignette parity: GPU VignetteNode (map_scene maps `VignetteAnimated`) vs the CPU
+    // `vignette` filter. The falloff profiles differ (smoothstep vs cos^4), so a loose
+    // calibrated tolerance. Double-gated (adapter + filters).
+    //
+    // A colored gradient (RK-022): a vignette scales every channel by the same factor,
+    // so GPU (all-RGB node) and CPU (FFmpeg) stay color-consistent here, unlike a
+    // channel-subset effect. The corners darken, so a GPU that skipped the vignette
+    // would keep the bright gradient and diverge (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::VignetteAnimated {
+            amount: AnimatedValue::Static(0.8),
+            x0: 0.0,
+            y0: 0.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported vignette layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "vignette GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the vignette must actually darken the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU vignette must visibly darken the frame; got {effect}"
+    );
+    assert!(
+        mean <= TOL_VIGNETTE_MEAN,
+        "GPU and CPU vignette diverged beyond tolerance: mean={mean}"
     );
 }
 

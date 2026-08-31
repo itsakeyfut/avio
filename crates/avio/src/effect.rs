@@ -93,6 +93,16 @@ pub enum EffectKind {
         /// Sharpening amount (luma). Range −1.5..=1.5 (neutral: 0.0).
         amount: Param,
     },
+    /// Vignette (the `vignette` filter on the CPU path, `ff_render::VignetteNode`
+    /// on the GPU).
+    ///
+    /// A single normalised darkening amount in `[0, 1]` (`0.0` = no vignette),
+    /// centred on the frame. The `vignette` filter re-evaluates its angle per frame,
+    /// so an animated `amount` animates on both paths.
+    Vignette {
+        /// Darkening amount. Range 0.0..=1.0 (neutral: 0.0).
+        amount: Param,
+    },
 }
 
 impl EffectKind {
@@ -161,6 +171,14 @@ impl EffectKind {
                     luma_strength: amount.to_animated(),
                     chroma_strength: AnimatedValue::Static(0.0),
                 },
+            }),
+            // The `vignette` filter self-animates via `eval=frame`, so both the
+            // constant and animated amount route through the one `VignetteAnimated`
+            // variant (centred; a `Static` renders a plain static vignette).
+            EffectKind::Vignette { amount } => Some(FilterStep::VignetteAnimated {
+                amount: amount.to_animated(),
+                x0: 0.0,
+                y0: 0.0,
             }),
         }
     }
@@ -303,6 +321,34 @@ mod tests {
         assert!(matches!(
             kind.to_filter_step(),
             Some(FilterStep::UnsharpAnimated { .. })
+        ));
+    }
+
+    #[test]
+    fn vignette_const_should_compile_to_centred_vignette_animated() {
+        let kind = EffectKind::Vignette {
+            amount: Param::Const(0.6),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::VignetteAnimated { amount, x0, y0 } => {
+                assert!((amount.value_at(std::time::Duration::ZERO) - 0.6).abs() < 1e-6);
+                assert!(
+                    (x0 - 0.0).abs() < 1e-6 && (y0 - 0.0).abs() < 1e-6,
+                    "centred"
+                );
+            }
+            other => panic!("expected VignetteAnimated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vignette_animated_should_compile_to_vignette_animated() {
+        let kind = EffectKind::Vignette {
+            amount: Param::Animated(animated_track()),
+        };
+        assert!(matches!(
+            kind.to_filter_step(),
+            Some(FilterStep::VignetteAnimated { .. })
         ));
     }
 }

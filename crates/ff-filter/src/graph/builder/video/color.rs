@@ -372,6 +372,24 @@ impl FilterGraphBuilder {
         self.steps.push(FilterStep::Vignette { angle, x0, y0 });
         self
     }
+
+    /// Apply a vignette with an optionally animated normalised amount.
+    ///
+    /// - `amount`: normalised darkening in `[0, 1]`, scaled to the `vignette`
+    ///   filter's `angle` as `amount * PI/2`. A `Track` self-animates via
+    ///   `eval=frame` (no `send_command`); a `Static` renders a plain vignette.
+    /// - `x0` / `y0`: centre; pass `0.0` for the video centre (`w/2` / `h/2`).
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if `amount`
+    /// evaluates outside `[0.0, 1.0]` at `Duration::ZERO`.
+    #[must_use]
+    pub fn vignette_animated(mut self, amount: AnimatedValue<f64>, x0: f32, y0: f32) -> Self {
+        self.steps
+            .push(FilterStep::VignetteAnimated { amount, x0, y0 });
+        self
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1039,61 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for angle < 0.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn vignette_animated_static_should_scale_amount_to_angle() {
+        // amount 1.0 maps to angle PI/2 (~1.5708); centre defaults to w/2, h/2.
+        let step = FilterStep::VignetteAnimated {
+            amount: AnimatedValue::Static(1.0_f64),
+            x0: 0.0,
+            y0: 0.0,
+        };
+        assert_eq!(step.filter_name(), "vignette");
+        let args = step.args();
+        assert!(
+            args.contains("angle=1.57"),
+            "amount 1.0 -> angle PI/2: {args}"
+        );
+        assert!(args.contains("x0=w/2") && args.contains("y0=h/2"), "{args}");
+        assert!(
+            !args.contains("eval=frame"),
+            "a Static must not self-animate: {args}"
+        );
+    }
+
+    #[test]
+    fn vignette_animated_track_should_use_eval_frame_expression() {
+        use crate::animation::Easing;
+        use std::time::Duration;
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.2, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 0.8, Easing::Linear));
+        let step = FilterStep::VignetteAnimated {
+            amount: AnimatedValue::Track(track),
+            x0: 0.0,
+            y0: 0.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("eval=frame"),
+            "a Track must self-animate: {args}"
+        );
+        assert!(
+            args.contains("*PI/2"),
+            "the amount expression is scaled to radians: {args}"
+        );
+    }
+
+    #[test]
+    fn builder_vignette_animated_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .vignette_animated(AnimatedValue::Static(1.5_f64), 0.0, 0.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for amount > 1.0, got {result:?}"
         );
     }
 
