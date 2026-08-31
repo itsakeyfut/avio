@@ -275,7 +275,7 @@ SceneAudioPlacement { source: PathBuf, offset, in_point, out_point: Option<Durat
 
 ```
 ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode / ff-remux → ff-filter
-       → ff-pipeline → ff-stream / ff-preview / ff-render → avio (engine, top)
+       → ff-pipeline → ff-stream / ff-preview / ff-render → ffx (facade) → avio (engine, top)
 
 ff-decode → ff-analysis   (media analysis reads decoded frames; sits above ff-decode)
 ```
@@ -283,7 +283,14 @@ ff-decode → ff-analysis   (media analysis reads decoded frames; sits above ff-
 - **The editing model lives at the top (`avio`).** Nothing in `ff-*` depends on it, so `ff-*` are
   structurally model-free — the separation is enforced by dependency direction, not discipline.
 - `avio` stops being a facade-only crate. It defines the editing-model types (and, in #1327, the
-  derivation, immutable state, and undo). It still re-exports the `ff-*` primitives.
+  derivation, immutable state, and undo). It still re-exports the model-facing primitive types.
+- **`ffx` is the primitive-family facade (ADR-0008).** It aggregates the whole `ff-*` family under
+  namespaced modules (`ffx::decode`, `ffx::filter`, `ffx::render`, ...) with Bevy-style feature
+  gating (a lightweight `default` core; `render`/wgpu, `preview`, `analysis`, `stream`, `serde`,
+  `hwaccel`, `gpl` behind features). **`avio` depends only on `ffx`**, forwarding its features; the
+  `ff-*` crates and their inter-dependencies are unchanged (the facade is purely additive). This
+  keeps `avio` the engine, not the facade (ADR-0004 holds), and gives the family a single boundary
+  for a future two-repository split (engine vs primitives), which is deferred to its own milestone.
 - Versioning: **independent per-crate** as of v0.16.0 (tokio/`http`-style — each crate's version
   reflects its own change cadence, so a stable `ff-format` can reach 1.0 while `ff-filter` iterates
   at 0.x; see `docs/roadmap/v0-16-0/ROADMAP.md`). Lockstep through v0.15.x.
