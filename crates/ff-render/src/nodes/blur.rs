@@ -82,10 +82,10 @@ fn blur_pass_cpu(
 }
 
 /// Blurs an 8-bit RGBA buffer in place with a separable Gaussian, returning the
-/// blurred result as f32 (0..1) so a caller (sharpen) can reuse it. `None` when the
-/// buffer size does not match `w × h × 4`.
+/// blurred result as f32 (0..1) so a caller (sharpen, glow) can reuse it. `None`
+/// when the buffer size does not match `w × h × 4`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn separable_blur_f32(rgba: &[u8], w: u32, h: u32, sigma: f32) -> Option<Vec<f32>> {
+pub(crate) fn separable_blur_f32(rgba: &[u8], w: u32, h: u32, sigma: f32) -> Option<Vec<f32>> {
     let (wu, hu) = (w as usize, h as usize);
     if wu == 0 || hu == 0 || rgba.len() != wu * hu * 4 {
         return None;
@@ -388,7 +388,7 @@ fn create_combine_pipeline(ctx: &crate::context::RenderContext, strength: f32) -
 }
 
 #[cfg(feature = "wgpu")]
-fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -402,7 +402,7 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 #[cfg(feature = "wgpu")]
-fn create_uniform(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+pub(crate) fn create_uniform(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
@@ -412,7 +412,7 @@ fn create_uniform(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 }
 
 #[cfg(feature = "wgpu")]
-fn fullscreen_pipeline(
+pub(crate) fn fullscreen_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     bgl: &wgpu::BindGroupLayout,
@@ -525,7 +525,7 @@ fn encode_combine_pass(
 }
 
 #[cfg(feature = "wgpu")]
-fn run_fullscreen(
+pub(crate) fn run_fullscreen(
     ctx: &crate::context::RenderContext,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
