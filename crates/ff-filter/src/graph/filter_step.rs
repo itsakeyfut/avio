@@ -173,6 +173,23 @@ pub enum FilterStep {
         /// Affects highlights (whites). Neutral: `Rgb::NEUTRAL`.
         gain: Rgb,
     },
+    /// Three-way (lift/gamma/gain) colour corrector with optionally animated
+    /// per-channel parameters.
+    ///
+    /// Parameters are evaluated at [`Duration::ZERO`] for the graph build. `curves`
+    /// takes string curve options rather than scalars, so it is not driven by
+    /// `send_command` here: the CPU (`libavfilter`) path renders the `Duration::ZERO`
+    /// curves statically; the GPU path (`ff_render::ColorWheelsNode`) animates the
+    /// parameters per frame. Each `[R, G, B]` array carries the per-channel tracks,
+    /// with the same `Rgb::NEUTRAL` (1.0) convention as [`ThreeWayCC`](Self::ThreeWayCC).
+    ThreeWayCCAnimated {
+        /// Shadows (lift) per channel `[R, G, B]`. Neutral: 1.0.
+        lift: [AnimatedValue<f64>; 3],
+        /// Midtones (gamma) per channel `[R, G, B]`. Neutral: 1.0; must be > 0.0.
+        gamma: [AnimatedValue<f64>; 3],
+        /// Highlights (gain) per channel `[R, G, B]`. Neutral: 1.0.
+        gain: [AnimatedValue<f64>; 3],
+    },
     /// Vignette effect via `FFmpeg` `vignette` filter.
     Vignette {
         /// Radius angle in radians (valid range: 0.0 – π/2 ≈ 1.5708). Default: π/5 ≈ 0.628.
@@ -1052,6 +1069,33 @@ pub enum FilterStep {
 /// Tanner Helland's algorithm.
 ///
 /// Returns `(r, g, b)` each in `[0.0, 1.0]`.
+/// Renders the three-way (lift/gamma/gain) colour corrector as `curves` `r/g/b`
+/// options. Shared by [`FilterStep::ThreeWayCC`] and
+/// [`FilterStep::ThreeWayCCAnimated`].
+///
+/// The formula maps each channel to a 3-point curve:
+///   input 0.0 -> (lift - 1.0) * gain  (black point)
+///   input 0.5 -> (0.5 * lift)^(1/gamma) * gain  (midtone)
+///   input 1.0 -> gain  (white point)
+/// All neutral (1.0) produces the identity curve `0/0 0.5/0.5 1/1`.
+fn three_way_cc_args(lift: Rgb, gamma: Rgb, gain: Rgb) -> String {
+    let curve = |l: f32, gm: f32, gn: f32| -> String {
+        let l = f64::from(l);
+        let gm = f64::from(gm);
+        let gn = f64::from(gn);
+        let black = ((l - 1.0) * gn).clamp(0.0, 1.0);
+        let mid = ((0.5 * l).powf(1.0 / gm) * gn).clamp(0.0, 1.0);
+        let white = gn.clamp(0.0, 1.0);
+        format!("0/{black} 0.5/{mid} 1/{white}")
+    };
+    format!(
+        "r='{}':g='{}':b='{}'",
+        curve(lift.r, gamma.r, gain.r),
+        curve(lift.g, gamma.g, gain.g),
+        curve(lift.b, gamma.b, gain.b),
+    )
+}
+
 /// Renders the compound glow filter chain (`split` -> `curves` -> `gblur` ->
 /// `blend`) as a filtergraph string. Shared by [`FilterStep::Glow`] and
 /// [`FilterStep::GlowAnimated`]. (The real build goes through `add_glow_step`; this
@@ -1127,6 +1171,7 @@ impl FilterStep {
             Self::Hue { .. } => "hue",
             Self::Gamma { .. } => "eq",
             Self::ThreeWayCC { .. } => "curves",
+            Self::ThreeWayCCAnimated { .. } => "curves",
             Self::Vignette { .. } => "vignette",
             Self::HFlip => "hflip",
             Self::VFlip => "vflip",
@@ -1410,28 +1455,17 @@ impl FilterStep {
                 };
                 format!("angle={angle}:x0={cx}:y0={cy}")
             }
-            Self::ThreeWayCC { lift, gamma, gain } => {
-                // Convert lift/gamma/gain to a 3-point per-channel curves representation.
-                // The formula maps:
-                //   input 0.0 → (lift - 1.0) * gain  (black point)
-                //   input 0.5 → (0.5 * lift)^(1/gamma) * gain  (midtone)
-                //   input 1.0 → gain  (white point)
-                // All neutral (1.0) produces the identity curve 0/0 0.5/0.5 1/1.
-                let curve = |l: f32, gm: f32, gn: f32| -> String {
-                    let l = f64::from(l);
-                    let gm = f64::from(gm);
-                    let gn = f64::from(gn);
-                    let black = ((l - 1.0) * gn).clamp(0.0, 1.0);
-                    let mid = ((0.5 * l).powf(1.0 / gm) * gn).clamp(0.0, 1.0);
-                    let white = gn.clamp(0.0, 1.0);
-                    format!("0/{black} 0.5/{mid} 1/{white}")
+            Self::ThreeWayCC { lift, gamma, gain } => three_way_cc_args(*lift, *gamma, *gain),
+            Self::ThreeWayCCAnimated { lift, gamma, gain } => {
+                // The compound `curves` string is built from the `Duration::ZERO`
+                // values (the CPU path is static; the GPU animates per frame).
+                #[allow(clippy::cast_possible_truncation)]
+                let at0 = |a: &[AnimatedValue<f64>; 3]| Rgb {
+                    r: a[0].value_at(Duration::ZERO) as f32,
+                    g: a[1].value_at(Duration::ZERO) as f32,
+                    b: a[2].value_at(Duration::ZERO) as f32,
                 };
-                format!(
-                    "r='{}':g='{}':b='{}'",
-                    curve(lift.r, gamma.r, gain.r),
-                    curve(lift.g, gamma.g, gain.g),
-                    curve(lift.b, gamma.b, gain.b),
-                )
+                three_way_cc_args(at0(lift), at0(gamma), at0(gain))
             }
             Self::HFlip | Self::VFlip | Self::Reverse | Self::AReverse => String::new(),
             Self::GBlur { sigma } => format!("sigma={sigma}"),

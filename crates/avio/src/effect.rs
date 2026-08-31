@@ -13,7 +13,7 @@
 //! model-free — this type lives in `avio` because it exists to make a *clip's*
 //! effects re-editable (a CLIP/EDIT concern per the engine/primitive litmus).
 
-use ff_filter::{AnimatedValue, AnimationTrack, FilterStep};
+use ff_filter::{AnimatedValue, AnimationTrack, FilterStep, Keyframe, Rgb};
 
 use crate::ids::EffectId;
 
@@ -131,6 +131,42 @@ pub enum EffectKind {
         /// Additive blend strength. Range 0.0..=2.0 (neutral: 0.0).
         intensity: Param,
     },
+    /// Three-way (lift/gamma/gain) colour corrector (the `curves` filter on the CPU
+    /// path, `ff_render::ColorWheelsNode` on the GPU).
+    ///
+    /// Each wheel is a per-channel `[R, G, B]` array. Neutral parameters
+    /// (`shadows_lift = 0.0`, `midtones_gamma = 1.0`, `highlights_gain = 1.0`, all
+    /// constant) compile to no filter at all. Because `curves` takes string options,
+    /// an animated parameter animates on the GPU-default path but renders its `t = 0`
+    /// value on the CPU fallback.
+    ColorWheels {
+        /// Shadows lift, additive per channel. Range −1.0..=1.0 (neutral: 0.0).
+        shadows_lift: [Param; 3],
+        /// Midtones gamma, per channel. Range 0.1..=10.0 (neutral: 1.0; must be > 0).
+        midtones_gamma: [Param; 3],
+        /// Highlights gain, per channel. Range 0.0..=4.0 (neutral: 1.0).
+        highlights_gain: [Param; 3],
+    },
+}
+
+/// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
+/// `ThreeWayCC` `lift` convention (multiplicative-style, neutral `1.0`) by offsetting
+/// the value by `+1.0`. A `Track` is rebuilt keyframe-by-keyframe (an animation track
+/// has no scalar-offset op).
+fn lift_to_animated(p: &Param) -> AnimatedValue<f64> {
+    match p {
+        Param::Const(v) => AnimatedValue::Static(v + 1.0),
+        Param::Animated(track) => AnimatedValue::Track(track.keyframes().iter().fold(
+            AnimationTrack::new(),
+            |t, kf| {
+                t.push(Keyframe {
+                    timestamp: kf.timestamp,
+                    value: kf.value + 1.0,
+                    easing: kf.easing.clone(),
+                })
+            },
+        )),
+    }
 }
 
 impl EffectKind {
@@ -248,6 +284,63 @@ impl EffectKind {
                     }
                 },
             ),
+            // ColorWheels maps to `curves` (via `ThreeWayCC`). The `shadows_lift`
+            // (additive, neutral 0) is offset to the `lift` convention (neutral 1).
+            // A fully neutral, all-constant corrector compiles to nothing.
+            EffectKind::ColorWheels {
+                shadows_lift,
+                midtones_gamma,
+                highlights_gain,
+            } => {
+                let all_const = shadows_lift
+                    .iter()
+                    .chain(midtones_gamma.iter())
+                    .chain(highlights_gain.iter())
+                    .all(Param::is_const);
+                if all_const {
+                    #[allow(clippy::float_cmp)]
+                    let neutral = shadows_lift.iter().all(|p| p.as_const() == Some(0.0))
+                        && midtones_gamma.iter().all(|p| p.as_const() == Some(1.0))
+                        && highlights_gain.iter().all(|p| p.as_const() == Some(1.0));
+                    if neutral {
+                        return None;
+                    }
+                    let lift = Rgb {
+                        r: (shadows_lift[0].as_const().unwrap_or(0.0) + 1.0) as f32,
+                        g: (shadows_lift[1].as_const().unwrap_or(0.0) + 1.0) as f32,
+                        b: (shadows_lift[2].as_const().unwrap_or(0.0) + 1.0) as f32,
+                    };
+                    let gamma = Rgb {
+                        r: midtones_gamma[0].as_const().unwrap_or(1.0) as f32,
+                        g: midtones_gamma[1].as_const().unwrap_or(1.0) as f32,
+                        b: midtones_gamma[2].as_const().unwrap_or(1.0) as f32,
+                    };
+                    let gain = Rgb {
+                        r: highlights_gain[0].as_const().unwrap_or(1.0) as f32,
+                        g: highlights_gain[1].as_const().unwrap_or(1.0) as f32,
+                        b: highlights_gain[2].as_const().unwrap_or(1.0) as f32,
+                    };
+                    Some(FilterStep::ThreeWayCC { lift, gamma, gain })
+                } else {
+                    Some(FilterStep::ThreeWayCCAnimated {
+                        lift: [
+                            lift_to_animated(&shadows_lift[0]),
+                            lift_to_animated(&shadows_lift[1]),
+                            lift_to_animated(&shadows_lift[2]),
+                        ],
+                        gamma: [
+                            midtones_gamma[0].to_animated(),
+                            midtones_gamma[1].to_animated(),
+                            midtones_gamma[2].to_animated(),
+                        ],
+                        gain: [
+                            highlights_gain[0].to_animated(),
+                            highlights_gain[1].to_animated(),
+                            highlights_gain[2].to_animated(),
+                        ],
+                    })
+                }
+            }
         }
     }
 }
@@ -482,5 +575,60 @@ mod tests {
             kind.to_filter_step(),
             Some(FilterStep::GlowAnimated { .. })
         ));
+    }
+
+    fn cw(lift: f64, gamma: f64, gain: f64) -> EffectKind {
+        EffectKind::ColorWheels {
+            shadows_lift: [Param::Const(lift), Param::Const(lift), Param::Const(lift)],
+            midtones_gamma: [
+                Param::Const(gamma),
+                Param::Const(gamma),
+                Param::Const(gamma),
+            ],
+            highlights_gain: [Param::Const(gain), Param::Const(gain), Param::Const(gain)],
+        }
+    }
+
+    #[test]
+    fn color_wheels_neutral_should_compile_to_nothing() {
+        assert!(
+            cw(0.0, 1.0, 1.0).to_filter_step().is_none(),
+            "a neutral ColorWheels is a no-op"
+        );
+    }
+
+    #[test]
+    fn color_wheels_const_should_offset_lift_by_one() {
+        // shadows_lift 0.1 (additive) maps to the ThreeWayCC lift 1.1 (neutral 1.0).
+        match cw(0.1, 1.0, 1.0).to_filter_step().unwrap() {
+            FilterStep::ThreeWayCC { lift, gamma, gain } => {
+                assert!((lift.r - 1.1).abs() < 1e-5, "lift = 1 + shadows_lift");
+                assert!((gamma.r - 1.0).abs() < 1e-6 && (gain.r - 1.0).abs() < 1e-6);
+            }
+            other => panic!("expected ThreeWayCC, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn color_wheels_any_animated_should_compile_to_three_way_cc_animated() {
+        let kind = EffectKind::ColorWheels {
+            shadows_lift: [
+                Param::Animated(animated_track()),
+                Param::Const(0.0),
+                Param::Const(0.0),
+            ],
+            midtones_gamma: [Param::Const(1.0), Param::Const(1.0), Param::Const(1.0)],
+            highlights_gain: [Param::Const(1.0), Param::Const(1.0), Param::Const(1.0)],
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::ThreeWayCCAnimated { lift, .. } => {
+                // The animated lift track (values ~0.5) is offset by +1 (~1.5).
+                assert!(
+                    lift[0].value_at(std::time::Duration::ZERO) > 1.0,
+                    "the animated lift track is offset to the neutral-1.0 convention"
+                );
+            }
+            other => panic!("expected ThreeWayCCAnimated, got {other:?}"),
+        }
     }
 }

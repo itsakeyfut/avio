@@ -353,6 +353,30 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Three-way (lift/gamma/gain) colour corrector with optionally animated
+    /// per-channel `[R, G, B]` parameters (same `Rgb::NEUTRAL` convention as
+    /// [`three_way_cc`](Self::three_way_cc)).
+    ///
+    /// `curves` takes string options, so no `send_command` animation is registered;
+    /// a `Track` renders its `Duration::ZERO` value on the CPU while the GPU bridge
+    /// animates it per frame.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any `gamma`
+    /// component evaluates to `≤ 0.0` at `Duration::ZERO`.
+    #[must_use]
+    pub fn three_way_cc_animated(
+        mut self,
+        lift: [AnimatedValue<f64>; 3],
+        gamma: [AnimatedValue<f64>; 3],
+        gain: [AnimatedValue<f64>; 3],
+    ) -> Self {
+        self.steps
+            .push(FilterStep::ThreeWayCCAnimated { lift, gamma, gain });
+        self
+    }
+
     /// Apply a vignette effect using `FFmpeg`'s `vignette` filter.
     ///
     /// Darkens the corners of the frame with a smooth radial falloff.
@@ -905,6 +929,57 @@ mod tests {
         assert!(
             args.contains("b='0/0 0.5/0.5 1/1'"),
             "neutral b channel must be identity: {args}"
+        );
+    }
+
+    #[test]
+    fn three_way_cc_animated_static_should_render_the_zero_time_curves() {
+        use crate::animation::AnimatedValue;
+        let neutral = || {
+            [
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            ]
+        };
+        let step = FilterStep::ThreeWayCCAnimated {
+            lift: neutral(),
+            gamma: neutral(),
+            gain: neutral(),
+        };
+        assert_eq!(step.filter_name(), "curves");
+        // Same identity curves as the static ThreeWayCC at neutral values.
+        assert!(
+            step.args().contains("r='0/0 0.5/0.5 1/1'"),
+            "neutral animated r channel must be identity: {}",
+            step.args()
+        );
+    }
+
+    #[test]
+    fn three_way_cc_animated_with_zero_gamma_should_return_invalid_config() {
+        use crate::animation::AnimatedValue;
+        let neutral = || {
+            [
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            ]
+        };
+        let result = FilterGraph::builder()
+            .three_way_cc_animated(
+                neutral(),
+                [
+                    AnimatedValue::Static(0.0_f64),
+                    AnimatedValue::Static(1.0_f64),
+                    AnimatedValue::Static(1.0_f64),
+                ],
+                neutral(),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for gamma <= 0.0, got {result:?}"
         );
     }
 
