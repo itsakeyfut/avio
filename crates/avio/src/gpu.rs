@@ -245,6 +245,15 @@ pub enum GpuEffect {
         /// Additive blend weight of the glow layer.
         intensity: f32,
     },
+    /// `ff_render::ColorWheelsNode` (three-way lift/gamma/gain corrector).
+    ColorWheels {
+        /// Shadows lift (additive, neutral 0.0) per channel `[R, G, B]`.
+        shadows_lift: [f32; 3],
+        /// Midtones gamma (neutral 1.0) per channel `[R, G, B]`.
+        midtones_gamma: [f32; 3],
+        /// Highlights gain (neutral 1.0) per channel `[R, G, B]`.
+        highlights_gain: [f32; 3],
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -532,6 +541,24 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             radius.value_at(t) as f32,
             intensity.value_at(t) as f32,
         ),
+        // The `curves`/`ThreeWayCC` lift is neutral at 1.0; the node's additive
+        // `shadows_lift` is neutral at 0.0, so subtract 1.0.
+        FilterStep::ThreeWayCC { lift, gamma, gain } => color_wheels_step(
+            [lift.r - 1.0, lift.g - 1.0, lift.b - 1.0],
+            [gamma.r, gamma.g, gamma.b],
+            [gain.r, gain.g, gain.b],
+        ),
+        FilterStep::ThreeWayCCAnimated { lift, gamma, gain } => {
+            let at = |a: &[AnimatedValue<f64>; 3]| {
+                [
+                    a[0].value_at(t) as f32,
+                    a[1].value_at(t) as f32,
+                    a[2].value_at(t) as f32,
+                ]
+            };
+            let l = at(lift);
+            color_wheels_step([l[0] - 1.0, l[1] - 1.0, l[2] - 1.0], at(gamma), at(gain))
+        }
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
@@ -577,6 +604,27 @@ fn film_grain_step(luma_strength: f32, chroma_strength: f32, t: Duration) -> Ste
         luma_strength: luma_strength * NODE_GRAIN_SCALE,
         chroma_strength: chroma_strength * NODE_GRAIN_SCALE,
         frame_index: t.as_millis() as u32,
+    })
+}
+
+/// Classifies a three-way corrector: a fully neutral corrector is a no-op (`Skip`);
+/// otherwise it maps straight to the GPU node (parameters already in the node's
+/// convention: additive lift neutral 0, gamma/gain neutral 1).
+fn color_wheels_step(
+    shadows_lift: [f32; 3],
+    midtones_gamma: [f32; 3],
+    highlights_gain: [f32; 3],
+) -> StepClass {
+    let neutral = shadows_lift.iter().all(|&v| v.abs() < 1e-6)
+        && midtones_gamma.iter().all(|&v| (v - 1.0).abs() < 1e-6)
+        && highlights_gain.iter().all(|&v| (v - 1.0).abs() < 1e-6);
+    if neutral {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::ColorWheels {
+        shadows_lift,
+        midtones_gamma,
+        highlights_gain,
     })
 }
 
@@ -1079,6 +1127,59 @@ mod tests {
         assert!(
             plan.layers[0].effects.is_empty(),
             "zero-intensity glow is a no-op and is skipped"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_three_way_cc_to_color_wheels() {
+        // ThreeWayCC lift 1.1 -> node shadows_lift 0.1 (subtract the neutral 1.0).
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::ThreeWayCC {
+            lift: ff_filter::Rgb {
+                r: 1.1,
+                g: 1.1,
+                b: 1.1,
+            },
+            gamma: ff_filter::Rgb {
+                r: 1.2,
+                g: 1.2,
+                b: 1.2,
+            },
+            gain: ff_filter::Rgb::NEUTRAL,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        let [
+            GpuEffect::ColorWheels {
+                shadows_lift,
+                midtones_gamma,
+                ..
+            },
+        ] = plan.layers[0].effects.as_slice()
+        else {
+            panic!("three-way cc must map to a single ColorWheels effect");
+        };
+        assert!(
+            (shadows_lift[0] - 0.1).abs() < 1e-5,
+            "lift 1.1 -> shadows_lift 0.1"
+        );
+        assert!(
+            (midtones_gamma[0] - 1.2).abs() < 1e-6,
+            "gamma maps directly"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_skip_neutral_three_way_cc() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::ThreeWayCC {
+            lift: ff_filter::Rgb::NEUTRAL,
+            gamma: ff_filter::Rgb::NEUTRAL,
+            gain: ff_filter::Rgb::NEUTRAL,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert!(
+            plan.layers[0].effects.is_empty(),
+            "a neutral three-way corrector is a no-op and is skipped"
         );
     }
 

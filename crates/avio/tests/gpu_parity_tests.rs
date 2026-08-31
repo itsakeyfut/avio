@@ -59,6 +59,11 @@ const TOL_FILMGRAIN_STD: f64 = 6.0;
 // tolerance: ~4.4 here (effect vs input ~7.4). Tested on a coloured highlight
 // (RK-022): glow spreads the highlight colour, so the two paths stay colour-comparable.
 const TOL_GLOW_MEAN: f64 = 15.0;
+// ColorWheels: GPU ColorWheelsNode (luma-region-weighted lift/gamma/gain) vs the CPU
+// `curves` chain (per-channel 3-point curves). Different lift/gamma/gain models, so a
+// loose calibrated tolerance: ~8.8 here (effect vs input ~7.7). Tested on a colour
+// gradient (RK-022): the corrector shifts each channel, so it is colour-relevant.
+const TOL_COLOR_WHEELS_MEAN: f64 = 20.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -504,6 +509,65 @@ fn glow_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_GLOW_MEAN,
         "GPU and CPU glow diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn color_wheels_gpu_should_match_cpu_within_tolerance() {
+    // ColorWheels parity: GPU ColorWheelsNode vs the CPU `curves`-based ThreeWayCC.
+    // The lift/gamma/gain models differ (luma-region weighting vs per-channel curves),
+    // so a loose calibrated tolerance. Double-gated (adapter + filters). A colour
+    // gradient (RK-022) exercises the per-channel correction; the corrector changes the
+    // frame, so a GPU that skipped it would diverge (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    // Warm shadows lift + brighter midtones + slightly boosted highlights.
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::ThreeWayCC {
+            lift: ff_filter::Rgb {
+                r: 1.1,
+                g: 1.0,
+                b: 0.95,
+            },
+            gamma: ff_filter::Rgb {
+                r: 1.2,
+                g: 1.1,
+                b: 1.0,
+            },
+            gain: ff_filter::Rgb {
+                r: 1.1,
+                g: 1.05,
+                b: 1.0,
+            },
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported ColorWheels layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "color-wheels GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the corrector must actually change the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU ColorWheels must visibly grade the frame; got {effect}"
+    );
+    assert!(
+        mean <= TOL_COLOR_WHEELS_MEAN,
+        "GPU and CPU ColorWheels diverged beyond tolerance: mean={mean}"
     );
 }
 

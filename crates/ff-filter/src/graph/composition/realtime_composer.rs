@@ -409,6 +409,71 @@ mod tests {
     }
 
     #[test]
+    fn base_layer_with_three_way_cc_animated_should_build() {
+        // `ThreeWayCCAnimated` builds the `curves` filter from its `Duration::ZERO`
+        // values through the generic `add_and_link_step` path. This drives that build
+        // for real (the args-only unit test does not). Same probe-gate as the other
+        // compound-effect tests: skip where FFmpeg has no filters.
+        let probe = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        if RealtimeComposer::new(&[probe]).is_err() {
+            println!("Skipping: FFmpeg filters unavailable");
+            return;
+        }
+
+        // Non-neutral lift/gamma/gain so the curves are not the identity.
+        let ch = |v: f64| {
+            [
+                AnimatedValue::Static(v),
+                AnimatedValue::Static(v),
+                AnimatedValue::Static(v),
+            ]
+        };
+        let layer = RealtimeLayer {
+            width: 8,
+            height: 8,
+            pixel_format: PixelFormat::Rgba,
+            effects: vec![FilterStep::ThreeWayCCAnimated {
+                lift: ch(1.1),
+                gamma: ch(1.2),
+                gain: ch(1.05),
+            }],
+            opacity: AnimatedValue::Static(1.0),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
+        };
+        let mut composer = RealtimeComposer::new(&[layer])
+            .expect("ThreeWayCCAnimated must build the curves filter once filters exist");
+        let frame = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
+            Ok(None) => println!("Skipping: no frame produced"),
+            Err(e) => println!("Skipping: {e}"),
+        }
+    }
+
+    #[test]
     fn base_layer_with_raw_effect_should_build() {
         // #1376: `FilterStep::Raw` (the arbitrary-avfilter escape hatch) must work as a
         // per-layer effect through the realtime (preview) compositor's `add_and_link_step`

@@ -647,6 +647,20 @@ impl FilterGraphBuilder {
                     }
                 }
             }
+            if let FilterStep::ThreeWayCCAnimated {
+                gamma: [gr, gg, gb],
+                ..
+            } = step
+            {
+                for (channel, av) in [("r", gr), ("g", gg), ("b", gb)] {
+                    let val = av.value_at(Duration::ZERO);
+                    if val <= 0.0 {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("three_way_cc gamma.{channel} {val} must be > 0.0"),
+                        });
+                    }
+                }
+            }
             if let FilterStep::Vignette { angle, .. } = step
                 && !((0.0)..=std::f32::consts::FRAC_PI_2).contains(angle)
             {
