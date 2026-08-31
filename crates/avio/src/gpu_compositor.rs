@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use ff_format::VideoFrame;
 use ff_render::{
-    ColorGradeNode, Compositor, FilmGrainNode, FrameLayer, GaussianBlurNode, LayerTransform,
-    RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
+    ColorGradeNode, Compositor, FilmGrainNode, FrameLayer, GaussianBlurNode, GlowNode,
+    LayerTransform, RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -182,6 +182,12 @@ impl GpuCompositor {
                     *chroma_strength,
                     *frame_index,
                 )),
+                // Glow preserves the frame dimensions too.
+                GpuEffect::Glow {
+                    threshold,
+                    radius,
+                    intensity,
+                } => graph.push(GlowNode::new(*threshold, *radius, *intensity)),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;

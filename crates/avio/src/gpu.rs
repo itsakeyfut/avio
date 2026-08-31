@@ -235,6 +235,16 @@ pub enum GpuEffect {
         /// (the CPU path uses the `noise` filter's own `allf=t` temporal seed).
         frame_index: u32,
     },
+    /// `ff_render::GlowNode` (three-pass bloom).
+    Glow {
+        /// Luminance threshold for highlight extraction.
+        threshold: f32,
+        /// Gaussian blur radius (sigma) for the glow spread; the node clamps it to its
+        /// blur range (`[0.5, 20.0]`), so a larger `noise`/CPU radius spreads further.
+        radius: f32,
+        /// Additive blend weight of the glow layer.
+        intensity: f32,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -508,6 +518,20 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             chroma_strength.value_at(t) as f32,
             t,
         ),
+        FilterStep::Glow {
+            threshold,
+            radius,
+            intensity,
+        } => glow_step(*threshold, *radius, *intensity),
+        FilterStep::GlowAnimated {
+            threshold,
+            radius,
+            intensity,
+        } => glow_step(
+            threshold.value_at(t) as f32,
+            radius.value_at(t) as f32,
+            intensity.value_at(t) as f32,
+        ),
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
@@ -553,6 +577,19 @@ fn film_grain_step(luma_strength: f32, chroma_strength: f32, t: Duration) -> Ste
         luma_strength: luma_strength * NODE_GRAIN_SCALE,
         chroma_strength: chroma_strength * NODE_GRAIN_SCALE,
         frame_index: t.as_millis() as u32,
+    })
+}
+
+/// Classifies a glow step: a non-positive intensity is a no-op (`Skip`); otherwise
+/// it maps the (matching) threshold / radius / intensity straight to the GPU node.
+fn glow_step(threshold: f32, radius: f32, intensity: f32) -> StepClass {
+    if intensity <= 0.0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::Glow {
+        threshold,
+        radius,
+        intensity,
     })
 }
 
@@ -987,6 +1024,61 @@ mod tests {
         assert!(
             (luma_strength - 20.0 * NODE_GRAIN_SCALE).abs() < 1e-4,
             "animated strength at t=1s should be ~20*scale; got {luma_strength}"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_glow_directly() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Glow {
+            threshold: 0.8,
+            radius: 10.0,
+            intensity: 0.8,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert_eq!(
+            plan.layers[0].effects.as_slice(),
+            [GpuEffect::Glow {
+                threshold: 0.8,
+                radius: 10.0,
+                intensity: 0.8,
+            }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_evaluate_animated_glow_at_t() {
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.4, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 1.2, Easing::Linear));
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::GlowAnimated {
+            threshold: AnimatedValue::Static(0.8),
+            radius: AnimatedValue::Static(10.0),
+            intensity: AnimatedValue::Track(track),
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::from_secs(1)));
+        let [GpuEffect::Glow { intensity, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("animated glow must map to a single Glow effect");
+        };
+        assert!(
+            (intensity - 0.8).abs() < 1e-3,
+            "animated intensity at t=1s should be ~0.8; got {intensity}"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_skip_zero_intensity_glow() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Glow {
+            threshold: 0.8,
+            radius: 10.0,
+            intensity: 0.0,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert!(
+            plan.layers[0].effects.is_empty(),
+            "zero-intensity glow is a no-op and is skipped"
         );
     }
 

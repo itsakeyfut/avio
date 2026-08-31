@@ -116,6 +116,21 @@ pub enum EffectKind {
         /// Chroma-plane grain strength. Range 0.0..=100.0 (neutral: 0.0).
         chroma_strength: Param,
     },
+    /// Glow / bloom (the compound `split`/`curves`/`gblur`/`blend` chain on the CPU
+    /// path, `ff_render::GlowNode` on the GPU).
+    ///
+    /// Extracts highlights above `threshold`, blurs them by `radius`, and adds them
+    /// back weighted by `intensity`. An animated parameter animates on the GPU-default
+    /// path; the CPU renders its `t = 0` value (the glow sub-filters have no runtime
+    /// parameter).
+    Glow {
+        /// Luminance threshold that triggers the glow. Range 0.0..=1.0.
+        threshold: Param,
+        /// Gaussian blur radius (sigma) in pixels. Range 0.5..=50.0.
+        radius: Param,
+        /// Additive blend strength. Range 0.0..=2.0 (neutral: 0.0).
+        intensity: Param,
+    },
 }
 
 impl EffectKind {
@@ -211,6 +226,28 @@ impl EffectKind {
                     chroma_strength: chroma_strength.to_animated(),
                 }
             }),
+            // Glow is a compound step. An all-constant glow uses the static `Glow`;
+            // any animated parameter uses `GlowAnimated` (which the GPU animates per
+            // frame; the CPU renders its `t = 0` values).
+            EffectKind::Glow {
+                threshold,
+                radius,
+                intensity,
+            } => Some(
+                if threshold.is_const() && radius.is_const() && intensity.is_const() {
+                    FilterStep::Glow {
+                        threshold: threshold.as_const().unwrap_or(0.0) as f32,
+                        radius: radius.as_const().unwrap_or(0.5) as f32,
+                        intensity: intensity.as_const().unwrap_or(0.0) as f32,
+                    }
+                } else {
+                    FilterStep::GlowAnimated {
+                        threshold: threshold.to_animated(),
+                        radius: radius.to_animated(),
+                        intensity: intensity.to_animated(),
+                    }
+                },
+            ),
         }
     }
 }
@@ -410,6 +447,40 @@ mod tests {
         assert!(matches!(
             kind.to_filter_step(),
             Some(FilterStep::FilmGrainAnimated { .. })
+        ));
+    }
+
+    #[test]
+    fn glow_const_should_compile_to_glow() {
+        let kind = EffectKind::Glow {
+            threshold: Param::Const(0.8),
+            radius: Param::Const(10.0),
+            intensity: Param::Const(0.8),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Glow {
+                threshold,
+                radius,
+                intensity,
+            } => {
+                assert!((threshold - 0.8).abs() < 1e-6);
+                assert!((radius - 10.0).abs() < 1e-6);
+                assert!((intensity - 0.8).abs() < 1e-6);
+            }
+            other => panic!("expected Glow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn glow_any_animated_param_should_compile_to_glow_animated() {
+        let kind = EffectKind::Glow {
+            threshold: Param::Const(0.8),
+            radius: Param::Animated(animated_track()),
+            intensity: Param::Const(0.8),
+        };
+        assert!(matches!(
+            kind.to_filter_step(),
+            Some(FilterStep::GlowAnimated { .. })
         ));
     }
 }

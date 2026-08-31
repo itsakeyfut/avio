@@ -124,6 +124,23 @@ pub(crate) unsafe fn add_and_link_step(
             radius,
             intensity,
         } => return add_glow_step(graph, prev_ctx, *threshold, *radius, *intensity, index),
+        // The `noise`/glow sub-filters have no runtime parameter, so an animated glow
+        // is built statically from its `Duration::ZERO` values (the GPU animates it).
+        #[allow(clippy::cast_possible_truncation)]
+        FilterStep::GlowAnimated {
+            threshold,
+            radius,
+            intensity,
+        } => {
+            return add_glow_step(
+                graph,
+                prev_ctx,
+                threshold.value_at(std::time::Duration::ZERO) as f32,
+                radius.value_at(std::time::Duration::ZERO) as f32,
+                intensity.value_at(std::time::Duration::ZERO) as f32,
+                index,
+            );
+        }
         FilterStep::FeatherMask { radius } => {
             return add_feather_mask_step(graph, prev_ctx, *radius, index);
         }
@@ -2574,6 +2591,25 @@ impl FilterGraphInner {
             {
                 prev_ctx = match add_glow_step(graph, prev_ctx, *threshold, *radius, *intensity, i)
                 {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // GlowAnimated — same compound step, built statically from its
+            // `Duration::ZERO` values (the sub-filters have no runtime parameter).
+            #[allow(clippy::cast_possible_truncation)]
+            if let FilterStep::GlowAnimated {
+                threshold,
+                radius,
+                intensity,
+            } = step
+            {
+                let t0 = threshold.value_at(std::time::Duration::ZERO) as f32;
+                let r0 = radius.value_at(std::time::Duration::ZERO) as f32;
+                let i0 = intensity.value_at(std::time::Duration::ZERO) as f32;
+                prev_ctx = match add_glow_step(graph, prev_ctx, t0, r0, i0, i) {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),
                 };

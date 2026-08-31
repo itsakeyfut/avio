@@ -847,6 +847,21 @@ pub enum FilterStep {
         /// Additive blend strength (clamped to [0.0, 2.0]).
         intensity: f32,
     },
+    /// Glow / bloom (the compound `split`/`curves`/`gblur`/`blend` chain) with
+    /// optionally animated parameters.
+    ///
+    /// Parameters are evaluated at [`Duration::ZERO`] for the graph build. None of
+    /// the sub-filters expose a runtime-settable glow parameter, so the CPU path
+    /// renders the `Duration::ZERO` values statically; the GPU path
+    /// (`ff_render::GlowNode`) animates them per frame.
+    GlowAnimated {
+        /// Luminance threshold. Evaluated to [0.0, 1.0] at `Duration::ZERO`.
+        threshold: AnimatedValue<f64>,
+        /// Gaussian blur radius in pixels. Evaluated to [0.5, 50.0] at `Duration::ZERO`.
+        radius: AnimatedValue<f64>,
+        /// Additive blend strength. Evaluated to [0.0, 2.0] at `Duration::ZERO`.
+        intensity: AnimatedValue<f64>,
+    },
 
     /// Convolution reverb using an impulse response (IR) audio file.
     ///
@@ -1037,6 +1052,22 @@ pub enum FilterStep {
 /// Tanner Helland's algorithm.
 ///
 /// Returns `(r, g, b)` each in `[0.0, 1.0]`.
+/// Renders the compound glow filter chain (`split` -> `curves` -> `gblur` ->
+/// `blend`) as a filtergraph string. Shared by [`FilterStep::Glow`] and
+/// [`FilterStep::GlowAnimated`]. (The real build goes through `add_glow_step`; this
+/// is for the `args()` completeness path.)
+fn glow_compound_args(threshold: f32, radius: f32, intensity: f32) -> String {
+    let t = threshold.clamp(0.0, 1.0);
+    let r = radius.clamp(0.5, 50.0);
+    let iv = intensity.clamp(0.0, 2.0);
+    let hi_lo = format!("0/0 {t}/0 1/1");
+    format!(
+        "split=2[base][hl];[hl]curves=all='{hi_lo}'[glow_src];\
+         [glow_src]gblur=sigma={r}[glow];\
+         [base][glow]blend=all_mode=addition:all_opacity={iv}"
+    )
+}
+
 fn kelvin_to_rgb(temp_k: u32) -> (f64, f64, f64) {
     let t = (f64::from(temp_k) / 100.0).clamp(10.0, 400.0);
     let r = if t <= 66.0 {
@@ -1185,6 +1216,7 @@ impl FilterStep {
             // Glow is a compound step (split → curves → gblur → blend);
             // "split" is used by validate_filter_steps as the primary check.
             Self::Glow { .. } => "split",
+            Self::GlowAnimated { .. } => "split",
             // ReverbIr is a compound step (amovie[+adelay] → afir);
             // "afir" is used by validate_filter_steps as the primary check.
             Self::ReverbIr { .. } => "afir",
@@ -1819,16 +1851,21 @@ impl FilterStep {
                 threshold,
                 radius,
                 intensity,
+            } => glow_compound_args(*threshold, *radius, *intensity),
+            // The compound step is built by `add_glow_step`, not from this string;
+            // the args are provided for completeness (rendered at `Duration::ZERO`).
+            Self::GlowAnimated {
+                threshold,
+                radius,
+                intensity,
             } => {
-                let t = threshold.clamp(0.0, 1.0);
-                let r = radius.clamp(0.5, 50.0);
-                let iv = intensity.clamp(0.0, 2.0);
-                let hi_lo = format!("0/0 {t}/0 1/1");
-                format!(
-                    "split=2[base][hl];[hl]curves=all='{hi_lo}'[glow_src];\
-                     [glow_src]gblur=sigma={r}[glow];\
-                     [base][glow]blend=all_mode=addition:all_opacity={iv}"
-                )
+                #[allow(clippy::cast_possible_truncation)]
+                let out = glow_compound_args(
+                    threshold.value_at(Duration::ZERO) as f32,
+                    radius.value_at(Duration::ZERO) as f32,
+                    intensity.value_at(Duration::ZERO) as f32,
+                );
+                out
             }
             Self::ReverbEcho {
                 in_gain,

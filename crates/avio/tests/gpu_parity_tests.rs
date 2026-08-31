@@ -54,6 +54,11 @@ const TOL_VIGNETTE_MEAN: f64 = 45.0;
 // (NODE_GRAIN_SCALE) so the two grain std-devs match: ~10.9 vs ~11.1 here. The margin
 // covers per-run RNG variance across GPU drivers.
 const TOL_FILMGRAIN_STD: f64 = 6.0;
+// Glow: GPU GlowNode (extract -> blur -> add) vs the CPU compound `split`/`curves`/
+// `gblur`/`blend` chain. Different bloom implementations, so a loose calibrated
+// tolerance: ~4.4 here (effect vs input ~7.4). Tested on a coloured highlight
+// (RK-022): glow spreads the highlight colour, so the two paths stay colour-comparable.
+const TOL_GLOW_MEAN: f64 = 15.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -441,6 +446,64 @@ fn film_grain_gpu_should_match_cpu_grain_strength() {
     assert!(
         (std_gpu - std_cpu).abs() <= TOL_FILMGRAIN_STD,
         "GPU and CPU grain strength diverged: gpu={std_gpu} cpu={std_cpu}"
+    );
+}
+
+#[test]
+fn glow_gpu_should_match_cpu_within_tolerance() {
+    // Glow parity: GPU GlowNode (map_scene maps `Glow`) vs the CPU compound glow.
+    // Different bloom implementations, so a loose calibrated tolerance. Double-gated
+    // (adapter + filters).
+    //
+    // A coloured highlight (bright cyan rect on a dark background, RK-022): glow
+    // extracts the highlight, blurs it, and adds it back, spreading its colour. The
+    // corners around the rect gain a glow halo, so a GPU that skipped the glow would
+    // keep the dark background and diverge (non-vacuous, RK-015). radius <= 20 keeps
+    // it within the GPU blur node's sigma range.
+    let (w, h) = (64, 48);
+    let mut input = vec![0u8; (w * h * 4) as usize];
+    for (i, px) in input.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let x = i as u32 % w;
+        let y = i as u32 / w;
+        px[3] = 255;
+        if (24..40).contains(&x) && (16..32).contains(&y) {
+            *px = [40, 230, 230, 255]; // bright cyan highlight
+        }
+    }
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Glow {
+            threshold: 0.5,
+            radius: 8.0,
+            intensity: 1.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported glow layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "glow GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the glow must actually change the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU glow must visibly add a halo; got {effect}"
+    );
+    assert!(
+        mean <= TOL_GLOW_MEAN,
+        "GPU and CPU glow diverged beyond tolerance: mean={mean}"
     );
 }
 
