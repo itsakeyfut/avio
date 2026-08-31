@@ -1,9 +1,12 @@
 pub mod blur;
 pub mod color_grade;
+pub mod color_wheels;
 pub mod composite;
 pub mod crossfade;
+pub mod curves;
 pub mod film_grain;
 pub mod glow;
+pub mod hsl;
 pub mod overlay;
 pub mod scale;
 pub mod upload;
@@ -11,13 +14,16 @@ pub mod vignette;
 
 pub use blur::{GaussianBlurNode, SharpenNode};
 pub use color_grade::ColorGradeNode;
+pub use color_wheels::ColorWheelsNode;
 pub use composite::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, LumaMaskNode, ShapeMaskNode,
     TransformNode,
 };
 pub use crossfade::CrossfadeNode;
+pub use curves::CurvesNode;
 pub use film_grain::FilmGrainNode;
 pub use glow::GlowNode;
+pub use hsl::HslNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
 pub use upload::{YuvFormat, YuvUploadNode};
