@@ -64,6 +64,11 @@ const TOL_GLOW_MEAN: f64 = 15.0;
 // loose calibrated tolerance: ~8.8 here (effect vs input ~7.7). Tested on a colour
 // gradient (RK-022): the corrector shifts each channel, so it is colour-relevant.
 const TOL_COLOR_WHEELS_MEAN: f64 = 20.0;
+// Curves: GPU CurvesNode (Steffen monotone-cubic LUT) vs the CPU `curves` filter
+// (its own spline). Both interpolate the same control points, so they agree closely:
+// ~1.4 here (effect vs input ~23). Tested on a colour gradient (RK-022): the per-channel
+// curves shift colour.
+const TOL_CURVES_MEAN: f64 = 8.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -568,6 +573,55 @@ fn color_wheels_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_COLOR_WHEELS_MEAN,
         "GPU and CPU ColorWheels diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn curves_gpu_should_match_cpu_within_tolerance() {
+    // Curves parity: GPU CurvesNode (map_scene maps `Curves`) vs the CPU `curves`
+    // filter. Both interpolate the same control points but with different splines
+    // (Steffen monotone cubic vs FFmpeg's), so a loose calibrated tolerance.
+    // Double-gated (adapter + filters). A colour gradient (RK-022) exercises the
+    // per-channel tone shift; the curve changes the frame, so a GPU that skipped it
+    // would diverge (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    // Lifted-midtones master curve + a slight red boost.
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Curves {
+            master: vec![(0.0, 0.0), (0.5, 0.62), (1.0, 1.0)],
+            r: vec![(0.0, 0.05), (1.0, 1.0)],
+            g: vec![],
+            b: vec![],
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported Curves layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "curves GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the curve must actually change the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU curves must visibly grade the frame; got {effect}"
+    );
+    assert!(
+        mean <= TOL_CURVES_MEAN,
+        "GPU and CPU curves diverged beyond tolerance: mean={mean}"
     );
 }
 

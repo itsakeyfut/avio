@@ -59,8 +59,8 @@ impl Param {
 /// A typed effect that a clip can carry. `#[non_exhaustive]`: more kinds are added
 /// over time, so external matchers must include a `_` arm.
 ///
-/// The v1 curated set is [`ColorCorrect`](Self::ColorCorrect), [`Blur`](Self::Blur),
-/// and [`Sharpen`](Self::Sharpen).
+/// The set grows as effect nodes are wired into the GPU bridge; each kind documents
+/// the `ff-filter` step / `ff-render` node it maps to.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -146,6 +146,23 @@ pub enum EffectKind {
         midtones_gamma: [Param; 3],
         /// Highlights gain, per channel. Range 0.0..=4.0 (neutral: 1.0).
         highlights_gain: [Param; 3],
+    },
+    /// Per-channel tone curves (the `curves` filter on the CPU path,
+    /// `ff_render::CurvesNode` on the GPU).
+    ///
+    /// Each curve is a list of `[input, output]` control points in `[0, 1]`. Unlike
+    /// the other kinds, a curve is a structural parameter, not a scalar, so it carries
+    /// no keyframeable [`Param`]; an empty set of curves is a no-op. The master curve
+    /// applies to every channel, then the per-channel curve.
+    Curves {
+        /// Master curve control points (applied to every channel). Empty = identity.
+        master: Vec<[f32; 2]>,
+        /// Red channel curve control points. Empty = identity.
+        red: Vec<[f32; 2]>,
+        /// Green channel curve control points. Empty = identity.
+        green: Vec<[f32; 2]>,
+        /// Blue channel curve control points. Empty = identity.
+        blue: Vec<[f32; 2]>,
     },
 }
 
@@ -340,6 +357,25 @@ impl EffectKind {
                         ],
                     })
                 }
+            }
+            // Curves map straight to the `curves` filter (control points as tuples);
+            // an all-empty set of curves is the identity, so it compiles to nothing.
+            EffectKind::Curves {
+                master,
+                red,
+                green,
+                blue,
+            } => {
+                if master.is_empty() && red.is_empty() && green.is_empty() && blue.is_empty() {
+                    return None;
+                }
+                let pts = |c: &[[f32; 2]]| c.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>();
+                Some(FilterStep::Curves {
+                    master: pts(master),
+                    r: pts(red),
+                    g: pts(green),
+                    b: pts(blue),
+                })
             }
         }
     }
@@ -629,6 +665,37 @@ mod tests {
                 );
             }
             other => panic!("expected ThreeWayCCAnimated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn curves_empty_should_compile_to_nothing() {
+        let kind = EffectKind::Curves {
+            master: vec![],
+            red: vec![],
+            green: vec![],
+            blue: vec![],
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "an all-empty Curves is the identity (no-op)"
+        );
+    }
+
+    #[test]
+    fn curves_should_compile_to_curves_with_tuple_points() {
+        let kind = EffectKind::Curves {
+            master: vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]],
+            red: vec![],
+            green: vec![],
+            blue: vec![],
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Curves { master, r, .. } => {
+                assert_eq!(master, vec![(0.0, 0.0), (0.5, 0.7), (1.0, 1.0)]);
+                assert!(r.is_empty(), "an empty per-channel curve stays empty");
+            }
+            other => panic!("expected Curves, got {other:?}"),
         }
     }
 }
