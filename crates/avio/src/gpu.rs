@@ -208,7 +208,7 @@ pub enum GpuEffect {
     },
     /// `ff_render::SharpenNode` (unsharp-mask sharpen).
     Sharpen {
-        /// Unsharp-mask blur radius (sigma). Fixed to [`DEFAULT_SHARPEN_RADIUS`]:
+        /// Unsharp-mask blur radius (sigma). Fixed to `DEFAULT_SHARPEN_RADIUS`:
         /// the `unsharp` filter carries no radius (a fixed 5×5 mask), so the GPU
         /// node uses a constant that approximates it.
         radius: f32,
