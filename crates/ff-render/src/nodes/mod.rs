@@ -10,6 +10,7 @@ pub mod hsl;
 pub mod lut;
 pub mod overlay;
 pub mod scale;
+pub mod transition;
 pub mod upload;
 pub mod vignette;
 
@@ -28,6 +29,7 @@ pub use hsl::HslNode;
 pub use lut::LutNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
+pub use transition::{DipToColorNode, WipeTransitionNode};
 pub use upload::{YuvFormat, YuvUploadNode};
 pub use vignette::VignetteNode;
 
