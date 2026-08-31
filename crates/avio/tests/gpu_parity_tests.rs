@@ -49,6 +49,11 @@ const TOL_SHARPEN_MEAN: f64 = 5.0;
 // input ~56, so a skipped vignette diverges past this). Tested on a colored gradient
 // (RK-022): vignette scales every channel equally, so it is color-consistent.
 const TOL_VIGNETTE_MEAN: f64 = 45.0;
+// Film grain: GPU (Wang hash) and CPU (`noise` RNG) produce different patterns, so
+// parity compares grain *strength* (std of output - input), not pixels. Calibrated
+// (NODE_GRAIN_SCALE) so the two grain std-devs match: ~10.9 vs ~11.1 here. The margin
+// covers per-run RNG variance across GPU drivers.
+const TOL_FILMGRAIN_STD: f64 = 6.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -81,6 +86,26 @@ fn checkerboard_rgba(w: u32, h: u32, block: u32) -> Vec<u8> {
         }
     }
     v
+}
+
+/// Standard deviation of the signed per-channel difference `out - input` over the
+/// RGB channels. For an added-noise effect this is the grain magnitude; the film
+/// grain parity compares this (not pixels, since the GPU and CPU use different RNGs
+/// so their grain patterns never match).
+fn std_delta_rgb(out: &[u8], input: &[u8]) -> f64 {
+    let mut diffs = Vec::with_capacity(out.len() / 4 * 3);
+    for (po, pi) in out.chunks_exact(4).zip(input.chunks_exact(4)) {
+        for c in 0..3 {
+            diffs.push(f64::from(i16::from(po[c]) - i16::from(pi[c])));
+        }
+    }
+    let n = diffs.len() as f64;
+    if n == 0.0 {
+        return 0.0;
+    }
+    let mean = diffs.iter().sum::<f64>() / n;
+    let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n;
+    var.sqrt()
 }
 
 /// Mean absolute per-channel difference over the RGB channels only (skips alpha).
@@ -372,6 +397,50 @@ fn vignette_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_VIGNETTE_MEAN,
         "GPU and CPU vignette diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn film_grain_gpu_should_match_cpu_grain_strength() {
+    // Film grain parity is statistical, not per-pixel: the GPU node (Wang hash) and
+    // the CPU `noise` filter use different RNGs, so their grain patterns never match.
+    // Instead compare the grain *magnitude* (std of output - input) on a flat mid-grey
+    // frame, which both must move by a comparable amount. Double-gated (adapter +
+    // filters). Non-vacuous (RK-015): a GPU that added no grain gives std 0 and fails.
+    let (w, h) = (64, 48);
+    let mut input = vec![0u8; (w * h * 4) as usize];
+    for px in input.as_chunks_mut::<4>().0 {
+        *px = [128, 128, 128, 255];
+    }
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::FilmGrain {
+            luma_strength: 20.0,
+            chroma_strength: 20.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported film-grain layer must composite on the GPU");
+    };
+    let std_gpu = std_delta_rgb(&gpu_out, &input);
+    let std_cpu = std_delta_rgb(&cpu, &input);
+    println!("filmgrain grain std: gpu={std_gpu:.3} cpu={std_cpu:.3}");
+    // Non-vacuous: both paths must actually add grain.
+    assert!(
+        std_gpu > 1.0 && std_cpu > 1.0,
+        "both paths must add visible grain; gpu={std_gpu} cpu={std_cpu}"
+    );
+    assert!(
+        (std_gpu - std_cpu).abs() <= TOL_FILMGRAIN_STD,
+        "GPU and CPU grain strength diverged: gpu={std_gpu} cpu={std_cpu}"
     );
 }
 

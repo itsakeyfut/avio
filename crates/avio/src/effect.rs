@@ -103,6 +103,19 @@ pub enum EffectKind {
         /// Darkening amount. Range 0.0..=1.0 (neutral: 0.0).
         amount: Param,
     },
+    /// Temporal film grain (the `noise` filter on the CPU path,
+    /// `ff_render::FilmGrainNode` on the GPU).
+    ///
+    /// Luma and chroma grain strengths in the `noise` filter's `[0, 100]` scale
+    /// (`0.0` = none). The grain pattern varies per frame on both paths; because
+    /// `noise` has no runtime-settable parameter, an animated strength animates on
+    /// the GPU-default path but renders its `t = 0` value on the CPU fallback.
+    FilmGrain {
+        /// Luma-plane grain strength. Range 0.0..=100.0 (neutral: 0.0).
+        luma_strength: Param,
+        /// Chroma-plane grain strength. Range 0.0..=100.0 (neutral: 0.0).
+        chroma_strength: Param,
+    },
 }
 
 impl EffectKind {
@@ -179,6 +192,24 @@ impl EffectKind {
                 amount: amount.to_animated(),
                 x0: 0.0,
                 y0: 0.0,
+            }),
+            // FilmGrain maps to `noise`. An all-constant strength uses the static
+            // `FilmGrain`; any animated strength uses `FilmGrainAnimated` (which the
+            // GPU animates per frame; the CPU renders its `t = 0` value, `noise`
+            // having no runtime parameter). The grain pattern is temporal regardless.
+            EffectKind::FilmGrain {
+                luma_strength,
+                chroma_strength,
+            } => Some(if luma_strength.is_const() && chroma_strength.is_const() {
+                FilterStep::FilmGrain {
+                    luma_strength: luma_strength.as_const().unwrap_or(0.0) as f32,
+                    chroma_strength: chroma_strength.as_const().unwrap_or(0.0) as f32,
+                }
+            } else {
+                FilterStep::FilmGrainAnimated {
+                    luma_strength: luma_strength.to_animated(),
+                    chroma_strength: chroma_strength.to_animated(),
+                }
             }),
         }
     }
@@ -349,6 +380,36 @@ mod tests {
         assert!(matches!(
             kind.to_filter_step(),
             Some(FilterStep::VignetteAnimated { .. })
+        ));
+    }
+
+    #[test]
+    fn film_grain_const_should_compile_to_film_grain() {
+        let kind = EffectKind::FilmGrain {
+            luma_strength: Param::Const(20.0),
+            chroma_strength: Param::Const(5.0),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::FilmGrain {
+                luma_strength,
+                chroma_strength,
+            } => {
+                assert!((luma_strength - 20.0).abs() < 1e-6);
+                assert!((chroma_strength - 5.0).abs() < 1e-6);
+            }
+            other => panic!("expected FilmGrain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn film_grain_any_animated_strength_should_compile_to_film_grain_animated() {
+        let kind = EffectKind::FilmGrain {
+            luma_strength: Param::Animated(animated_track()),
+            chroma_strength: Param::Const(5.0),
+        };
+        assert!(matches!(
+            kind.to_filter_step(),
+            Some(FilterStep::FilmGrainAnimated { .. })
         ));
     }
 }

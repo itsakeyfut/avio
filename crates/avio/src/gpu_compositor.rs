@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use ff_format::VideoFrame;
 use ff_render::{
-    ColorGradeNode, Compositor, FrameLayer, GaussianBlurNode, LayerTransform, RenderContext,
-    RenderGraph, ScaleNode, SharpenNode, VignetteNode,
+    ColorGradeNode, Compositor, FilmGrainNode, FrameLayer, GaussianBlurNode, LayerTransform,
+    RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -172,6 +172,16 @@ impl GpuCompositor {
                     strength,
                     feather,
                 } => graph.push(VignetteNode::new(*radius, *strength, *feather)),
+                // FilmGrain preserves the frame dimensions too.
+                GpuEffect::FilmGrain {
+                    luma_strength,
+                    chroma_strength,
+                    frame_index,
+                } => graph.push(FilmGrainNode::new(
+                    *luma_strength,
+                    *chroma_strength,
+                    *frame_index,
+                )),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;

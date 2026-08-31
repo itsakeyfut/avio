@@ -797,6 +797,20 @@ pub enum FilterStep {
         /// Grain strength applied to the Cb and Cr planes. Clamped to [0.0, 100.0].
         chroma_strength: f32,
     },
+    /// Temporal film grain (the `noise` filter) with an optionally animated strength.
+    ///
+    /// Strengths are evaluated at [`Duration::ZERO`] for the graph build. Like
+    /// [`UnsharpAnimated`](Self::UnsharpAnimated), `noise` exposes no
+    /// runtime-settable parameter, so the CPU (`libavfilter`) path renders the
+    /// `Duration::ZERO` strength statically; the GPU path animates it per frame. The
+    /// grain *pattern* is temporal on both paths regardless (`allf=t` on the CPU, the
+    /// per-frame seed on the GPU).
+    FilmGrainAnimated {
+        /// Luma-plane grain strength. Evaluated to [0.0, 100.0] at `Duration::ZERO`.
+        luma_strength: AnimatedValue<f64>,
+        /// Chroma-plane grain strength. Evaluated to [0.0, 100.0] at `Duration::ZERO`.
+        chroma_strength: AnimatedValue<f64>,
+    },
 
     /// Uniform scale by a fractional multiplier via `FFmpeg`'s `scale` filter.
     ///
@@ -1165,6 +1179,7 @@ impl FilterStep {
             Self::MotionBlur { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
+            Self::FilmGrainAnimated { .. } => "noise",
             Self::ScaleMultiplier { .. } => "scale",
             Self::ChromaticAberration { .. } => "rgbashift",
             // Glow is a compound step (split → curves → gblur → blend);
@@ -1777,6 +1792,19 @@ impl FilterStep {
                 let ls = luma_strength.clamp(0.0, 100.0) as u32;
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let cs = chroma_strength.clamp(0.0, 100.0) as u32;
+                format!("alls={ls}:c0s={cs}:c1s={cs}:allf=t")
+            }
+            Self::FilmGrainAnimated {
+                luma_strength,
+                chroma_strength,
+            } => {
+                // No `eval=frame` / `send_command`: `noise` has no runtime parameter,
+                // so the CPU path renders the `Duration::ZERO` strength statically. The
+                // pattern is still temporal via `allf=t`.
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let ls = luma_strength.value_at(Duration::ZERO).clamp(0.0, 100.0) as u32;
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let cs = chroma_strength.value_at(Duration::ZERO).clamp(0.0, 100.0) as u32;
                 format!("alls={ls}:c0s={cs}:c1s={cs}:allf=t")
             }
             Self::ScaleMultiplier { factor } => {
