@@ -206,7 +206,21 @@ pub enum GpuEffect {
         /// `gblur` filter uses on the CPU path.
         sigma: f32,
     },
+    /// `ff_render::SharpenNode` (unsharp-mask sharpen).
+    Sharpen {
+        /// Unsharp-mask blur radius (sigma). Fixed to [`DEFAULT_SHARPEN_RADIUS`]:
+        /// the `unsharp` filter carries no radius (a fixed 5×5 mask), so the GPU
+        /// node uses a constant that approximates it.
+        radius: f32,
+        /// Sharpening amount (the `unsharp` luma amount).
+        strength: f32,
+    },
 }
+
+/// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
+/// has no radius option (a fixed 5×5 luma mask), so the GPU path approximates it
+/// with this constant; the parity tolerance absorbs the small kernel difference.
+const DEFAULT_SHARPEN_RADIUS: f32 = 1.0;
 
 /// One layer of a [`GpuScenePlan`]: the transform / blend / opacity the
 /// `ff_render::Compositor` needs, plus the per-layer effect nodes to run before
@@ -336,7 +350,9 @@ enum StepClass {
     Unsupported,
 }
 
-#[allow(clippy::cast_possible_truncation)]
+// `chroma != 0.0` compares against the neutral sentinel our mapping always emits,
+// so an exact float comparison is intended here.
+#[allow(clippy::cast_possible_truncation, clippy::float_cmp)]
 fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
     match step {
         // Temporal / decode-scheduling steps are applied upstream (the GPU path
@@ -392,6 +408,36 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             // an animated sigma is evaluated at the frame time here.
             sigma: sigma.value_at(t) as f32,
         }),
+        // The GPU SharpenNode is luma-only; a non-zero chroma amount cannot be
+        // represented, so it falls back rather than silently drop it (RK-020).
+        FilterStep::Unsharp {
+            luma_strength,
+            chroma_strength,
+        } => {
+            if *chroma_strength != 0.0 {
+                StepClass::Unsupported
+            } else {
+                StepClass::Effect(GpuEffect::Sharpen {
+                    radius: DEFAULT_SHARPEN_RADIUS,
+                    strength: *luma_strength,
+                })
+            }
+        }
+        FilterStep::UnsharpAnimated {
+            luma_strength,
+            chroma_strength,
+        } => {
+            if chroma_strength.value_at(t) != 0.0 {
+                StepClass::Unsupported
+            } else {
+                // Rebuilt per frame (map_scene runs per frame), so the animated
+                // amount is evaluated at the frame time here.
+                StepClass::Effect(GpuEffect::Sharpen {
+                    radius: DEFAULT_SHARPEN_RADIUS,
+                    strength: luma_strength.value_at(t) as f32,
+                })
+            }
+        }
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
@@ -658,6 +704,59 @@ mod tests {
         assert!(
             (sigma - 4.0).abs() < 1e-3,
             "animated sigma at t=1s should be ~4; got {sigma}"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_unsharp_to_sharpen() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Unsharp {
+            luma_strength: 0.8,
+            chroma_strength: 0.0,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert_eq!(
+            plan.layers[0].effects.as_slice(),
+            [GpuEffect::Sharpen {
+                radius: DEFAULT_SHARPEN_RADIUS,
+                strength: 0.8,
+            }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_evaluate_animated_unsharp_amount_at_t() {
+        // amount ramps 0.2 -> 0.6 over 0..2s; at t=1s it should read ~0.4.
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.2, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 0.6, Easing::Linear));
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::UnsharpAnimated {
+            luma_strength: AnimatedValue::Track(track),
+            chroma_strength: AnimatedValue::Static(0.0),
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::from_secs(1)));
+        let [GpuEffect::Sharpen { strength, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("animated unsharp must map to a single Sharpen effect");
+        };
+        assert!(
+            (strength - 0.4).abs() < 1e-3,
+            "animated amount at t=1s should be ~0.4; got {strength}"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_fall_back_on_unsharp_with_chroma() {
+        // A non-zero chroma amount cannot be represented by the luma-only GPU node,
+        // so the whole frame must fall back rather than drop the chroma (RK-020).
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Unsharp {
+            luma_strength: 0.5,
+            chroma_strength: 0.5,
+        }];
+        assert_eq!(
+            map_scene(&[layer], (16, 16), Duration::ZERO),
+            GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
         );
     }
 
