@@ -37,23 +37,39 @@ impl VideoEncoderInner {
         }
     }
 
-    /// Apply `movflags` for fMP4 containers before `avformat_write_header`.
+    /// Apply `movflags` for MP4/MOV containers before `avformat_write_header`.
     ///
-    /// When `container` is [`crate::OutputContainer::FMp4`], sets
-    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` via `av_opt_set`
-    /// on the format context's `priv_data`. This enables CMAF-compatible
-    /// fragmented output required for HLS fMP4 segments and MPEG-DASH.
+    /// Fragmented MP4 ([`crate::OutputContainer::FMp4`]) sets
+    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` (CMAF-compatible
+    /// output for HLS fMP4 segments and MPEG-DASH). Otherwise, when `faststart`
+    /// is requested on an MP4/MOV container, sets `movflags=+faststart` so the
+    /// `moov` atom is relocated to the front for progressive download. The two
+    /// are mutually exclusive: fragmented output already streams, so `faststart`
+    /// is ignored there. Non-MP4/MOV containers have no `movflags` option, so
+    /// nothing is set. `movflags` is set via `av_opt_set` on `priv_data`.
     ///
+    /// `container` is the explicitly requested container (`None` when the caller
+    /// let the extension decide); the effective container for MP4/MOV detection
+    /// is resolved from `path` in that case.
     pub(super) fn apply_movflags(
         format_ctx: &mut ff_sys::OutputFormatContext,
         container: Option<crate::OutputContainer>,
+        path: &std::path::Path,
+        faststart: bool,
     ) {
-        if container.is_some_and(|c| c.is_fragmented())
-            && let Err(e) =
-                format_ctx.set_opt(c"movflags", c"+frag_keyframe+empty_moov+default_base_moof")
+        let effective = container.or_else(|| crate::OutputContainer::from_path(path));
+        let flags: Option<&std::ffi::CStr> = if effective.is_some_and(|c| c.is_fragmented()) {
+            Some(c"+frag_keyframe+empty_moov+default_base_moof")
+        } else if faststart && effective.is_some_and(|c| c.supports_faststart()) {
+            Some(c"+faststart")
+        } else {
+            None
+        };
+        if let Some(f) = flags
+            && let Err(e) = format_ctx.set_opt(c"movflags", f)
         {
             log::warn!(
-                "av_opt_set movflags failed for fMP4 container error={}",
+                "av_opt_set movflags failed error={}",
                 ff_sys::av_error_string(e.code())
             );
         }
