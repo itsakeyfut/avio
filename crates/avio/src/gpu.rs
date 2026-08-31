@@ -215,12 +215,29 @@ pub enum GpuEffect {
         /// Sharpening amount (the `unsharp` luma amount).
         strength: f32,
     },
+    /// `ff_render::VignetteNode` (radial darkening).
+    Vignette {
+        /// Normalised distance where darkening begins. Fixed to
+        /// `DEFAULT_VIGNETTE_RADIUS` (the `vignette` filter has no radius option).
+        radius: f32,
+        /// Maximum darkening at the corners (the mapped `vignette` amount).
+        strength: f32,
+        /// Falloff width. Fixed to `DEFAULT_VIGNETTE_FEATHER`.
+        feather: f32,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
 /// has no radius option (a fixed 5×5 luma mask), so the GPU path approximates it
 /// with this constant; the parity tolerance absorbs the small kernel difference.
 const DEFAULT_SHARPEN_RADIUS: f32 = 1.0;
+
+/// Radius / feather the GPU [`ff_render::VignetteNode`] uses. The `vignette` filter
+/// is parameterised only by an `angle` (a `cos^4` falloff), so the GPU node
+/// approximates its profile with fixed radius and feather; only the mapped strength
+/// varies. The parity tolerance absorbs the profile difference.
+const DEFAULT_VIGNETTE_RADIUS: f32 = 0.5;
+const DEFAULT_VIGNETTE_FEATHER: f32 = 0.5;
 
 /// One layer of a [`GpuScenePlan`]: the transform / blend / opacity the
 /// `ff_render::Compositor` needs, plus the per-layer effect nodes to run before
@@ -435,6 +452,32 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                 StepClass::Effect(GpuEffect::Sharpen {
                     radius: DEFAULT_SHARPEN_RADIUS,
                     strength: luma_strength.value_at(t) as f32,
+                })
+            }
+        }
+        // The GPU VignetteNode is centred; an off-centre `vignette` falls back
+        // rather than render a differently-placed vignette (RK-020).
+        FilterStep::Vignette { angle, x0, y0 } => {
+            if *x0 != 0.0 || *y0 != 0.0 {
+                StepClass::Unsupported
+            } else {
+                StepClass::Effect(GpuEffect::Vignette {
+                    radius: DEFAULT_VIGNETTE_RADIUS,
+                    // The `vignette` angle spans [0, PI/2]; normalise to the node's
+                    // [0, 1] strength.
+                    strength: (angle / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0),
+                    feather: DEFAULT_VIGNETTE_FEATHER,
+                })
+            }
+        }
+        FilterStep::VignetteAnimated { amount, x0, y0 } => {
+            if *x0 != 0.0 || *y0 != 0.0 {
+                StepClass::Unsupported
+            } else {
+                StepClass::Effect(GpuEffect::Vignette {
+                    radius: DEFAULT_VIGNETTE_RADIUS,
+                    strength: (amount.value_at(t) as f32).clamp(0.0, 1.0),
+                    feather: DEFAULT_VIGNETTE_FEATHER,
                 })
             }
         }
@@ -753,6 +796,69 @@ mod tests {
         layer.effects = vec![FilterStep::Unsharp {
             luma_strength: 0.5,
             chroma_strength: 0.5,
+        }];
+        assert_eq!(
+            map_scene(&[layer], (16, 16), Duration::ZERO),
+            GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_vignette_animated_to_vignette() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::VignetteAnimated {
+            amount: AnimatedValue::Static(0.6),
+            x0: 0.0,
+            y0: 0.0,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        let [
+            GpuEffect::Vignette {
+                radius,
+                strength,
+                feather,
+            },
+        ] = plan.layers[0].effects.as_slice()
+        else {
+            panic!("vignette must map to a single Vignette effect");
+        };
+        assert!(
+            (strength - 0.6).abs() < 1e-6,
+            "amount maps to strength; got {strength}"
+        );
+        assert!(
+            *radius > 0.0 && *feather > 0.0,
+            "radius/feather use the defaults"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_static_vignette_normalising_angle() {
+        // A hand-built static Vignette at the max angle (PI/2) maps to full strength.
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Vignette {
+            angle: std::f32::consts::FRAC_PI_2,
+            x0: 0.0,
+            y0: 0.0,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        let [GpuEffect::Vignette { strength, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("vignette must map to a single Vignette effect");
+        };
+        assert!(
+            (strength - 1.0).abs() < 1e-6,
+            "angle PI/2 -> strength 1.0; got {strength}"
+        );
+    }
+
+    #[test]
+    fn map_scene_should_fall_back_on_off_centre_vignette() {
+        // The GPU node is centred, so an off-centre vignette falls back (RK-020).
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::VignetteAnimated {
+            amount: AnimatedValue::Static(0.5),
+            x0: 320.0,
+            y0: 0.0,
         }];
         assert_eq!(
             map_scene(&[layer], (16, 16), Duration::ZERO),

@@ -654,6 +654,14 @@ impl FilterGraphBuilder {
                     reason: format!("vignette angle {angle} out of range [0.0, π/2]"),
                 });
             }
+            if let FilterStep::VignetteAnimated { amount, .. } = step {
+                let a0 = amount.value_at(Duration::ZERO);
+                if !(0.0..=1.0).contains(&a0) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("vignette amount {a0} out of range [0.0, 1.0]"),
+                    });
+                }
+            }
             if let FilterStep::Pad { width, height, .. } = step
                 && (*width == 0 || *height == 0)
             {

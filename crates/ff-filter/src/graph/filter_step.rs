@@ -182,6 +182,21 @@ pub enum FilterStep {
         /// Vertical centre of the vignette. `0.0` maps to `h/2`.
         y0: f32,
     },
+    /// Vignette with an optionally animated normalised amount.
+    ///
+    /// `amount` is a normalised darkening strength in `[0, 1]`; it maps to the
+    /// `vignette` filter's `angle` (radians) as `amount * PI/2`. `vignette`
+    /// re-evaluates `angle` per frame under `eval=frame`, so a `Track` self-animates
+    /// via a `t`-expression (like [`RotateAnimated`](Self::RotateAnimated)); a
+    /// `Static` renders a plain static vignette.
+    VignetteAnimated {
+        /// Normalised darkening amount, evaluated to `[0, 1]` at `Duration::ZERO`.
+        amount: AnimatedValue<f64>,
+        /// Horizontal centre. `0.0` maps to `w/2`.
+        x0: f32,
+        /// Vertical centre. `0.0` maps to `h/2`.
+        y0: f32,
+    },
     /// Horizontal flip (mirror left-right).
     HFlip,
     /// Vertical flip (mirror top-bottom).
@@ -1146,6 +1161,7 @@ impl FilterStep {
             Self::UnsharpAnimated { .. } => "unsharp",
             Self::ScaleAnimated { .. } => "scale",
             Self::RotateAnimated { .. } => "rotate",
+            Self::VignetteAnimated { .. } => "vignette",
             Self::MotionBlur { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
@@ -1719,6 +1735,30 @@ impl FilterStep {
                     format!("angle={}:fillcolor={fill_color}", deg.to_radians())
                 }
             },
+            Self::VignetteAnimated { amount, x0, y0 } => {
+                let cx = if *x0 == 0.0 {
+                    "w/2".to_string()
+                } else {
+                    x0.to_string()
+                };
+                let cy = if *y0 == 0.0 {
+                    "h/2".to_string()
+                } else {
+                    y0.to_string()
+                };
+                match amount {
+                    // `vignette` re-evaluates `angle` per frame under `eval=frame`, so a
+                    // Track self-animates. The normalised amount is scaled to the angle
+                    // (radians) in the expression: `amount * PI/2`.
+                    AnimatedValue::Track(track) => {
+                        let a = track.to_ffmpeg_expr("t");
+                        format!("angle=({a})*PI/2:x0={cx}:y0={cy}:eval=frame")
+                    }
+                    AnimatedValue::Static(a) => {
+                        format!("angle={}:x0={cx}:y0={cy}", a * std::f64::consts::FRAC_PI_2)
+                    }
+                }
+            }
             Self::MotionBlur {
                 shutter_angle_degrees,
                 ..
