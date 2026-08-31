@@ -60,6 +60,12 @@ name = "composition_framerate"
 name = "timeline_preview_tests"
 required-features = ["preview"]
 
+# GPU/CPU parity + fallback tests (Br5): the GPU leg needs the `gpu` feature and the
+# runner-fallback leg needs `preview`. Kept in sync with the file's `#![cfg(all(...))]`.
+[[test]]
+name = "gpu_parity_tests"
+required-features = ["gpu", "preview"]
+
 # Engine demo — builds by default now that the model is unconditional.
 [[example]]
 name = "timeline_render"

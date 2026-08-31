@@ -149,8 +149,22 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
   regression).
 - The capability check is the single gate: a frame is GPU only if every step maps. This guarantees the GPU
   path never approximates or drops an unsupported effect -- it defers to CPU instead.
-- Br5 (#1628) confirms this with parity tests (GPU vs CPU within tolerance for the supported set) and fallback
-  tests (no adapter / forced error / unsupported step each route to CPU without panic or hang).
+- Br5 (#1628) confirms this in `crates/avio/tests/gpu_parity_tests.rs`:
+  - **Parity** compares the GPU compositor and the CPU `RealtimeComposer` directly in rgba (no encode/decode
+    noise) over the same `RealtimeLayer`. Identity passthrough is pixel-exact on the dev build (GPU vs input
+    and GPU vs CPU both mean 0.0; guarded at mean <= 2.0); a `ColorGrade` (`eq`) is mean ~6.6 (guarded at
+    <= 20.0, looser because `ColorGradeNode` and FFmpeg `eq` are different implementations). The GPU **export**
+    drain composites through the same `GpuCompositor`, so this covers the export compositing math; the
+    end-to-end export-vs-force-CPU smoke lives in `gpu_export_tests.rs`. The tolerance asserts are the
+    divergence regression guard.
+  - **Fallback** asserts the compositor returns `None` (never panics) for every unsupported input
+    (non-identity transform, aspect mismatch, unsupported blend, unsupported effect), and the preview runner
+    keeps advancing and terminates (never hangs, RK-019) when it falls back; `render_forcing_cpu` and the
+    ineligible-timeline gate route export to CPU.
+  - Both parity legs are double-gated (RK-002): the GPU leg needs an adapter, the CPU leg needs an
+    FFmpeg-with-filters (`RealtimeComposer` is libavfilter-based). Each skips gracefully, so the real parity
+    runs on a full dev build / macOS CI and the suite stays green on headless / minimal CI. Exact pixel
+    equality across GPU drivers is not asserted (`docs/rules/test.md`).
 
 ## Deferred beyond v0.18.0
 
