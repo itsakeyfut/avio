@@ -274,6 +274,11 @@ pub enum GpuEffect {
         /// Lightness offset (neutral `0.0`).
         lightness: f32,
     },
+    /// `ff_render::LutNode` (3D colour LUT loaded from a `.cube` / `.3dl` file).
+    Lut {
+        /// Path to the LUT file the compositor loads.
+        path: String,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -607,6 +612,15 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             saturation.value_at(t) as f32,
             lightness.value_at(t) as f32,
         ),
+        // An empty path is the identity (no-op); otherwise the compositor loads the
+        // LUT file. A file it cannot load falls back to CPU there (RK-020).
+        FilterStep::Lut3d { path } => {
+            if path.is_empty() {
+                StepClass::Skip
+            } else {
+                StepClass::Effect(GpuEffect::Lut { path: path.clone() })
+            }
+        }
         // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).

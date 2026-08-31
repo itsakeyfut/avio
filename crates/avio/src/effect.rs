@@ -183,6 +183,17 @@ pub enum EffectKind {
         /// Lightness offset. Range −1.0..=1.0 (neutral: 0.0).
         lightness: Param,
     },
+    /// 3D colour LUT (the `lut3d` filter on the CPU path, `ff_render::LutNode` on
+    /// the GPU), loaded from an Adobe `.cube` or Resolve `.3dl` file.
+    ///
+    /// Like [`Curves`](Self::Curves), a LUT is a structural parameter (a file
+    /// path), not a scalar, so it carries no keyframeable [`Param`]; an empty path
+    /// is a no-op. On the GPU a file that cannot be loaded (missing, malformed, or
+    /// an unsupported extension) falls back to the CPU path.
+    Lut {
+        /// Path to the `.cube` / `.3dl` LUT file. Empty = identity.
+        path: String,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -425,6 +436,14 @@ impl EffectKind {
                         lightness: lightness.to_animated(),
                     })
                 }
+            }
+            // Lut maps straight to the `lut3d` filter (the same file path the GPU
+            // LutNode loads); an empty path is the identity, so it compiles to nothing.
+            EffectKind::Lut { path } => {
+                if path.is_empty() {
+                    return None;
+                }
+                Some(FilterStep::Lut3d { path: path.clone() })
             }
         }
     }
@@ -796,5 +815,27 @@ mod tests {
             ),
             "any animated parameter routes through HslAnimated"
         );
+    }
+
+    #[test]
+    fn lut_empty_path_should_compile_to_nothing() {
+        let kind = EffectKind::Lut {
+            path: String::new(),
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "an empty LUT path is the identity (no-op)"
+        );
+    }
+
+    #[test]
+    fn lut_should_compile_to_lut3d() {
+        let kind = EffectKind::Lut {
+            path: "grade.cube".to_string(),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Lut3d { path } => assert_eq!(path, "grade.cube"),
+            other => panic!("expected Lut3d, got {other:?}"),
+        }
     }
 }
