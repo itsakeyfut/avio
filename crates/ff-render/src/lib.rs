@@ -80,8 +80,8 @@ pub use ff_format::{ErrorSeverity, MediaError};
 pub use graph::RenderGraph;
 pub use nodes::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
-    LumaMaskNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode,
-    TransformNode, YuvFormat, YuvUploadNode,
+    GaussianBlurNode, LumaMaskNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode,
+    ShapeMaskNode, SharpenNode, TransformNode, YuvFormat, YuvUploadNode,
 };
 pub use sink::GpuFrameSink;
 
