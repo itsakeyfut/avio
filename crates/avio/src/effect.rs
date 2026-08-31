@@ -164,6 +164,25 @@ pub enum EffectKind {
         /// Blue channel curve control points. Empty = identity.
         blue: Vec<[f32; 2]>,
     },
+    /// HSL adjustment (the `hue` filter on the CPU path, `ff_render::HslNode` on
+    /// the GPU).
+    ///
+    /// A hue rotation in degrees, a saturation multiplier, and a lightness offset.
+    /// The CPU `hue` filter works in YUV (chroma rotation plus a luma-add
+    /// brightness), so it approximates the GPU node's HSL-space adjustment within a
+    /// documented tolerance. Neutral parameters (`hue_shift = 0.0`,
+    /// `saturation = 1.0`, `lightness = 0.0`, all constant) compile to no filter.
+    /// Because `hue`'s options are string expressions, an animated parameter
+    /// animates on the GPU-default path but renders its `t = 0` value on the CPU
+    /// fallback.
+    Hsl {
+        /// Hue rotation in degrees. Range −180.0..=180.0 (neutral: 0.0).
+        hue_shift: Param,
+        /// Saturation multiplier. Range 0.0..=2.0 (neutral: 1.0).
+        saturation: Param,
+        /// Lightness offset. Range −1.0..=1.0 (neutral: 0.0).
+        lightness: Param,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -376,6 +395,36 @@ impl EffectKind {
                     g: pts(green),
                     b: pts(blue),
                 })
+            }
+            // Hsl maps to the `hue` filter (hue_shift -> h degrees, saturation -> s,
+            // lightness -> b brightness). A fully neutral, all-constant adjustment
+            // compiles to nothing; any animated parameter uses `HslAnimated` (which
+            // the GPU animates per frame; the CPU renders its `t = 0` values).
+            EffectKind::Hsl {
+                hue_shift,
+                saturation,
+                lightness,
+            } => {
+                if hue_shift.is_const() && saturation.is_const() && lightness.is_const() {
+                    #[allow(clippy::float_cmp)]
+                    let neutral = hue_shift.as_const() == Some(0.0)
+                        && saturation.as_const() == Some(1.0)
+                        && lightness.as_const() == Some(0.0);
+                    if neutral {
+                        return None;
+                    }
+                    Some(FilterStep::Hsl {
+                        hue: hue_shift.as_const().unwrap_or(0.0) as f32,
+                        saturation: saturation.as_const().unwrap_or(1.0) as f32,
+                        lightness: lightness.as_const().unwrap_or(0.0) as f32,
+                    })
+                } else {
+                    Some(FilterStep::HslAnimated {
+                        hue: hue_shift.to_animated(),
+                        saturation: saturation.to_animated(),
+                        lightness: lightness.to_animated(),
+                    })
+                }
             }
         }
     }
@@ -697,5 +746,55 @@ mod tests {
             }
             other => panic!("expected Curves, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hsl_neutral_should_compile_to_nothing() {
+        let kind = EffectKind::Hsl {
+            hue_shift: Param::Const(0.0),
+            saturation: Param::Const(1.0),
+            lightness: Param::Const(0.0),
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "a neutral HSL adjustment is a no-op"
+        );
+    }
+
+    #[test]
+    fn hsl_const_should_compile_to_hsl() {
+        let kind = EffectKind::Hsl {
+            hue_shift: Param::Const(20.0),
+            saturation: Param::Const(1.2),
+            lightness: Param::Const(0.05),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Hsl {
+                hue,
+                saturation,
+                lightness,
+            } => {
+                assert!((hue - 20.0).abs() < 1e-5);
+                assert!((saturation - 1.2).abs() < 1e-5);
+                assert!((lightness - 0.05).abs() < 1e-5);
+            }
+            other => panic!("expected Hsl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hsl_any_animated_should_compile_to_hsl_animated() {
+        let kind = EffectKind::Hsl {
+            hue_shift: Param::Animated(animated_track()),
+            saturation: Param::Const(1.0),
+            lightness: Param::Const(0.0),
+        };
+        assert!(
+            matches!(
+                kind.to_filter_step().unwrap(),
+                FilterStep::HslAnimated { .. }
+            ),
+            "any animated parameter routes through HslAnimated"
+        );
     }
 }

@@ -31,8 +31,8 @@ use std::time::Duration;
 use ff_format::VideoFrame;
 use ff_render::{
     ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode, FrameLayer,
-    GaussianBlurNode, GlowNode, LayerTransform, RenderContext, RenderGraph, ScaleNode, SharpenNode,
-    VignetteNode,
+    GaussianBlurNode, GlowNode, HslNode, LayerTransform, RenderContext, RenderGraph, ScaleNode,
+    SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -211,6 +211,12 @@ impl GpuCompositor {
                     green.clone(),
                     blue.clone(),
                 )),
+                // Hsl preserves the frame dimensions too.
+                GpuEffect::Hsl {
+                    hue_shift,
+                    saturation,
+                    lightness,
+                } => graph.push(HslNode::new(*hue_shift, *saturation, *lightness)),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;

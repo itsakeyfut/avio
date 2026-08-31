@@ -69,6 +69,12 @@ const TOL_COLOR_WHEELS_MEAN: f64 = 20.0;
 // ~1.4 here (effect vs input ~23). Tested on a colour gradient (RK-022): the per-channel
 // curves shift colour.
 const TOL_CURVES_MEAN: f64 = 8.0;
+// HSL: GPU HslNode (true HSL space) vs the CPU `hue` filter (YUV chroma rotation
+// for hue/saturation, a luma add for brightness). The colour models differ but
+// still agree closely for a modest adjustment: ~6.7 here (effect vs input ~21).
+// Tested on a colour gradient (RK-022) where the hue/saturation shift moves every
+// channel.
+const TOL_HSL_MEAN: f64 = 20.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -622,6 +628,54 @@ fn curves_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_CURVES_MEAN,
         "GPU and CPU curves diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn hsl_gpu_should_match_cpu_within_tolerance() {
+    // HSL parity: GPU HslNode (map_scene maps `Hsl`) vs the CPU `hue` filter. The
+    // node works in HSL space; `hue` works in YUV (chroma rotation + a luma-add
+    // brightness), so they only agree within a wide calibrated tolerance.
+    // Double-gated (adapter + filters). A colour gradient (RK-022) exercises the
+    // hue/saturation shift across channels; the adjustment changes the frame, so a
+    // GPU that skipped it would diverge (non-vacuous, RK-015).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    // Modest hue rotation + saturation boost + a small lightness lift.
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Hsl {
+            hue: 20.0,
+            saturation: 1.2,
+            lightness: 0.05,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported Hsl layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    let effect = mean_abs_diff_rgb(&gpu_out, &input);
+    println!(
+        "hsl GPU vs CPU: mean={mean:.3} max={} (GPU vs input: {effect:.3})",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    // Non-vacuous (RK-015): the HSL adjustment must actually change the frame.
+    assert!(
+        effect > 2.0,
+        "the GPU HSL adjustment must visibly change the frame; got {effect}"
+    );
+    assert!(
+        mean <= TOL_HSL_MEAN,
+        "GPU and CPU HSL diverged beyond tolerance: mean={mean}"
     );
 }
 

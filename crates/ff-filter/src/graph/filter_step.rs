@@ -214,6 +214,32 @@ pub enum FilterStep {
         /// Vertical centre. `0.0` maps to `h/2`.
         y0: f32,
     },
+    /// HSL adjustment via `FFmpeg` `hue` filter (`ff_render::HslNode` on the GPU).
+    ///
+    /// `hue` works in YUV (a chroma rotation for hue/saturation, a luma add for
+    /// brightness), so it approximates the GPU node's HSL-space adjustment within a
+    /// documented tolerance. `lightness` is scaled to the filter's `b` brightness.
+    Hsl {
+        /// Hue rotation in degrees.
+        hue: f32,
+        /// Saturation multiplier (neutral `1.0`).
+        saturation: f32,
+        /// Lightness offset in `[-1, 1]` (scaled to the `hue` filter's brightness).
+        lightness: f32,
+    },
+    /// HSL adjustment with optionally animated parameters.
+    ///
+    /// The GPU animates per frame; the CPU (`libavfilter`) path renders the
+    /// `Duration::ZERO` values (`hue`'s options accept `t`-expressions, but the CPU
+    /// path is kept static so the GPU-default path is the single animated one).
+    HslAnimated {
+        /// Hue rotation in degrees, evaluated at `Duration::ZERO`.
+        hue: AnimatedValue<f64>,
+        /// Saturation multiplier, evaluated at `Duration::ZERO`.
+        saturation: AnimatedValue<f64>,
+        /// Lightness offset in `[-1, 1]`, evaluated at `Duration::ZERO`.
+        lightness: AnimatedValue<f64>,
+    },
     /// Horizontal flip (mirror left-right).
     HFlip,
     /// Vertical flip (mirror top-bottom).
@@ -1112,6 +1138,19 @@ fn glow_compound_args(threshold: f32, radius: f32, intensity: f32) -> String {
     )
 }
 
+/// Lightness offset `[-1, 1]` -> the `hue` filter's brightness `[-10, 10]`. The
+/// filter adds `b * 25.5` to 8-bit luma, so `±1` lightness maps to `±10` b, a
+/// roughly full-range luma shift. This YUV luma-add only approximates the GPU
+/// node's HSL-space lightness, hence the wide parity tolerance.
+const HSL_LIGHTNESS_TO_BRIGHTNESS: f32 = 10.0;
+
+/// Renders the `hue` filter args for an HSL adjustment (hue degrees, saturation
+/// multiplier, lightness scaled to the filter's brightness).
+fn hsl_args(hue: f32, saturation: f32, lightness: f32) -> String {
+    let b = lightness * HSL_LIGHTNESS_TO_BRIGHTNESS;
+    format!("h={hue}:s={saturation}:b={b}")
+}
+
 fn kelvin_to_rgb(temp_k: u32) -> (f64, f64, f64) {
     let t = (f64::from(temp_k) / 100.0).clamp(10.0, 400.0);
     let r = if t <= 66.0 {
@@ -1169,6 +1208,8 @@ impl FilterStep {
             Self::Curves { .. } => "curves",
             Self::WhiteBalance { .. } => "colorchannelmixer",
             Self::Hue { .. } => "hue",
+            Self::Hsl { .. } => "hue",
+            Self::HslAnimated { .. } => "hue",
             Self::Gamma { .. } => "eq",
             Self::ThreeWayCC { .. } => "curves",
             Self::ThreeWayCCAnimated { .. } => "curves",
@@ -1441,6 +1482,25 @@ impl FilterStep {
                 format!("rr={r}:gg={g_adj}:bb={b}")
             }
             Self::Hue { degrees } => format!("h={degrees}"),
+            Self::Hsl {
+                hue,
+                saturation,
+                lightness,
+            } => hsl_args(*hue, *saturation, *lightness),
+            Self::HslAnimated {
+                hue,
+                saturation,
+                lightness,
+            } => {
+                // The CPU path is static (the GPU animates per frame): render the
+                // `Duration::ZERO` values.
+                #[allow(clippy::cast_possible_truncation)]
+                hsl_args(
+                    hue.value_at(Duration::ZERO) as f32,
+                    saturation.value_at(Duration::ZERO) as f32,
+                    lightness.value_at(Duration::ZERO) as f32,
+                )
+            }
             Self::Gamma { r, g, b } => format!("gamma_r={r}:gamma_g={g}:gamma_b={b}"),
             Self::Vignette { angle, x0, y0 } => {
                 let cx = if *x0 == 0.0 {
