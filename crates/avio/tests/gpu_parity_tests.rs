@@ -39,6 +39,7 @@ use ff_preview::FrameSink;
 // divergence (a stretch/letterbox/axis-swap of the gradient is tens of levels).
 const TOL_PASSTHROUGH_MEAN: f64 = 2.0; // identity passthrough: pixel-exact here
 const TOL_COLOR_GRADE_MEAN: f64 = 20.0; // GPU ColorGradeNode vs FFmpeg `eq`: ~6.6 here
+const TOL_BLUR_MEAN: f64 = 20.0; // GPU GaussianBlurNode vs FFmpeg `gblur`: ~9.0 here (different kernels)
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -52,6 +53,22 @@ fn gradient_rgba(w: u32, h: u32) -> Vec<u8> {
             let g = (y * 255 / (hu - 1).max(1)) as u8;
             let b = ((x + y) * 255 / (wu + hu - 2).max(1)) as u8;
             v.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    v
+}
+
+/// A high-frequency `block`-sized checkerboard (black/white). A blur visibly smooths
+/// it, so a parity test on it is non-vacuous (RK-015): a GPU that failed to blur would
+/// keep the sharp squares and diverge far from the CPU-blurred reference.
+fn checkerboard_rgba(w: u32, h: u32, block: u32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let mut v = Vec::with_capacity(wu * hu * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let on = ((x / block) + (y / block)) % 2 == 0;
+            let c = if on { 255u8 } else { 0u8 };
+            v.extend_from_slice(&[c, c, c, 255]);
         }
     }
     v
@@ -207,6 +224,36 @@ fn color_grade_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_COLOR_GRADE_MEAN,
         "GPU and CPU colour grade diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn blur_gpu_should_match_cpu_within_tolerance() {
+    // Gaussian blur parity: GPU GaussianBlurNode (map_scene maps `GBlur`) vs the CPU
+    // `gblur` filter. Different kernel implementations, so a loose calibrated
+    // tolerance. Double-gated (adapter + filters); a high-frequency checkerboard makes
+    // it non-vacuous (a GPU that did not blur would diverge far).
+    let (w, h) = (64, 48);
+    let frame = VideoFrame::from_rgba(w, h, checkerboard_rgba(w, h, 4)).unwrap();
+    let layer = base_layer(w, h, vec![FilterStep::GBlur { sigma: 3.0 }]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported blur layer must composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "blur GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_BLUR_MEAN,
+        "GPU and CPU blur diverged beyond tolerance: mean={mean}"
     );
 }
 

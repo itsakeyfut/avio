@@ -200,6 +200,12 @@ pub enum GpuEffect {
         /// Resampling algorithm.
         algorithm: RenderScaleAlgorithm,
     },
+    /// `ff_render::GaussianBlurNode` (two-pass separable Gaussian blur).
+    Blur {
+        /// Gaussian standard deviation (blur radius) in pixels; the same value the
+        /// `gblur` filter uses on the CPU path.
+        sigma: f32,
+    },
 }
 
 /// One layer of a [`GpuScenePlan`]: the transform / blend / opacity the
@@ -380,7 +386,13 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             height: *height,
             algorithm: map_scale_algo(*algorithm),
         }),
-        // Everything else (other colour, keying, masks, blur, animated geometry,
+        FilterStep::GBlur { sigma } => StepClass::Effect(GpuEffect::Blur { sigma: *sigma }),
+        FilterStep::GBlurAnimated { sigma } => StepClass::Effect(GpuEffect::Blur {
+            // The blur node is rebuilt each composite (map_scene runs per frame), so
+            // an animated sigma is evaluated at the frame time here.
+            sigma: sigma.value_at(t) as f32,
+        }),
+        // Everything else (other colour, keying, masks, animated geometry,
         // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
         // `#[non_exhaustive]` from ff-filter (RK-003).
         _ => StepClass::Unsupported,
@@ -615,6 +627,37 @@ mod tests {
                 height: 240,
                 algorithm: RenderScaleAlgorithm::Bicubic,
             }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_gblur_to_blur() {
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::GBlur { sigma: 3.5 }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert_eq!(
+            plan.layers[0].effects.as_slice(),
+            [GpuEffect::Blur { sigma: 3.5 }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_evaluate_animated_gblur_sigma_at_t() {
+        // sigma ramps 2 -> 6 over 0..2s; at t=1s it should read ~4.
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 2.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(2), 6.0, Easing::Linear));
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::GBlurAnimated {
+            sigma: AnimatedValue::Track(track),
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::from_secs(1)));
+        let [GpuEffect::Blur { sigma }] = plan.layers[0].effects.as_slice() else {
+            panic!("animated gblur must map to a single Blur effect");
+        };
+        assert!(
+            (sigma - 4.0).abs() < 1e-3,
+            "animated sigma at t=1s should be ~4; got {sigma}"
         );
     }
 
