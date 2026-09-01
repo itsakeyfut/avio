@@ -226,6 +226,27 @@ pub enum EffectKind {
         /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
         invert: bool,
     },
+    /// Rectangular shape mask: keeps the clip opaque inside the rectangle and clears
+    /// the alpha outside (the `geq` filter on the CPU path, `ff_render::ShapeMaskNode`
+    /// on the GPU). `invert` swaps inside and outside.
+    ///
+    /// `x` / `y` / `width` / `height` are keyframeable per-pixel [`Param`]s (a moving
+    /// or resizing mask), so a constant rectangle compiles to the `RectMask` filter
+    /// and any animated bound uses `RectMaskAnimated` (the GPU animates per frame; the
+    /// CPU renders its `t = 0` bounds, like [`ChromaKey`](Self::ChromaKey)). A constant
+    /// zero `width` or `height` masks nothing, so it compiles to no filter.
+    ShapeMask {
+        /// Left edge of the rectangle, in pixels.
+        x: Param,
+        /// Top edge of the rectangle, in pixels.
+        y: Param,
+        /// Rectangle width, in pixels (a constant `0` is a no-op).
+        width: Param,
+        /// Rectangle height, in pixels (a constant `0` is a no-op).
+        height: Param,
+        /// When `true`, keep the exterior and clear the interior.
+        invert: bool,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -507,8 +528,49 @@ impl EffectKind {
             // LumaMask is structural (no scalar param): it always maps to the `geq`
             // self-luma mask. `invert` carries straight through.
             EffectKind::LumaMask { invert } => Some(FilterStep::LumaMask { invert: *invert }),
+            // ShapeMask maps to the rectangular `geq` mask. All-const bounds compile to
+            // `RectMask` (a constant zero width/height masks nothing, so it is a no-op);
+            // any animated bound uses `RectMaskAnimated` (the GPU animates per frame;
+            // the CPU renders its `t = 0` bounds).
+            EffectKind::ShapeMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => {
+                if x.is_const() && y.is_const() && width.is_const() && height.is_const() {
+                    let (w, h) = (param_to_u32(width), param_to_u32(height));
+                    if w == 0 || h == 0 {
+                        return None;
+                    }
+                    Some(FilterStep::RectMask {
+                        x: param_to_u32(x),
+                        y: param_to_u32(y),
+                        width: w,
+                        height: h,
+                        invert: *invert,
+                    })
+                } else {
+                    Some(FilterStep::RectMaskAnimated {
+                        x: x.to_animated(),
+                        y: y.to_animated(),
+                        width: width.to_animated(),
+                        height: height.to_animated(),
+                        invert: *invert,
+                    })
+                }
+            }
         }
     }
+}
+
+/// Rounds a constant [`Param`] to a non-negative pixel count for the `RectMask`
+/// filter (`u32`). An animated parameter has no constant value; callers only use this
+/// on the all-const path, so it clamps to `0`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn param_to_u32(p: &Param) -> u32 {
+    p.as_const().unwrap_or(0.0).max(0.0).round() as u32
 }
 
 /// Formats an RGB triple (each channel `0.0..=1.0`) as an `FFmpeg` `0xRRGGBB`
@@ -969,5 +1031,62 @@ mod tests {
                 other => panic!("expected LumaMask {{ invert: {invert} }}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn shape_mask_const_should_compile_to_rect_mask_with_rounded_bounds() {
+        let kind = EffectKind::ShapeMask {
+            x: Param::Const(10.4),
+            y: Param::Const(20.6),
+            width: Param::Const(30.0),
+            height: Param::Const(40.0),
+            invert: true,
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::RectMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => {
+                assert_eq!((x, y, width, height), (10, 21, 30, 40));
+                assert!(invert);
+            }
+            other => panic!("expected RectMask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_mask_zero_size_should_compile_to_nothing() {
+        let kind = EffectKind::ShapeMask {
+            x: Param::Const(0.0),
+            y: Param::Const(0.0),
+            width: Param::Const(0.0),
+            height: Param::Const(10.0),
+            invert: false,
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "a zero-width rectangle masks nothing, so it is a no-op"
+        );
+    }
+
+    #[test]
+    fn shape_mask_any_animated_should_compile_to_rect_mask_animated() {
+        let kind = EffectKind::ShapeMask {
+            x: Param::Animated(animated_track()),
+            y: Param::Const(0.0),
+            width: Param::Const(30.0),
+            height: Param::Const(40.0),
+            invert: false,
+        };
+        assert!(
+            matches!(
+                kind.to_filter_step().unwrap(),
+                FilterStep::RectMaskAnimated { .. }
+            ),
+            "any animated bound routes through RectMaskAnimated"
+        );
     }
 }

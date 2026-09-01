@@ -793,6 +793,27 @@ pub enum FilterStep {
         invert: bool,
     },
 
+    /// [`RectMask`](Self::RectMask) with optionally animated `x` / `y` / `width` /
+    /// `height`.
+    ///
+    /// The GPU animates the rectangle per frame; the CPU (`libavfilter`) path renders
+    /// the `Duration::ZERO` values (the `geq` rectangle bounds are static, so the CPU
+    /// path is kept static and the GPU-default path is the animated one, matching
+    /// [`ChromaKeyAnimated`](Self::ChromaKeyAnimated)). `width` / `height` are clamped
+    /// to at least `1` at render time so a zero-size frame never fails `geq` build.
+    RectMaskAnimated {
+        /// Left edge in pixels, evaluated at `Duration::ZERO` on the CPU.
+        x: AnimatedValue<f64>,
+        /// Top edge in pixels, evaluated at `Duration::ZERO` on the CPU.
+        y: AnimatedValue<f64>,
+        /// Width in pixels (clamped to `>= 1`), evaluated at `Duration::ZERO` on the CPU.
+        width: AnimatedValue<f64>,
+        /// Height in pixels (clamped to `>= 1`), evaluated at `Duration::ZERO` on the CPU.
+        height: AnimatedValue<f64>,
+        /// When `true`, the mask is inverted: outside is opaque, inside is transparent.
+        invert: bool,
+    },
+
     /// Set the alpha channel to the frame's own BT.709 luma using `FFmpeg`'s `geq`
     /// filter (a self-referential continuous luma mask).
     ///
@@ -1317,6 +1338,7 @@ impl FilterStep {
             Self::LumaKey { .. } => "lumakey",
             // RectMask uses geq to set alpha per-pixel based on rectangle bounds.
             Self::RectMask { .. } => "geq",
+            Self::RectMaskAnimated { .. } => "geq",
             Self::LumaMask { .. } => "geq",
             // FeatherMask is a compound step (split → alphaextract → gblur → alphamerge);
             // "alphaextract" is used by validate_filter_steps as the primary check.
@@ -1734,6 +1756,30 @@ impl FilterStep {
                 height,
                 invert,
             } => {
+                let xw = x + width - 1;
+                let yh = y + height - 1;
+                let (inside, outside) = if *invert { (0, 255) } else { (255, 0) };
+                format!(
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+                     a='if(between(X,{x},{xw})*between(Y,{y},{yh}),{inside},{outside})'"
+                )
+            }
+            Self::RectMaskAnimated {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => {
+                // The CPU path is static (the GPU animates per frame): render the
+                // `Duration::ZERO` rectangle. width/height are clamped to >= 1 so a
+                // degenerate frame never fails `geq` build.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let px = |v: &AnimatedValue<f64>, min: f64| {
+                    v.value_at(Duration::ZERO).max(min).round() as u32
+                };
+                let (x, y) = (px(x, 0.0), px(y, 0.0));
+                let (width, height) = (px(width, 1.0), px(height, 1.0));
                 let xw = x + width - 1;
                 let yh = y + height - 1;
                 let (inside, outside) = if *invert { (0, 255) } else { (255, 0) };
@@ -2350,6 +2396,42 @@ mod tests {
         };
         assert_eq!(step.filter_name(), "chromakey");
         assert_eq!(step.args(), "color=0x00FF00:similarity=0.3:blend=0.1");
+    }
+
+    #[test]
+    fn rect_mask_animated_should_render_static_zero_bounds_via_geq() {
+        // The CPU path is static: args() renders the Duration::ZERO rectangle through
+        // the same geq expression as the const RectMask variant.
+        let step = FilterStep::RectMaskAnimated {
+            x: AnimatedValue::Static(10.0),
+            y: AnimatedValue::Static(20.0),
+            width: AnimatedValue::Static(30.0),
+            height: AnimatedValue::Static(40.0),
+            invert: false,
+        };
+        assert_eq!(step.filter_name(), "geq");
+        // xw = 10 + 30 - 1 = 39, yh = 20 + 40 - 1 = 59.
+        assert_eq!(
+            step.args(),
+            "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+             a='if(between(X,10,39)*between(Y,20,59),255,0)'"
+        );
+    }
+
+    #[test]
+    fn rect_mask_animated_invert_should_swap_inside_outside() {
+        let step = FilterStep::RectMaskAnimated {
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            width: AnimatedValue::Static(8.0),
+            height: AnimatedValue::Static(8.0),
+            invert: true,
+        };
+        assert_eq!(
+            step.args(),
+            "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+             a='if(between(X,0,7)*between(Y,0,7),0,255)'"
+        );
     }
 
     #[test]

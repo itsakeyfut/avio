@@ -99,6 +99,13 @@ const TOL_CHROMAKEY_MEAN: f64 = 25.0;
 // (dark pixels reveal the background). Loose enough to cover the invert path's mask
 // quantisation (the grey mask rounds 255-luma to a u8).
 const TOL_LUMAMASK_MEAN: f64 = 6.0;
+// ShapeMask: GPU ShapeMaskNode (rectangle alpha mask) vs the CPU `geq` RectMask. The
+// mask is position-based (hard edges, colour-independent) and both paths use the same
+// inclusive rectangle bounds, so they agree almost exactly. As with the other masks
+// the compositor discards composited alpha, so the masked foreground is composited
+// over an opaque background; a centre vertical band pins the rectangle's x-bounds
+// (RK-015), not merely that a mask was applied.
+const TOL_SHAPEMASK_MEAN: f64 = 4.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -188,6 +195,27 @@ fn band_mean_rgb(buf: &[u8], w: u32, x0: u32, x1: u32) -> [f64; 3] {
     for (i, px) in buf.chunks_exact(4).enumerate() {
         let x = i % wu;
         if x >= x0 && x < x1 {
+            for c in 0..3 {
+                sum[c] += u64::from(px[c]);
+            }
+            n += 1;
+        }
+    }
+    let d = n.max(1) as f64;
+    [sum[0] as f64 / d, sum[1] as f64 / d, sum[2] as f64 / d]
+}
+
+/// Mean RGB over the rectangular region `[x0, x1) x [y0, y1)`. The shape-mask fixture
+/// uses a centre box, so both its x- and y-bounds must be checked (a band would leave
+/// one axis unexercised — a transposition / y-offset bug would slip through).
+fn box_mean_rgb(buf: &[u8], w: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> [f64; 3] {
+    let wu = w as usize;
+    let (x0, y0, x1, y1) = (x0 as usize, y0 as usize, x1 as usize, y1 as usize);
+    let mut sum = [0u64; 3];
+    let mut n = 0u64;
+    for (i, px) in buf.chunks_exact(4).enumerate() {
+        let (x, y) = (i % wu, i / wu);
+        if x >= x0 && x < x1 && y >= y0 && y < y1 {
             for c in 0..3 {
                 sum[c] += u64::from(px[c]);
             }
@@ -1063,6 +1091,127 @@ fn luma_mask_invert_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_LUMAMASK_MEAN,
         "GPU and CPU inverted luma-mask diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn shape_mask_gpu_should_match_cpu_within_tolerance() {
+    // ShapeMask parity: GPU ShapeMaskNode (map_scene maps `RectMask`) vs the CPU `geq`
+    // rectangle mask. The mask keeps the interior opaque and clears the exterior, so
+    // the masked foreground is composited over an opaque background: the rectangle
+    // interior shows the foreground, the exterior reveals the background. A centre
+    // *box* (bounded in x AND y) pins both axes (RK-015): a full-height band would
+    // leave the y-bounds and any x<->y / width<->height transposition unexercised.
+    // Double-gated (adapter + filters).
+    let (w, h) = (64, 48);
+    let (rx, ry, rw, rh) = (w / 4, h / 4, w / 2, h / 2); // centre box: x[16,48) y[12,36)
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap(); // blue
+    let fg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [220, 40, 40])).unwrap(); // red
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::RectMask {
+            x: rx,
+            y: ry,
+            width: rw,
+            height: rh,
+            invert: false,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bg_layer, &fg_layer], &[&bg, &fg], (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, _, _)) = gpu.composite(
+        &[(&bg_layer, &bg), (&fg_layer, &fg)],
+        (w, h),
+        Duration::ZERO,
+    ) else {
+        panic!("a supported shape-mask composite must render on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    // Non-vacuity guards (RK-015): the box interior keeps the red foreground; the
+    // corner (outside in both x and y) reveals the blue background. Driving both axes
+    // catches a y-offset or transposition bug that a full-height band would miss.
+    let interior = box_mean_rgb(&gpu_out, w, rx, ry, rx + rw, ry + rh);
+    let corner = box_mean_rgb(&gpu_out, w, 0, 0, rx, ry);
+    println!("shape-mask GPU interior={interior:?} corner={corner:?}");
+    assert!(
+        interior[0] > 128.0 && interior[2] < 128.0,
+        "the box interior must keep the red foreground; got {interior:?}"
+    );
+    assert!(
+        corner[2] > 128.0 && corner[0] < 128.0,
+        "the corner must reveal the blue background; got {corner:?}"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "shape-mask GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_SHAPEMASK_MEAN,
+        "GPU and CPU shape-mask composite diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn shape_mask_invert_gpu_should_match_cpu_within_tolerance() {
+    // Inverted mirror: the box interior is cleared (reveals the background) and the
+    // exterior keeps the foreground. Drives build_shape_mask's invert branch and the
+    // geq inverted inside/outside, in both axes. Double-gated (adapter + filters).
+    let (w, h) = (64, 48);
+    let (rx, ry, rw, rh) = (w / 4, h / 4, w / 2, h / 2);
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap();
+    let fg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [220, 40, 40])).unwrap();
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::RectMask {
+            x: rx,
+            y: ry,
+            width: rw,
+            height: rh,
+            invert: true,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bg_layer, &fg_layer], &[&bg, &fg], (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, _, _)) = gpu.composite(
+        &[(&bg_layer, &bg), (&fg_layer, &fg)],
+        (w, h),
+        Duration::ZERO,
+    ) else {
+        panic!("a supported inverted shape-mask composite must render on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    let interior = box_mean_rgb(&gpu_out, w, rx, ry, rx + rw, ry + rh);
+    let corner = box_mean_rgb(&gpu_out, w, 0, 0, rx, ry);
+    println!("shape-mask(invert) GPU interior={interior:?} corner={corner:?}");
+    assert!(
+        interior[2] > 128.0 && interior[0] < 128.0,
+        "the inverted box interior must reveal the blue background; got {interior:?}"
+    );
+    assert!(
+        corner[0] > 128.0 && corner[2] < 128.0,
+        "outside the inverted box must keep the red foreground; got {corner:?}"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "shape-mask(invert) GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_SHAPEMASK_MEAN,
+        "GPU and CPU inverted shape-mask diverged beyond tolerance: mean={mean}"
     );
 }
 

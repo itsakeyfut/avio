@@ -294,6 +294,20 @@ pub enum GpuEffect {
         /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
         invert: bool,
     },
+    /// `ff_render::ShapeMaskNode` (a rectangular alpha mask). The compositor builds
+    /// the rectangle mask from these pixel bounds when applying this.
+    ShapeMask {
+        /// Left edge of the rectangle, in pixels.
+        x: u32,
+        /// Top edge of the rectangle, in pixels.
+        y: u32,
+        /// Rectangle width, in pixels.
+        width: u32,
+        /// Rectangle height, in pixels.
+        height: u32,
+        /// When `true`, keep the exterior and clear the interior.
+        invert: bool,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -664,6 +678,28 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
         FilterStep::LumaMask { invert } => {
             StepClass::Effect(GpuEffect::LumaMask { invert: *invert })
         }
+        // ShapeMask (rectangular mask): the compositor builds the rectangle mask from
+        // these bounds. A zero-size rectangle masks nothing (Skip).
+        FilterStep::RectMask {
+            x,
+            y,
+            width,
+            height,
+            invert,
+        } => shape_mask_step(*x, *y, *width, *height, *invert),
+        FilterStep::RectMaskAnimated {
+            x,
+            y,
+            width,
+            height,
+            invert,
+        } => shape_mask_step(
+            round_u32(x.value_at(t)),
+            round_u32(y.value_at(t)),
+            round_u32(width.value_at(t)),
+            round_u32(height.value_at(t)),
+            *invert,
+        ),
         // Everything else (other colour, masks, animated geometry, xfade, ...) has
         // no GPU node yet. `_` is required: `FilterStep` is `#[non_exhaustive]`
         // from ff-filter (RK-003).
@@ -774,6 +810,28 @@ fn chroma_key_step(key_color: [f32; 3], tolerance: f32, softness: f32) -> StepCl
         tolerance,
         softness,
     })
+}
+
+/// Classifies a rectangular shape-mask step: a zero `width` or `height` masks
+/// nothing, so it is a no-op (`Skip`); otherwise it maps to the GPU node with the
+/// rectangle bounds the compositor bakes into the mask.
+fn shape_mask_step(x: u32, y: u32, width: u32, height: u32, invert: bool) -> StepClass {
+    if width == 0 || height == 0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::ShapeMask {
+        x,
+        y,
+        width,
+        height,
+        invert,
+    })
+}
+
+/// Rounds an animated pixel bound (`f64`) to a non-negative `u32` for the mask.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn round_u32(v: f64) -> u32 {
+    v.max(0.0).round() as u32
 }
 
 /// Parses an `FFmpeg` `0xRRGGBB` / `#RRGGBB` colour string into an RGB triple
@@ -1567,5 +1625,65 @@ mod tests {
                 _ => panic!("expected a LumaMask GPU effect for invert={invert}"),
             }
         }
+    }
+
+    #[test]
+    fn classify_rect_mask_should_map_to_shape_mask_with_bounds() {
+        let step = FilterStep::RectMask {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+            invert: true,
+        };
+        match classify_step(&step, Duration::ZERO) {
+            StepClass::Effect(GpuEffect::ShapeMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            }) => {
+                assert_eq!((x, y, width, height), (10, 20, 30, 40));
+                assert!(invert);
+            }
+            _ => panic!("expected a ShapeMask GPU effect"),
+        }
+    }
+
+    #[test]
+    fn classify_rect_mask_animated_should_evaluate_bounds_at_t() {
+        let step = FilterStep::RectMaskAnimated {
+            x: AnimatedValue::Static(5.0),
+            y: AnimatedValue::Static(6.0),
+            width: AnimatedValue::Static(7.0),
+            height: AnimatedValue::Static(8.0),
+            invert: false,
+        };
+        match classify_step(&step, Duration::from_secs(1)) {
+            StepClass::Effect(GpuEffect::ShapeMask {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }) => assert_eq!((x, y, width, height), (5, 6, 7, 8)),
+            _ => panic!("expected a ShapeMask GPU effect"),
+        }
+    }
+
+    #[test]
+    fn classify_rect_mask_zero_size_should_skip() {
+        let step = FilterStep::RectMask {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 10,
+            invert: false,
+        };
+        assert!(matches!(
+            classify_step(&step, Duration::ZERO),
+            StepClass::Skip
+        ));
     }
 }
