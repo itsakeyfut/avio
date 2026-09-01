@@ -106,6 +106,14 @@ const TOL_LUMAMASK_MEAN: f64 = 6.0;
 // over an opaque background; a centre vertical band pins the rectangle's x-bounds
 // (RK-015), not merely that a mask was applied.
 const TOL_SHAPEMASK_MEAN: f64 = 4.0;
+// MotionBlur: GPU MotionBlurNode (IIR: mix(current, accumulated prev)) vs the CPU
+// `tblend` filter (FIR-2: a weighted blend of the two most recent frames). Different
+// temporal models, but over two frames at shutter 180 / sub_frames 8 both reduce to
+// `0.5*prev + 0.5*current`, so they align at that calibration point (the CPU tblend
+// ignores sub_frames): measured mean 0.0 here (bit-exact). Temporal, so the parity drives
+// two frames; a single frame is unblended on both paths and would be vacuous (RK-015).
+// The margin covers GPU-driver rounding on other machines.
+const TOL_MOTIONBLUR_MEAN: f64 = 15.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -1384,6 +1392,133 @@ fn composite_owned_should_match_borrowed_for_no_effects() {
     assert_eq!(
         borrowed, owned,
         "composite_owned must match the borrowing composite output"
+    );
+}
+
+/// A single `MotionBlur` layer over two frames on the CPU (`RealtimeComposer`, one
+/// persistent `tblend` graph), returning the second (blended) frame's rgba, or `None`
+/// when `FFmpeg` filters are unavailable (skip). The first pull is the unblended seed.
+fn cpu_motion_blur_two_frames(
+    layer: &RealtimeLayer,
+    f1: &VideoFrame,
+    f2: &VideoFrame,
+    canvas: (u32, u32),
+) -> Option<Vec<u8>> {
+    let mut composer =
+        RealtimeComposer::with_canvas(std::slice::from_ref(layer), Some(canvas)).ok()?;
+    composer.push_layer(0, f1).ok()?;
+    let _ = composer.pull().ok()?; // discard the first (unblended) frame
+    composer.push_layer(0, f2).ok()?;
+    composer.pull().ok()??.to_rgba()
+}
+
+/// A single `MotionBlur` layer over two frames on the GPU (`GpuCompositor`, whose cached
+/// graph reuse lets the stateful node accumulate), returning the second frame's rgba.
+/// `None` when no adapter is present or the layer is unsupported.
+fn gpu_motion_blur_two_frames(
+    gpu: &mut GpuCompositor,
+    layer: &RealtimeLayer,
+    f1: &VideoFrame,
+    f2: &VideoFrame,
+    canvas: (u32, u32),
+) -> Option<Vec<u8>> {
+    gpu.composite(&[(layer, f1)], canvas, Duration::ZERO)?; // seed the accumulation
+    let (rgba, _, _) = gpu.composite(&[(layer, f2)], canvas, Duration::from_millis(33))?;
+    Some(rgba)
+}
+
+/// A single `MotionBlur` layer (shutter 180, sub_frames 8): the calibration point where
+/// the GPU IIR node and the CPU FIR-2 `tblend` both reduce to `0.5*prev + 0.5*current`.
+fn motion_blur_layer(w: u32, h: u32) -> RealtimeLayer {
+    base_layer(
+        w,
+        h,
+        vec![FilterStep::MotionBlur {
+            shutter_angle_degrees: 180.0,
+            sub_frames: 8,
+        }],
+    )
+}
+
+#[test]
+fn motion_blur_gpu_should_match_cpu_within_tolerance() {
+    // AC3 (Br5): the GPU MotionBlurNode and the CPU `tblend` agree within a calibrated
+    // tolerance. Temporal, so two frames of different solid colours make the trail
+    // observable (a single frame is unblended on both = vacuous, RK-015). Double-gated.
+    let (w, h) = (16, 16);
+    let f1 = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [200, 0, 0])).unwrap(); // red
+    let f2 = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 200])).unwrap(); // blue
+    let layer = motion_blur_layer(w, h);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let gpu_out = gpu_motion_blur_two_frames(&mut gpu, &layer, &f1, &f2, (w, h))
+        .expect("gpu motion blur second frame");
+    // The CPU leg must actually run, not silently skip = false green (RK-024 / RK-002).
+    let Some(cpu_out) = cpu_motion_blur_two_frames(&layer, &f1, &f2, (w, h)) else {
+        return; // FFmpeg filters unavailable: skip
+    };
+    // Non-vacuity: the blue frame's trail must carry red from the previous frame (its own
+    // input red is 0), so the GPU output's red channel is ~100, not 0.
+    assert!(
+        gpu_out[0] > 40,
+        "the red frame must leave a trail on the blue frame (red > 0); got {}",
+        gpu_out[0]
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu_out);
+    assert!(
+        mean <= TOL_MOTIONBLUR_MEAN,
+        "GPU/CPU motion blur must agree within {TOL_MOTIONBLUR_MEAN}; got {mean}"
+    );
+}
+
+#[test]
+fn motion_blur_should_accumulate_across_frames() {
+    // #1653: the effect-graph cache reuse within a clip is what lets the stateful
+    // MotionBlurNode accumulate. Composite white then black at layer 0: the second output
+    // must carry a fading trail from the white frame. Adapter-gated (pure GPU).
+    let (w, h) = (8, 8);
+    let white = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [255, 255, 255])).unwrap();
+    let black = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 0])).unwrap();
+    let layer = motion_blur_layer(w, h);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let out = gpu_motion_blur_two_frames(&mut gpu, &layer, &white, &black, (w, h))
+        .expect("gpu motion blur second frame");
+    assert!(
+        out[0] > 0,
+        "the white frame must leave a trail on the black frame; got {}",
+        out[0]
+    );
+}
+
+#[test]
+fn reset_effect_cache_should_reset_motion_blur_accumulation() {
+    // RK-025: resetting the effect cache at a clip boundary drops the stateful node, so a
+    // new clip's first frame is unblended (no white trail bleeds across the cut). Without
+    // the reset the third composite would reuse the accumulated trail. Adapter-gated.
+    let (w, h) = (8, 8);
+    let white = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [255, 255, 255])).unwrap();
+    let black = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 0])).unwrap();
+    let layer = motion_blur_layer(w, h);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    // Clip A: accumulate a white trail, then cut.
+    gpu.composite(&[(&layer, &white)], (w, h), Duration::ZERO)
+        .expect("clip A frame 1");
+    gpu.composite(&[(&layer, &black)], (w, h), Duration::from_millis(33))
+        .expect("clip A frame 2");
+    gpu.reset_effect_cache();
+    // Clip B first frame (black): a fresh node has no history, so it is unblended.
+    let (out, _, _) = gpu
+        .composite(&[(&layer, &black)], (w, h), Duration::from_millis(66))
+        .expect("clip B frame 1");
+    assert!(
+        out[0] <= 2,
+        "after a reset the new clip's first frame must be unblended (no trail); got {}",
+        out[0]
     );
 }
 

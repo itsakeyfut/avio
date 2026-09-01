@@ -191,6 +191,10 @@ pub(crate) fn drain_video_gpu(
 
         let layer = derive::video_layer(clip, 0, &track.automation, canvas.0, canvas.1, None, None);
 
+        // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
+        // exposure trail) must not accumulate across the cut into this clip (RK-025).
+        core.reset_effect_cache();
+
         let mut produced: u64 = 0;
         loop {
             if frame_budget.is_some_and(|budget| produced >= budget) {

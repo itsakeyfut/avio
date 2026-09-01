@@ -23,6 +23,13 @@
 //! (or layer count) rebuilds. [`GpuEffect::LumaMask`] is excluded (its node embeds the
 //! source pixels), and [`composite_owned`](GpuCompositor::composite_owned) moves owned
 //! frames so the no-effects export path avoids a `VideoFrame::clone`.
+//!
+//! **Stateful effects (#1653):** a [`GpuEffect::MotionBlur`] node accumulates a trail
+//! across a clip's frames, so its cross-frame reuse *is* the accumulation. A caller
+//! that composites a sequence of clips at one layer position must call
+//! [`reset_effect_cache`](GpuCompositor::reset_effect_cache) at each clip boundary so
+//! the trail does not bleed across a cut (RK-025); the export drain does this. The
+//! preview runner's clip-boundary reset is a documented follow-up.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +38,8 @@ use ff_format::VideoFrame;
 use ff_render::{
     ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode,
     FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode,
-    RenderContext, RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode, VignetteNode,
+    MotionBlurNode, RenderContext, RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode,
+    VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -190,6 +198,21 @@ impl GpuCompositor {
         }
     }
 
+    /// Drops every cached effect graph (keeping the slot count), so the next composite
+    /// rebuilds each layer's graph from scratch.
+    ///
+    /// A stateful effect node (e.g. [`MotionBlurNode`], whose exposure trail
+    /// accumulates across the frames of one clip) is embedded in the cached graph, so a
+    /// caller that composites a sequence of clips at the same layer position must call
+    /// this **at each clip boundary** — otherwise the previous clip's accumulated trail
+    /// bleeds into the next clip's first frame (RK-025). Stateless effects are
+    /// unaffected beyond a one-frame pipeline rebuild.
+    pub fn reset_effect_cache(&mut self) {
+        for slot in &mut self.effect_cache {
+            *slot = None;
+        }
+    }
+
     /// Applies a layer's mappable effects to its rgba frame via a `RenderGraph`, reusing
     /// the layer's cached graph when the effect list is unchanged and cacheable. `None`
     /// on a GPU error. Must not be called for an empty effect list (the caller handles
@@ -333,6 +356,15 @@ impl GpuCompositor {
                     in_w,
                     in_h,
                 )),
+                // MotionBlur is stateful (the trail accumulates across frames on this
+                // node), so it depends on the cached graph being *reused* across a
+                // clip's frames. It stays cacheable; the accumulation is reset at a
+                // clip boundary via `reset_effect_cache` so a trail never bleeds across
+                // a cut (RK-025). Preserves the frame dimensions.
+                GpuEffect::MotionBlur {
+                    shutter_angle,
+                    sub_frames,
+                } => graph.push(MotionBlurNode::new(*shutter_angle, *sub_frames)),
             };
         }
 
