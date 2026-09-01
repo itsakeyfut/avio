@@ -288,6 +288,12 @@ pub enum GpuEffect {
         /// Edge softness (the `chromakey` `blend`).
         softness: f32,
     },
+    /// `ff_render::LumaMaskNode` (alpha *= the frame's own BT.709 luma). The
+    /// compositor builds the mask from the frame itself when applying this.
+    LumaMask {
+        /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
+        invert: bool,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -653,6 +659,11 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             ),
             None => StepClass::Unsupported,
         },
+        // LumaMask (self-luma mask): the compositor builds the mask from the frame,
+        // so only the `invert` toggle carries into the GPU effect.
+        FilterStep::LumaMask { invert } => {
+            StepClass::Effect(GpuEffect::LumaMask { invert: *invert })
+        }
         // Everything else (other colour, masks, animated geometry, xfade, ...) has
         // no GPU node yet. `_` is required: `FilterStep` is `#[non_exhaustive]`
         // from ff-filter (RK-003).
@@ -1545,5 +1556,16 @@ mod tests {
             classify_step(&step, Duration::ZERO),
             StepClass::Unsupported
         ));
+    }
+
+    #[test]
+    fn classify_luma_mask_should_map_to_node_with_invert_flag() {
+        for invert in [false, true] {
+            let step = FilterStep::LumaMask { invert };
+            match classify_step(&step, Duration::ZERO) {
+                StepClass::Effect(GpuEffect::LumaMask { invert: got }) => assert_eq!(got, invert),
+                _ => panic!("expected a LumaMask GPU effect for invert={invert}"),
+            }
+        }
     }
 }

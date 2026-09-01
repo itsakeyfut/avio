@@ -31,8 +31,8 @@ use std::time::Duration;
 use ff_format::VideoFrame;
 use ff_render::{
     ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode,
-    FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LutNode, RenderContext,
-    RenderGraph, ScaleNode, SharpenNode, VignetteNode,
+    FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode,
+    RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -227,6 +227,16 @@ impl GpuCompositor {
                     tolerance,
                     softness,
                 } => graph.push(ChromaKeyNode::new(*key_color, *tolerance, *softness)),
+                // LumaMask multiplies alpha by the frame's own BT.709 luma, so the
+                // mask is built from the source frame here (preserves dimensions).
+                // The mask is baked from the pre-graph frame; when LumaMask follows
+                // another effect the GPU mask is the source luma while the CPU `geq`
+                // sees the chained frame (a v1 limitation; parity uses it alone).
+                GpuEffect::LumaMask { invert } => graph.push(LumaMaskNode::new(
+                    build_luma_mask(&rgba, *invert),
+                    in_w,
+                    in_h,
+                )),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
@@ -244,6 +254,27 @@ fn load_lut(path: &str) -> Option<LutNode> {
         Some(ext) if ext.eq_ignore_ascii_case("3dl") => LutNode::from_3dl(p).ok(),
         _ => None,
     }
+}
+
+/// Builds the mask [`ff_render::LumaMaskNode`] consumes for the self-luma mask.
+///
+/// Non-inverted, the mask is the frame itself: the node multiplies the base alpha by
+/// `bt709_luma(mask) = bt709_luma(frame)`. Inverted, each pixel becomes a grey of
+/// `255 - bt709_luma`, so the node's `bt709_luma(grey) = 255 - luma` gives
+/// `alpha *= 1 - luma`. Matches the CPU `geq` self-luma expression.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn build_luma_mask(rgba: &[u8], invert: bool) -> Vec<u8> {
+    if !invert {
+        return rgba.to_vec();
+    }
+    let mut mask = Vec::with_capacity(rgba.len());
+    for px in rgba.as_chunks::<4>().0 {
+        let luma =
+            0.2126 * f32::from(px[0]) + 0.7152 * f32::from(px[1]) + 0.0722 * f32::from(px[2]);
+        let grey = (255.0 - luma).clamp(0.0, 255.0).round() as u8;
+        mask.extend_from_slice(&[grey, grey, grey, 255]);
+    }
+    mask
 }
 
 /// Whether a plan layer's transform is the identity (no translate / scale / rotate),

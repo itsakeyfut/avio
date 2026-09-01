@@ -213,6 +213,19 @@ pub enum EffectKind {
         /// Edge softness in `0.0..=1.0` (`0.0` = hard edge).
         softness: Param,
     },
+    /// Luma mask: multiplies the clip's alpha by its own BT.709 luma (the `geq`
+    /// filter on the CPU path, `ff_render::LumaMaskNode` on the GPU). Bright pixels
+    /// stay opaque, dark pixels become transparent; `invert` uses `1 - luma`.
+    ///
+    /// This is a structural effect with no scalar [`Param`] — like [`Lut`](Self::Lut)
+    /// and [`Curves`](Self::Curves), its "keyframeable per parameter" requirement is
+    /// satisfied vacuously (there is nothing to animate; `invert` is a one-time
+    /// toggle). The mask is the clip's own frame, so no external mask source is
+    /// needed.
+    LumaMask {
+        /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
+        invert: bool,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -491,6 +504,9 @@ impl EffectKind {
                     })
                 }
             }
+            // LumaMask is structural (no scalar param): it always maps to the `geq`
+            // self-luma mask. `invert` carries straight through.
+            EffectKind::LumaMask { invert } => Some(FilterStep::LumaMask { invert: *invert }),
         }
     }
 }
@@ -942,5 +958,16 @@ mod tests {
             ),
             "any animated parameter routes through ChromaKeyAnimated"
         );
+    }
+
+    #[test]
+    fn luma_mask_should_compile_to_luma_mask_filter_step() {
+        for invert in [false, true] {
+            let kind = EffectKind::LumaMask { invert };
+            match kind.to_filter_step() {
+                Some(FilterStep::LumaMask { invert: got }) => assert_eq!(got, invert),
+                other => panic!("expected LumaMask {{ invert: {invert} }}, got {other:?}"),
+            }
+        }
     }
 }

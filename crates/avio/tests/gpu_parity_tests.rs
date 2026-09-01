@@ -91,6 +91,14 @@ const TOL_LUT_MEAN: f64 = 4.0;
 // a loose calibrated tolerance; the flat interiors agree and only the region edge
 // differs between the metrics.
 const TOL_CHROMAKEY_MEAN: f64 = 25.0;
+// LumaMask: GPU LumaMaskNode (alpha *= own BT.709 luma) vs the CPU `geq` self-luma
+// mask. Both use the same BT.709 coefficients on the same gamma-encoded RGB, so they
+// agree almost exactly (tighter than ChromaKey). As with ChromaKey, the compositor
+// discards composited alpha, so the keyed layer is composited over an opaque
+// background to turn the luma-modulated alpha into a non-vacuous RGB difference
+// (dark pixels reveal the background). Loose enough to cover the invert path's mask
+// quantisation (the grey mask rounds 255-luma to a u8).
+const TOL_LUMAMASK_MEAN: f64 = 6.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -143,6 +151,51 @@ fn key_split_rgba(w: u32, h: u32) -> Vec<u8> {
         }
     }
     v
+}
+
+/// Three vertical bands driving the luma mask non-vacuously (RK-015 / RK-022):
+/// white (luma 1.0 -> opaque), pure red (BT.709 luma ~0.21 -> a *partial* alpha), and
+/// black (luma 0.0 -> transparent). The red band is the important one: its mid alpha
+/// exercises the continuous blend (a threshold key would clear it entirely), and its
+/// value depends on the luma *coefficients* (BT.709 red 0.2126 vs BT.601 0.299 differ
+/// by ~20 levels), so GPU and CPU using different coefficients would diverge here.
+fn luma_bands_rgba(w: u32, h: u32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let third = wu / 3;
+    let mut v = Vec::with_capacity(wu * hu * 4);
+    for _y in 0..hu {
+        for x in 0..wu {
+            let px = if x < third {
+                [255, 255, 255, 255] // white: luma 1 -> opaque
+            } else if x < 2 * third {
+                [255, 0, 0, 255] // pure red: mid luma -> partial alpha
+            } else {
+                [0, 0, 0, 255] // black: luma 0 -> transparent
+            };
+            v.extend_from_slice(&px);
+        }
+    }
+    v
+}
+
+/// Mean RGB over the vertical band `[x0, x1)` (all rows). The three-band luma fixture
+/// is checked band-by-band so the partial-alpha middle band can be asserted directly.
+fn band_mean_rgb(buf: &[u8], w: u32, x0: u32, x1: u32) -> [f64; 3] {
+    let wu = w as usize;
+    let (x0, x1) = (x0 as usize, x1 as usize);
+    let mut sum = [0u64; 3];
+    let mut n = 0u64;
+    for (i, px) in buf.chunks_exact(4).enumerate() {
+        let x = i % wu;
+        if x >= x0 && x < x1 {
+            for c in 0..3 {
+                sum[c] += u64::from(px[c]);
+            }
+            n += 1;
+        }
+    }
+    let d = n.max(1) as f64;
+    [sum[0] as f64 / d, sum[1] as f64 / d, sum[2] as f64 / d]
 }
 
 /// A flat, fully opaque `[r, g, b]` fill: used as an opaque background layer so a keyed
@@ -889,6 +942,127 @@ fn chroma_key_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_CHROMAKEY_MEAN,
         "GPU and CPU chroma-key composite diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn luma_mask_gpu_should_match_cpu_within_tolerance() {
+    // LumaMask parity: GPU LumaMaskNode (map_scene maps `LumaMask`) vs the CPU `geq`
+    // self-luma mask. Both multiply alpha by the frame's own BT.709 luma. As with
+    // ChromaKey the compositor discards composited alpha, so the masked foreground is
+    // composited over an opaque background: the bright (opaque) half shows the
+    // foreground, the dark (transparent) half reveals the background, making an RGB
+    // parity non-vacuous (RK-015). Double-gated (adapter + filters).
+    let (w, h) = (64, 48);
+    let third = w / 3;
+    let bg_rgb = [30u8, 60, 200]; // opaque blue background
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, bg_rgb)).unwrap();
+    // Foreground: white | pure red (mid luma) | black bands.
+    let fg = VideoFrame::from_rgba(w, h, luma_bands_rgba(w, h)).unwrap();
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(w, h, vec![FilterStep::LumaMask { invert: false }]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bg_layer, &fg_layer], &[&bg, &fg], (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, _, _)) = gpu.composite(
+        &[(&bg_layer, &bg), (&fg_layer, &fg)],
+        (w, h),
+        Duration::ZERO,
+    ) else {
+        panic!("a supported luma-mask composite must render on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    // Non-vacuity guards (RK-015 / RK-022): the white band stays opaque, the black band
+    // reveals the background, and the red band is a *partial* blend (not pure red, not
+    // pure background) whose exact value depends on the BT.709 coefficients. A GPU that
+    // skipped the mask, thresholded instead of blending, or used other coefficients
+    // would diverge from the CPU reference.
+    let white = band_mean_rgb(&gpu_out, w, 0, third);
+    let red = band_mean_rgb(&gpu_out, w, third, 2 * third);
+    let black = band_mean_rgb(&gpu_out, w, 2 * third, w);
+    println!("luma-mask GPU white={white:?} red={red:?} black={black:?}");
+    assert!(
+        white[0] > 192.0 && white[2] > 192.0,
+        "the white band must stay opaque white; got {white:?}"
+    );
+    assert!(
+        black[2] > 128.0 && black[0] < 128.0,
+        "the black band must reveal the blue background; got {black:?}"
+    );
+    // Partial blend: red pulled in above the background red (30), but the blue
+    // background still dominant (mid alpha ~54/255) — a threshold key would leave this
+    // pure background instead.
+    assert!(
+        red[0] > 50.0 && red[0] < 200.0 && red[2] > 120.0,
+        "the red band must be a partial fg/bg blend; got {red:?}"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "luma-mask GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_LUMAMASK_MEAN,
+        "GPU and CPU luma-mask composite diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn luma_mask_invert_gpu_should_match_cpu_within_tolerance() {
+    // The invert branch drives distinct new code: the GPU builds a grey `255 - luma`
+    // mask and the CPU `geq` uses `255 - luma`. With invert the bright half becomes
+    // transparent (reveals the background) and the dark half stays opaque, the mirror
+    // of the non-inverted test. Double-gated (adapter + filters).
+    let (w, h) = (64, 48);
+    let third = w / 3;
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap();
+    let fg = VideoFrame::from_rgba(w, h, luma_bands_rgba(w, h)).unwrap();
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(w, h, vec![FilterStep::LumaMask { invert: true }]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bg_layer, &fg_layer], &[&bg, &fg], (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, _, _)) = gpu.composite(
+        &[(&bg_layer, &bg), (&fg_layer, &fg)],
+        (w, h),
+        Duration::ZERO,
+    ) else {
+        panic!("a supported inverted luma-mask composite must render on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    // Inverted mirror: the white band now reveals the background, the red band becomes
+    // mostly opaque (alpha ~201/255), and the black band stays opaque black.
+    let white = band_mean_rgb(&gpu_out, w, 0, third);
+    let red = band_mean_rgb(&gpu_out, w, third, 2 * third);
+    let black = band_mean_rgb(&gpu_out, w, 2 * third, w);
+    println!("luma-mask(invert) GPU white={white:?} red={red:?} black={black:?}");
+    assert!(
+        white[2] > 128.0 && white[0] < 128.0,
+        "the white band must reveal the blue background when inverted; got {white:?}"
+    );
+    assert!(
+        black[0] < 64.0 && black[2] < 64.0,
+        "the black band must stay opaque black when inverted; got {black:?}"
+    );
+    // Inverted red band is mostly opaque red (mid alpha flips to ~201).
+    assert!(
+        red[0] > 128.0 && red[2] < 128.0,
+        "the inverted red band must be mostly opaque red; got {red:?}"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "luma-mask(invert) GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_LUMAMASK_MEAN,
+        "GPU and CPU inverted luma-mask diverged beyond tolerance: mean={mean}"
     );
 }
 
