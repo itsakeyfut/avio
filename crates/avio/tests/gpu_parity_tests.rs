@@ -80,6 +80,17 @@ const TOL_HSL_MEAN: f64 = 20.0;
 // RK-005-verified axis order matches FFmpeg's, so a transposition would push the
 // mean to tens. Tested on a colour gradient (RK-022) with a per-channel-shifting LUT.
 const TOL_LUT_MEAN: f64 = 4.0;
+// ChromaKey: GPU ChromaKeyNode (RGB chroma distance) vs the CPU `chromakey` filter
+// (YUV chroma distance). ChromaKey rewrites *alpha*, but the GPU compositor's blend
+// shader outputs the canvas alpha, not the composited overlay alpha (blend.wgsl), so a
+// composited-alpha comparison is not possible and a composited-RGB comparison of the
+// keyed layer alone is vacuous (keying leaves RGB untouched). So the keyed layer is
+// composited over an *opaque* background: the compositor's `mix(base, overlay,
+// overlay.a)` turns the keyed alpha into an RGB difference (background shows through the
+// keyed region), making an RGB parity non-vacuous. The two distance metrics differ, so
+// a loose calibrated tolerance; the flat interiors agree and only the region edge
+// differs between the metrics.
+const TOL_CHROMAKEY_MEAN: f64 = 25.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -110,6 +121,36 @@ fn checkerboard_rgba(w: u32, h: u32, block: u32) -> Vec<u8> {
             let c = if on { 255u8 } else { 0u8 };
             v.extend_from_slice(&[c, c, c, 255]);
         }
+    }
+    v
+}
+
+/// Two flat halves: the left is pure key green (0x00FF00), the right a non-key red.
+/// ChromaKey must drive the left half transparent (revealing the background it is
+/// composited over) and leave the right opaque, so a parity over this fixture is
+/// non-vacuous (RK-015): a GPU that failed to key would keep green in the left half and
+/// diverge from the CPU reference.
+fn key_split_rgba(w: u32, h: u32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let mut v = Vec::with_capacity(wu * hu * 4);
+    for _y in 0..hu {
+        for x in 0..wu {
+            if x < wu / 2 {
+                v.extend_from_slice(&[0, 255, 0, 255]); // key: pure green
+            } else {
+                v.extend_from_slice(&[220, 40, 40, 255]); // non-key: red
+            }
+        }
+    }
+    v
+}
+
+/// A flat, fully opaque `[r, g, b]` fill: used as an opaque background layer so a keyed
+/// foreground shows the background through its transparent regions.
+fn solid_rgba(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut v = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..(w * h) {
+        v.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
     }
     v
 }
@@ -148,6 +189,26 @@ fn mean_abs_diff_rgb(a: &[u8], b: &[u8]) -> f64 {
     if n == 0 { 0.0 } else { sum as f64 / n as f64 }
 }
 
+/// Mean RGB over the pixels in one half (`key_half`: x < w/2 = the keyed green half,
+/// else the non-key red half). The chroma-key non-vacuity guard uses this to prove the
+/// background shows through the keyed half (RGB near the background) but not the other.
+fn region_mean_rgb(buf: &[u8], w: u32, key_half: bool) -> [f64; 3] {
+    let wu = w as usize;
+    let mut sum = [0u64; 3];
+    let mut n = 0u64;
+    for (i, px) in buf.chunks_exact(4).enumerate() {
+        let x = i % wu;
+        if (x < wu / 2) == key_half {
+            for c in 0..3 {
+                sum[c] += u64::from(px[c]);
+            }
+            n += 1;
+        }
+    }
+    let d = n.max(1) as f64;
+    [sum[0] as f64 / d, sum[1] as f64 / d, sum[2] as f64 / d]
+}
+
 fn max_abs_diff_rgb(a: &[u8], b: &[u8]) -> u8 {
     a.chunks_exact(4)
         .zip(b.chunks_exact(4))
@@ -181,6 +242,21 @@ fn cpu_composite(layer: &RealtimeLayer, frame: &VideoFrame, canvas: (u32, u32)) 
     let mut composer =
         RealtimeComposer::with_canvas(std::slice::from_ref(layer), Some(canvas)).ok()?;
     composer.push_layer(0, frame).ok()?;
+    composer.pull().ok()??.to_rgba()
+}
+
+/// Composites two layers (bottom first) + their frames on the CPU (`RealtimeComposer`)
+/// to rgba, or `None` when `FFmpeg` filters are unavailable (skip).
+fn cpu_composite2(
+    layers: &[&RealtimeLayer],
+    frames: &[&VideoFrame],
+    canvas: (u32, u32),
+) -> Option<Vec<u8>> {
+    let owned: Vec<RealtimeLayer> = layers.iter().map(|l| (*l).clone()).collect();
+    let mut composer = RealtimeComposer::with_canvas(&owned, Some(canvas)).ok()?;
+    for (i, frame) in frames.iter().enumerate() {
+        composer.push_layer(i, frame).ok()?;
+    }
     composer.pull().ok()??.to_rgba()
 }
 
@@ -748,6 +824,71 @@ fn lut_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_LUT_MEAN,
         "GPU and CPU LUT diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn chroma_key_gpu_should_match_cpu_within_tolerance() {
+    // ChromaKey parity: GPU ChromaKeyNode (map_scene maps `ChromaKey`) vs the CPU
+    // `chromakey` filter. ChromaKey rewrites alpha, but the GPU compositor's blend
+    // shader outputs the canvas alpha rather than the composited overlay alpha
+    // (blend.wgsl), so parity cannot compare composited alpha and a composited-RGB
+    // comparison of the keyed layer alone is vacuous. Instead the keyed foreground is
+    // composited over an *opaque* background: the compositor's `mix(base, overlay,
+    // overlay.a)` turns the keyed alpha into an RGB difference (background shows through
+    // the keyed green half), making an RGB parity non-vacuous (RK-015). Double-gated
+    // (adapter + filters).
+    let (w, h) = (64, 48);
+    let bg_rgb = [30u8, 60, 200]; // opaque blue background
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, bg_rgb)).unwrap();
+    // Foreground: left half pure key green, right half non-key red.
+    let fg = VideoFrame::from_rgba(w, h, key_split_rgba(w, h)).unwrap();
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::ChromaKey {
+            color: "0x00FF00".to_string(),
+            similarity: 0.3,
+            blend: 0.1,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bg_layer, &fg_layer], &[&bg, &fg], (w, h)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, _, _)) = gpu.composite(
+        &[(&bg_layer, &bg), (&fg_layer, &fg)],
+        (w, h),
+        Duration::ZERO,
+    ) else {
+        panic!("a supported chroma-key composite must render on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+    // Non-vacuity guard (RK-015): the keyed green half must show the blue background
+    // through it, while the non-key red half stays red. A GPU that failed to key would
+    // keep green in the left half and diverge here.
+    let key_half = region_mean_rgb(&gpu_out, w, true);
+    let non_key_half = region_mean_rgb(&gpu_out, w, false);
+    println!("chroma-key GPU key_half={key_half:?} non_key_half={non_key_half:?}");
+    assert!(
+        key_half[2] > 128.0 && key_half[1] < 128.0,
+        "the keyed green half must reveal the blue background; got {key_half:?}"
+    );
+    assert!(
+        non_key_half[0] > 128.0 && non_key_half[2] < 128.0,
+        "the non-key red half must stay red; got {non_key_half:?}"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "chroma-key GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_CHROMAKEY_MEAN,
+        "GPU and CPU chroma-key composite diverged beyond tolerance: mean={mean}"
     );
 }
 

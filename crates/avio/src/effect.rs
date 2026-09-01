@@ -194,6 +194,25 @@ pub enum EffectKind {
         /// Path to the `.cube` / `.3dl` LUT file. Empty = identity.
         path: String,
     },
+    /// Chroma-key (green-screen removal): makes pixels near `key_color`
+    /// transparent (the `chromakey` filter on the CPU path, `ff_render::ChromaKeyNode`
+    /// on the GPU).
+    ///
+    /// `key_color` is a structural RGB triple (each channel `0.0..=1.0`), not a
+    /// keyframeable [`Param`] — the key colour is picked once, like a
+    /// [`Lut`](Self::Lut) path. `similarity` (match radius) and `softness` (edge
+    /// feather) are keyframeable. A constant `similarity = 0.0` removes nothing, so
+    /// it compiles to no filter. Because `chromakey`'s options are static, an
+    /// animated parameter animates on the GPU-default path but renders its `t = 0`
+    /// value on the CPU fallback (like [`Hsl`](Self::Hsl)).
+    ChromaKey {
+        /// Key colour in RGB, each channel `0.0..=1.0`.
+        key_color: [f32; 3],
+        /// Match radius in `0.0..=1.0` (neutral: `0.0` removes nothing).
+        similarity: Param,
+        /// Edge softness in `0.0..=1.0` (`0.0` = hard edge).
+        softness: Param,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -445,8 +464,44 @@ impl EffectKind {
                 }
                 Some(FilterStep::Lut3d { path: path.clone() })
             }
+            // ChromaKey maps to the `chromakey` filter (key colour + similarity +
+            // blend). A constant `similarity = 0.0` removes nothing, so it compiles
+            // to nothing; any animated parameter uses `ChromaKeyAnimated` (the GPU
+            // animates per frame; the CPU renders its `t = 0` values).
+            EffectKind::ChromaKey {
+                key_color,
+                similarity,
+                softness,
+            } => {
+                if similarity.is_const() && softness.is_const() {
+                    #[allow(clippy::float_cmp)]
+                    if similarity.as_const() == Some(0.0) {
+                        return None;
+                    }
+                    Some(FilterStep::ChromaKey {
+                        color: rgb_to_ffmpeg_hex(*key_color),
+                        similarity: similarity.as_const().unwrap_or(0.0) as f32,
+                        blend: softness.as_const().unwrap_or(0.0) as f32,
+                    })
+                } else {
+                    Some(FilterStep::ChromaKeyAnimated {
+                        color: rgb_to_ffmpeg_hex(*key_color),
+                        similarity: similarity.to_animated(),
+                        blend: softness.to_animated(),
+                    })
+                }
+            }
         }
     }
+}
+
+/// Formats an RGB triple (each channel `0.0..=1.0`) as an `FFmpeg` `0xRRGGBB`
+/// colour string, the canonical form [`avio::gpu`](crate::gpu) parses back to the
+/// GPU node's key colour.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rgb_to_ffmpeg_hex(rgb: [f32; 3]) -> String {
+    let ch = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    format!("0x{:02X}{:02X}{:02X}", ch(rgb[0]), ch(rgb[1]), ch(rgb[2]))
 }
 
 /// One typed effect in a [`Clip`](crate::Clip)'s ordered effect list.
@@ -837,5 +892,55 @@ mod tests {
             FilterStep::Lut3d { path } => assert_eq!(path, "grade.cube"),
             other => panic!("expected Lut3d, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn chroma_key_zero_similarity_should_compile_to_nothing() {
+        let kind = EffectKind::ChromaKey {
+            key_color: [0.0, 1.0, 0.0],
+            similarity: Param::Const(0.0),
+            softness: Param::Const(0.1),
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "similarity 0 removes nothing, so it is a no-op"
+        );
+    }
+
+    #[test]
+    fn chroma_key_const_should_compile_to_chroma_key_with_hex_colour() {
+        let kind = EffectKind::ChromaKey {
+            key_color: [0.0, 1.0, 0.0],
+            similarity: Param::Const(0.3),
+            softness: Param::Const(0.1),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::ChromaKey {
+                color,
+                similarity,
+                blend,
+            } => {
+                assert_eq!(color, "0x00FF00");
+                assert!((similarity - 0.3).abs() < 1e-5);
+                assert!((blend - 0.1).abs() < 1e-5);
+            }
+            other => panic!("expected ChromaKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chroma_key_any_animated_should_compile_to_chroma_key_animated() {
+        let kind = EffectKind::ChromaKey {
+            key_color: [0.0, 1.0, 0.0],
+            similarity: Param::Animated(animated_track()),
+            softness: Param::Const(0.1),
+        };
+        assert!(
+            matches!(
+                kind.to_filter_step().unwrap(),
+                FilterStep::ChromaKeyAnimated { .. }
+            ),
+            "any animated parameter routes through ChromaKeyAnimated"
+        );
     }
 }

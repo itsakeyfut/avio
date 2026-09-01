@@ -279,6 +279,15 @@ pub enum GpuEffect {
         /// Path to the LUT file the compositor loads.
         path: String,
     },
+    /// `ff_render::ChromaKeyNode` (green-screen keying by chroma distance).
+    ChromaKey {
+        /// Key colour in RGB, each channel `0.0..=1.0`.
+        key_color: [f32; 3],
+        /// Chroma-distance threshold (the `chromakey` `similarity`).
+        tolerance: f32,
+        /// Edge softness (the `chromakey` `blend`).
+        softness: f32,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -621,9 +630,32 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                 StepClass::Effect(GpuEffect::Lut { path: path.clone() })
             }
         }
-        // Everything else (other colour, keying, masks, animated geometry,
-        // xfade, ...) has no GPU node yet. `_` is required: `FilterStep` is
-        // `#[non_exhaustive]` from ff-filter (RK-003).
+        // ChromaKey: parse the canonical `0xRRGGBB` colour back to the node's key
+        // colour. A colour string this parser cannot read (a named/other form from
+        // a non-typed source) has no GPU node, so it falls back to CPU (RK-020).
+        FilterStep::ChromaKey {
+            color,
+            similarity,
+            blend,
+        } => match parse_ffmpeg_hex(color) {
+            Some(key_color) => chroma_key_step(key_color, *similarity, *blend),
+            None => StepClass::Unsupported,
+        },
+        FilterStep::ChromaKeyAnimated {
+            color,
+            similarity,
+            blend,
+        } => match parse_ffmpeg_hex(color) {
+            Some(key_color) => chroma_key_step(
+                key_color,
+                similarity.value_at(t) as f32,
+                blend.value_at(t) as f32,
+            ),
+            None => StepClass::Unsupported,
+        },
+        // Everything else (other colour, masks, animated geometry, xfade, ...) has
+        // no GPU node yet. `_` is required: `FilterStep` is `#[non_exhaustive]`
+        // from ff-filter (RK-003).
         _ => StepClass::Unsupported,
     }
 }
@@ -716,6 +748,42 @@ fn hsl_step(hue_shift: f32, saturation: f32, lightness: f32) -> StepClass {
         saturation,
         lightness,
     })
+}
+
+/// Classifies a chroma-key step: a zero `tolerance` removes nothing, so it is a
+/// no-op (`Skip`); otherwise it maps straight to the GPU node (the `chromakey`
+/// `similarity`/`blend` are the node's `tolerance`/`softness`).
+#[allow(clippy::float_cmp)]
+fn chroma_key_step(key_color: [f32; 3], tolerance: f32, softness: f32) -> StepClass {
+    if tolerance == 0.0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::ChromaKey {
+        key_color,
+        tolerance,
+        softness,
+    })
+}
+
+/// Parses an `FFmpeg` `0xRRGGBB` / `#RRGGBB` colour string into an RGB triple
+/// (each channel `0.0..=1.0`), or `None` for any other form. Used to recover the
+/// GPU node's key colour from the [`FilterStep::ChromaKey`] colour string that
+/// [`EffectKind::ChromaKey`](crate::EffectKind::ChromaKey) emits canonically.
+fn parse_ffmpeg_hex(color: &str) -> Option<[f32; 3]> {
+    let hex = color
+        .strip_prefix("0x")
+        .or_else(|| color.strip_prefix('#'))?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+    ])
 }
 
 /// Maps `ff_filter::ScaleAlgorithm` to `ff_render::ScaleAlgorithm` (ff-render has no
@@ -1420,6 +1488,62 @@ mod tests {
         assert!(matches!(
             plan.layers[0].effects.as_slice(),
             [GpuEffect::ColorGrade { .. }]
+        ));
+    }
+
+    #[test]
+    fn parse_ffmpeg_hex_should_read_0x_and_hash_forms_and_reject_others() {
+        assert_eq!(parse_ffmpeg_hex("0x00FF00"), Some([0.0, 1.0, 0.0]));
+        assert_eq!(parse_ffmpeg_hex("#0000FF"), Some([0.0, 0.0, 1.0]));
+        // A named / non-hex colour has no GPU node → None (CPU fallback).
+        assert_eq!(parse_ffmpeg_hex("green"), None);
+        assert_eq!(parse_ffmpeg_hex("0x00FF"), None);
+    }
+
+    #[test]
+    fn classify_chroma_key_should_map_to_node_with_parsed_colour() {
+        let step = FilterStep::ChromaKey {
+            color: "0x00FF00".to_string(),
+            similarity: 0.3,
+            blend: 0.1,
+        };
+        match classify_step(&step, Duration::ZERO) {
+            StepClass::Effect(GpuEffect::ChromaKey {
+                key_color,
+                tolerance,
+                softness,
+            }) => {
+                assert_eq!(key_color, [0.0, 1.0, 0.0]);
+                assert!((tolerance - 0.3).abs() < 1e-5);
+                assert!((softness - 0.1).abs() < 1e-5);
+            }
+            _ => panic!("expected a ChromaKey GPU effect"),
+        }
+    }
+
+    #[test]
+    fn classify_chroma_key_zero_tolerance_should_skip() {
+        let step = FilterStep::ChromaKey {
+            color: "0x00FF00".to_string(),
+            similarity: 0.0,
+            blend: 0.1,
+        };
+        assert!(matches!(
+            classify_step(&step, Duration::ZERO),
+            StepClass::Skip
+        ));
+    }
+
+    #[test]
+    fn classify_chroma_key_unparseable_colour_should_fall_back_to_cpu() {
+        let step = FilterStep::ChromaKey {
+            color: "green".to_string(),
+            similarity: 0.3,
+            blend: 0.1,
+        };
+        assert!(matches!(
+            classify_step(&step, Duration::ZERO),
+            StepClass::Unsupported
         ));
     }
 }

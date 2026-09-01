@@ -673,6 +673,22 @@ pub enum FilterStep {
         blend: f32,
     },
 
+    /// [`ChromaKey`](Self::ChromaKey) with optionally animated `similarity` /
+    /// `blend`.
+    ///
+    /// The GPU animates per frame; the CPU (`libavfilter`) path renders the
+    /// `Duration::ZERO` values (`chromakey`'s options are static, so the CPU path
+    /// is kept static and the GPU-default path is the single animated one, matching
+    /// [`HslAnimated`](Self::HslAnimated)).
+    ChromaKeyAnimated {
+        /// `FFmpeg` color string, e.g. `"0x00FF00"`.
+        color: String,
+        /// Match radius in `[0.0, 1.0]`, evaluated at `Duration::ZERO` on the CPU.
+        similarity: AnimatedValue<f64>,
+        /// Edge softness in `[0.0, 1.0]`, evaluated at `Duration::ZERO` on the CPU.
+        blend: AnimatedValue<f64>,
+    },
+
     /// Remove pixels matching `color` in RGB space using `FFmpeg`'s `colorkey`
     /// filter, producing an `rgba` output with transparent areas where the key
     /// color was detected.
@@ -1272,6 +1288,7 @@ impl FilterStep {
                 }
             },
             Self::ChromaKey { .. } => "chromakey",
+            Self::ChromaKeyAnimated { .. } => "chromakey",
             Self::ColorKey { .. } => "colorkey",
             Self::SpillSuppress { .. } => "hue",
             // AlphaMatte is a compound step (matte pipeline → alphamerge);
@@ -1659,6 +1676,20 @@ impl FilterStep {
                 similarity,
                 blend,
             } => format!("color={color}:similarity={similarity}:blend={blend}"),
+            Self::ChromaKeyAnimated {
+                color,
+                similarity,
+                blend,
+            } => {
+                // The CPU path is static (the GPU animates per frame): render the
+                // `Duration::ZERO` values.
+                #[allow(clippy::cast_possible_truncation)]
+                let (s, b) = (
+                    similarity.value_at(Duration::ZERO) as f32,
+                    blend.value_at(Duration::ZERO) as f32,
+                );
+                format!("color={color}:similarity={s}:blend={b}")
+            }
             Self::ColorKey {
                 color,
                 similarity,
@@ -2275,6 +2306,19 @@ mod tests {
             color_trc: None,
         };
         assert_eq!(step.args(), "");
+    }
+
+    #[test]
+    fn chroma_key_animated_should_render_static_zero_values_via_chromakey() {
+        // The CPU path is static: args() renders the Duration::ZERO values through
+        // the same `chromakey` filter as the const variant.
+        let step = FilterStep::ChromaKeyAnimated {
+            color: "0x00FF00".to_string(),
+            similarity: AnimatedValue::Static(0.3),
+            blend: AnimatedValue::Static(0.1),
+        };
+        assert_eq!(step.filter_name(), "chromakey");
+        assert_eq!(step.args(), "color=0x00FF00:similarity=0.3:blend=0.1");
     }
 
     #[test]
