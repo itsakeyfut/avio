@@ -422,6 +422,56 @@ mod tests {
         assert_eq!(rgba[3], 0, "black mask must zero out alpha");
     }
 
+    /// A 4x2 tagged fixture pair for the luma mask: an opaque base and a mask
+    /// whose left half (x=0,1) is white (luma 1.0) and right half (x=2,3) is
+    /// black (luma 0.0). Masking must preserve alpha on the left region and zero
+    /// it on the right, so a per-region assertion pins spatial mask selection
+    /// (a 1x1 test cannot).
+    fn luma_tagged_fixtures() -> (Vec<u8>, Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut base = Vec::with_capacity((w * h * 4) as usize);
+        let mut mask = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                base.extend_from_slice(&[100, 100, 100, 255]); // opaque grey
+                if x < 2 {
+                    mask.extend_from_slice(&[255, 255, 255, 255]); // white → luma 1.0
+                } else {
+                    mask.extend_from_slice(&[0, 0, 0, 255]); // black → luma 0.0
+                }
+            }
+        }
+        (base, mask, w, h)
+    }
+
+    fn alpha_at(rgba: &[u8], w: u32, x: u32, y: u32) -> u8 {
+        rgba[((y * w + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn luma_mask_node_should_mask_by_region_luma() {
+        let (mut base, mask, w, h) = luma_tagged_fixtures();
+        LumaMaskNode::new(mask, w, h).process_cpu(&mut base, w, h);
+        // White mask region → alpha preserved.
+        assert!(
+            alpha_at(&base, w, 0, 0) > 200,
+            "white-mask (0,0) preserves alpha"
+        );
+        assert!(
+            alpha_at(&base, w, 1, 1) > 200,
+            "white-mask (1,1) preserves alpha"
+        );
+        // Black mask region → alpha zeroed.
+        assert!(
+            alpha_at(&base, w, 2, 0) < 30,
+            "black-mask (2,0) zeroes alpha"
+        );
+        assert!(
+            alpha_at(&base, w, 3, 1) < 30,
+            "black-mask (3,1) zeroes alpha"
+        );
+    }
+
     // AlphaMatteNode
 
     #[test]
@@ -447,6 +497,75 @@ mod tests {
             (fg[0] as i32 - 50).abs() <= 1,
             "transparent fg must show bg; got {}",
             fg[0]
+        );
+    }
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+mod gpu_tests {
+    use super::*;
+    use crate::context::RenderContext;
+    use crate::graph::RenderGraph;
+    use std::sync::Arc;
+
+    /// A headless GPU context, or `None` when no adapter is available (CI).
+    fn ctx() -> Option<Arc<RenderContext>> {
+        match futures::executor::block_on(RenderContext::init()) {
+            Ok(ctx) => Some(Arc::new(ctx)),
+            Err(_) => None,
+        }
+    }
+
+    /// Same tagged fixtures as the CPU test: opaque base, white/black split mask.
+    fn luma_tagged_fixtures() -> (Vec<u8>, Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut base = Vec::with_capacity((w * h * 4) as usize);
+        let mut mask = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                base.extend_from_slice(&[100, 100, 100, 255]);
+                if x < 2 {
+                    mask.extend_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    mask.extend_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        (base, mask, w, h)
+    }
+
+    fn alpha_at(rgba: &[u8], w: u32, x: u32, y: u32) -> u8 {
+        rgba[((y * w + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn luma_mask_gpu_should_mask_by_region_luma_on_tagged_fixture() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (base, mask, w, h) = luma_tagged_fixtures();
+        let out = RenderGraph::new(Arc::clone(&ctx))
+            .push(LumaMaskNode::new(mask, w, h))
+            .process_gpu(&base, w, h)
+            .expect("gpu luma mask");
+
+        // White mask region → alpha preserved; black region → zeroed (validates
+        // the mask.wgsl luma branch).
+        assert!(
+            alpha_at(&out, w, 0, 0) > 200,
+            "white-mask (0,0) preserves alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 1, 1) > 200,
+            "white-mask (1,1) preserves alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 2, 0) < 30,
+            "black-mask (2,0) zeroes alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 3, 1) < 30,
+            "black-mask (3,1) zeroes alpha on GPU"
         );
     }
 }
