@@ -183,6 +183,43 @@ mod tests {
     use super::*;
     use crate::nodes::RenderNodeCpu;
 
+    /// A 4x2 tagged fixture: the left half (x=0,1) is pure green, the right half
+    /// (x=2,3) is pure red. Keying green must clear alpha on the left region and
+    /// leave the right region opaque, so a per-region assertion pins that the
+    /// mask selects the correct pixels (a 1x1 test cannot).
+    fn tagged_frame() -> (Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut buf = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                if x < 2 {
+                    buf.extend_from_slice(&[0, 255, 0, 255]); // green
+                } else {
+                    buf.extend_from_slice(&[255, 0, 0, 255]); // red
+                }
+            }
+        }
+        (buf, w, h)
+    }
+
+    /// Alpha byte of pixel (x, y) in a `w`-wide RGBA buffer.
+    fn alpha_at(rgba: &[u8], w: u32, x: u32, y: u32) -> u8 {
+        rgba[((y * w + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn chroma_key_node_should_key_green_region_only() {
+        let (mut rgba, w, _h) = tagged_frame();
+        let node = ChromaKeyNode::new([0.0, 1.0, 0.0], 0.1, 0.05);
+        node.process_cpu(&mut rgba, w, 2);
+        // Green region (both rows) → transparent.
+        assert!(alpha_at(&rgba, w, 0, 0) < 30, "green (0,0) must be keyed");
+        assert!(alpha_at(&rgba, w, 1, 1) < 30, "green (1,1) must be keyed");
+        // Red region (both rows) → opaque.
+        assert!(alpha_at(&rgba, w, 2, 0) > 200, "red (2,0) must stay opaque");
+        assert!(alpha_at(&rgba, w, 3, 1) > 200, "red (3,1) must stay opaque");
+    }
+
     #[test]
     fn chroma_key_node_pure_green_should_become_transparent() {
         let mut rgba = vec![0u8, 255, 0, 255]; // pure green
@@ -218,6 +255,72 @@ mod tests {
         assert!(
             rgba_loose[3] < rgba_tight[3],
             "loose tolerance must key more aggressively than tight"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+mod gpu_tests {
+    use super::*;
+    use crate::context::RenderContext;
+    use crate::graph::RenderGraph;
+    use std::sync::Arc;
+
+    /// A headless GPU context, or `None` when no adapter is available (CI).
+    fn ctx() -> Option<Arc<RenderContext>> {
+        match futures::executor::block_on(RenderContext::init()) {
+            Ok(ctx) => Some(Arc::new(ctx)),
+            Err(_) => None,
+        }
+    }
+
+    /// Same tagged fixture as the CPU tests: left half green, right half red.
+    fn tagged_frame() -> (Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut buf = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                if x < 2 {
+                    buf.extend_from_slice(&[0, 255, 0, 255]);
+                } else {
+                    buf.extend_from_slice(&[255, 0, 0, 255]);
+                }
+            }
+        }
+        (buf, w, h)
+    }
+
+    fn alpha_at(rgba: &[u8], w: u32, x: u32, y: u32) -> u8 {
+        rgba[((y * w + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn chroma_key_gpu_should_key_green_region_on_tagged_fixture() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (frame, w, h) = tagged_frame();
+        let out = RenderGraph::new(Arc::clone(&ctx))
+            .push(ChromaKeyNode::new([0.0, 1.0, 0.0], 0.1, 0.05))
+            .process_gpu(&frame, w, h)
+            .expect("gpu chroma key");
+
+        // Green region → transparent; red region → opaque (validates the shader).
+        assert!(
+            alpha_at(&out, w, 0, 0) < 30,
+            "green (0,0) must be keyed on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 1, 1) < 30,
+            "green (1,1) must be keyed on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 2, 0) > 200,
+            "red (2,0) must stay opaque on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 3, 1) > 200,
+            "red (3,1) must stay opaque on GPU"
         );
     }
 }
