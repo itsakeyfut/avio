@@ -308,6 +308,17 @@ pub enum GpuEffect {
         /// When `true`, keep the exterior and clear the interior.
         invert: bool,
     },
+    /// `ff_render::MotionBlurNode` (exposure-trail accumulation). This node is
+    /// **stateful**: the trail accumulates across frames on one node instance, so the
+    /// compositor must reuse its cached graph within a clip and reset it at a clip
+    /// boundary (RK-025). The shutter is a constant (motion blur cannot animate the
+    /// shutter per frame; see [`EffectKind::MotionBlur`](crate::EffectKind::MotionBlur)).
+    MotionBlur {
+        /// Shutter angle in degrees (`0.0` = no blur, `180.0` = standard film blur).
+        shutter_angle: f32,
+        /// Trail-length sub-frame count (the node clamps it to `2..=8`).
+        sub_frames: u8,
+    },
 }
 
 /// Blur radius (sigma) the GPU [`ff_render::SharpenNode`] uses. `FFmpeg` `unsharp`
@@ -700,6 +711,14 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             round_u32(height.value_at(t)),
             *invert,
         ),
+        // MotionBlur (exposure trail): the compositor builds the stateful
+        // `MotionBlurNode`. A zero shutter is no blur (Skip). The shutter is already
+        // constant here (`EffectKind::MotionBlur` collapses an animated shutter to its
+        // t=0 value), so accumulation reuses one node across the clip.
+        FilterStep::MotionBlur {
+            shutter_angle_degrees,
+            sub_frames,
+        } => motion_blur_step(*shutter_angle_degrees, *sub_frames),
         // Everything else (other colour, masks, animated geometry, xfade, ...) has
         // no GPU node yet. `_` is required: `FilterStep` is `#[non_exhaustive]`
         // from ff-filter (RK-003).
@@ -825,6 +844,19 @@ fn shape_mask_step(x: u32, y: u32, width: u32, height: u32, invert: bool) -> Ste
         width,
         height,
         invert,
+    })
+}
+
+/// Classifies a motion-blur step: a non-positive shutter is no blur, so it is a no-op
+/// (`Skip`); otherwise it maps straight to the stateful GPU node (shutter degrees /
+/// sub-frame count in the node's convention).
+fn motion_blur_step(shutter_angle: f32, sub_frames: u8) -> StepClass {
+    if shutter_angle <= 0.0 {
+        return StepClass::Skip;
+    }
+    StepClass::Effect(GpuEffect::MotionBlur {
+        shutter_angle,
+        sub_frames,
     })
 }
 
@@ -1680,6 +1712,36 @@ mod tests {
             width: 0,
             height: 10,
             invert: false,
+        };
+        assert!(matches!(
+            classify_step(&step, Duration::ZERO),
+            StepClass::Skip
+        ));
+    }
+
+    #[test]
+    fn classify_motion_blur_should_map_to_gpu_effect() {
+        let step = FilterStep::MotionBlur {
+            shutter_angle_degrees: 180.0,
+            sub_frames: 6,
+        };
+        match classify_step(&step, Duration::ZERO) {
+            StepClass::Effect(GpuEffect::MotionBlur {
+                shutter_angle,
+                sub_frames,
+            }) => {
+                assert!((shutter_angle - 180.0).abs() < 1e-4);
+                assert_eq!(sub_frames, 6);
+            }
+            _ => panic!("expected a MotionBlur GPU effect"),
+        }
+    }
+
+    #[test]
+    fn classify_motion_blur_zero_shutter_should_skip() {
+        let step = FilterStep::MotionBlur {
+            shutter_angle_degrees: 0.0,
+            sub_frames: 4,
         };
         assert!(matches!(
             classify_step(&step, Duration::ZERO),

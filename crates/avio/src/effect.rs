@@ -13,6 +13,8 @@
 //! model-free — this type lives in `avio` because it exists to make a *clip's*
 //! effects re-editable (a CLIP/EDIT concern per the engine/primitive litmus).
 
+use std::time::Duration;
+
 use ff_filter::{AnimatedValue, AnimationTrack, FilterStep, Keyframe, Rgb};
 
 use crate::ids::EffectId;
@@ -246,6 +248,26 @@ pub enum EffectKind {
         height: Param,
         /// When `true`, keep the exterior and clear the interior.
         invert: bool,
+    },
+    /// Motion blur (the `tblend` filter on the CPU path, `ff_render::MotionBlurNode`
+    /// on the GPU): a per-clip exposure trail that blends each frame with the
+    /// accumulated previous output.
+    ///
+    /// `shutter_angle` is keyframeable per the typed-effect model, but motion blur is
+    /// **stateful** — the trail accumulates across successive frames on one node
+    /// instance — so a stable shutter is required and the value at `t = 0` is used on
+    /// both paths (the CPU `tblend` likewise has no runtime shutter parameter). A
+    /// constant `shutter_angle = 0.0` is no blur, so it compiles to no filter.
+    /// `sub_frames` is a structural trail-length count (clamped `2..=8` by the GPU
+    /// node); the CPU `tblend` ignores it (it blends only the two most recent frames),
+    /// a documented GPU/CPU divergence.
+    MotionBlur {
+        /// Shutter angle in degrees. Range 0.0..=360.0 (`0.0` = no blur, `180.0` =
+        /// standard film blur). Keyframeable, but rendered at its `t = 0` value.
+        shutter_angle: Param,
+        /// Trail-length sub-frame count (the GPU node clamps it to `2..=8`; the CPU
+        /// `tblend` ignores it).
+        sub_frames: u8,
     },
 }
 
@@ -560,6 +582,24 @@ impl EffectKind {
                         invert: *invert,
                     })
                 }
+            }
+            // MotionBlur maps to `tblend`. Motion blur is stateful (the trail
+            // accumulates across frames on one node), so the shutter cannot animate
+            // per frame: both paths use the value at `t = 0`. A non-positive shutter
+            // is no blur, so it compiles to nothing — matching the GPU classifier's
+            // `<= 0.0` Skip so both paths treat an out-of-range value the same way.
+            EffectKind::MotionBlur {
+                shutter_angle,
+                sub_frames,
+            } => {
+                let angle = shutter_angle.to_animated().value_at(Duration::ZERO) as f32;
+                if angle <= 0.0 {
+                    return None;
+                }
+                Some(FilterStep::MotionBlur {
+                    shutter_angle_degrees: angle,
+                    sub_frames: *sub_frames,
+                })
             }
         }
     }
@@ -1088,5 +1128,65 @@ mod tests {
             ),
             "any animated bound routes through RectMaskAnimated"
         );
+    }
+
+    #[test]
+    fn motion_blur_const_should_map_to_motion_blur_step() {
+        let kind = EffectKind::MotionBlur {
+            shutter_angle: Param::Const(180.0),
+            sub_frames: 4,
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::MotionBlur {
+                shutter_angle_degrees,
+                sub_frames,
+            } => {
+                assert!((shutter_angle_degrees - 180.0).abs() < 1e-4);
+                assert_eq!(sub_frames, 4);
+            }
+            other => panic!("expected MotionBlur, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn motion_blur_non_positive_shutter_should_map_to_none() {
+        // A zero (and any out-of-range negative) shutter is no blur, so it compiles to
+        // nothing on both paths (the GPU classifier likewise skips `<= 0.0`).
+        for angle in [0.0, -10.0] {
+            let kind = EffectKind::MotionBlur {
+                shutter_angle: Param::Const(angle),
+                sub_frames: 4,
+            };
+            assert!(
+                kind.to_filter_step().is_none(),
+                "a non-positive shutter angle ({angle}) is no blur, so it is a no-op"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_blur_animated_shutter_should_render_t0_value() {
+        // The trail needs a stable node, so an animated shutter renders its t=0 value
+        // (here 180) rather than a later keyframe (90).
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 180.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 90.0, Easing::Linear));
+        let kind = EffectKind::MotionBlur {
+            shutter_angle: Param::Animated(track),
+            sub_frames: 6,
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::MotionBlur {
+                shutter_angle_degrees,
+                sub_frames,
+            } => {
+                assert!(
+                    (shutter_angle_degrees - 180.0).abs() < 1e-4,
+                    "must use the t=0 shutter value (180), got {shutter_angle_degrees}"
+                );
+                assert_eq!(sub_frames, 6);
+            }
+            other => panic!("expected MotionBlur, got {other:?}"),
+        }
     }
 }
