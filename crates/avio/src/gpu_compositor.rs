@@ -32,7 +32,7 @@ use ff_format::VideoFrame;
 use ff_render::{
     ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode,
     FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode,
-    RenderContext, RenderGraph, ScaleNode, SharpenNode, VignetteNode,
+    RenderContext, RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -237,6 +237,19 @@ impl GpuCompositor {
                     in_w,
                     in_h,
                 )),
+                // ShapeMask builds a rectangular alpha mask from the pixel bounds
+                // (preserves dimensions; the mask is sized to the source frame).
+                GpuEffect::ShapeMask {
+                    x,
+                    y,
+                    width,
+                    height,
+                    invert,
+                } => graph.push(ShapeMaskNode::new(
+                    build_shape_mask(in_w, in_h, *x, *y, *width, *height, *invert),
+                    in_w,
+                    in_h,
+                )),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
@@ -273,6 +286,36 @@ fn build_luma_mask(rgba: &[u8], invert: bool) -> Vec<u8> {
             0.2126 * f32::from(px[0]) + 0.7152 * f32::from(px[1]) + 0.0722 * f32::from(px[2]);
         let grey = (255.0 - luma).clamp(0.0, 255.0).round() as u8;
         mask.extend_from_slice(&[grey, grey, grey, 255]);
+    }
+    mask
+}
+
+/// Builds the mask [`ff_render::ShapeMaskNode`] consumes: alpha `255` inside the
+/// rectangle `[x, x+width) x [y, y+height)` and `0` outside (swapped when `invert`).
+/// The node keeps a pixel where the mask alpha is `> 1`, so this exactly matches the
+/// CPU `RectMask` `geq` (`between(X, x, x+width-1)`), which is inclusive of the far
+/// edge. RGB is unused by the node, so it is left `0`.
+fn build_shape_mask(
+    w: u32,
+    h: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    invert: bool,
+) -> Vec<u8> {
+    let (inside, outside) = if invert { (0u8, 255u8) } else { (255u8, 0u8) };
+    let (x_end, y_end) = (x.saturating_add(width), y.saturating_add(height));
+    let mut mask = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for py in 0..h {
+        for px in 0..w {
+            let alpha = if px >= x && px < x_end && py >= y && py < y_end {
+                inside
+            } else {
+                outside
+            };
+            mask.extend_from_slice(&[0, 0, 0, alpha]);
+        }
     }
     mask
 }

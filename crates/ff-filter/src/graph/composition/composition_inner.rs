@@ -331,6 +331,7 @@ pub(super) unsafe fn build_video_composition(
                     | FilterStep::ColorKey { .. }
                     | FilterStep::LumaKey { .. }
                     | FilterStep::RectMask { .. }
+                    | FilterStep::RectMaskAnimated { .. }
                     | FilterStep::LumaMask { .. }
                     | FilterStep::PolygonMatte { .. }
                     | FilterStep::FeatherMask { .. }
