@@ -201,8 +201,10 @@ pub(crate) fn drain_video_gpu(
             };
             #[allow(clippy::cast_precision_loss)] // frame index fits the f64 mantissa
             let t = Duration::from_secs_f64(f64::from(video_idx) / frame_rate);
+            // Move the freshly-decoded frame into the compositor: a no-effects layer
+            // then avoids a full-frame clone on this hot path (#1634).
             let (rgba, w, h) = core
-                .composite(&[(&layer, &frame)], canvas, t)
+                .composite_owned(vec![(&layer, frame)], canvas, t)
                 .ok_or_else(|| TimelineError::TimelineRenderFailed {
                     reason: "gpu export: a frame fell back mid-export (precluded by eligibility)"
                         .to_string(),

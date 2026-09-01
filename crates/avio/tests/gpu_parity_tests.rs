@@ -1216,6 +1216,178 @@ fn shape_mask_invert_gpu_should_match_cpu_within_tolerance() {
 }
 
 #[test]
+fn effect_cache_should_reuse_for_identical_const_effects() {
+    // #1634: compositing the same const-effect layer twice must reuse the cached graph
+    // and produce identical, correctly-effected output (not stale/garbage on the reuse).
+    // Adapter-gated only (no CPU filters needed).
+    let (w, h) = (64, 48);
+    let input = gradient_rgba(w, h);
+    let frame = VideoFrame::from_rgba(w, h, input.clone()).unwrap();
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Eq {
+            brightness: 0.15,
+            contrast: 1.2,
+            saturation: 1.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let out1 = gpu_composite(&mut gpu, &layer, &frame, (w, h)).expect("first composite");
+    let out2 = gpu_composite(&mut gpu, &layer, &frame, (w, h)).expect("second composite (cached)");
+    assert_eq!(
+        out1, out2,
+        "the cached reuse must match the first render exactly"
+    );
+    // Non-vacuous: the effect actually changed the frame (so a stale/empty cache would
+    // be a visible divergence, not a no-op).
+    assert!(
+        mean_abs_diff_rgb(&out1, &input) > 2.0,
+        "the colour grade must visibly change the frame"
+    );
+}
+
+#[test]
+fn effect_cache_should_rebuild_on_changed_effect() {
+    // #1634 / RK-015: with the same compositor and input but a *different* effect param,
+    // the cache must rebuild — the two outputs must differ. If the cache wrongly reused
+    // the first graph, they would be equal and this fails.
+    let (w, h) = (64, 48);
+    let frame = VideoFrame::from_rgba(w, h, gradient_rgba(w, h)).unwrap();
+    let dark = base_layer(
+        w,
+        h,
+        vec![FilterStep::Eq {
+            brightness: -0.3,
+            contrast: 1.0,
+            saturation: 1.0,
+        }],
+    );
+    let bright = base_layer(
+        w,
+        h,
+        vec![FilterStep::Eq {
+            brightness: 0.3,
+            contrast: 1.0,
+            saturation: 1.0,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let out_dark = gpu_composite(&mut gpu, &dark, &frame, (w, h)).expect("dark composite");
+    let out_bright = gpu_composite(&mut gpu, &bright, &frame, (w, h)).expect("bright composite");
+    assert!(
+        mean_abs_diff_rgb(&out_dark, &out_bright) > 10.0,
+        "a changed brightness must rebuild the cached graph and change the output"
+    );
+}
+
+#[test]
+fn effect_cache_should_not_panic_on_layer_count_change() {
+    // #1634: the position-keyed cache resets when the layer count changes; shrinking the
+    // count must not index out of bounds.
+    let (w, h) = (64, 48);
+    let fa = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [200, 40, 40])).unwrap();
+    let fb = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [40, 40, 200])).unwrap();
+    let eq = || {
+        base_layer(
+            w,
+            h,
+            vec![FilterStep::Eq {
+                brightness: 0.1,
+                contrast: 1.0,
+                saturation: 1.0,
+            }],
+        )
+    };
+    let (la, lb) = (eq(), eq());
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    // Two layers, then one: the cache (len 2) must reset to len 1 without panicking.
+    assert!(
+        gpu.composite(&[(&la, &fa), (&lb, &fb)], (w, h), Duration::ZERO)
+            .is_some(),
+        "two-layer composite must render"
+    );
+    assert!(
+        gpu.composite(&[(&la, &fa)], (w, h), Duration::ZERO)
+            .is_some(),
+        "shrinking to one layer must not panic and must render"
+    );
+}
+
+#[test]
+fn effect_cache_should_rebuild_on_input_dimension_change() {
+    // #1634 / RK-020: the cache key includes the input size, so reusing a graph across a
+    // different frame size (a same-effect cut to a different resolution at the same layer
+    // position) must rebuild — not wrap the read-back at the stale first-frame dimensions
+    // (or reuse a dimension-sized mask). Without the size in the key the second composite
+    // would return None (byte-length mismatch) or wrong dimensions.
+    let (w1, h1) = (64, 48);
+    let (w2, h2) = (32, 24);
+    let eq = |w, h| {
+        base_layer(
+            w,
+            h,
+            vec![FilterStep::Eq {
+                brightness: 0.15,
+                contrast: 1.1,
+                saturation: 1.0,
+            }],
+        )
+    };
+    let f1 = VideoFrame::from_rgba(w1, h1, gradient_rgba(w1, h1)).unwrap();
+    let f2 = VideoFrame::from_rgba(w2, h2, gradient_rgba(w2, h2)).unwrap();
+    let (l1, l2) = (eq(w1, h1), eq(w2, h2));
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    // Prime the position-0 cache with the large frame, then composite a smaller frame
+    // with the same effect fingerprint on the same compositor.
+    gpu.composite(&[(&l1, &f1)], (w1, h1), Duration::ZERO)
+        .expect("large composite primes the cache");
+    let (small, sw, sh) = gpu
+        .composite(&[(&l2, &f2)], (w2, h2), Duration::ZERO)
+        .expect("smaller composite must rebuild, not reuse stale dims");
+    assert_eq!((sw, sh), (w2, h2));
+    // A fresh compositor (no stale cache) is the ground truth for the small frame.
+    let mut fresh = GpuCompositor::new().expect("adapter present");
+    let (reference, _, _) = fresh
+        .composite(&[(&l2, &f2)], (w2, h2), Duration::ZERO)
+        .expect("fresh composite");
+    assert_eq!(
+        small, reference,
+        "the resized reuse must rebuild and match a fresh render"
+    );
+}
+
+#[test]
+fn composite_owned_should_match_borrowed_for_no_effects() {
+    // #1634: the owned entry point (which moves the frame, avoiding a clone on the
+    // no-effects path) must produce the same output as the borrowing `composite`.
+    let (w, h) = (64, 48);
+    let frame = VideoFrame::from_rgba(w, h, gradient_rgba(w, h)).unwrap();
+    let layer = base_layer(w, h, vec![]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let (borrowed, _, _) = gpu
+        .composite(&[(&layer, &frame)], (w, h), Duration::ZERO)
+        .expect("borrowed composite");
+    let (owned, _, _) = gpu
+        .composite_owned(vec![(&layer, frame.clone())], (w, h), Duration::ZERO)
+        .expect("owned composite");
+    assert_eq!(
+        borrowed, owned,
+        "composite_owned must match the borrowing composite output"
+    );
+}
+
+#[test]
 fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
     // Every unsupported input must return None (CPU fallback), never panic (AC2).
     // Adapter-gated (the gate lives past GpuCompositor::new).

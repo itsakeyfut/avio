@@ -17,13 +17,12 @@
 //! letterboxes. Matching those exactly is parity work (Br5), so those cases fall back
 //! to CPU rather than render wrong output.
 //!
-//! **Known v1 inefficiencies (deferred, tracked in #1634):** `apply_effects`
-//! builds a fresh `RenderGraph` and fresh effect nodes per frame, so an effected layer
-//! recompiles its pipeline each frame instead of reusing a cached one; and the
-//! no-effects path deep-copies the source frame (`VideoFrame::clone`). Both are on the
-//! export hot path but cost nothing for the common no-effect export beyond one copy;
-//! a persistent per-effect node cache and an owned-frame `composite` entry point are
-//! the fix.
+//! **Per-frame cost (#1634):** an effected layer's `RenderGraph` is cached per layer
+//! position ([`CachedEffectGraph`]) and reused while its effect list compares equal, so
+//! its node pipelines are compiled once instead of every frame; a changed effect list
+//! (or layer count) rebuilds. [`GpuEffect::LumaMask`] is excluded (its node embeds the
+//! source pixels), and [`composite_owned`](GpuCompositor::composite_owned) moves owned
+//! frames so the no-effects export path avoids a `VideoFrame::clone`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,12 +36,30 @@ use ff_render::{
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
 
+/// A per-layer effect [`RenderGraph`] cached across frames so an effected layer does
+/// not recompile its node pipelines every frame (#1634). Keyed by the exact effect
+/// list **and the input frame dimensions**; reused only when the next frame's effects
+/// compare equal (const params) and its size matches, so the graph's baked node params
+/// (and any dimension-sized mask, e.g. `ShapeMaskNode`) stay correct and the read-back
+/// is wrapped at the right size.
+struct CachedEffectGraph {
+    effects: Vec<GpuEffect>,
+    graph: RenderGraph,
+    in_w: u32,
+    in_h: u32,
+    out_w: u32,
+    out_h: u32,
+}
+
 /// Composites derived layers on the GPU, returning `None` (CPU fallback) on
 /// unsupported content or any GPU error.
 pub struct GpuCompositor {
     ctx: Arc<RenderContext>,
     /// Compositor cached for its target canvas; rebuilt when the canvas changes.
     compositor: Option<(Compositor, (u32, u32))>,
+    /// Per-layer effect-graph cache, indexed by layer position; reset when the layer
+    /// count changes (positions shift). `None` where a layer has no cached graph yet.
+    effect_cache: Vec<Option<CachedEffectGraph>>,
 }
 
 impl GpuCompositor {
@@ -54,6 +71,7 @@ impl GpuCompositor {
             Ok(ctx) => Some(Self {
                 ctx: Arc::new(ctx),
                 compositor: None,
+                effect_cache: Vec::new(),
             }),
             Err(e) => {
                 // Info, not debug: the GPU->CPU fallback reason must stay visible at
@@ -84,33 +102,70 @@ impl GpuCompositor {
             GpuMapping::Gpu(plan) => plan,
             GpuMapping::Fallback(_) => return None,
         };
+        self.ensure_cache_size(layers.len());
 
         let mut frame_layers = Vec::with_capacity(plan.layers.len());
-        for (lp, (_, frame)) in plan.layers.iter().zip(layers.iter()) {
+        for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers.iter()).enumerate() {
             // v1 renders only layers that need no geometric placement (see the module
             // docs); a non-identity transform falls back to CPU rather than render
             // wrong output.
             if !is_identity_transform(lp) {
                 return None;
             }
-            let processed = self.apply_effects(lp, frame)?;
-            // The compositor would stretch a differently-shaped frame to fill the
-            // canvas, which the CPU path letterboxes instead; only a canvas-aspect
-            // frame composites without distortion.
-            if u64::from(processed.width()) * u64::from(canvas.1)
-                != u64::from(processed.height()) * u64::from(canvas.0)
-            {
-                return None;
-            }
-            frame_layers.push(FrameLayer {
-                frame: processed,
-                transform: LayerTransform::default(),
-                blend_mode: lp.blend_mode,
-                opacity: lp.opacity,
-                z_order: lp.z_order,
-            });
+            // The preview adapter does not own its frames, so a no-effects layer must
+            // clone; `composite_owned` avoids this for the export drain.
+            let processed = if lp.effects.is_empty() {
+                (*frame).clone()
+            } else {
+                self.apply_effects(idx, lp, frame)?
+            };
+            let layer = make_frame_layer(processed, lp, canvas)?;
+            frame_layers.push(layer);
         }
 
+        self.finish(frame_layers, canvas)
+    }
+
+    /// Like [`composite`](Self::composite) but takes ownership of the layer frames, so a
+    /// no-effects layer moves its frame into the compositor instead of cloning it (the
+    /// export drain owns each freshly-decoded frame; #1634).
+    pub fn composite_owned<L: GpuLayerSource>(
+        &mut self,
+        layers: Vec<(&L, VideoFrame)>,
+        canvas: (u32, u32),
+        t: Duration,
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        let refs: Vec<&L> = layers.iter().map(|(l, _)| *l).collect();
+        let plan = match map_scene(&refs, canvas, t) {
+            GpuMapping::Gpu(plan) => plan,
+            GpuMapping::Fallback(_) => return None,
+        };
+        self.ensure_cache_size(layers.len());
+
+        let mut frame_layers = Vec::with_capacity(plan.layers.len());
+        for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers).enumerate() {
+            if !is_identity_transform(lp) {
+                return None;
+            }
+            // Owned: a no-effects layer moves its frame in, no clone.
+            let processed = if lp.effects.is_empty() {
+                frame
+            } else {
+                self.apply_effects(idx, lp, &frame)?
+            };
+            let layer = make_frame_layer(processed, lp, canvas)?;
+            frame_layers.push(layer);
+        }
+
+        self.finish(frame_layers, canvas)
+    }
+
+    /// Composites the built `frame_layers` on the (canvas-cached) `Compositor` to rgba.
+    fn finish(
+        &mut self,
+        mut frame_layers: Vec<FrameLayer>,
+        canvas: (u32, u32),
+    ) -> Option<(Vec<u8>, u32, u32)> {
         let rebuild = match &self.compositor {
             Some((_, cached)) => *cached != canvas,
             None => true,
@@ -125,14 +180,42 @@ impl GpuCompositor {
         compositor.composite_to_rgba(&mut frame_layers).ok()
     }
 
-    /// Applies a layer's mappable effects to its rgba frame via a `RenderGraph`, or
-    /// returns the frame unchanged when it has none. `None` on a GPU error.
-    fn apply_effects(&self, plan: &GpuLayerPlan, frame: &VideoFrame) -> Option<VideoFrame> {
-        if plan.effects.is_empty() {
-            return Some(frame.clone());
+    /// Resets the per-layer effect cache when the layer count changes (positions
+    /// shift, so cached entries would misalign). Mirrors `Compositor`'s layer-count
+    /// invalidation.
+    fn ensure_cache_size(&mut self, n: usize) {
+        if self.effect_cache.len() != n {
+            self.effect_cache.clear();
+            self.effect_cache.resize_with(n, || None);
         }
+    }
+
+    /// Applies a layer's mappable effects to its rgba frame via a `RenderGraph`, reusing
+    /// the layer's cached graph when the effect list is unchanged and cacheable. `None`
+    /// on a GPU error. Must not be called for an empty effect list (the caller handles
+    /// that).
+    fn apply_effects(
+        &mut self,
+        layer_idx: usize,
+        plan: &GpuLayerPlan,
+        frame: &VideoFrame,
+    ) -> Option<VideoFrame> {
         let (in_w, in_h) = (frame.width(), frame.height());
         let rgba = frame.to_rgba()?;
+
+        // Reuse the cached graph when this layer's effects are byte-identical, the input
+        // dimensions match (a dimension-sized mask or the read-back size would otherwise
+        // be stale), and every effect is fully determined by its `GpuEffect` value (see
+        // `is_cacheable`).
+        if is_cacheable(&plan.effects)
+            && let Some(Some(cached)) = self.effect_cache.get(layer_idx)
+            && cached.effects == plan.effects
+            && (cached.in_w, cached.in_h) == (in_w, in_h)
+        {
+            let out = cached.graph.process_gpu(&rgba, in_w, in_h).ok()?;
+            return VideoFrame::from_rgba(cached.out_w, cached.out_h, out).ok();
+        }
+
         let mut graph = RenderGraph::new(self.ctx.clone());
         // A `Scale` node resizes the frame; track the output dimensions so the
         // read-back buffer is wrapped at the right size.
@@ -252,9 +335,64 @@ impl GpuCompositor {
                 )),
             };
         }
+
+        // Store the built graph, then run it (`process_gpu` borrows, does not consume),
+        // so the next frame with identical effects reuses it.
+        if is_cacheable(&plan.effects)
+            && let Some(slot) = self.effect_cache.get_mut(layer_idx)
+        {
+            *slot = Some(CachedEffectGraph {
+                effects: plan.effects.clone(),
+                graph,
+                in_w,
+                in_h,
+                out_w,
+                out_h,
+            });
+            let cached = slot.as_ref()?;
+            let out = cached.graph.process_gpu(&rgba, in_w, in_h).ok()?;
+            return VideoFrame::from_rgba(out_w, out_h, out).ok();
+        }
+        // Not cacheable (a frame-content-dependent node): drop any stale entry and run
+        // the freshly-built graph without storing it.
+        if let Some(slot) = self.effect_cache.get_mut(layer_idx) {
+            *slot = None;
+        }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
         VideoFrame::from_rgba(out_w, out_h, out).ok()
     }
+}
+
+/// Whether an effect list may be cached and reused across frames. Every mapped node is
+/// fully determined by its [`GpuEffect`] value **except** [`GpuEffect::LumaMask`], whose
+/// node embeds the source frame's own pixels (`build_luma_mask`) not represented in the
+/// `GpuEffect` — reusing it would apply a stale mask (RK-020: never wrong output).
+fn is_cacheable(effects: &[GpuEffect]) -> bool {
+    !effects
+        .iter()
+        .any(|e| matches!(e, GpuEffect::LumaMask { .. }))
+}
+
+/// Wraps a processed layer frame in a [`FrameLayer`], or `None` when its aspect does not
+/// match the canvas (the compositor would stretch it where the CPU path letterboxes, so
+/// fall back to CPU rather than render distorted output).
+fn make_frame_layer(
+    processed: VideoFrame,
+    lp: &GpuLayerPlan,
+    canvas: (u32, u32),
+) -> Option<FrameLayer> {
+    if u64::from(processed.width()) * u64::from(canvas.1)
+        != u64::from(processed.height()) * u64::from(canvas.0)
+    {
+        return None;
+    }
+    Some(FrameLayer {
+        frame: processed,
+        transform: LayerTransform::default(),
+        blend_mode: lp.blend_mode,
+        opacity: lp.opacity,
+        z_order: lp.z_order,
+    })
 }
 
 /// Loads a `LutNode` from a `.cube` or `.3dl` file, or `None` when the extension is
