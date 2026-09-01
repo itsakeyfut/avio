@@ -793,6 +793,24 @@ pub enum FilterStep {
         invert: bool,
     },
 
+    /// Set the alpha channel to the frame's own BT.709 luma using `FFmpeg`'s `geq`
+    /// filter (a self-referential continuous luma mask).
+    ///
+    /// `alpha = luma`, where `luma = 0.2126·R + 0.7152·G + 0.0722·B` on the frame's
+    /// own gamma-encoded RGB. Bright pixels stay opaque, dark pixels become
+    /// transparent. When `invert` is `true`, `255 - luma` is used, so dark pixels
+    /// stay opaque. This is the CPU pair of `ff_render::LumaMaskNode` (mask = the
+    /// frame itself, which multiplies the existing alpha by `luma`); on an opaque
+    /// source `alpha = luma` and `alpha *= luma` coincide, and the coefficients
+    /// match exactly. (`geq` exposes no alpha-read function here, so the existing
+    /// alpha is replaced rather than multiplied.)
+    ///
+    /// The output carries an alpha channel (`rgba`).
+    LumaMask {
+        /// When `true`, use `255 - luma` (dark pixels stay opaque).
+        invert: bool,
+    },
+
     /// Feather (soften) the alpha channel edges using a Gaussian blur.
     ///
     /// Splits the stream into a color copy and an alpha copy, blurs the alpha
@@ -1299,6 +1317,7 @@ impl FilterStep {
             Self::LumaKey { .. } => "lumakey",
             // RectMask uses geq to set alpha per-pixel based on rectangle bounds.
             Self::RectMask { .. } => "geq",
+            Self::LumaMask { .. } => "geq",
             // FeatherMask is a compound step (split → alphaextract → gblur → alphamerge);
             // "alphaextract" is used by validate_filter_steps as the primary check.
             Self::FeatherMask { .. } => "alphaextract",
@@ -1722,6 +1741,18 @@ impl FilterStep {
                     "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
                      a='if(between(X,{x},{xw})*between(Y,{y},{yh}),{inside},{outside})'"
                 )
+            }
+            Self::LumaMask { invert } => {
+                // BT.709 luma of the frame's own RGB (0..255) becomes the alpha.
+                // Matches `ff_render::LumaMaskNode` on an opaque source. `invert`
+                // uses `255 - luma` so dark pixels stay opaque.
+                let luma = "0.2126*r(X,Y)+0.7152*g(X,Y)+0.0722*b(X,Y)";
+                let alpha = if *invert {
+                    format!("255-({luma})")
+                } else {
+                    luma.to_string()
+                };
+                format!("r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha}'")
             }
             Self::PolygonMatte { vertices, invert } => {
                 // Build a crossing-number point-in-polygon expression.
@@ -2319,6 +2350,31 @@ mod tests {
         };
         assert_eq!(step.filter_name(), "chromakey");
         assert_eq!(step.args(), "color=0x00FF00:similarity=0.3:blend=0.1");
+    }
+
+    #[test]
+    fn luma_mask_should_render_bt709_self_luma_geq() {
+        // Non-invert: alpha becomes the frame's own BT.709 luma via geq. (geq exposes
+        // no alpha-read function here, so alpha is set to the luma rather than
+        // multiplied; on the opaque source this equals LumaMaskNode's alpha *= luma.)
+        let step = FilterStep::LumaMask { invert: false };
+        assert_eq!(step.filter_name(), "geq");
+        assert_eq!(
+            step.args(),
+            "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+             a='0.2126*r(X,Y)+0.7152*g(X,Y)+0.0722*b(X,Y)'"
+        );
+    }
+
+    #[test]
+    fn luma_mask_invert_should_use_one_minus_luma() {
+        // Invert: `255 - luma`, so dark pixels stay opaque.
+        let step = FilterStep::LumaMask { invert: true };
+        assert_eq!(
+            step.args(),
+            "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+             a='255-(0.2126*r(X,Y)+0.7152*g(X,Y)+0.0722*b(X,Y))'"
+        );
     }
 
     #[test]
