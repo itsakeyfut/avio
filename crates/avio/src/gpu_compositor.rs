@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use ff_format::VideoFrame;
 use ff_render::{
-    ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode, FrameLayer,
-    GaussianBlurNode, GlowNode, HslNode, LayerTransform, LutNode, RenderContext, RenderGraph,
-    ScaleNode, SharpenNode, VignetteNode,
+    ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FilmGrainNode,
+    FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LutNode, RenderContext,
+    RenderGraph, ScaleNode, SharpenNode, VignetteNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
@@ -221,6 +221,12 @@ impl GpuCompositor {
                 // load (missing, malformed, or an unsupported extension) makes the
                 // whole frame fall back to CPU rather than render wrong output (RK-020).
                 GpuEffect::Lut { path } => graph.push(load_lut(path)?),
+                // ChromaKey preserves the frame dimensions (it only rewrites alpha).
+                GpuEffect::ChromaKey {
+                    key_color,
+                    tolerance,
+                    softness,
+                } => graph.push(ChromaKeyNode::new(*key_color, *tolerance, *softness)),
             };
         }
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
