@@ -399,6 +399,39 @@ mod tests {
         assert_eq!(rgba[3], 0, "transparent mask must produce zero alpha");
     }
 
+    /// A 4x2 tagged fixture pair for the shape mask: an opaque base and a mask
+    /// whose left half (x=0,1) is opaque (alpha 255 → keep) and right half
+    /// (x=2,3) is transparent (alpha 0 → drop). Only the mask alpha matters, so a
+    /// per-region assertion pins spatial mask selection (a 1x1 test cannot).
+    fn shape_tagged_fixtures() -> (Vec<u8>, Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut base = Vec::with_capacity((w * h * 4) as usize);
+        let mut mask = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                base.extend_from_slice(&[100, 100, 100, 255]); // opaque grey
+                if x < 2 {
+                    mask.extend_from_slice(&[255, 255, 255, 255]); // alpha 255 → keep
+                } else {
+                    mask.extend_from_slice(&[0, 0, 0, 0]); // alpha 0 → drop
+                }
+            }
+        }
+        (base, mask, w, h)
+    }
+
+    #[test]
+    fn shape_mask_node_should_keep_masked_region_only() {
+        let (mut base, mask, w, h) = shape_tagged_fixtures();
+        ShapeMaskNode::new(mask, w, h).process_cpu(&mut base, w, h);
+        // Opaque mask region → alpha preserved.
+        assert!(alpha_at(&base, w, 0, 0) > 200, "kept (0,0) preserves alpha");
+        assert!(alpha_at(&base, w, 1, 1) > 200, "kept (1,1) preserves alpha");
+        // Transparent mask region → alpha zeroed.
+        assert!(alpha_at(&base, w, 2, 0) < 30, "dropped (2,0) zeroes alpha");
+        assert!(alpha_at(&base, w, 3, 1) < 30, "dropped (3,1) zeroes alpha");
+    }
+
     // LumaMaskNode
 
     #[test]
@@ -566,6 +599,56 @@ mod gpu_tests {
         assert!(
             alpha_at(&out, w, 3, 1) < 30,
             "black-mask (3,1) zeroes alpha on GPU"
+        );
+    }
+
+    /// Same tagged fixtures as the shape CPU test: opaque base, opaque/transparent
+    /// split mask.
+    fn shape_tagged_fixtures() -> (Vec<u8>, Vec<u8>, u32, u32) {
+        let (w, h) = (4u32, 2u32);
+        let mut base = Vec::with_capacity((w * h * 4) as usize);
+        let mut mask = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                base.extend_from_slice(&[100, 100, 100, 255]);
+                if x < 2 {
+                    mask.extend_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    mask.extend_from_slice(&[0, 0, 0, 0]);
+                }
+            }
+        }
+        (base, mask, w, h)
+    }
+
+    #[test]
+    fn shape_mask_gpu_should_keep_masked_region_on_tagged_fixture() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (base, mask, w, h) = shape_tagged_fixtures();
+        let out = RenderGraph::new(Arc::clone(&ctx))
+            .push(ShapeMaskNode::new(mask, w, h))
+            .process_gpu(&base, w, h)
+            .expect("gpu shape mask");
+
+        // Opaque mask region → alpha preserved; transparent region → zeroed
+        // (validates the mask.wgsl shape branch).
+        assert!(
+            alpha_at(&out, w, 0, 0) > 200,
+            "kept (0,0) preserves alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 1, 1) > 200,
+            "kept (1,1) preserves alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 2, 0) < 30,
+            "dropped (2,0) zeroes alpha on GPU"
+        );
+        assert!(
+            alpha_at(&out, w, 3, 1) < 30,
+            "dropped (3,1) zeroes alpha on GPU"
         );
     }
 }
