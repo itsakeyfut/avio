@@ -207,6 +207,8 @@ fn clip_typed_effects_should_round_trip_through_serde() {
                     brightness: Param::Const(0.25),
                     contrast: Param::Const(1.1),
                     saturation: Param::Const(0.9),
+                    temperature: Param::Const(0.3),
+                    tint: Param::Const(-0.2),
                 },
             },
             Command::AddEffect {

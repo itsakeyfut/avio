@@ -2557,6 +2557,8 @@ mod tests {
             brightness: Param::Const(brightness),
             contrast: Param::Const(1.0),
             saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
         }
     }
 

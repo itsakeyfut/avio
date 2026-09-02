@@ -146,6 +146,8 @@ mod tests {
             brightness: 0.4,
             contrast: 1.2,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         }];
         let frame = VideoFrame::from_rgba(4, 4, vec![80u8; 4 * 4 * 4]).unwrap();
         let out = gpu.composite(&[(&desc, &frame)], (4, 4), Duration::ZERO);

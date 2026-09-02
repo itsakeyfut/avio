@@ -177,8 +177,9 @@ impl<T: GpuLayerSource + ?Sized> GpuLayerSource for &T {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum GpuEffect {
-    /// `ff_render::ColorGradeNode` (brightness / contrast / saturation; temperature
-    /// and tint are neutral until a source carries them).
+    /// `ff_render::ColorGradeNode` (brightness / contrast / saturation / temperature /
+    /// tint). Temperature and tint come from the typed `ColorCorrect` effect and are a
+    /// GPU-only enrichment (the CPU `eq` fallback does not apply them).
     ColorGrade {
         /// Brightness offset.
         brightness: f32,
@@ -482,18 +483,22 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             brightness,
             contrast,
             saturation,
+            temperature,
+            tint,
         } => StepClass::Effect(GpuEffect::ColorGrade {
             brightness: *brightness,
             contrast: *contrast,
             saturation: *saturation,
-            temperature: 0.0,
-            tint: 0.0,
+            temperature: *temperature,
+            tint: *tint,
         }),
         FilterStep::EqAnimated {
             brightness,
             contrast,
             saturation,
             gamma,
+            temperature,
+            tint,
         } => {
             // ff-render's ColorGradeNode has no gamma, so only an `eq` whose gamma
             // is neutral at `t` maps; otherwise fall back so gamma is not dropped.
@@ -502,8 +507,8 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                     brightness: brightness.value_at(t) as f32,
                     contrast: contrast.value_at(t) as f32,
                     saturation: saturation.value_at(t) as f32,
-                    temperature: 0.0,
-                    tint: 0.0,
+                    temperature: temperature.value_at(t) as f32,
+                    tint: tint.value_at(t) as f32,
                 })
             } else {
                 StepClass::Unsupported
@@ -1010,10 +1015,14 @@ mod tests {
     #[test]
     fn map_scene_should_map_eq_to_color_grade() {
         let mut layer = TestLayer::identity();
+        // Non-neutral temperature/tint must flow through to the node (not the old
+        // hardcoded 0.0), so the assertion below is non-vacuous.
         layer.effects = vec![FilterStep::Eq {
             brightness: 0.5,
             contrast: 1.2,
             saturation: 0.8,
+            temperature: 0.4,
+            tint: -0.3,
         }];
         let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
         assert_eq!(
@@ -1022,8 +1031,8 @@ mod tests {
                 brightness: 0.5,
                 contrast: 1.2,
                 saturation: 0.8,
-                temperature: 0.0,
-                tint: 0.0,
+                temperature: 0.4,
+                tint: -0.3,
             }]
         );
     }
@@ -1036,6 +1045,8 @@ mod tests {
             contrast: AnimatedValue::Static(1.1),
             saturation: AnimatedValue::Static(0.9),
             gamma: AnimatedValue::Static(1.0),
+            temperature: AnimatedValue::Static(0.5),
+            tint: AnimatedValue::Static(-0.2),
         }];
         let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
         assert_eq!(
@@ -1044,8 +1055,8 @@ mod tests {
                 brightness: 0.3,
                 contrast: 1.1,
                 saturation: 0.9,
-                temperature: 0.0,
-                tint: 0.0,
+                temperature: 0.5,
+                tint: -0.2,
             }]
         );
     }
@@ -1060,6 +1071,8 @@ mod tests {
             contrast: AnimatedValue::Static(1.0),
             saturation: AnimatedValue::Static(1.0),
             gamma: AnimatedValue::Static(1.5),
+            temperature: AnimatedValue::Static(0.0),
+            tint: AnimatedValue::Static(0.0),
         }];
         assert_eq!(
             map_scene(&[layer], (16, 16), Duration::ZERO),
@@ -1478,6 +1491,8 @@ mod tests {
                 brightness: 0.1,
                 contrast: 1.0,
                 saturation: 1.0,
+                temperature: 0.0,
+                tint: 0.0,
             },
         ];
         let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
@@ -1531,6 +1546,8 @@ mod tests {
                 brightness: 0.5,
                 contrast: 1.0,
                 saturation: 1.0,
+                temperature: 0.0,
+                tint: 0.0,
             }],
             opacity: AnimatedValue::Static(1.0),
             x: AnimatedValue::Static(0.0),

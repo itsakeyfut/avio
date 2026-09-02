@@ -39,6 +39,11 @@ use ff_preview::FrameSink;
 // divergence (a stretch/letterbox/axis-swap of the gradient is tens of levels).
 const TOL_PASSTHROUGH_MEAN: f64 = 2.0; // identity passthrough: pixel-exact here
 const TOL_COLOR_GRADE_MEAN: f64 = 20.0; // GPU ColorGradeNode vs FFmpeg `eq`: ~6.6 here
+// Extended grade (temperature/tint): the GPU node applies the ±0.1 offset that FFmpeg `eq`
+// cannot express, so the CPU reference is the neutral-eq output plus that offset applied in
+// Rust (mirroring the node). With brightness/contrast/saturation neutral the node reduces to
+// just the offset, so the only divergence is quantisation/driver rounding: ~0.4 here.
+const TOL_GRADE_TEMPTINT_MEAN: f64 = 8.0;
 const TOL_BLUR_MEAN: f64 = 20.0; // GPU GaussianBlurNode vs FFmpeg `gblur`: ~9.0 here (different kernels)
 // GPU SharpenNode (RGB, fixed sigma) vs FFmpeg `unsharp` (luma-only, 5x5): ~0.7 here
 // (effect vs input ~7.9). Grey-calibrated: the test image is achromatic (R=G=B), where
@@ -429,6 +434,8 @@ fn color_grade_gpu_should_match_cpu_within_tolerance() {
             brightness: 0.1,
             contrast: 1.2,
             saturation: 1.1,
+            temperature: 0.0,
+            tint: 0.0,
         }],
     );
     let Some(mut gpu) = GpuCompositor::new() else {
@@ -449,6 +456,78 @@ fn color_grade_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_COLOR_GRADE_MEAN,
         "GPU and CPU colour grade diverged beyond tolerance: mean={mean}"
+    );
+}
+
+/// Applies the `ColorGradeNode`'s temperature/tint offset (`r += temp*0.1`, `b -= temp*0.1`,
+/// `g += tint*0.1`, per pixel, clamped) to an rgba buffer, mirroring the node so the CPU
+/// parity reference reflects a leg FFmpeg `eq` cannot express.
+fn apply_temp_tint_offset(rgba: &[u8], temperature: f32, tint: f32) -> Vec<u8> {
+    let mut out = rgba.to_vec();
+    for px in out.chunks_exact_mut(4) {
+        let r = f32::from(px[0]) / 255.0 + temperature * 0.1;
+        let g = f32::from(px[1]) / 255.0 + tint * 0.1;
+        let b = f32::from(px[2]) / 255.0 - temperature * 0.1;
+        px[0] = (r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[1] = (g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[2] = (b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        // alpha unchanged
+    }
+    out
+}
+
+#[test]
+fn color_grade_temperature_tint_gpu_should_match_cpu_reference() {
+    // AC3: temperature/tint must reach the GPU ColorGradeNode (not the old hardcoded 0.0).
+    // FFmpeg `eq` cannot express the node's ±0.1 offset model, so the CPU reference is the
+    // neutral-eq CPU output plus that offset applied in Rust (Q3 decision). Isolate temp/tint
+    // with neutral brightness/contrast/saturation, so the node reduces to just the offset and
+    // the post-offset reference is order-faithful. Double-gated (adapter + filters).
+    let (w, h) = (64, 48);
+    let frame = VideoFrame::from_rgba(w, h, gradient_rgba(w, h)).unwrap();
+    let (temperature, tint) = (0.6_f32, -0.4_f32);
+    let layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::Eq {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            temperature,
+            tint,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    // The CPU leg must actually run, not silently skip = false green (RK-024 / RK-002).
+    let Some(cpu_neutral) = cpu_composite(&layer, &frame, (w, h)) else {
+        return; // FFmpeg filters unavailable: skip
+    };
+    // The CPU `eq` ignores temperature/tint (GPU-only), so its output must stay ~neutral; the
+    // reference adds the node's offset on top of it.
+    let reference = apply_temp_tint_offset(&cpu_neutral, temperature, tint);
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, (w, h)) else {
+        panic!("a supported colour-graded layer must composite on the GPU");
+    };
+    // Non-vacuity: temperature/tint must actually shift the frame (temp>0 raises R / lowers B,
+    // tint<0 lowers G), so a hardcoded-0.0 regression (GPU == neutral) fails both guards.
+    assert!(
+        mean_abs_diff_rgb(&reference, &cpu_neutral) > 5.0,
+        "the temperature/tint offset must visibly shift the reference"
+    );
+    assert!(
+        mean_abs_diff_rgb(&gpu_out, &cpu_neutral) > 5.0,
+        "the GPU grade must apply temperature/tint (not the old hardcoded 0.0)"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &reference);
+    println!(
+        "grade temp/tint GPU vs reference: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &reference)
+    );
+    assert!(
+        mean <= TOL_GRADE_TEMPTINT_MEAN,
+        "GPU temperature/tint grade diverged from the reference: mean={mean}"
     );
 }
 
@@ -1238,6 +1317,8 @@ fn effect_cache_should_reuse_for_identical_const_effects() {
             brightness: 0.15,
             contrast: 1.2,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         }],
     );
     let Some(mut gpu) = GpuCompositor::new() else {
@@ -1271,6 +1352,8 @@ fn effect_cache_should_rebuild_on_changed_effect() {
             brightness: -0.3,
             contrast: 1.0,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         }],
     );
     let bright = base_layer(
@@ -1280,6 +1363,8 @@ fn effect_cache_should_rebuild_on_changed_effect() {
             brightness: 0.3,
             contrast: 1.0,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         }],
     );
     let Some(mut gpu) = GpuCompositor::new() else {
@@ -1308,6 +1393,8 @@ fn effect_cache_should_not_panic_on_layer_count_change() {
                 brightness: 0.1,
                 contrast: 1.0,
                 saturation: 1.0,
+                temperature: 0.0,
+                tint: 0.0,
             }],
         )
     };
@@ -1345,6 +1432,8 @@ fn effect_cache_should_rebuild_on_input_dimension_change() {
                 brightness: 0.15,
                 contrast: 1.1,
                 saturation: 1.0,
+                temperature: 0.0,
+                tint: 0.0,
             }],
         )
     };
