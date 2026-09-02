@@ -913,6 +913,47 @@ mod tests {
     use crate::Clip;
     use crate::track::TrackAutomation;
 
+    /// Names the GPU/CPU parity test (in `crates/avio/tests/gpu_parity_tests.rs`) that
+    /// exercises each mapped [`GpuEffect`] node. The exhaustive `match` is the point:
+    /// adding a `GpuEffect` variant without a parity test fails to compile here, which
+    /// enforces #1663's "a per-effect parity test exists for each supported effect" for
+    /// every future node. **Never add a `_` arm** — that would defeat the guard (this is
+    /// in-crate, so `#[non_exhaustive]` does not force one; RK-003).
+    fn parity_coverage(effect: &GpuEffect) -> &'static str {
+        match effect {
+            GpuEffect::ColorGrade { .. } => "color_grade_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Scale { .. } => "scale_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Blur { .. } => "blur_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Sharpen { .. } => "sharpen_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Vignette { .. } => "vignette_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::FilmGrain { .. } => "film_grain_gpu_should_match_cpu_grain_strength",
+            GpuEffect::Glow { .. } => "glow_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::ColorWheels { .. } => "color_wheels_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Curves { .. } => "curves_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Hsl { .. } => "hsl_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::Lut { .. } => "lut_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::ChromaKey { .. } => "chroma_key_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::LumaMask { .. } => "luma_mask_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::ShapeMask { .. } => "shape_mask_gpu_should_match_cpu_within_tolerance",
+            GpuEffect::MotionBlur { .. } => "motion_blur_gpu_should_match_cpu_within_tolerance",
+        }
+    }
+
+    #[test]
+    fn every_gpu_effect_variant_is_registered_for_parity() {
+        // The compile-time exhaustiveness of `parity_coverage` is the real guard; this
+        // keeps it referenced and spot-checks one mapping.
+        let scale = GpuEffect::Scale {
+            width: 2,
+            height: 2,
+            algorithm: RenderScaleAlgorithm::Bilinear,
+        };
+        assert_eq!(
+            parity_coverage(&scale),
+            "scale_gpu_should_match_cpu_within_tolerance"
+        );
+    }
+
     /// A fully controllable [`GpuLayerSource`] for exercising the mapping in
     /// isolation (identity transform, Normal blend, Over composite, no effects).
     struct TestLayer {
