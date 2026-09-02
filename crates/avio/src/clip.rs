@@ -283,22 +283,19 @@ pub struct Clip {
     pub proxy: Option<PathBuf>,
     /// Ordered per-clip video filter steps applied to the clip's video layer.
     ///
-    /// Applied during `Timeline::render()` after the built-in speed and
-    /// colour-correction steps, allowing callers to attach any video
-    /// [`FilterStep`] (e.g. `Lut3d`, `Curves`, `ChromaKey`, `GBlur`) to a
-    /// single clip. An empty vec (the default) is a no-op.
+    /// Ordered, typed, re-editable per-clip video effects (#1458) — the single
+    /// video-effect surface (#1622).
+    ///
+    /// Each [`ClipEffect`] is an id-addressed [`EffectKind`] with individually
+    /// keyframable [`Param`](crate::Param)s, edited via the `*Effect` commands. During
+    /// derivation each enabled effect compiles to a [`FilterStep`] in list order (see
+    /// [`video_effect_chain`](Self::video_effect_chain)). A step the typed model has no
+    /// variant for is attached through the [`EffectKind::Raw`](crate::EffectKind)
+    /// escape hatch (see [`with_video_effect`](Self::with_video_effect)). An empty vec
+    /// (the default) is a no-op.
     ///
     /// Persisted by the `serde` feature (#1452). Compositor-internal steps
     /// (`Blend` / `Composite` / `AlphaMatte`) are not serialized.
-    pub video_effects: Vec<FilterStep>,
-    /// Ordered, typed, re-editable per-clip video effects (#1458).
-    ///
-    /// The authoring layer above [`video_effects`](Self::video_effects): each
-    /// [`ClipEffect`] is an id-addressed [`EffectKind`] with individually
-    /// keyframable [`Param`](crate::Param)s, edited via the `*Effect` commands.
-    /// During derivation each enabled effect compiles to a [`FilterStep`] (see
-    /// [`video_effect_chain`](Self::video_effect_chain)), prepended before the
-    /// opaque `video_effects`. An empty vec (the default) is a no-op.
     pub effects: Vec<ClipEffect>,
     /// Ordered per-clip audio filter steps applied to the clip's audio track.
     ///
@@ -307,7 +304,10 @@ pub struct Clip {
     /// `ParametricEq`, `NoiseReduce`) to a single clip. An empty vec (the
     /// default) is a no-op.
     ///
-    /// Persisted by the `serde` feature (#1452; see [`video_effects`](Self::video_effects)).
+    /// Persisted by the `serde` feature (#1452; see [`effects`](Self::effects)).
+    ///
+    /// Unlike the video side (#1622), audio has no typed effect model yet, so this is
+    /// still an opaque step list.
     pub audio_effects: Vec<FilterStep>,
 }
 
@@ -383,38 +383,40 @@ impl Clip {
             composite_op: CompositeOp::Over,
             speed: 1.0,
             proxy: None,
-            video_effects: Vec::new(),
             effects: Vec::new(),
             audio_effects: Vec::new(),
         }
     }
 
-    /// Attaches a video [`FilterStep`] to this clip and returns the updated clip.
+    /// Appends a raw video [`FilterStep`] to this clip's [`effects`](Self::effects) as
+    /// an [`EffectKind::Raw`](crate::EffectKind) effect, and returns the updated clip.
     ///
-    /// Steps are applied in the order added, after the built-in speed and
-    /// colour-correction steps, during `Timeline::render()`.
+    /// This is the escape hatch for steps the typed model has no variant for; it is a
+    /// normal typed effect, so it renders in its position in `effects` and can be
+    /// enabled/disabled, reordered and removed through the `*Effect` commands. Prefer a
+    /// typed builder (e.g. [`with_color_grade`](Self::with_color_grade)) when one exists.
     ///
     /// # Examples
     ///
     /// ```
-    /// use avio::Clip;
+    /// use avio::{Clip, EffectKind};
     /// use ff_filter::FilterStep;
     ///
     /// let clip = Clip::new("scene.mp4")
     ///     .with_video_effect(FilterStep::Lut3d { path: "look.cube".into() });
-    /// assert_eq!(clip.video_effects.len(), 1);
+    /// assert!(matches!(clip.effects[0].kind, EffectKind::Raw { .. }));
     /// ```
     #[must_use]
     pub fn with_video_effect(mut self, step: FilterStep) -> Self {
-        self.video_effects.push(step);
+        self.effects.push(ClipEffect::new(EffectKind::Raw { step }));
         self
     }
 
     /// Returns the pixel-domain video effect chain that `Timeline::render()`
     /// applies to this clip's layer: each enabled typed [`effect`](Self::effects)
-    /// compiled to its [`FilterStep`] (a neutral `ColorCorrect` compiles to
-    /// nothing), followed by the caller-attached [`video_effects`](Self::video_effects),
-    /// in order.
+    /// compiled to its [`FilterStep`], in list order (a neutral `ColorCorrect`
+    /// compiles to nothing, and an [`EffectKind::Raw`](crate::EffectKind) effect
+    /// contributes its step verbatim).
     ///
     /// Temporal steps such as `Speed` are intentionally excluded — they affect
     /// timing, not a single frame's pixels. This is the exact list
@@ -447,7 +449,6 @@ impl Clip {
                 steps.push(step);
             }
         }
-        steps.extend(self.video_effects.iter().cloned());
         steps
     }
 
@@ -1608,7 +1609,9 @@ mod tests {
     }
 
     #[test]
-    fn video_effect_chain_should_append_video_effects_after_eq() {
+    fn video_effect_chain_should_compile_raw_step_after_typed_effect() {
+        // #1622 AC2: for the natural authoring order (typed effect, then a raw step)
+        // the derived chain is unchanged from the pre-migration surface.
         let clip = Clip::new("v.mp4")
             .with_color_correction(0.1, 1.0, 1.0)
             .with_video_effect(FilterStep::Hue { degrees: 30.0 });
@@ -1616,6 +1619,41 @@ mod tests {
             clip.video_effect_chain().as_slice(),
             [FilterStep::Eq { .. }, FilterStep::Hue { .. }]
         ));
+    }
+
+    #[test]
+    fn video_effect_chain_should_follow_effects_order() {
+        // #1622: a raw step now renders in its position in `effects`. Authoring it
+        // first puts it first — previously raw steps were forced after every typed
+        // effect regardless of authoring order.
+        let clip = Clip::new("v.mp4")
+            .with_video_effect(FilterStep::Hue { degrees: 30.0 })
+            .with_color_correction(0.1, 1.0, 1.0);
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::Hue { .. }, FilterStep::Eq { .. }]
+        ));
+    }
+
+    #[test]
+    fn with_video_effect_should_append_a_raw_typed_effect() {
+        // #1622: the escape hatch is a normal typed effect, so it is id-addressed and
+        // can be toggled/reordered/removed through the `*Effect` commands.
+        let clip = Clip::new("v.mp4").with_video_effect(FilterStep::HFlip);
+        let [effect] = clip.effects.as_slice() else {
+            panic!("expected exactly one effect");
+        };
+        assert!(effect.enabled);
+        assert!(matches!(
+            effect.kind,
+            EffectKind::Raw {
+                step: FilterStep::HFlip
+            }
+        ));
+        // A disabled raw effect drops out of the chain like any other typed effect.
+        let mut disabled = clip.clone();
+        disabled.effects[0].enabled = false;
+        assert!(disabled.video_effect_chain().is_empty());
     }
 
     #[test]

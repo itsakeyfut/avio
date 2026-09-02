@@ -1774,9 +1774,11 @@ mod tests {
         let mut clip = Clip::new("a.mp4");
         clip.transition = Some(XfadeTransition::Fade);
         clip.transition_duration = Duration::from_millis(300);
-        clip.video_effects.push(FilterStep::Lut3d {
-            path: "look.cube".into(),
-        });
+        clip.effects.push(ClipEffect::new(EffectKind::Raw {
+            step: FilterStep::Lut3d {
+                path: "look.cube".into(),
+            },
+        }));
         let t = Timeline::builder()
             .canvas(1920, 1080)
             .frame_rate(30.0)
@@ -1798,7 +1800,8 @@ mod tests {
         let moved = &out.video_tracks()[1].clips[0];
         assert_eq!(moved.transition, Some(XfadeTransition::Fade));
         assert_eq!(moved.transition_duration, Duration::from_millis(300));
-        assert_eq!(moved.video_effects.len(), 1);
+        assert_eq!(moved.effects.len(), 1);
+        assert!(matches!(moved.effects[0].kind, EffectKind::Raw { .. }));
     }
 
     #[test]

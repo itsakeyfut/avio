@@ -364,6 +364,19 @@ pub enum EffectKind {
         /// `tblend` ignores it).
         sub_frames: u8,
     },
+    /// Escape hatch: a raw [`FilterStep`] the typed model has no variant for yet
+    /// (`Hue`, `HFlip`, `Crop`, `Denoise`, ...).
+    ///
+    /// This is the **only** way to attach an untyped step, so every effect a clip
+    /// carries still lives in one ordered, id-addressed list: a raw step can be
+    /// enabled/disabled, reordered and removed through the `*Effect` commands like any
+    /// other effect. Its interior is opaque, though — the step's own arguments are not
+    /// individually keyframeable [`Param`]s and [`descriptor`](Self::descriptor)
+    /// reports no parameters for it. Prefer a typed kind whenever one exists.
+    Raw {
+        /// The step rendered verbatim, in this effect's position in the chain.
+        step: FilterStep,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -688,6 +701,12 @@ impl EffectKind {
                     },
                 ],
             },
+            // A raw step is opaque: its arguments are not typed `Param`s, so there is
+            // nothing for a host to render a parameter editor from.
+            EffectKind::Raw { .. } => EffectDescriptor {
+                name: "raw",
+                params: Vec::new(),
+            },
         }
     }
 
@@ -1011,6 +1030,8 @@ impl EffectKind {
                     sub_frames: *sub_frames,
                 })
             }
+            // The escape hatch renders its step verbatim.
+            EffectKind::Raw { step } => Some(step.clone()),
         }
     }
 }
@@ -1072,6 +1093,32 @@ mod tests {
 
     fn animated_track() -> AnimationTrack<f64> {
         AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+    }
+
+    #[test]
+    fn raw_should_compile_to_its_filter_step() {
+        // #1622: the escape hatch renders its step verbatim.
+        let kind = EffectKind::Raw {
+            step: FilterStep::Hue { degrees: 30.0 },
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Hue { degrees } => assert!((degrees - 30.0).abs() < 1e-6),
+            other => panic!("expected Hue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn descriptor_should_describe_raw_as_opaque() {
+        // A raw step has no typed parameters, so introspection reports none.
+        let kind = EffectKind::Raw {
+            step: FilterStep::HFlip,
+        };
+        let d = kind.descriptor();
+        assert_eq!(d.name, "raw");
+        assert!(
+            d.params.is_empty(),
+            "a raw step exposes no typed parameters"
+        );
     }
 
     #[test]

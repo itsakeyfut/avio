@@ -160,15 +160,18 @@ fn clip_effects_should_round_trip_through_serde() {
         serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
     assert_eq!(v1, v2, "effect chains must round-trip through serde");
 
-    assert_eq!(
-        back.video_effects.len(),
-        2,
-        "video effects survive the load"
-    );
-    assert!(
-        matches!(back.video_effects[0], FilterStep::Hue { degrees } if (degrees - 30.0).abs() < 1e-6)
-    );
-    assert!(matches!(back.video_effects[1], FilterStep::HFlip));
+    // #1622: a raw video step now persists as an `EffectKind::Raw` typed effect.
+    assert_eq!(back.effects.len(), 2, "video effects survive the load");
+    assert!(matches!(
+        &back.effects[0].kind,
+        EffectKind::Raw { step: FilterStep::Hue { degrees } } if (degrees - 30.0).abs() < 1e-6
+    ));
+    assert!(matches!(
+        &back.effects[1].kind,
+        EffectKind::Raw {
+            step: FilterStep::HFlip
+        }
+    ));
     assert_eq!(
         back.audio_effects.len(),
         2,
