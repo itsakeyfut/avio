@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use ff_render::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
-    LumaMaskNode, OverlayNode, RenderContext, RenderGraph, RenderNode, ScaleAlgorithm, ScaleNode,
-    ShapeMaskNode, TransformNode, YuvFormat, YuvUploadNode,
+    DissolveTransitionNode, LumaMaskNode, OverlayNode, RenderContext, RenderGraph, RenderNode,
+    ScaleAlgorithm, ScaleNode, ShapeMaskNode, TransformNode, YuvFormat, YuvUploadNode,
 };
 
 // Helpers
@@ -177,6 +177,64 @@ fn crossfade_gpu_half_factor_should_average_inputs() {
         "factor=0.5 must blend R to ~100; got {}",
         out[0]
     );
+}
+
+// DissolveTransitionNode
+
+/// Clip A and clip B for the dissolve test. Every channel differs between the two and
+/// none repeats within a frame, so a swapped pair, a dropped channel or a transposed one
+/// all show up. Mirrors the constants the CPU tests in `nodes/transition.rs` use.
+const DISSOLVE_A: [u8; 4] = [10, 200, 30, 255];
+const DISSOLVE_B: [u8; 4] = [210, 40, 130, 55];
+
+/// A 2x2 frame filled with one tagged colour.
+fn tagged(px: [u8; 4]) -> Vec<u8> {
+    solid_rgba(px[0], px[1], px[2], px[3], 2, 2)
+}
+
+#[test]
+fn dissolve_gpu_half_progress_should_average_inputs() {
+    let Some(ctx) = gpu_ctx() else { return };
+    let a = tagged(DISSOLVE_A);
+    let b = tagged(DISSOLVE_B);
+    let out = run_gpu(&ctx, DissolveTransitionNode::new(0.5, b, 2, 2), &a, 2, 2);
+    for c in 0..4 {
+        let want = u8::midpoint(DISSOLVE_A[c], DISSOLVE_B[c]);
+        assert!(
+            close(out[c], want, 8),
+            "channel {c}: progress=0.5 must blend to ~{want}; got {}",
+            out[c]
+        );
+    }
+}
+
+#[test]
+fn dissolve_gpu_progress_endpoints_should_be_each_clip() {
+    // The 0.5 blend above is symmetric, so it cannot tell clip A from clip B. These
+    // endpoints are what pin the direction on the GPU path.
+    let Some(ctx) = gpu_ctx() else { return };
+    let a = tagged(DISSOLVE_A);
+    let b = tagged(DISSOLVE_B);
+    let at_zero = run_gpu(
+        &ctx,
+        DissolveTransitionNode::new(0.0, b.clone(), 2, 2),
+        &a,
+        2,
+        2,
+    );
+    let at_one = run_gpu(&ctx, DissolveTransitionNode::new(1.0, b, 2, 2), &a, 2, 2);
+    for c in 0..4 {
+        assert!(
+            close(at_zero[c], DISSOLVE_A[c], 2),
+            "channel {c}: progress=0 must be clip A; got {}",
+            at_zero[c]
+        );
+        assert!(
+            close(at_one[c], DISSOLVE_B[c], 2),
+            "channel {c}: progress=1 must be clip B; got {}",
+            at_one[c]
+        );
+    }
 }
 
 // BlendModeNode

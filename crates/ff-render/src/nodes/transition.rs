@@ -1,5 +1,5 @@
-//! Two-clip transition nodes: a directional wipe and a two-phase dip to a solid
-//! colour. Like [`CrossfadeNode`](super::crossfade::CrossfadeNode), the second clip
+//! Two-clip transition nodes: a directional wipe, a linear dissolve, and a two-phase
+//! dip to a solid colour. Like [`CrossfadeNode`](super::crossfade::CrossfadeNode), the second clip
 //! (B) is carried as RGBA bytes in the node and uploaded to a GPU texture at render
 //! time: a single render graph has one source, so B cannot arrive as a second GPU
 //! input. Clip A is the node's input (`inputs[0]` / the `process_cpu` argument).
@@ -102,6 +102,68 @@ impl RenderNodeCpu for WipeTransitionNode {
                     rgba[idx + c] = lerp_u8(a, b, mask);
                 }
             }
+        }
+    }
+}
+
+// DissolveTransitionNode
+
+/// Linear dissolve: clip A mixed into clip B by `progress`.
+///
+/// `progress = 0` outputs clip A, `progress = 1` outputs clip B, and every value
+/// between is the per-channel mix of the two (alpha included, as the sibling
+/// transitions do).
+///
+/// The GPU path reuses `crossfade.wgsl` rather than carrying a second copy of the same
+/// `mix`: that shader's bindings already match the layout this module's shared
+/// `build_pipeline` sets up, and its single-`f32` uniform is this node's `progress`. It
+/// is therefore the same operation as [`CrossfadeNode`](super::crossfade::CrossfadeNode),
+/// exposed with the `progress` / `to_rgba` shape the rest of this module uses so a
+/// transition set can be mapped uniformly.
+///
+/// Like its siblings this node renders to an `Rgba8Unorm` target (the shared
+/// `build_pipeline` hard-codes that format), so it does not run in an `Rgba16Float`
+/// graph.
+pub struct DissolveTransitionNode {
+    /// Transition progress `[0, 1]`: 0 = clip A, 1 = clip B.
+    pub progress: f32,
+    /// Clip B as RGBA bytes (`to_width × to_height × 4`).
+    pub to_rgba: Vec<u8>,
+    /// Width of `to_rgba`.
+    pub to_width: u32,
+    /// Height of `to_rgba`.
+    pub to_height: u32,
+    #[cfg(feature = "wgpu")]
+    pipeline: std::sync::OnceLock<TransitionPipeline>,
+}
+
+impl DissolveTransitionNode {
+    /// Creates a dissolve from clip A (the node input) to clip B (`to_rgba`).
+    #[must_use]
+    pub fn new(progress: f32, to_rgba: Vec<u8>, to_width: u32, to_height: u32) -> Self {
+        Self {
+            progress,
+            to_rgba,
+            to_width,
+            to_height,
+            #[cfg(feature = "wgpu")]
+            pipeline: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl RenderNodeCpu for DissolveTransitionNode {
+    fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
+        if self.to_rgba.len() != rgba.len() {
+            log::warn!(
+                "DissolveTransitionNode::process_cpu skipped: size mismatch a={} b={}",
+                rgba.len(),
+                self.to_rgba.len()
+            );
+            return;
+        }
+        for (a, b) in rgba.iter_mut().zip(self.to_rgba.iter()) {
+            *a = lerp_u8(f32::from(*a), f32::from(*b), self.progress);
         }
     }
 }
@@ -450,6 +512,46 @@ impl super::RenderNode for WipeTransitionNode {
 }
 
 #[cfg(feature = "wgpu")]
+impl super::RenderNode for DissolveTransitionNode {
+    fn input_count(&self) -> usize {
+        2
+    }
+
+    fn process(
+        &self,
+        inputs: &[&wgpu::Texture],
+        outputs: &[&wgpu::Texture],
+        ctx: &crate::context::RenderContext,
+    ) {
+        let Some(tex_a) = inputs.first() else {
+            log::warn!("DissolveTransitionNode::process called with no inputs");
+            return;
+        };
+        let Some(output) = outputs.first() else {
+            log::warn!("DissolveTransitionNode::process called with no outputs");
+            return;
+        };
+        // `crossfade.wgsl` is this node's shader: same binding layout as the other
+        // transitions, and its one `f32` uniform is `progress` (see the type docs).
+        let pd = self.pipeline.get_or_init(|| {
+            build_pipeline(
+                &ctx.device,
+                include_str!("../shaders/crossfade.wgsl"),
+                "Dissolve",
+                16,
+            )
+        });
+        ctx.queue.write_buffer(
+            &pd.uniform_buf,
+            0,
+            &pack_f32(&[self.progress, 0.0, 0.0, 0.0]),
+        );
+        let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
+        run_pass(ctx, pd, tex_a, &to_tex, output, "Dissolve pass");
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl super::RenderNode for DipToColorNode {
     fn input_count(&self) -> usize {
         2
@@ -541,6 +643,53 @@ mod tests {
         let b = vec![200u8; 8]; // 2 px
         let node = WipeTransitionNode::new(0.5, 0.0, 0.0, b, 2, 1);
         let original = vec![10u8, 20, 30, 255]; // 1 px
+        let mut rgba = original.clone();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, original, "size mismatch must be a no-op");
+    }
+
+    /// Clip A and clip B of the dissolve tests: every channel differs between the two
+    /// and no channel repeats within a frame, so a swapped pair, a dropped channel or a
+    /// transposed one all show up in the assertions below.
+    const DISSOLVE_A: [u8; 4] = [10, 200, 30, 255];
+    const DISSOLVE_B: [u8; 4] = [210, 40, 130, 55];
+
+    #[test]
+    fn dissolve_progress_zero_should_be_clip_a() {
+        let node = DissolveTransitionNode::new(0.0, DISSOLVE_B.to_vec(), 1, 1);
+        let mut rgba = DISSOLVE_A.to_vec();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, DISSOLVE_A, "progress=0 must output clip A");
+    }
+
+    #[test]
+    fn dissolve_progress_one_should_be_clip_b() {
+        let node = DissolveTransitionNode::new(1.0, DISSOLVE_B.to_vec(), 1, 1);
+        let mut rgba = DISSOLVE_A.to_vec();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, DISSOLVE_B, "progress=1 must output clip B");
+    }
+
+    #[test]
+    fn dissolve_half_should_average_the_pair() {
+        // The acceptance criterion. On its own it cannot tell A from B (the mix is
+        // symmetric at 0.5); the endpoint tests above are what pin the direction.
+        let node = DissolveTransitionNode::new(0.5, DISSOLVE_B.to_vec(), 1, 1);
+        let mut rgba = DISSOLVE_A.to_vec();
+        node.process_cpu(&mut rgba, 1, 1);
+        for (c, got) in rgba.iter().enumerate() {
+            let want = f32::midpoint(f32::from(DISSOLVE_A[c]), f32::from(DISSOLVE_B[c]));
+            assert!(
+                (f32::from(*got) - want).abs() <= 1.0,
+                "channel {c}: got {got} want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn dissolve_size_mismatch_should_leave_rgba_unchanged() {
+        let node = DissolveTransitionNode::new(0.5, vec![200u8; 8], 2, 1); // 2 px of B
+        let original = DISSOLVE_A.to_vec(); // 1 px of A
         let mut rgba = original.clone();
         node.process_cpu(&mut rgba, 1, 1);
         assert_eq!(rgba, original, "size mismatch must be a no-op");
