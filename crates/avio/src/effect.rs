@@ -13,6 +13,7 @@
 //! model-free — this type lives in `avio` because it exists to make a *clip's*
 //! effects re-editable (a CLIP/EDIT concern per the engine/primitive litmus).
 
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use ff_filter::{AnimatedValue, AnimationTrack, FilterStep, Keyframe, Rgb};
@@ -55,6 +56,88 @@ impl Param {
             Param::Const(v) => AnimatedValue::Static(*v),
             Param::Animated(track) => AnimatedValue::Track(track.clone()),
         }
+    }
+}
+
+/// A host-facing description of an effect kind and its editable parameters, returned
+/// by [`EffectKind::descriptor`]. Lets a UI render a parameter panel generically,
+/// without hard-coding each [`EffectKind`] variant.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct EffectDescriptor {
+    /// Stable `snake_case` name of the kind (e.g. `"color_correct"`, `"motion_blur"`).
+    pub name: &'static str,
+    /// The kind's parameters, in a stable order.
+    pub params: Vec<ParamDescriptor>,
+}
+
+/// A host-facing description of one effect parameter (see [`EffectDescriptor`]).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ParamDescriptor {
+    /// Stable parameter name (e.g. `"brightness"`, `"shadows_lift.r"`).
+    pub name: &'static str,
+    /// The parameter's type, editable metadata, and current value.
+    pub value: ParamValue,
+}
+
+/// The type, editable metadata, and current value of an effect parameter. The variant
+/// tells a host which editor to render (slider / checkbox / number field / colour
+/// picker / file picker / curve editor).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ParamValue {
+    /// A keyframeable scalar (a slider). `current` is the constant value, or `None`
+    /// when the parameter is animated by a keyframe track. An open-ended range uses
+    /// [`f64::INFINITY`] as the upper bound (the host picks a UI maximum).
+    Scalar {
+        /// Valid inclusive range for the value.
+        range: RangeInclusive<f64>,
+        /// Neutral / starting default.
+        default: f64,
+        /// The constant value, or `None` if the parameter is animated.
+        current: Option<f64>,
+    },
+    /// A structural on/off toggle (a checkbox).
+    Bool {
+        /// Default toggle state.
+        default: bool,
+        /// Current toggle state.
+        current: bool,
+    },
+    /// A structural integer within a range (a number field).
+    Int {
+        /// Valid inclusive range for the value.
+        range: RangeInclusive<i64>,
+        /// Default value.
+        default: i64,
+        /// Current value.
+        current: i64,
+    },
+    /// A structural RGB colour, each channel `0.0..=1.0` (a colour picker).
+    Color {
+        /// Current colour.
+        current: [f32; 3],
+    },
+    /// A structural file path (a file picker). Empty = none.
+    Path {
+        /// Current path.
+        current: String,
+    },
+    /// A structural set of `[input, output]` curve control points (a curve editor).
+    Points {
+        /// Current control points.
+        current: Vec<[f32; 2]>,
+    },
+}
+
+/// Builds a [`ParamValue::Scalar`] whose `current` is the constant value, or `None`
+/// when `p` is animated.
+fn scalar(range: RangeInclusive<f64>, default: f64, p: &Param) -> ParamValue {
+    ParamValue::Scalar {
+        range,
+        default,
+        current: p.as_const(),
     }
 }
 
@@ -304,6 +387,310 @@ fn lift_to_animated(p: &Param) -> AnimatedValue<f64> {
 }
 
 impl EffectKind {
+    /// Host-facing introspection: the kind's stable `snake_case` name and a
+    /// [`ParamDescriptor`] for every parameter (name, type, range, default, current
+    /// value), so a UI can render an editable parameter panel without hard-coding each
+    /// variant.
+    ///
+    /// The `match` is exhaustive with **no** `_` arm (per #1640): adding an
+    /// [`EffectKind`] variant without a descriptor here fails to compile, which
+    /// guarantees the descriptor stays complete for every variant. This is in-crate, so
+    /// `#[non_exhaustive]` does not force a wildcard arm (RK-003). Ranges and defaults
+    /// come from each parameter's documented range on the variant; an open-ended range
+    /// uses [`f64::INFINITY`] as the upper bound.
+    #[must_use]
+    pub fn descriptor(&self) -> EffectDescriptor {
+        match self {
+            EffectKind::ColorCorrect {
+                brightness,
+                contrast,
+                saturation,
+                temperature,
+                tint,
+            } => EffectDescriptor {
+                name: "color_correct",
+                params: vec![
+                    ParamDescriptor {
+                        name: "brightness",
+                        value: scalar(-1.0..=1.0, 0.0, brightness),
+                    },
+                    ParamDescriptor {
+                        name: "contrast",
+                        value: scalar(0.0..=3.0, 1.0, contrast),
+                    },
+                    ParamDescriptor {
+                        name: "saturation",
+                        value: scalar(0.0..=3.0, 1.0, saturation),
+                    },
+                    ParamDescriptor {
+                        name: "temperature",
+                        value: scalar(-1.0..=1.0, 0.0, temperature),
+                    },
+                    ParamDescriptor {
+                        name: "tint",
+                        value: scalar(-1.0..=1.0, 0.0, tint),
+                    },
+                ],
+            },
+            EffectKind::Blur { radius } => EffectDescriptor {
+                name: "blur",
+                params: vec![ParamDescriptor {
+                    name: "radius",
+                    value: scalar(0.0..=f64::INFINITY, 0.0, radius),
+                }],
+            },
+            EffectKind::Sharpen { amount } => EffectDescriptor {
+                name: "sharpen",
+                params: vec![ParamDescriptor {
+                    name: "amount",
+                    value: scalar(-1.5..=1.5, 0.0, amount),
+                }],
+            },
+            EffectKind::Vignette { amount } => EffectDescriptor {
+                name: "vignette",
+                params: vec![ParamDescriptor {
+                    name: "amount",
+                    value: scalar(0.0..=1.0, 0.0, amount),
+                }],
+            },
+            EffectKind::FilmGrain {
+                luma_strength,
+                chroma_strength,
+            } => EffectDescriptor {
+                name: "film_grain",
+                params: vec![
+                    ParamDescriptor {
+                        name: "luma_strength",
+                        value: scalar(0.0..=100.0, 0.0, luma_strength),
+                    },
+                    ParamDescriptor {
+                        name: "chroma_strength",
+                        value: scalar(0.0..=100.0, 0.0, chroma_strength),
+                    },
+                ],
+            },
+            // threshold / radius have no documented neutral (glow is a no-op at
+            // intensity 0), so a sensible starting default is used.
+            EffectKind::Glow {
+                threshold,
+                radius,
+                intensity,
+            } => EffectDescriptor {
+                name: "glow",
+                params: vec![
+                    ParamDescriptor {
+                        name: "threshold",
+                        value: scalar(0.0..=1.0, 0.8, threshold),
+                    },
+                    ParamDescriptor {
+                        name: "radius",
+                        value: scalar(0.5..=50.0, 4.0, radius),
+                    },
+                    ParamDescriptor {
+                        name: "intensity",
+                        value: scalar(0.0..=2.0, 0.0, intensity),
+                    },
+                ],
+            },
+            EffectKind::ColorWheels {
+                shadows_lift,
+                midtones_gamma,
+                highlights_gain,
+            } => EffectDescriptor {
+                name: "color_wheels",
+                params: vec![
+                    ParamDescriptor {
+                        name: "shadows_lift.r",
+                        value: scalar(-1.0..=1.0, 0.0, &shadows_lift[0]),
+                    },
+                    ParamDescriptor {
+                        name: "shadows_lift.g",
+                        value: scalar(-1.0..=1.0, 0.0, &shadows_lift[1]),
+                    },
+                    ParamDescriptor {
+                        name: "shadows_lift.b",
+                        value: scalar(-1.0..=1.0, 0.0, &shadows_lift[2]),
+                    },
+                    ParamDescriptor {
+                        name: "midtones_gamma.r",
+                        value: scalar(0.1..=10.0, 1.0, &midtones_gamma[0]),
+                    },
+                    ParamDescriptor {
+                        name: "midtones_gamma.g",
+                        value: scalar(0.1..=10.0, 1.0, &midtones_gamma[1]),
+                    },
+                    ParamDescriptor {
+                        name: "midtones_gamma.b",
+                        value: scalar(0.1..=10.0, 1.0, &midtones_gamma[2]),
+                    },
+                    ParamDescriptor {
+                        name: "highlights_gain.r",
+                        value: scalar(0.0..=4.0, 1.0, &highlights_gain[0]),
+                    },
+                    ParamDescriptor {
+                        name: "highlights_gain.g",
+                        value: scalar(0.0..=4.0, 1.0, &highlights_gain[1]),
+                    },
+                    ParamDescriptor {
+                        name: "highlights_gain.b",
+                        value: scalar(0.0..=4.0, 1.0, &highlights_gain[2]),
+                    },
+                ],
+            },
+            EffectKind::Curves {
+                master,
+                red,
+                green,
+                blue,
+            } => EffectDescriptor {
+                name: "curves",
+                params: vec![
+                    ParamDescriptor {
+                        name: "master",
+                        value: ParamValue::Points {
+                            current: master.clone(),
+                        },
+                    },
+                    ParamDescriptor {
+                        name: "red",
+                        value: ParamValue::Points {
+                            current: red.clone(),
+                        },
+                    },
+                    ParamDescriptor {
+                        name: "green",
+                        value: ParamValue::Points {
+                            current: green.clone(),
+                        },
+                    },
+                    ParamDescriptor {
+                        name: "blue",
+                        value: ParamValue::Points {
+                            current: blue.clone(),
+                        },
+                    },
+                ],
+            },
+            EffectKind::Hsl {
+                hue_shift,
+                saturation,
+                lightness,
+            } => EffectDescriptor {
+                name: "hsl",
+                params: vec![
+                    ParamDescriptor {
+                        name: "hue_shift",
+                        value: scalar(-180.0..=180.0, 0.0, hue_shift),
+                    },
+                    ParamDescriptor {
+                        name: "saturation",
+                        value: scalar(0.0..=2.0, 1.0, saturation),
+                    },
+                    ParamDescriptor {
+                        name: "lightness",
+                        value: scalar(-1.0..=1.0, 0.0, lightness),
+                    },
+                ],
+            },
+            EffectKind::Lut { path } => EffectDescriptor {
+                name: "lut",
+                params: vec![ParamDescriptor {
+                    name: "path",
+                    value: ParamValue::Path {
+                        current: path.clone(),
+                    },
+                }],
+            },
+            EffectKind::ChromaKey {
+                key_color,
+                similarity,
+                softness,
+            } => EffectDescriptor {
+                name: "chroma_key",
+                params: vec![
+                    ParamDescriptor {
+                        name: "key_color",
+                        value: ParamValue::Color {
+                            current: *key_color,
+                        },
+                    },
+                    ParamDescriptor {
+                        name: "similarity",
+                        value: scalar(0.0..=1.0, 0.0, similarity),
+                    },
+                    ParamDescriptor {
+                        name: "softness",
+                        value: scalar(0.0..=1.0, 0.0, softness),
+                    },
+                ],
+            },
+            EffectKind::LumaMask { invert } => EffectDescriptor {
+                name: "luma_mask",
+                params: vec![ParamDescriptor {
+                    name: "invert",
+                    value: ParamValue::Bool {
+                        default: false,
+                        current: *invert,
+                    },
+                }],
+            },
+            EffectKind::ShapeMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => EffectDescriptor {
+                name: "shape_mask",
+                params: vec![
+                    ParamDescriptor {
+                        name: "x",
+                        value: scalar(0.0..=f64::INFINITY, 0.0, x),
+                    },
+                    ParamDescriptor {
+                        name: "y",
+                        value: scalar(0.0..=f64::INFINITY, 0.0, y),
+                    },
+                    ParamDescriptor {
+                        name: "width",
+                        value: scalar(0.0..=f64::INFINITY, 0.0, width),
+                    },
+                    ParamDescriptor {
+                        name: "height",
+                        value: scalar(0.0..=f64::INFINITY, 0.0, height),
+                    },
+                    ParamDescriptor {
+                        name: "invert",
+                        value: ParamValue::Bool {
+                            default: false,
+                            current: *invert,
+                        },
+                    },
+                ],
+            },
+            EffectKind::MotionBlur {
+                shutter_angle,
+                sub_frames,
+            } => EffectDescriptor {
+                name: "motion_blur",
+                params: vec![
+                    ParamDescriptor {
+                        name: "shutter_angle",
+                        value: scalar(0.0..=360.0, 0.0, shutter_angle),
+                    },
+                    ParamDescriptor {
+                        name: "sub_frames",
+                        value: ParamValue::Int {
+                            range: 2..=8,
+                            default: 8,
+                            current: i64::from(*sub_frames),
+                        },
+                    },
+                ],
+            },
+        }
+    }
+
     /// Compiles this kind to the [`FilterStep`] that renders it, or `None` when the
     /// kind is a no-op (a neutral, all-constant [`ColorCorrect`](Self::ColorCorrect),
     /// matching the historical "skip `eq` when neutral" behaviour so output stays
@@ -685,6 +1072,166 @@ mod tests {
 
     fn animated_track() -> AnimationTrack<f64> {
         AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+    }
+
+    #[test]
+    fn descriptor_should_list_color_correct_params() {
+        let kind = EffectKind::ColorCorrect {
+            brightness: Param::Const(0.2),
+            contrast: Param::Const(1.1),
+            saturation: Param::Const(0.9),
+            temperature: Param::Const(-0.3),
+            tint: Param::Const(0.4),
+        };
+        let d = kind.descriptor();
+        assert_eq!(d.name, "color_correct");
+        let names: Vec<&str> = d.params.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "brightness",
+                "contrast",
+                "saturation",
+                "temperature",
+                "tint"
+            ]
+        );
+        assert_eq!(
+            d.params[0].value,
+            ParamValue::Scalar {
+                range: -1.0..=1.0,
+                default: 0.0,
+                current: Some(0.2),
+            }
+        );
+        assert_eq!(
+            d.params[1].value,
+            ParamValue::Scalar {
+                range: 0.0..=3.0,
+                default: 1.0,
+                current: Some(1.1),
+            }
+        );
+        assert_eq!(
+            d.params[3].value,
+            ParamValue::Scalar {
+                range: -1.0..=1.0,
+                default: 0.0,
+                current: Some(-0.3),
+            }
+        );
+    }
+
+    #[test]
+    fn descriptor_should_report_animated_scalar_as_none() {
+        let kind = EffectKind::ColorCorrect {
+            brightness: Param::Animated(animated_track()),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
+        };
+        let d = kind.descriptor();
+        // An animated scalar reports `current: None` (the host knows it is keyframed).
+        match &d.params[0].value {
+            ParamValue::Scalar { current, .. } => assert_eq!(*current, None),
+            other => panic!("expected a Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn descriptor_should_cover_structural_param_kinds() {
+        // MotionBlur.sub_frames -> Int
+        let mb = EffectKind::MotionBlur {
+            shutter_angle: Param::Const(180.0),
+            sub_frames: 6,
+        };
+        assert_eq!(
+            mb.descriptor().params[1].value,
+            ParamValue::Int {
+                range: 2..=8,
+                default: 8,
+                current: 6,
+            }
+        );
+        // LumaMask.invert -> Bool
+        let lm = EffectKind::LumaMask { invert: true };
+        assert_eq!(
+            lm.descriptor().params[0].value,
+            ParamValue::Bool {
+                default: false,
+                current: true,
+            }
+        );
+        // ChromaKey.key_color -> Color
+        let ck = EffectKind::ChromaKey {
+            key_color: [0.0, 1.0, 0.0],
+            similarity: Param::Const(0.1),
+            softness: Param::Const(0.0),
+        };
+        assert_eq!(
+            ck.descriptor().params[0].value,
+            ParamValue::Color {
+                current: [0.0, 1.0, 0.0],
+            }
+        );
+        // Lut.path -> Path
+        let lut = EffectKind::Lut {
+            path: "look.cube".to_string(),
+        };
+        assert_eq!(
+            lut.descriptor().params[0].value,
+            ParamValue::Path {
+                current: "look.cube".to_string(),
+            }
+        );
+        // Curves.master -> Points
+        let curves = EffectKind::Curves {
+            master: vec![[0.0, 0.0], [1.0, 1.0]],
+            red: vec![],
+            green: vec![],
+            blue: vec![],
+        };
+        assert_eq!(
+            curves.descriptor().params[0].value,
+            ParamValue::Points {
+                current: vec![[0.0, 0.0], [1.0, 1.0]],
+            }
+        );
+    }
+
+    #[test]
+    fn descriptor_should_flatten_color_wheels_channels() {
+        let kind = EffectKind::ColorWheels {
+            shadows_lift: [Param::Const(0.1), Param::Const(0.2), Param::Const(0.3)],
+            midtones_gamma: [Param::Const(1.0), Param::Const(1.0), Param::Const(1.0)],
+            highlights_gain: [Param::Const(1.0), Param::Const(1.0), Param::Const(1.0)],
+        };
+        let d = kind.descriptor();
+        assert_eq!(d.name, "color_wheels");
+        let names: Vec<&str> = d.params.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "shadows_lift.r",
+                "shadows_lift.g",
+                "shadows_lift.b",
+                "midtones_gamma.r",
+                "midtones_gamma.g",
+                "midtones_gamma.b",
+                "highlights_gain.r",
+                "highlights_gain.g",
+                "highlights_gain.b",
+            ]
+        );
+        assert_eq!(
+            d.params[2].value,
+            ParamValue::Scalar {
+                range: -1.0..=1.0,
+                default: 0.0,
+                current: Some(0.3),
+            }
+        );
     }
 
     #[test]
