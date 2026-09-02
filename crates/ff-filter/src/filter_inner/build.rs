@@ -2261,16 +2261,70 @@ pub(super) unsafe fn add_alphamerge_step(
 /// creating a video `buffer` (buffersrc) context.
 ///
 /// The format follows libavfilter's `buffer` filter parameter syntax:
-/// `video_size=WxH:pix_fmt=N:time_base=NUM/DEN:pixel_aspect=1/1`.
+/// `video_size=WxH:pix_fmt=N:time_base=NUM/DEN:pixel_aspect=1/1`, with
+/// `:frame_rate=NUM/DEN` appended when `frame_rate` is set.
+///
+/// The rate is omitted when unset, which leaves the buffersrc reporting `0/1` — fine
+/// for every filter except the ones that demand a constant frame rate. `xfade` is one:
+/// without a rate it refuses to configure with "The inputs needs to be a constant frame
+/// rate". `FilterGraphBuilder::build` is what rejects that combination up front.
 pub(crate) fn video_buffersrc_args(
     width: u32,
     height: u32,
     pix_fmt: std::os::raw::c_int,
+    frame_rate: Option<f64>,
 ) -> String {
-    format!(
+    let mut args = format!(
         "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect=1/1",
         width, height, pix_fmt, VIDEO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN,
-    )
+    );
+    if let Some(fps) = frame_rate {
+        use std::fmt::Write as _;
+        let (num, den) = frame_rate_to_rational(fps);
+        let _ = write!(args, ":frame_rate={num}/{den}");
+    }
+    args
+}
+
+/// The smallest declarable input frame rate.
+///
+/// Below this, [`frame_rate_to_rational`]'s `round(fps * SCALE)` numerator is zero and
+/// the emitted token degenerates to `0/1` — the unusable rate an *undeclared* buffersrc
+/// reports, which is what declaring one is meant to avoid. `FilterGraphBuilder::build`
+/// rejects anything smaller, so the conversion below never sees it.
+pub(crate) const MIN_INPUT_FRAME_RATE: f64 = 1.0 / FRAME_RATE_SCALE;
+
+/// Denominator the declared frame rate is scaled by before reduction.
+const FRAME_RATE_SCALE: f64 = 1000.0;
+
+/// Converts a frame rate to the exact `num/den` pair emitted in the buffersrc args.
+///
+/// Scales by 1000 and reduces, so `30.0` becomes `30/1` and `29.97` becomes `2997/100`.
+/// An exact rational rather than a decimal: libavfilter would parse `29.97` through
+/// `av_parse_video_rate`, and this repo verifies `FFmpeg` values against the C source
+/// rather than assuming (`docs/rules/design.md`), which a plain rational makes
+/// unnecessary. It also pins the emitted token in a build-independent unit test.
+///
+/// Note this is the literal rate, not the broadcast one: `23.976` becomes `2997/125`
+/// (= 23.976), not `24000/1001` (= 23.97602…). The declared rate only has to be a valid
+/// constant-frame-rate declaration for the filters that require one, and the ~1e-5
+/// difference does not affect them; frame timing comes from each frame's own PTS.
+///
+/// Callers guarantee `fps` is finite and at least [`MIN_INPUT_FRAME_RATE`]
+/// (`FilterGraphBuilder::build` rejects anything else), which is exactly the bound that
+/// keeps the numerator from rounding to zero. The scaled value fits an `i64` for every
+/// realistic rate.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn frame_rate_to_rational(fps: f64) -> (i64, i64) {
+    let scale = FRAME_RATE_SCALE as i64;
+    let num = (fps * FRAME_RATE_SCALE).round() as i64;
+    let divisor = gcd(num, scale);
+    (num / divisor, scale / divisor)
+}
+
+/// Greatest common divisor of two positive integers (Euclid).
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a.max(1) } else { gcd(b, a % b) }
 }
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when

@@ -1073,7 +1073,12 @@ pub(super) unsafe fn build_realtime_composition(
         Vec::with_capacity(layers.len());
     for (idx, layer) in layers.iter().enumerate() {
         let pix = crate::filter_inner::pixel_format_to_av(layer.pixel_format);
-        let args_str = crate::filter_inner::video_buffersrc_args(layer.width, layer.height, pix);
+        // No declared rate: this path has never declared one and none of its filters
+        // require a constant one (the `fps` filter below is inserted only for a
+        // `Speed` step). Declaring it here would change the input link for every
+        // composition, which is beyond fixing `FilterGraph::xfade`.
+        let args_str =
+            crate::filter_inner::video_buffersrc_args(layer.width, layer.height, pix, None);
         let Ok(args) = CString::new(args_str.as_str()) else {
             bail!(graph, "CString::new failed for buffersrc args");
         };

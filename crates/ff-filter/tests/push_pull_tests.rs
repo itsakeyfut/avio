@@ -15,7 +15,7 @@ use ff_filter::{
 };
 use ff_format::{
     AlphaMode, AudioFrame, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, PixelFormat,
-    PooledBuffer, SampleFormat, Timestamp, VideoFrame,
+    PooledBuffer, Rational, SampleFormat, Timestamp, VideoFrame,
 };
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -1324,36 +1324,56 @@ fn push_video_through_fade_out_white_should_return_frame_with_same_dimensions() 
     );
 }
 
+/// Whether this FFmpeg build has filters at all, probed with a universally valid
+/// `format=pix_fmts=yuv420p` (no conversion). CI's Linux FFmpeg is `--disable-everything`
+/// and has none; a full build has them. Mirrors the probe
+/// `format_graph_with_ffmpeg_tokens_should_be_accepted_by_ffmpeg` uses.
+fn filters_available() -> bool {
+    let frame = make_yuv420p_frame(64, 64);
+    let Ok(mut probe) = FilterGraph::builder()
+        .format(vec![PixelFormat::Yuv420p], vec![], vec![])
+        .build()
+    else {
+        return false;
+    };
+    probe.push_video(0, &frame).is_ok()
+}
+
+/// A 64x64 Yuv420p frame of flat luma `y` (neutral chroma) stamped at `secs`.
+fn make_luma_frame_at(y: u8, secs: f64) -> VideoFrame {
+    let mut frame = make_yuv_frame(64, 64, y, 128, 128);
+    #[allow(clippy::cast_possible_truncation)]
+    frame.set_timestamp(Timestamp::new(
+        (secs * 1000.0).round() as i64,
+        Rational::new(1, 1000),
+    ));
+    frame
+}
+
 #[test]
 fn push_two_clips_through_xfade_dissolve_should_return_frame_with_same_dimensions() {
-    let mut graph = match FilterGraph::builder()
+    // #1720: this used to swallow its own failure. The buffersrc declared no frame rate,
+    // so `xfade` — which requires a constant one — refused to configure, and the `match`
+    // below reported it as a skip. It therefore never ran, on any build. The skip now
+    // covers only "this FFmpeg has no filters"; anything past that is a real failure.
+    if !filters_available() {
+        println!("skipping: this FFmpeg build has no filters");
+        return;
+    }
+    let mut graph = FilterGraph::builder()
+        .input_frame_rate(30.0)
         .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
         .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
+        .expect("a rate-declaring xfade graph must build");
     let clip_a = make_yuv420p_frame(64, 64);
     let clip_b = make_yuv420p_frame(64, 64);
     // Push clip A to slot 0 first; this initialises the graph.
-    match graph.push_video(0, &clip_a) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    // Push clip B to slot 1.
-    match graph.push_video(1, &clip_b) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
+    graph
+        .push_video(0, &clip_a)
+        .expect("xfade must accept clip A once the input rate is declared");
+    graph
+        .push_video(1, &clip_b)
+        .expect("xfade must accept clip B once the input rate is declared");
     let result = graph.pull_video().expect("pull_video must not fail");
     let out = result.expect("expected Some(frame) after xfade push");
     assert_eq!(
@@ -1365,6 +1385,120 @@ fn push_two_clips_through_xfade_dissolve_should_return_frame_with_same_dimension
         out.height(),
         64,
         "output height should match input after xfade"
+    );
+}
+
+/// Drives `xfade` from a black clip A to a white clip B over a 1 s transition starting
+/// at 0, and returns `(seconds, luma histogram)` for each output frame. Black-to-white
+/// makes the two candidate behaviours unmistakable: a linear blend lands every pixel on
+/// one mid value, a per-pixel threshold leaves every pixel at 0 or 255.
+fn record_xfade_luma(kind: XfadeTransition) -> Vec<(f64, std::collections::BTreeMap<u8, usize>)> {
+    let mut graph = FilterGraph::builder()
+        .input_frame_rate(30.0)
+        .xfade(kind, 1.0, 0.0)
+        .build()
+        .expect("a rate-declaring xfade graph must build");
+    let mut recorded = Vec::new();
+    for i in 0..20 {
+        let secs = f64::from(i) / 30.0;
+        graph
+            .push_video(0, &make_luma_frame_at(0, secs))
+            .expect("xfade must accept clip A");
+        graph
+            .push_video(1, &make_luma_frame_at(255, secs))
+            .expect("xfade must accept clip B");
+        while let Some(out) = graph.pull_video().expect("pull_video must not fail") {
+            let plane = out.plane(0).expect("luma plane");
+            let mut hist: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+            for &v in plane {
+                *hist.entry(v).or_default() += 1;
+            }
+            recorded.push((secs, hist));
+        }
+    }
+    recorded
+}
+
+/// The histogram recorded closest to `secs`.
+fn histogram_at(
+    recorded: &[(f64, std::collections::BTreeMap<u8, usize>)],
+    secs: f64,
+) -> &std::collections::BTreeMap<u8, usize> {
+    let (_, hist) = recorded
+        .iter()
+        .min_by(|a, b| {
+            (a.0 - secs)
+                .abs()
+                .partial_cmp(&(b.0 - secs).abs())
+                .expect("finite timestamps")
+        })
+        .expect("at least one recorded frame");
+    hist
+}
+
+#[test]
+fn xfade_dissolve_at_half_progress_should_threshold_pixels_not_blend_them() {
+    // #1720 AC3: record what `xfade=transition=dissolve` actually does, so the GPU
+    // transition mapping (#1657) has a reference instead of an assumption.
+    //
+    // Measured here: at 50% progress the output holds exactly two luma values, 0 and
+    // 255, at roughly half each (2074 white / 2022 black of 4096) -- and *no* mid-grey.
+    // `dissolve` is therefore a per-pixel threshold against a pseudo-random value, not
+    // the linear cross-blend `XfadeTransition::Dissolve`'s own doc describes.
+    if !filters_available() {
+        println!("skipping: this FFmpeg build has no filters");
+        return;
+    }
+    let recorded = record_xfade_luma(XfadeTransition::Dissolve);
+    assert!(
+        !recorded.is_empty(),
+        "the dissolve produced no frames; the filter chain did not run"
+    );
+    let hist = histogram_at(&recorded, 0.5);
+    let total: usize = hist.values().sum();
+    let white = hist.get(&255).copied().unwrap_or(0);
+    println!(
+        "dissolve @50%: distinct_luma={} white={white}/{total}",
+        hist.len()
+    );
+    assert_eq!(
+        hist.keys().copied().collect::<Vec<_>>(),
+        vec![0, 255],
+        "dissolve at 50% must hold only the two source values, got {hist:?}"
+    );
+    let ratio = white as f64 / total as f64;
+    assert!(
+        (0.35..=0.65).contains(&ratio),
+        "dissolve at 50% should reveal about half of clip B, got {ratio:.3}"
+    );
+}
+
+#[test]
+fn xfade_fade_at_half_progress_should_blend_pixels_not_threshold_them() {
+    // The contrast that makes the assertion above meaningful: `fade` *is* the linear
+    // cross-blend, so at 50% every pixel lands on one mid value. Recording both pins
+    // which FFmpeg token the linear `DissolveTransitionNode` (#1668) corresponds to.
+    if !filters_available() {
+        println!("skipping: this FFmpeg build has no filters");
+        return;
+    }
+    let recorded = record_xfade_luma(XfadeTransition::Fade);
+    assert!(
+        !recorded.is_empty(),
+        "the fade produced no frames; the filter chain did not run"
+    );
+    let hist = histogram_at(&recorded, 0.5);
+    println!("fade @50%: distinct_luma={} hist={hist:?}", hist.len());
+    let mid = hist
+        .keys()
+        .copied()
+        .find(|v| (100..=155).contains(v))
+        .unwrap_or_else(|| panic!("fade at 50% must produce a mid-grey, got {hist:?}"));
+    let at_mid = hist[&mid];
+    let total: usize = hist.values().sum();
+    assert!(
+        at_mid * 100 / total >= 90,
+        "fade at 50% must put nearly every pixel on one mid value, got {hist:?}"
     );
 }
 

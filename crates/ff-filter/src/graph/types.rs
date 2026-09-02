@@ -164,9 +164,12 @@ pub enum PitchAlgo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum XfadeTransition {
-    /// Blend frames (cross-dissolve).
+    /// Reveal clip B one pixel at a time, thresholding a pseudo-random value against
+    /// the progress. **Not** a cross-blend: at 50% every pixel is still fully clip A or
+    /// fully clip B, never a mix of the two. Use [`Fade`](Self::Fade) for a blend.
     Dissolve,
-    /// Fade through black.
+    /// Linear cross-blend: every pixel is `mix(A, B, progress)`, so at 50% the frame is
+    /// the arithmetic mean of the two clips.
     Fade,
     /// Wipe from right to left.
     WipeLeft,

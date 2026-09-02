@@ -11,7 +11,7 @@ pub(super) use super::types::{
 pub(super) use crate::animation::{AnimatedValue, AnimationEntry};
 pub(super) use crate::blend::BlendMode;
 pub(super) use crate::error::FilterError;
-use crate::filter_inner::FilterGraphInner;
+use crate::filter_inner::{FilterGraphInner, MIN_INPUT_FRAME_RATE};
 
 mod audio;
 mod video;
@@ -39,6 +39,9 @@ pub struct FilterGraphBuilder {
     pub(super) hw: Option<HwAccel>,
     /// Registered animation entries, transferred to [`FilterGraph`] on [`build()`](Self::build).
     pub(super) animations: Vec<AnimationEntry>,
+    /// Frame rate declared on the video buffersrc. `None` leaves it unset, which is what
+    /// every filter but the constant-frame-rate ones wants.
+    pub(super) input_frame_rate: Option<f64>,
 }
 
 impl FilterGraphBuilder {
@@ -83,6 +86,21 @@ impl FilterGraphBuilder {
             filter: filter.into(),
             args: args.into(),
         })
+    }
+
+    /// Declare the frame rate of the frames that will be pushed, in frames per second.
+    ///
+    /// Only the filters that require a constant frame rate need it — [`xfade`](Self::xfade)
+    /// is one, and rejects a graph whose input rate is `0/1`, which is what an undeclared
+    /// buffersrc reports. Leaving it unset is correct for everything else, so this is
+    /// opt-in; [`build`](Self::build) rejects a graph that needs a rate and has none.
+    ///
+    /// The rate declares the *timing contract* of the input link. Frame presentation
+    /// still comes from each frame's own timestamp.
+    #[must_use]
+    pub fn input_frame_rate(mut self, fps: f64) -> Self {
+        self.input_frame_rate = Some(fps);
+        self
     }
 
     /// Enable hardware-accelerated filtering.
@@ -779,6 +797,40 @@ impl FilterGraphBuilder {
             }
         }
 
+        // A declared rate reaches libavfilter as the buffersrc's `frame_rate`, so a
+        // token it cannot use has to be caught here — filter args are only validated at
+        // push time (see `build`'s lazy-graph note), long after the caller set this.
+        //
+        // The lower bound is not cosmetic: the emitted rational is `round(fps * 1000)`
+        // over 1000, so anything under 0.0005 rounds the numerator to zero and emits
+        // `frame_rate=0/1` — exactly the unusable rate an *undeclared* buffersrc
+        // reports, and the one this check exists to keep out.
+        if let Some(fps) = self.input_frame_rate
+            && (!fps.is_finite() || fps < MIN_INPUT_FRAME_RATE)
+        {
+            return Err(FilterError::InvalidConfig {
+                reason: format!(
+                    "input_frame_rate {fps} must be finite and >= {MIN_INPUT_FRAME_RATE} \
+                     (a smaller rate rounds to the unusable 0/1)"
+                ),
+            });
+        }
+        // `xfade` requires a constant frame rate on its inputs and refuses to configure
+        // against the `0/1` an undeclared buffersrc reports. Without this the failure
+        // surfaces only on the first push, as an opaque FFmpeg "Invalid argument".
+        if self.input_frame_rate.is_none()
+            && self
+                .steps
+                .iter()
+                .any(|s| matches!(s, FilterStep::XFade { .. }))
+        {
+            return Err(FilterError::InvalidConfig {
+                reason: "xfade requires a constant frame rate: call input_frame_rate() \
+                         with the rate of the pushed frames"
+                    .to_string(),
+            });
+        }
+
         crate::filter_inner::validate_filter_steps(&self.steps)?;
         let output_resolution = self.steps.iter().rev().find_map(|s| {
             if let FilterStep::Scale { width, height, .. } = s {
@@ -788,7 +840,7 @@ impl FilterGraphBuilder {
             }
         });
         Ok(FilterGraph {
-            inner: FilterGraphInner::new(self.steps, self.hw),
+            inner: FilterGraphInner::new(self.steps, self.hw, self.input_frame_rate),
             output_resolution,
             pending_animations: self.animations,
         })
