@@ -59,6 +59,24 @@ impl Param {
     }
 }
 
+/// Which of a clip's media streams an [`EffectKind`] applies to (#1712).
+///
+/// A clip keeps **one** ordered effect list ([`Clip::effects`](crate::Clip::effects))
+/// for both domains, so effect ids, enable/disable, reordering, undo history and
+/// [`descriptor`](EffectKind::descriptor) are shared machinery. Each derive path
+/// selects its own domain (see [`Clip::video_effect_chain`](crate::Clip::video_effect_chain)
+/// and [`Clip::audio_effect_chain`](crate::Clip::audio_effect_chain)), preserving the
+/// relative order within that domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum EffectDomain {
+    /// Applies to the clip's video frames.
+    Video,
+    /// Applies to the clip's audio samples.
+    Audio,
+}
+
 /// A host-facing description of an effect kind and its editable parameters, returned
 /// by [`EffectKind::descriptor`]. Lets a UI render a parameter panel generically,
 /// without hard-coding each [`EffectKind`] variant.
@@ -377,6 +395,27 @@ pub enum EffectKind {
         /// The step rendered verbatim, in this effect's position in the chain.
         step: FilterStep,
     },
+    /// Audio gain in decibels (the `volume` filter) — an [`EffectDomain::Audio`] effect.
+    ///
+    /// A neutral constant (`0.0` dB) compiles to no filter at all, preserving
+    /// bit-identical audio. `gain_db` is keyframeable per the typed model, but
+    /// `FFmpeg`'s `volume` step carries no runtime-settable parameter here, so an
+    /// animated gain renders its `t = 0` value (the same documented limitation as
+    /// [`Sharpen`](Self::Sharpen) and [`MotionBlur`](Self::MotionBlur)).
+    Volume {
+        /// Gain in decibels. Range −60.0..=30.0 (neutral: 0.0).
+        gain_db: Param,
+    },
+    /// Escape hatch for a raw audio [`FilterStep`] the typed model has no variant for
+    /// (`ACompressor`, `NoiseReduce`, `ParametricEq`, ...) — the audio counterpart of
+    /// [`Raw`](Self::Raw), and an [`EffectDomain::Audio`] effect.
+    ///
+    /// Like `Raw` it is opaque: the step's arguments are not individually keyframeable
+    /// [`Param`]s and [`descriptor`](Self::descriptor) reports no parameters for it.
+    AudioRaw {
+        /// The step rendered verbatim, in this effect's position in the audio chain.
+        step: FilterStep,
+    },
 }
 
 /// Projects a `shadows_lift` parameter (additive, neutral `0.0`) onto the
@@ -400,6 +439,38 @@ fn lift_to_animated(p: &Param) -> AnimatedValue<f64> {
 }
 
 impl EffectKind {
+    /// Which media stream this kind applies to (#1712).
+    ///
+    /// A clip keeps one effect list for both domains; each derive path selects its own
+    /// domain, so the value here decides whether a kind reaches
+    /// [`Clip::video_effect_chain`](crate::Clip::video_effect_chain) or
+    /// [`Clip::audio_effect_chain`](crate::Clip::audio_effect_chain).
+    ///
+    /// The `match` is exhaustive with **no** `_` arm: a new [`EffectKind`] variant
+    /// fails to compile until its domain is declared, so a kind can never silently
+    /// default to the wrong pipeline (RK-003).
+    #[must_use]
+    pub fn domain(&self) -> EffectDomain {
+        match self {
+            EffectKind::ColorCorrect { .. }
+            | EffectKind::Blur { .. }
+            | EffectKind::Sharpen { .. }
+            | EffectKind::Vignette { .. }
+            | EffectKind::FilmGrain { .. }
+            | EffectKind::Glow { .. }
+            | EffectKind::ColorWheels { .. }
+            | EffectKind::Curves { .. }
+            | EffectKind::Hsl { .. }
+            | EffectKind::Lut { .. }
+            | EffectKind::ChromaKey { .. }
+            | EffectKind::LumaMask { .. }
+            | EffectKind::ShapeMask { .. }
+            | EffectKind::MotionBlur { .. }
+            | EffectKind::Raw { .. } => EffectDomain::Video,
+            EffectKind::Volume { .. } | EffectKind::AudioRaw { .. } => EffectDomain::Audio,
+        }
+    }
+
     /// Host-facing introspection: the kind's stable `snake_case` name and a
     /// [`ParamDescriptor`] for every parameter (name, type, range, default, current
     /// value), so a UI can render an editable parameter panel without hard-coding each
@@ -705,6 +776,17 @@ impl EffectKind {
             // nothing for a host to render a parameter editor from.
             EffectKind::Raw { .. } => EffectDescriptor {
                 name: "raw",
+                params: Vec::new(),
+            },
+            EffectKind::Volume { gain_db } => EffectDescriptor {
+                name: "volume",
+                params: vec![ParamDescriptor {
+                    name: "gain_db",
+                    value: scalar(-60.0..=30.0, 0.0, gain_db),
+                }],
+            },
+            EffectKind::AudioRaw { .. } => EffectDescriptor {
+                name: "audio_raw",
                 params: Vec::new(),
             },
         }
@@ -1030,8 +1112,18 @@ impl EffectKind {
                     sub_frames: *sub_frames,
                 })
             }
-            // The escape hatch renders its step verbatim.
-            EffectKind::Raw { step } => Some(step.clone()),
+            // The escape hatches render their step verbatim.
+            EffectKind::Raw { step } | EffectKind::AudioRaw { step } => Some(step.clone()),
+            // A neutral gain is no change, so it compiles to nothing. `volume` has no
+            // runtime-settable parameter here, so an animated gain renders at `t = 0`.
+            EffectKind::Volume { gain_db } => {
+                let db = gain_db.to_animated().value_at(Duration::ZERO);
+                #[allow(clippy::float_cmp)]
+                if db == 0.0 {
+                    return None;
+                }
+                Some(FilterStep::Volume(db))
+            }
         }
     }
 }
@@ -1093,6 +1185,92 @@ mod tests {
 
     fn animated_track() -> AnimationTrack<f64> {
         AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+    }
+
+    #[test]
+    fn domain_should_classify_video_and_audio_kinds() {
+        // #1712: one list holds both domains, so the kind must declare which pipeline
+        // it belongs to.
+        let video = EffectKind::Blur {
+            radius: Param::Const(2.0),
+        };
+        assert_eq!(video.domain(), EffectDomain::Video);
+        assert_eq!(
+            EffectKind::Raw {
+                step: FilterStep::HFlip
+            }
+            .domain(),
+            EffectDomain::Video
+        );
+        let audio = EffectKind::Volume {
+            gain_db: Param::Const(-6.0),
+        };
+        assert_eq!(audio.domain(), EffectDomain::Audio);
+        assert_eq!(
+            EffectKind::AudioRaw {
+                step: FilterStep::Volume(-3.0)
+            }
+            .domain(),
+            EffectDomain::Audio
+        );
+    }
+
+    #[test]
+    fn volume_should_compile_to_volume_step() {
+        let kind = EffectKind::Volume {
+            gain_db: Param::Const(-6.0),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Volume(db) => assert!((db - (-6.0)).abs() < 1e-6),
+            other => panic!("expected Volume, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn volume_neutral_should_compile_to_nothing() {
+        let kind = EffectKind::Volume {
+            gain_db: Param::Const(0.0),
+        };
+        assert!(
+            kind.to_filter_step().is_none(),
+            "0 dB is no change, so it is a no-op"
+        );
+    }
+
+    #[test]
+    fn audio_raw_should_compile_to_its_filter_step() {
+        let kind = EffectKind::AudioRaw {
+            step: FilterStep::Volume(-3.0),
+        };
+        assert!(matches!(
+            kind.to_filter_step().unwrap(),
+            FilterStep::Volume(_)
+        ));
+    }
+
+    #[test]
+    fn descriptor_should_list_volume_param() {
+        let kind = EffectKind::Volume {
+            gain_db: Param::Const(-6.0),
+        };
+        let d = kind.descriptor();
+        assert_eq!(d.name, "volume");
+        assert_eq!(d.params.len(), 1);
+        assert_eq!(d.params[0].name, "gain_db");
+        assert_eq!(
+            d.params[0].value,
+            ParamValue::Scalar {
+                range: -60.0..=30.0,
+                default: 0.0,
+                current: Some(-6.0),
+            }
+        );
+        // The audio escape hatch is opaque, like the video one.
+        let raw = EffectKind::AudioRaw {
+            step: FilterStep::Volume(-3.0),
+        };
+        assert_eq!(raw.descriptor().name, "audio_raw");
+        assert!(raw.descriptor().params.is_empty());
     }
 
     #[test]

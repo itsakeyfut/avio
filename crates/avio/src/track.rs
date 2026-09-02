@@ -132,10 +132,13 @@ pub struct Track {
     /// audio path unchanged. Ignored for video tracks (they carry no audio).
     ///
     /// Persisted by the `serde` feature (#1452), like
-    /// [`Clip::audio_effects`](crate::Clip::audio_effects) and
+    /// [`Clip::effects`](crate::Clip::effects) and
     /// [`Timeline::audio_filter`](crate::Timeline). The compositor-internal
     /// `FilterStep` variants (`Blend` / `Composite` / `AlphaMatte`) are not
     /// serialized, but an audio chain never contains them.
+    ///
+    /// This track-level chain stays an opaque step list: unlike the per-clip effects
+    /// (#1712) it is a bus-style insert, not a typed, id-addressed authoring surface.
     pub audio_effects: Vec<FilterStep>,
     /// Typed, id-addressed track-level automation (see [`TrackAutomation`]).
     /// Empty by default; set via the `with_*_animation` builders or

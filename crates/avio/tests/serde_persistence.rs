@@ -160,8 +160,13 @@ fn clip_effects_should_round_trip_through_serde() {
         serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
     assert_eq!(v1, v2, "effect chains must round-trip through serde");
 
-    // #1622: a raw video step now persists as an `EffectKind::Raw` typed effect.
-    assert_eq!(back.effects.len(), 2, "video effects survive the load");
+    // #1622 / #1712: raw video and audio steps now persist as typed `Raw` / `AudioRaw`
+    // effects in the single `effects` list, in authoring order.
+    assert_eq!(
+        back.effects.len(),
+        4,
+        "video and audio effects survive the load"
+    );
     assert!(matches!(
         &back.effects[0].kind,
         EffectKind::Raw { step: FilterStep::Hue { degrees } } if (degrees - 30.0).abs() < 1e-6
@@ -172,21 +177,21 @@ fn clip_effects_should_round_trip_through_serde() {
             step: FilterStep::HFlip
         }
     ));
-    assert_eq!(
-        back.audio_effects.len(),
-        2,
-        "audio effects survive the load"
-    );
     assert!(
         matches!(
-            back.audio_effects[1],
-            FilterStep::PitchShift {
-                algo: PitchAlgo::Rubberband,
-                ..
+            &back.effects[3].kind,
+            EffectKind::AudioRaw {
+                step: FilterStep::PitchShift {
+                    algo: PitchAlgo::Rubberband,
+                    ..
+                }
             }
         ),
         "the PitchShift algo backend survives the round-trip"
     );
+    // The domain split holds after a round-trip: each chain sees only its own effects.
+    assert_eq!(back.video_effect_chain().len(), 2);
+    assert_eq!(back.audio_effect_chain().len(), 2);
 }
 
 #[test]
