@@ -140,9 +140,7 @@ fn export_should_produce_frames_on_cpu_and_gpu_routes() {
 fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
     const SRC_FPS: f64 = 24.0;
     const OUT_FPS: f64 = 30.0;
-    const SRC_24_FRAMES: usize = 24; // exactly 1 s of 24 fps source
-    // 1 s of source at the timeline rate: the count that proves the duration is kept.
-    const EXPECTED_OUT_FRAMES: usize = 30;
+    const SRC_24_FRAMES: usize = 24; // ~1 s of 24 fps source
 
     let src = test_output_path("gpuexport_24fps_src.mp4");
     let _gs = FileGuard::new(src.clone());
@@ -152,6 +150,20 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
     if avio::GpuCompositor::new().is_none() {
         return; // no GPU adapter -> the GPU leg is unreachable here
     }
+    // Expect against what the source *actually decodes*, not the nominal frame count:
+    // an encode/decode round trip can lose a frame, and that shortfall would otherwise
+    // read as a conform bug. The conformed output should cover the same wall-clock span
+    // at the timeline rate, i.e. `src_frames * OUT_FPS / SRC_FPS`.
+    let (src_frames, _) = decode_stats(&src);
+    if src_frames == 0 {
+        return; // source decoder unavailable -> skip
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )]
+    let expected = (src_frames as f64 * OUT_FPS / SRC_FPS).round() as usize;
     let Some(timeline) = Timeline::builder()
         .canvas(CANVAS, CANVAS)
         .frame_rate(OUT_FPS)
@@ -172,12 +184,16 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
         Some((CANVAS, CANVAS)),
         "conformed export frames should be the {CANVAS}x{CANVAS} canvas size"
     );
-    // Without conform the drain consumed one source frame per output and stopped at 24,
-    // shortening the clip; with it the output covers the same second at 30 fps.
+    // Non-vacuity: up-conform must *add* frames. Without it the drain took one source
+    // frame per output and the clip came out short, at the source's own count.
     assert!(
-        (EXPECTED_OUT_FRAMES - 1..=EXPECTED_OUT_FRAMES + 1).contains(&count),
-        "a {SRC_FPS} fps source in a {OUT_FPS} fps timeline should export \
-         ~{EXPECTED_OUT_FRAMES} frames (1 s), got {count}"
+        count > src_frames,
+        "conform must add frames: {src_frames} source frames became {count} outputs"
+    );
+    assert!(
+        (expected - 1..=expected + 1).contains(&count),
+        "a {SRC_FPS} fps source ({src_frames} frames) in a {OUT_FPS} fps timeline should \
+         export ~{expected} frames, got {count}"
     );
 }
 

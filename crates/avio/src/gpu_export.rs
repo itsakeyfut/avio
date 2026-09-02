@@ -481,6 +481,12 @@ mod tests {
         if encode_probe_source(&src, 24.0).is_none() {
             return; // no encoder here -> skip
         }
+        // The probe pass opens a decoder, so a build without this decoder cannot reach
+        // the gate at all — skip rather than read the miss as a rejection (RK-002).
+        if VideoDecoder::open(&src).build().is_err() {
+            let _ = std::fs::remove_file(&src);
+            return;
+        }
         let t = square_timeline(vec![Clip::new(&src)]); // canvas 64x64, timeline 30 fps
         let eligible_now = eligible(&t);
         let _ = std::fs::remove_file(&src);
