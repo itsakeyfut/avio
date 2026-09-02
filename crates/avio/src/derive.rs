@@ -477,8 +477,8 @@ pub(crate) fn audio_track(
             }
         }
     }
-    // Caller-attached per-clip audio effects run last.
-    effects.extend(clip.audio_effects.iter().cloned());
+    // The clip's typed audio effects run last, in list order (#1712).
+    effects.extend(clip.audio_effect_chain());
 
     AudioTrack {
         source: source_path,

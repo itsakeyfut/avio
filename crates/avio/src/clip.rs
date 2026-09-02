@@ -14,7 +14,7 @@ use ff_filter::{
 };
 use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
 
-use crate::effect::{ClipEffect, EffectKind, Param};
+use crate::effect::{ClipEffect, EffectDomain, EffectKind, Param};
 use crate::error::TimelineError;
 use crate::ids::{ClipId, GroupId};
 
@@ -283,32 +283,24 @@ pub struct Clip {
     pub proxy: Option<PathBuf>,
     /// Ordered per-clip video filter steps applied to the clip's video layer.
     ///
-    /// Ordered, typed, re-editable per-clip video effects (#1458) — the single
-    /// video-effect surface (#1622).
+    /// Ordered, typed, re-editable per-clip effects (#1458) — the single effect
+    /// surface for both media domains (#1622 video, #1712 audio).
     ///
     /// Each [`ClipEffect`] is an id-addressed [`EffectKind`] with individually
-    /// keyframable [`Param`](crate::Param)s, edited via the `*Effect` commands. During
-    /// derivation each enabled effect compiles to a [`FilterStep`] in list order (see
-    /// [`video_effect_chain`](Self::video_effect_chain)). A step the typed model has no
-    /// variant for is attached through the [`EffectKind::Raw`](crate::EffectKind)
-    /// escape hatch (see [`with_video_effect`](Self::with_video_effect)). An empty vec
-    /// (the default) is a no-op.
+    /// keyframable [`Param`](crate::Param)s, edited via the `*Effect` commands. Each
+    /// kind declares its [`EffectDomain`](crate::EffectDomain), and during derivation
+    /// the video and audio paths each compile the enabled effects of their own domain,
+    /// in list order (see [`video_effect_chain`](Self::video_effect_chain) and
+    /// [`audio_effect_chain`](Self::audio_effect_chain)). A step the typed model has no
+    /// variant for is attached through the [`EffectKind::Raw`](crate::EffectKind) /
+    /// [`EffectKind::AudioRaw`](crate::EffectKind) escape hatches (see
+    /// [`with_video_effect`](Self::with_video_effect) /
+    /// [`with_audio_effect`](Self::with_audio_effect)). An empty vec (the default) is a
+    /// no-op.
     ///
     /// Persisted by the `serde` feature (#1452). Compositor-internal steps
     /// (`Blend` / `Composite` / `AlphaMatte`) are not serialized.
     pub effects: Vec<ClipEffect>,
-    /// Ordered per-clip audio filter steps applied to the clip's audio track.
-    ///
-    /// Applied during the audio mix after the built-in speed and fade steps,
-    /// allowing callers to attach any audio [`FilterStep`] (e.g. `ACompressor`,
-    /// `ParametricEq`, `NoiseReduce`) to a single clip. An empty vec (the
-    /// default) is a no-op.
-    ///
-    /// Persisted by the `serde` feature (#1452; see [`effects`](Self::effects)).
-    ///
-    /// Unlike the video side (#1622), audio has no typed effect model yet, so this is
-    /// still an opaque step list.
-    pub audio_effects: Vec<FilterStep>,
 }
 
 impl Clip {
@@ -384,7 +376,6 @@ impl Clip {
             speed: 1.0,
             proxy: None,
             effects: Vec::new(),
-            audio_effects: Vec::new(),
         }
     }
 
@@ -441,9 +432,43 @@ impl Clip {
     /// ```
     #[must_use]
     pub fn video_effect_chain(&self) -> Vec<FilterStep> {
+        self.effect_chain(EffectDomain::Video)
+    }
+
+    /// Returns the audio effect chain the audio mix applies to this clip: each enabled
+    /// [`EffectDomain::Audio`](crate::EffectDomain) effect compiled to its
+    /// [`FilterStep`], in list order (a neutral `Volume` compiles to nothing, and an
+    /// [`EffectKind::AudioRaw`](crate::EffectKind) effect contributes its step
+    /// verbatim). The audio counterpart of
+    /// [`video_effect_chain`](Self::video_effect_chain) (#1712).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use avio::Clip;
+    /// use ff_filter::FilterStep;
+    ///
+    /// let clip = Clip::new("scene.mp4").with_audio_effect(FilterStep::Volume(-6.0));
+    /// assert!(matches!(
+    ///     clip.audio_effect_chain().as_slice(),
+    ///     [FilterStep::Volume(_)]
+    /// ));
+    /// // Audio effects never leak into the video chain.
+    /// assert!(clip.video_effect_chain().is_empty());
+    /// ```
+    #[must_use]
+    pub fn audio_effect_chain(&self) -> Vec<FilterStep> {
+        self.effect_chain(EffectDomain::Audio)
+    }
+
+    /// The enabled effects of one domain, compiled to their steps in list order. One
+    /// clip list holds both domains, so each derive path selects its own (#1712); the
+    /// relative order within a domain is preserved.
+    fn effect_chain(&self, domain: EffectDomain) -> Vec<FilterStep> {
         let mut steps = Vec::new();
         for effect in &self.effects {
             if effect.enabled
+                && effect.kind.domain() == domain
                 && let Some(step) = effect.kind.to_filter_step()
             {
                 steps.push(step);
@@ -542,13 +567,29 @@ impl Clip {
         crate::derive::realtime_descriptor(self, &crate::track::TrackAutomation::default(), 0, 0)
     }
 
-    /// Attaches an audio [`FilterStep`] to this clip and returns the updated clip.
+    /// Appends a raw audio [`FilterStep`] to this clip's [`effects`](Self::effects) as
+    /// an [`EffectKind::AudioRaw`](crate::EffectKind) effect, and returns the updated
+    /// clip.
     ///
-    /// Steps are applied in the order added, after the built-in speed and fade
-    /// steps, during the audio mix.
+    /// The audio escape hatch (#1712), mirroring
+    /// [`with_video_effect`](Self::with_video_effect): it is a normal typed effect, so
+    /// it renders in its position in the audio chain and can be enabled/disabled,
+    /// reordered and removed through the `*Effect` commands. Prefer a typed audio kind
+    /// (e.g. [`EffectKind::Volume`](crate::EffectKind)) when one exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use avio::{Clip, EffectKind};
+    /// use ff_filter::FilterStep;
+    ///
+    /// let clip = Clip::new("scene.mp4").with_audio_effect(FilterStep::Volume(-6.0));
+    /// assert!(matches!(clip.effects[0].kind, EffectKind::AudioRaw { .. }));
+    /// ```
     #[must_use]
     pub fn with_audio_effect(mut self, step: FilterStep) -> Self {
-        self.audio_effects.push(step);
+        self.effects
+            .push(ClipEffect::new(EffectKind::AudioRaw { step }));
         self
     }
 
@@ -1654,6 +1695,55 @@ mod tests {
         let mut disabled = clip.clone();
         disabled.effects[0].enabled = false;
         assert!(disabled.video_effect_chain().is_empty());
+    }
+
+    #[test]
+    fn video_effect_chain_should_exclude_audio_effects() {
+        // #1712: one list holds both domains, so each chain must select its own.
+        let clip = Clip::new("v.mp4")
+            .with_color_correction(0.1, 1.0, 1.0)
+            .with_audio_effect(FilterStep::Volume(-6.0));
+        assert!(matches!(
+            clip.video_effect_chain().as_slice(),
+            [FilterStep::Eq { .. }]
+        ));
+        assert!(matches!(
+            clip.audio_effect_chain().as_slice(),
+            [FilterStep::Volume(_)]
+        ));
+    }
+
+    #[test]
+    fn audio_effect_chain_should_compile_audio_effects_in_order() {
+        // Relative order within the audio domain is preserved even when video effects
+        // are interleaved in the shared list.
+        use crate::effect::{ClipEffect, EffectKind, Param};
+        let mut clip = Clip::new("v.mp4").with_audio_effect(FilterStep::Volume(-6.0));
+        clip.effects.push(ClipEffect::new(EffectKind::Blur {
+            radius: Param::Const(2.0),
+        }));
+        clip.effects.push(ClipEffect::new(EffectKind::Volume {
+            gain_db: Param::Const(3.0),
+        }));
+        let chain = clip.audio_effect_chain();
+        assert_eq!(chain.len(), 2, "only the audio effects, in order");
+        assert!(matches!(chain[0], FilterStep::Volume(db) if (db - (-6.0)).abs() < 1e-6));
+        assert!(matches!(chain[1], FilterStep::Volume(db) if (db - 3.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn with_audio_effect_should_append_an_audio_raw_typed_effect() {
+        // #1712: the audio escape hatch is a normal typed effect (id-addressed,
+        // toggleable) like the video one.
+        let clip = Clip::new("v.mp4").with_audio_effect(FilterStep::Volume(-6.0));
+        let [effect] = clip.effects.as_slice() else {
+            panic!("expected exactly one effect");
+        };
+        assert!(effect.enabled);
+        assert!(matches!(effect.kind, EffectKind::AudioRaw { .. }));
+        let mut disabled = clip.clone();
+        disabled.effects[0].enabled = false;
+        assert!(disabled.audio_effect_chain().is_empty());
     }
 
     #[test]

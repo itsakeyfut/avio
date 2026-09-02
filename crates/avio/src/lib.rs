@@ -122,7 +122,9 @@ mod validate;
 pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};
 pub use edit::{ClipProperty, Command, EditError, apply};
 pub use editor::Editor;
-pub use effect::{ClipEffect, EffectDescriptor, EffectKind, Param, ParamDescriptor, ParamValue};
+pub use effect::{
+    ClipEffect, EffectDescriptor, EffectDomain, EffectKind, Param, ParamDescriptor, ParamValue,
+};
 pub use error::TimelineError;
 #[cfg(feature = "gpu")]
 pub use gpu::{
