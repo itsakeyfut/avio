@@ -11,9 +11,10 @@
 //!
 //! v1 handles only a **single active video track of contiguous hard cuts** at unity
 //! speed whose every clip is a file source that maps to the GPU with an identity
-//! transform and a canvas-matching aspect. A source whose frame rate differs from the
-//! timeline's is conformed by the drain (#1660), repeating or skipping source frames so
-//! the clip keeps its on-screen duration. Anything else keeps the whole export on the
+//! transform. A source whose frame rate differs from the timeline's is conformed by the
+//! drain (#1660), repeating or skipping source frames so the clip keeps its on-screen
+//! duration, and one whose aspect differs from the canvas is letterboxed by the shared
+//! compositing core (#1661). Anything else keeps the whole export on the
 //! CPU `MultiTrackComposer` path (see [`eligible_track`]); multi-track / overlay GPU
 //! export is a follow-up.
 
@@ -52,11 +53,11 @@ use crate::track::Track;
 ///   clips in order without honouring `clip.offset`, so a leading gap, an inter-clip
 ///   gap, or an overlap would diverge from the CPU compositor (which places each clip
 ///   via `OffsetPts`),
-/// - each source's native aspect matches the canvas (the compositor would stretch a
-///   differently-shaped frame where the CPU path letterboxes) and its native frame
-///   rate is usable (positive and finite). The rate no longer has to *match* the
-///   timeline `frame_rate`: the drain conforms it (#1660), repeating or skipping
-///   source frames so the clip keeps its on-screen duration.
+/// - each source's native frame rate is usable (positive and finite). Neither the rate
+///   nor the aspect has to *match* the timeline any more: the drain conforms the rate
+///   (#1660), repeating or skipping source frames so the clip keeps its on-screen
+///   duration, and the shared compositing core letterboxes a differently-shaped frame
+///   into the canvas (#1661).
 pub(crate) fn eligible_track(
     video_tracks: &[Track],
     lavfi_overlay: Option<&str>,
@@ -116,18 +117,13 @@ pub(crate) fn eligible_track(
         }
     }
 
-    // Probe pass (I/O): each source's native aspect must match the canvas, and its
-    // frame rate must be usable (it no longer has to match the timeline rate).
+    // Probe pass (I/O): each source's frame rate must be usable. Its aspect no longer
+    // has to match the canvas -- the shared compositing core letterboxes it (#1661).
     for clip in &track.clips {
         let src = clip.source_path()?;
         let Ok(decoder) = VideoDecoder::open(src).build() else {
             return None;
         };
-        if u64::from(decoder.width()) * u64::from(canvas.1)
-            != u64::from(decoder.height()) * u64::from(canvas.0)
-        {
-            return None;
-        }
         // The frame rate no longer has to match: the drain conforms the source to the
         // timeline rate from the frames' own timestamps (#1660). The rate is still
         // required to be usable, since a source that reports none is one whose timing
@@ -443,25 +439,42 @@ mod tests {
         assert_eq!(plan, (0..15).collect::<Vec<_>>());
     }
 
-    /// Encodes a tiny square video at `fps`, or `None` when the environment has no
+    /// Encodes a tiny `w` x `h` video at `fps`, or `None` when the environment has no
     /// usable encoder (skip). The probe pass needs a real file, so eligibility cannot
     /// be exercised without one.
-    fn encode_probe_source(path: &std::path::Path, fps: f64) -> Option<()> {
+    fn encode_probe_source(path: &std::path::Path, w: u32, h: u32, fps: f64) -> Option<()> {
         use ff_encode::{VideoCodec, VideoEncoder};
         use ff_format::{PixelFormat as PF, VideoFrame};
 
         let mut enc = VideoEncoder::create(path)
-            .video(64, 64, fps)
+            .video(w, h, fps)
             .video_codec(VideoCodec::Mpeg4)
             .build()
             .ok()?;
         // A few flat frames are enough: only the stream header (size, rate) is probed.
         for i in 0..4 {
-            let frame = VideoFrame::new_black(64, 64, PF::Yuv420p, i);
+            let frame = VideoFrame::new_black(w, h, PF::Yuv420p, i);
             enc.push_video(&frame).ok()?;
         }
         enc.finish().ok()?;
         Some(())
+    }
+
+    /// Encodes `src` and confirms it can be read back, so a probe-gated eligibility test
+    /// can tell "this environment cannot run the check" (skip) from "the gate rejected
+    /// the source" (fail). Minimal-`FFmpeg` CI has the `Mpeg4` encoder but not always the
+    /// decoder the probe pass opens (RK-002), and gating on the encoder alone reads that
+    /// miss as a rejection.
+    fn probe_source_or_skip(src: &std::path::Path, w: u32, h: u32, fps: f64) -> bool {
+        let _ = std::fs::remove_file(src);
+        if encode_probe_source(src, w, h, fps).is_none() {
+            return false;
+        }
+        if VideoDecoder::open(src).build().is_err() {
+            let _ = std::fs::remove_file(src);
+            return false;
+        }
+        true
     }
 
     #[test]
@@ -477,14 +490,7 @@ mod tests {
         // therefore silently exercising the CPU path. Keeping this assertion green is
         // what stops that false green from coming back.
         let src = std::env::temp_dir().join("avio_eligible_24fps_probe.mp4");
-        let _ = std::fs::remove_file(&src);
-        if encode_probe_source(&src, 24.0).is_none() {
-            return; // no encoder here -> skip
-        }
-        // The probe pass opens a decoder, so a build without this decoder cannot reach
-        // the gate at all — skip rather than read the miss as a rejection (RK-002).
-        if VideoDecoder::open(&src).build().is_err() {
-            let _ = std::fs::remove_file(&src);
+        if !probe_source_or_skip(&src, 64, 64, 24.0) {
             return;
         }
         let t = square_timeline(vec![Clip::new(&src)]); // canvas 64x64, timeline 30 fps
@@ -494,6 +500,27 @@ mod tests {
             eligible_now,
             Some(0),
             "a 24 fps source in a 30 fps timeline must be GPU-eligible after #1660"
+        );
+    }
+
+    #[test]
+    fn eligible_track_should_accept_a_source_whose_aspect_differs_from_the_canvas() {
+        // #1661: the probe pass no longer requires the source aspect to match the canvas
+        // — the shared compositing core letterboxes it — so a 16:9 source on a square
+        // canvas stays on the GPU route instead of falling back to CPU. This is the
+        // direct evidence the gate opened: the end-to-end export cannot show it, because
+        // the CPU fallback letterboxes too and would produce the same picture.
+        let src = std::env::temp_dir().join("avio_eligible_169_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 36, 30.0) {
+            return;
+        }
+        let t = square_timeline(vec![Clip::new(&src)]); // canvas 64x64
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            eligible_now,
+            Some(0),
+            "a 16:9 source on a square canvas must be GPU-eligible after #1661"
         );
     }
 
