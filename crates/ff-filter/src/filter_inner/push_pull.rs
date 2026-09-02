@@ -104,7 +104,12 @@ impl FilterGraphInner {
         }
 
         let pix_fmt = pixel_format_to_av(frame.format());
-        let args = video_buffersrc_args(frame.width(), frame.height(), pix_fmt);
+        let args = video_buffersrc_args(
+            frame.width(),
+            frame.height(),
+            pix_fmt,
+            self.input_frame_rate,
+        );
         let num_inputs = self.video_input_count();
 
         // SAFETY: all raw pointers are checked for null after allocation; the

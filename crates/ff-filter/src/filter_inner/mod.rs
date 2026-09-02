@@ -20,8 +20,8 @@ mod push_pull;
 pub(crate) use build::add_and_link_step;
 pub(crate) use build::add_asetrate_resample_chain;
 pub(crate) use build::{
-    NormalBlendParams, add_blend_normal_step, add_blend_photographic_step, add_composite_step,
-    video_buffersrc_args,
+    MIN_INPUT_FRAME_RATE, NormalBlendParams, add_blend_normal_step, add_blend_photographic_step,
+    add_composite_step, video_buffersrc_args,
 };
 pub(crate) use convert::pixel_format_to_av;
 
@@ -152,6 +152,9 @@ pub(crate) struct FilterGraphInner {
     peak_output_idx: usize,
     /// True once the two-pass peak measurement + correction has been executed.
     peak_pass2_done: bool,
+    /// Frame rate declared on the video buffersrc, or `None` to leave it unset.
+    /// Required by filters that demand a constant frame rate (`xfade`).
+    input_frame_rate: Option<f64>,
 }
 
 // SAFETY: `FilterGraphInner` owns all raw pointers exclusively.  No other
@@ -161,7 +164,11 @@ unsafe impl Send for FilterGraphInner {}
 
 impl FilterGraphInner {
     /// Create a new (uninitialised) inner.  No `FFmpeg` calls are made here.
-    pub(crate) fn new(steps: Vec<FilterStep>, hw: Option<HwAccel>) -> Self {
+    pub(crate) fn new(
+        steps: Vec<FilterStep>,
+        hw: Option<HwAccel>,
+        input_frame_rate: Option<f64>,
+    ) -> Self {
         Self {
             graph: None,
             audio_graph: None,
@@ -179,6 +186,7 @@ impl FilterGraphInner {
             peak_output: Vec::new(),
             peak_output_idx: 0,
             peak_pass2_done: false,
+            input_frame_rate,
         }
     }
 
@@ -225,6 +233,8 @@ impl FilterGraphInner {
             peak_output: Vec::new(),
             peak_output_idx: 0,
             peak_pass2_done: false,
+            // Pre-built graphs never format buffersrc args, so the rate is moot here.
+            input_frame_rate: None,
         }
     }
 
@@ -258,6 +268,8 @@ impl FilterGraphInner {
             peak_output: Vec::new(),
             peak_output_idx: 0,
             peak_pass2_done: false,
+            // Pre-built graphs never format buffersrc args, so the rate is moot here.
+            input_frame_rate: None,
         }
     }
 
@@ -287,6 +299,8 @@ impl FilterGraphInner {
             peak_output: Vec::new(),
             peak_output_idx: 0,
             peak_pass2_done: false,
+            // Pre-built graphs never format buffersrc args, so the rate is moot here.
+            input_frame_rate: None,
         }
     }
 }
@@ -307,6 +321,7 @@ mod tests {
                 height: 720,
                 algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
+            None,
             None,
         );
         assert!(
@@ -338,6 +353,7 @@ mod tests {
                 algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
+            None,
         );
         drop(inner); // must not panic or double-free
     }
@@ -358,7 +374,7 @@ mod tests {
     #[test]
     fn video_buffersrc_args_should_contain_size_pix_fmt_and_time_base() {
         // pix_fmt 0 = AV_PIX_FMT_YUV420P
-        let args = video_buffersrc_args(1920, 1080, 0);
+        let args = video_buffersrc_args(1920, 1080, 0, None);
         assert!(
             args.contains("video_size=1920x1080"),
             "missing video_size: {args}"
@@ -372,6 +388,34 @@ mod tests {
             args.contains("pixel_aspect=1/1"),
             "missing pixel_aspect: {args}"
         );
+    }
+
+    #[test]
+    fn video_buffersrc_args_should_omit_frame_rate_when_unset() {
+        // Leaving the rate out is the shape every non-CFR filter has always seen; only
+        // `xfade` and friends need it, so an undeclared graph must not change.
+        let args = video_buffersrc_args(1920, 1080, 0, None);
+        assert!(
+            !args.contains("frame_rate"),
+            "an undeclared rate must emit no frame_rate: {args}"
+        );
+    }
+
+    #[test]
+    fn video_buffersrc_args_should_emit_a_reduced_rational_frame_rate() {
+        // A rational, not a decimal: libavfilter would have to parse `29.97` through
+        // `av_parse_video_rate`, and this pins the emitted token without depending on
+        // that. The reduction keeps the common case readable (`30/1`, not `30000/1000`).
+        for (fps, want) in [
+            (30.0, "frame_rate=30/1"),
+            (60.0, "frame_rate=60/1"),
+            (25.0, "frame_rate=25/1"),
+            (29.97, "frame_rate=2997/100"),
+            (23.976, "frame_rate=2997/125"),
+        ] {
+            let args = video_buffersrc_args(64, 64, 0, Some(fps));
+            assert!(args.contains(want), "fps {fps} should emit {want}: {args}");
+        }
     }
 
     /// The audio buffersrc args string must contain all fields required by the
@@ -418,6 +462,7 @@ mod tests {
                 algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
+            None,
         );
         assert_eq!(inner.video_input_count(), 1);
     }
@@ -425,7 +470,7 @@ mod tests {
     /// Overlay requires two buffersrc contexts (main + secondary).
     #[test]
     fn video_input_count_should_return_2_for_overlay() {
-        let inner = FilterGraphInner::new(vec![FilterStep::Overlay { x: 10, y: 10 }], None);
+        let inner = FilterGraphInner::new(vec![FilterStep::Overlay { x: 10, y: 10 }], None, None);
         assert_eq!(inner.video_input_count(), 2);
     }
 
@@ -444,6 +489,7 @@ mod tests {
                     algorithm: crate::graph::ScaleAlgorithm::Fast,
                 },
             ],
+            None,
             None,
         );
         assert_eq!(inner.video_input_count(), 1);
@@ -492,6 +538,7 @@ mod tests {
                 algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
+            None,
         );
 
         assert!(
@@ -524,7 +571,7 @@ mod tests {
     fn apply_animations_with_empty_slice_should_be_a_no_op() {
         use std::time::Duration;
 
-        let inner = FilterGraphInner::new(vec![], None);
+        let inner = FilterGraphInner::new(vec![], None, None);
         // No FFmpeg calls expected; must not panic.
         inner.apply_animations(&[], Duration::ZERO);
     }

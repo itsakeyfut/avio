@@ -304,13 +304,54 @@ mod tests {
 
     #[test]
     fn builder_xfade_with_valid_params_should_succeed() {
+        // The rate is part of a valid xfade graph: the filter needs a constant frame
+        // rate on its inputs, which an undeclared buffersrc does not report.
         let result = FilterGraph::builder()
+            .input_frame_rate(30.0)
             .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
             .build();
         assert!(
             result.is_ok(),
             "xfade(Dissolve, 1.0, 4.0) must build successfully, got {result:?}"
         );
+    }
+
+    #[test]
+    fn builder_xfade_without_input_frame_rate_should_return_invalid_config() {
+        // Without this the graph builds and the failure surfaces only on the first
+        // push, as an opaque FFmpeg "Invalid argument" from the buffersrc's `0/1`.
+        let result = FilterGraph::builder()
+            .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for a rate-less xfade, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("frame rate"),
+                "reason should mention the frame rate: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_with_unusable_input_frame_rate_should_return_invalid_config() {
+        // A rate reaches libavfilter as a token, so a nonsense one has to be caught
+        // here rather than at push time. `0.0001` is the non-obvious member: it is
+        // finite and positive, but the emitted rational rounds its numerator to zero,
+        // so it would declare `frame_rate=0/1` — the very rate this check exists to
+        // keep out, wearing the disguise of a valid one.
+        for fps in [0.0, -30.0, f64::NAN, f64::INFINITY, 0.0001] {
+            let result = FilterGraph::builder()
+                .input_frame_rate(fps)
+                .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
+                .build();
+            assert!(
+                matches!(result, Err(FilterError::InvalidConfig { .. })),
+                "expected InvalidConfig for input_frame_rate {fps}, got {result:?}"
+            );
+        }
     }
 
     #[test]
