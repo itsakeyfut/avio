@@ -184,14 +184,19 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
         Some((CANVAS, CANVAS)),
         "conformed export frames should be the {CANVAS}x{CANVAS} canvas size"
     );
-    // Non-vacuity: up-conform must *add* frames. Without it the drain took one source
-    // frame per output and the clip came out short, at the source's own count.
+    // The load-bearing assertion: up-conform must *add* frames. Without it the drain
+    // took one source frame per output and the clip came out at the source's own count,
+    // far below this.
     assert!(
         count > src_frames,
         "conform must add frames: {src_frames} source frames became {count} outputs"
     );
+    // The count lands near the conformed duration, but not exactly: n frames span n-1
+    // intervals, so the file is 23/24 s rather than 1 s, and PTS quantisation and frame
+    // reordering move the last output's boundary by a frame between platforms. The
+    // window is wide enough to absorb that and still far from the un-conformed count.
     assert!(
-        (expected - 1..=expected + 1).contains(&count),
+        (expected - 2..=expected + 2).contains(&count),
         "a {SRC_FPS} fps source ({src_frames} frames) in a {OUT_FPS} fps timeline should \
          export ~{expected} frames, got {count}"
     );
