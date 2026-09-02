@@ -178,11 +178,16 @@ impl FilterGraphBuilder {
                 });
             }
         }
+        // temperature/tint are a GPU-only enrichment carried on the typed avio effect;
+        // the ff-filter `eq` builder stays brightness/contrast/saturation/gamma and
+        // leaves them neutral.
         self.steps.push(FilterStep::EqAnimated {
             brightness,
             contrast,
             saturation,
             gamma,
+            temperature: AnimatedValue::Static(0.0),
+            tint: AnimatedValue::Static(0.0),
         });
         self
     }
@@ -508,6 +513,8 @@ mod tests {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
         };
         assert_eq!(step.filter_name(), "eq");
     }
@@ -518,6 +525,9 @@ mod tests {
             brightness: 0.1,
             contrast: 1.5,
             saturation: 0.8,
+            // GPU-only, not emitted into the `eq` args.
+            temperature: 0.5,
+            tint: -0.5,
         };
         assert_eq!(step.args(), "brightness=0.1:contrast=1.5:saturation=0.8");
     }
@@ -1197,6 +1207,8 @@ mod tests {
             contrast: AnimatedValue::Static(1.5_f64),
             saturation: AnimatedValue::Static(0.8_f64),
             gamma: AnimatedValue::Static(2.0_f64),
+            temperature: AnimatedValue::Static(0.0_f64),
+            tint: AnimatedValue::Static(0.0_f64),
         };
         assert_eq!(step.filter_name(), "eq");
         assert_eq!(

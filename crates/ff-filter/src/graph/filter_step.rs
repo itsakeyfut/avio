@@ -117,15 +117,27 @@ pub enum FilterStep {
     /// Apply a 3D LUT from a `.cube` or `.3dl` file.
     Lut3d { path: String },
     /// Brightness/contrast/saturation adjustment via `FFmpeg` `eq` filter.
+    ///
+    /// `temperature`/`tint` are carried for the derive-to-ff-render `ColorGradeNode`
+    /// mapping (GPU-default path) and are **not** applied by the CPU `eq` filter, which
+    /// has no such option; they are a GPU-only enrichment (like `MotionBlur.sub_frames`
+    /// on the CPU `tblend`). Range −1.0..=1.0 each, neutral 0.0.
     Eq {
         brightness: f32,
         contrast: f32,
         saturation: f32,
+        /// Colour temperature offset (−1.0 cool/blue, +1.0 warm/orange). GPU-only.
+        temperature: f32,
+        /// Colour tint offset (−1.0 magenta, +1.0 green). GPU-only.
+        tint: f32,
     },
     /// Brightness / contrast / saturation / gamma via `FFmpeg` `eq` filter (optionally animated).
     ///
     /// Arguments are evaluated at [`Duration::ZERO`] for the initial graph build.
     /// Per-frame updates are applied via `avfilter_graph_send_command` in #363.
+    ///
+    /// `temperature`/`tint` are carried for the GPU `ColorGradeNode` mapping and are
+    /// **not** applied by the CPU `eq` filter (a GPU-only enrichment; see [`Self::Eq`]).
     EqAnimated {
         /// Brightness offset. Range: −1.0 – 1.0 (neutral: 0.0).
         brightness: AnimatedValue<f64>,
@@ -135,6 +147,10 @@ pub enum FilterStep {
         saturation: AnimatedValue<f64>,
         /// Global gamma correction. Range: 0.1 – 10.0 (neutral: 1.0).
         gamma: AnimatedValue<f64>,
+        /// Colour temperature offset (−1.0 – 1.0; neutral 0.0). GPU-only.
+        temperature: AnimatedValue<f64>,
+        /// Colour tint offset (−1.0 – 1.0; neutral 0.0). GPU-only.
+        tint: AnimatedValue<f64>,
     },
     /// Three-way color balance (shadows / midtones / highlights) via `FFmpeg` `colorbalance` filter
     /// (optionally animated).
@@ -1494,16 +1510,22 @@ impl FilterStep {
             Self::Lut3d { path } => {
                 format!("file={}:interp=trilinear", escape_filter_path(path))
             }
+            // `temperature`/`tint` are GPU-only (the CPU `eq` filter has no such option),
+            // so they are intentionally not emitted into the argument string.
             Self::Eq {
                 brightness,
                 contrast,
                 saturation,
+                temperature: _,
+                tint: _,
             } => format!("brightness={brightness}:contrast={contrast}:saturation={saturation}"),
             Self::EqAnimated {
                 brightness,
                 contrast,
                 saturation,
                 gamma,
+                temperature: _,
+                tint: _,
             } => {
                 let b = brightness.value_at(Duration::ZERO);
                 let c = contrast.value_at(Duration::ZERO);
@@ -2168,11 +2190,15 @@ impl FilterStep {
             Self::GBlurAnimated { sigma } => {
                 push_scalar_entry(&mut entries, node_name, "sigma", sigma);
             }
+            // `temperature`/`tint` are GPU-only; the `eq` filter has no such runtime
+            // command, so they are not pushed here.
             Self::EqAnimated {
                 brightness,
                 contrast,
                 saturation,
                 gamma,
+                temperature: _,
+                tint: _,
             } => {
                 push_scalar_entry(&mut entries, node_name, "brightness", brightness);
                 push_scalar_entry(&mut entries, node_name, "contrast", contrast);

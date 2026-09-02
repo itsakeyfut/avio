@@ -443,6 +443,8 @@ mod tests {
             brightness: Param::Const(0.5),
             contrast: Param::Const(1.0),
             saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
         };
         ed.apply(&Command::AddEffect { clip, kind: kind() })
             .unwrap();

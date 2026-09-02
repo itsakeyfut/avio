@@ -67,10 +67,16 @@ impl Param {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum EffectKind {
-    /// Brightness / contrast / saturation adjustment (the `eq` filter).
+    /// Brightness / contrast / saturation / temperature / tint adjustment (the `eq`
+    /// filter on the CPU path, `ff_render::ColorGradeNode` on the GPU).
     ///
     /// Neutral parameters (`brightness = 0.0`, `contrast = 1.0`, `saturation = 1.0`,
-    /// all constant) compile to no filter at all, preserving bit-identical output.
+    /// `temperature = 0.0`, `tint = 0.0`, all constant) compile to no filter at all,
+    /// preserving bit-identical output.
+    ///
+    /// `temperature`/`tint` are a GPU-only enrichment: the CPU `eq` fallback applies
+    /// brightness/contrast/saturation only and does not reproduce them (`FFmpeg` `eq`
+    /// has no such parameter), while the GPU-default path applies the full grade.
     ColorCorrect {
         /// Brightness offset. Range −1.0..=1.0 (neutral: 0.0).
         brightness: Param,
@@ -78,6 +84,12 @@ pub enum EffectKind {
         contrast: Param,
         /// Saturation multiplier. Range 0.0..=3.0 (neutral: 1.0).
         saturation: Param,
+        /// Colour temperature offset. Range −1.0..=1.0 (neutral: 0.0; −1.0 cool/blue,
+        /// +1.0 warm/orange). GPU-only (not applied by the CPU `eq` fallback).
+        temperature: Param,
+        /// Colour tint offset. Range −1.0..=1.0 (neutral: 0.0; −1.0 magenta, +1.0
+        /// green). GPU-only (not applied by the CPU `eq` fallback).
+        tint: Param,
     },
     /// Gaussian blur (the `gblur` filter).
     Blur {
@@ -311,16 +323,23 @@ impl EffectKind {
                 brightness,
                 contrast,
                 saturation,
+                temperature,
+                tint,
             } => {
-                let all_const =
-                    brightness.is_const() && contrast.is_const() && saturation.is_const();
+                let all_const = brightness.is_const()
+                    && contrast.is_const()
+                    && saturation.is_const()
+                    && temperature.is_const()
+                    && tint.is_const();
                 if all_const {
                     // Safe: `all_const` guarantees every `as_const` is `Some`.
                     let b = brightness.as_const().unwrap_or(0.0);
                     let c = contrast.as_const().unwrap_or(1.0);
                     let s = saturation.as_const().unwrap_or(1.0);
+                    let temp = temperature.as_const().unwrap_or(0.0);
+                    let ti = tint.as_const().unwrap_or(0.0);
                     #[allow(clippy::float_cmp)]
-                    let neutral = b == 0.0 && c == 1.0 && s == 1.0;
+                    let neutral = b == 0.0 && c == 1.0 && s == 1.0 && temp == 0.0 && ti == 0.0;
                     if neutral {
                         return None;
                     }
@@ -328,6 +347,8 @@ impl EffectKind {
                         brightness: b as f32,
                         contrast: c as f32,
                         saturation: s as f32,
+                        temperature: temp as f32,
+                        tint: ti as f32,
                     })
                 } else {
                     Some(FilterStep::EqAnimated {
@@ -335,6 +356,8 @@ impl EffectKind {
                         contrast: contrast.to_animated(),
                         saturation: saturation.to_animated(),
                         gamma: AnimatedValue::Static(1.0),
+                        temperature: temperature.to_animated(),
+                        tint: tint.to_animated(),
                     })
                 }
             }
@@ -670,6 +693,8 @@ mod tests {
             brightness: Param::Const(0.0),
             contrast: Param::Const(1.0),
             saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
         };
         assert!(
             kind.to_filter_step().is_none(),
@@ -683,6 +708,8 @@ mod tests {
             brightness: Param::Const(0.5),
             contrast: Param::Const(1.2),
             saturation: Param::Const(0.8),
+            temperature: Param::Const(0.3),
+            tint: Param::Const(-0.4),
         };
         let step = kind.to_filter_step().unwrap();
         match step {
@@ -690,10 +717,37 @@ mod tests {
                 brightness,
                 contrast,
                 saturation,
+                temperature,
+                tint,
             } => {
                 assert!((brightness - 0.5).abs() < 1e-6);
                 assert!((contrast - 1.2).abs() < 1e-6);
                 assert!((saturation - 0.8).abs() < 1e-6);
+                assert!((temperature - 0.3).abs() < 1e-6);
+                assert!((tint - (-0.4)).abs() < 1e-6);
+            }
+            other => panic!("expected Eq, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn color_correct_temperature_only_should_compile_to_eq() {
+        // Only temperature/tint are non-neutral (brightness/contrast/saturation neutral):
+        // it must still compile to an Eq step (not skipped as a no-op) so the GPU grade
+        // carries them.
+        let kind = EffectKind::ColorCorrect {
+            brightness: Param::Const(0.0),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+            temperature: Param::Const(0.6),
+            tint: Param::Const(0.0),
+        };
+        match kind.to_filter_step().unwrap() {
+            FilterStep::Eq {
+                temperature, tint, ..
+            } => {
+                assert!((temperature - 0.6).abs() < 1e-6);
+                assert!(tint.abs() < 1e-6);
             }
             other => panic!("expected Eq, got {other:?}"),
         }
@@ -705,6 +759,24 @@ mod tests {
             brightness: Param::Animated(animated_track()),
             contrast: Param::Const(1.0),
             saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
+        };
+        assert!(matches!(
+            kind.to_filter_step(),
+            Some(FilterStep::EqAnimated { .. })
+        ));
+    }
+
+    #[test]
+    fn color_correct_animated_temperature_should_compile_to_eq_animated() {
+        // An animated temperature alone routes through the animated variant.
+        let kind = EffectKind::ColorCorrect {
+            brightness: Param::Const(0.0),
+            contrast: Param::Const(1.0),
+            saturation: Param::Const(1.0),
+            temperature: Param::Animated(animated_track()),
+            tint: Param::Const(0.0),
         };
         assert!(matches!(
             kind.to_filter_step(),

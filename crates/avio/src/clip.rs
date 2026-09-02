@@ -763,16 +763,37 @@ impl Clip {
     /// ));
     /// ```
     #[must_use]
-    pub fn with_color_correction(
+    pub fn with_color_correction(self, brightness: f32, contrast: f32, saturation: f32) -> Self {
+        // Neutral temperature/tint: the plain colour-correction path is unchanged.
+        self.with_color_grade(brightness, contrast, saturation, 0.0, 0.0)
+    }
+
+    /// Sets a colour-correction effect with the full grade, including `temperature`
+    /// and `tint`, and returns the updated clip.
+    ///
+    /// Extends [`with_color_correction`](Self::with_color_correction) with:
+    /// - `temperature`: −1.0..=1.0, where `0.0` is no change (−1.0 cool/blue, +1.0 warm).
+    /// - `tint`:        −1.0..=1.0, where `0.0` is no change (−1.0 magenta, +1.0 green).
+    ///
+    /// `temperature`/`tint` are a GPU-only enrichment: they apply on the GPU-default
+    /// path (`ff_render::ColorGradeNode`); the CPU `eq` fallback applies
+    /// brightness/contrast/saturation only. Like the plain path, an all-neutral grade
+    /// produces bit-identical output to the no-eq render path.
+    #[must_use]
+    pub fn with_color_grade(
         mut self,
         brightness: f32,
         contrast: f32,
         saturation: f32,
+        temperature: f32,
+        tint: f32,
     ) -> Self {
         let kind = EffectKind::ColorCorrect {
             brightness: Param::Const(f64::from(brightness)),
             contrast: Param::Const(f64::from(contrast)),
             saturation: Param::Const(f64::from(saturation)),
+            temperature: Param::Const(f64::from(temperature)),
+            tint: Param::Const(f64::from(tint)),
         };
         // A single color-correct effect is the builder's contract; replace an
         // existing one in place (preserving its id/position) rather than stacking.
@@ -1230,6 +1251,8 @@ mod tests {
             brightness,
             contrast,
             saturation,
+            temperature,
+            tint,
         } = &effect.kind
         else {
             panic!("expected a ColorCorrect effect");
@@ -1237,6 +1260,9 @@ mod tests {
         assert_eq!(brightness.as_const(), Some(0.1_f32.into()));
         assert_eq!(contrast.as_const(), Some(1.2_f32.into()));
         assert_eq!(saturation.as_const(), Some(0.9_f32.into()));
+        // with_color_correction leaves temperature/tint neutral.
+        assert_eq!(temperature.as_const(), Some(0.0_f32.into()));
+        assert_eq!(tint.as_const(), Some(0.0_f32.into()));
         assert!(matches!(brightness, Param::Const(_)));
     }
 
@@ -1276,6 +1302,8 @@ mod tests {
             brightness: Param::Animated(track),
             contrast: Param::Const(1.0),
             saturation: Param::Const(1.0),
+            temperature: Param::Const(0.0),
+            tint: Param::Const(0.0),
         }));
         assert!(matches!(
             clip.video_effect_chain().as_slice(),

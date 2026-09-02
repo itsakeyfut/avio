@@ -221,6 +221,8 @@ impl FilterGraphBuilder {
                 contrast,
                 saturation,
                 gamma,
+                temperature,
+                tint,
             } = step
             {
                 let b = brightness.value_at(Duration::ZERO);
@@ -245,6 +247,18 @@ impl FilterGraphBuilder {
                 if !(0.1..=10.0).contains(&g) {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("eq gamma {g} out of range [0.1, 10.0]"),
+                    });
+                }
+                let temp = temperature.value_at(Duration::ZERO);
+                if !(-1.0..=1.0).contains(&temp) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq temperature {temp} out of range [-1.0, 1.0]"),
+                    });
+                }
+                let ti = tint.value_at(Duration::ZERO);
+                if !(-1.0..=1.0).contains(&ti) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq tint {ti} out of range [-1.0, 1.0]"),
                     });
                 }
             }
@@ -568,6 +582,8 @@ impl FilterGraphBuilder {
                 brightness,
                 contrast,
                 saturation,
+                temperature,
+                tint,
             } = step
             {
                 if !(-1.0..=1.0).contains(brightness) {
@@ -583,6 +599,16 @@ impl FilterGraphBuilder {
                 if !(0.0..=3.0).contains(saturation) {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("eq saturation {saturation} out of range [0.0, 3.0]"),
+                    });
+                }
+                if !(-1.0..=1.0).contains(temperature) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq temperature {temperature} out of range [-1.0, 1.0]"),
+                    });
+                }
+                if !(-1.0..=1.0).contains(tint) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq tint {tint} out of range [-1.0, 1.0]"),
                     });
                 }
             }
