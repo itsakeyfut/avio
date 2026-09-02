@@ -159,11 +159,76 @@ fn scalar(range: RangeInclusive<f64>, default: f64, p: &Param) -> ParamValue {
     }
 }
 
+// Serde defaults for the parameter fields (#1709). Each parameter field carries its
+// neutral as a `serde(default = ...)`, so a document written before that field existed
+// still loads. Every value here must equal the `default` the same parameter reports
+// from `descriptor()` — `deserializing_omitted_effect_fields_should_yield_descriptor_defaults`
+// fails if the two ever drift apart.
+#[cfg(feature = "serde")]
+fn param_zero() -> Param {
+    Param::Const(0.0)
+}
+
+#[cfg(feature = "serde")]
+fn param_one() -> Param {
+    Param::Const(1.0)
+}
+
+#[cfg(feature = "serde")]
+fn param3_zero() -> [Param; 3] {
+    [param_zero(), param_zero(), param_zero()]
+}
+
+#[cfg(feature = "serde")]
+fn param3_one() -> [Param; 3] {
+    [param_one(), param_one(), param_one()]
+}
+
+#[cfg(feature = "serde")]
+fn glow_threshold_default() -> Param {
+    Param::Const(0.8)
+}
+
+#[cfg(feature = "serde")]
+fn glow_radius_default() -> Param {
+    Param::Const(4.0)
+}
+
+/// The GPU node clamps to `2..=8`; `u8::default()` (`0`) is not a valid trail length.
+#[cfg(feature = "serde")]
+fn sub_frames_default() -> u8 {
+    8
+}
+
+/// Green screen — the common key, and inert while `similarity` is at its neutral `0.0`.
+#[cfg(feature = "serde")]
+fn key_color_default() -> [f32; 3] {
+    [0.0, 1.0, 0.0]
+}
+
 /// A typed effect that a clip can carry. `#[non_exhaustive]`: more kinds are added
 /// over time, so external matchers must include a `_` arm.
 ///
 /// The set grows as effect nodes are wired into the GPU bridge; each kind documents
 /// the `ff-filter` step / `ff-render` node it maps to.
+///
+/// # Serialization compatibility (#1709)
+///
+/// Every parameter field carries its **neutral** as a `serde` default, so a document
+/// serialized before that field existed still loads — the missing field simply takes
+/// its neutral and the effect renders as it did then. A new field added to an existing
+/// variant **must** follow this, and its neutral **must** equal the `default` the field
+/// reports from [`descriptor`](Self::descriptor); the
+/// `deserializing_omitted_effect_fields_should_yield_descriptor_defaults` test fails if
+/// they drift apart.
+///
+/// The exception is a field with no meaningful neutral — [`Raw::step`](Self::Raw) and
+/// [`AudioRaw::step`](Self::AudioRaw) carry a whole `FilterStep`, which has no neutral
+/// value, so they stay required.
+///
+/// The trade-off is deliberate: because parameters are optional on the wire, a
+/// truncated or hand-edited document also loads, with the missing parameters at their
+/// neutral, rather than being rejected.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -180,21 +245,27 @@ pub enum EffectKind {
     /// has no such parameter), while the GPU-default path applies the full grade.
     ColorCorrect {
         /// Brightness offset. Range −1.0..=1.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         brightness: Param,
         /// Contrast multiplier. Range 0.0..=3.0 (neutral: 1.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_one"))]
         contrast: Param,
         /// Saturation multiplier. Range 0.0..=3.0 (neutral: 1.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_one"))]
         saturation: Param,
         /// Colour temperature offset. Range −1.0..=1.0 (neutral: 0.0; −1.0 cool/blue,
         /// +1.0 warm/orange). GPU-only (not applied by the CPU `eq` fallback).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         temperature: Param,
         /// Colour tint offset. Range −1.0..=1.0 (neutral: 0.0; −1.0 magenta, +1.0
         /// green). GPU-only (not applied by the CPU `eq` fallback).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         tint: Param,
     },
     /// Gaussian blur (the `gblur` filter).
     Blur {
         /// Blur radius (standard deviation). Must be ≥ 0.0.
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         radius: Param,
     },
     /// Unsharp-mask sharpen (the `unsharp` filter on the CPU path,
@@ -206,6 +277,7 @@ pub enum EffectKind {
     /// fallback.
     Sharpen {
         /// Sharpening amount (luma). Range −1.5..=1.5 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         amount: Param,
     },
     /// Vignette (the `vignette` filter on the CPU path, `ff_render::VignetteNode`
@@ -216,6 +288,7 @@ pub enum EffectKind {
     /// so an animated `amount` animates on both paths.
     Vignette {
         /// Darkening amount. Range 0.0..=1.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         amount: Param,
     },
     /// Temporal film grain (the `noise` filter on the CPU path,
@@ -227,8 +300,10 @@ pub enum EffectKind {
     /// the GPU-default path but renders its `t = 0` value on the CPU fallback.
     FilmGrain {
         /// Luma-plane grain strength. Range 0.0..=100.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         luma_strength: Param,
         /// Chroma-plane grain strength. Range 0.0..=100.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         chroma_strength: Param,
     },
     /// Glow / bloom (the compound `split`/`curves`/`gblur`/`blend` chain on the CPU
@@ -240,10 +315,13 @@ pub enum EffectKind {
     /// parameter).
     Glow {
         /// Luminance threshold that triggers the glow. Range 0.0..=1.0.
+        #[cfg_attr(feature = "serde", serde(default = "glow_threshold_default"))]
         threshold: Param,
         /// Gaussian blur radius (sigma) in pixels. Range 0.5..=50.0.
+        #[cfg_attr(feature = "serde", serde(default = "glow_radius_default"))]
         radius: Param,
         /// Additive blend strength. Range 0.0..=2.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         intensity: Param,
     },
     /// Three-way (lift/gamma/gain) colour corrector (the `curves` filter on the CPU
@@ -256,10 +334,13 @@ pub enum EffectKind {
     /// value on the CPU fallback.
     ColorWheels {
         /// Shadows lift, additive per channel. Range −1.0..=1.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param3_zero"))]
         shadows_lift: [Param; 3],
         /// Midtones gamma, per channel. Range 0.1..=10.0 (neutral: 1.0; must be > 0).
+        #[cfg_attr(feature = "serde", serde(default = "param3_one"))]
         midtones_gamma: [Param; 3],
         /// Highlights gain, per channel. Range 0.0..=4.0 (neutral: 1.0).
+        #[cfg_attr(feature = "serde", serde(default = "param3_one"))]
         highlights_gain: [Param; 3],
     },
     /// Per-channel tone curves (the `curves` filter on the CPU path,
@@ -271,12 +352,16 @@ pub enum EffectKind {
     /// applies to every channel, then the per-channel curve.
     Curves {
         /// Master curve control points (applied to every channel). Empty = identity.
+        #[cfg_attr(feature = "serde", serde(default))]
         master: Vec<[f32; 2]>,
         /// Red channel curve control points. Empty = identity.
+        #[cfg_attr(feature = "serde", serde(default))]
         red: Vec<[f32; 2]>,
         /// Green channel curve control points. Empty = identity.
+        #[cfg_attr(feature = "serde", serde(default))]
         green: Vec<[f32; 2]>,
         /// Blue channel curve control points. Empty = identity.
+        #[cfg_attr(feature = "serde", serde(default))]
         blue: Vec<[f32; 2]>,
     },
     /// HSL adjustment (the `hue` filter on the CPU path, `ff_render::HslNode` on
@@ -292,10 +377,13 @@ pub enum EffectKind {
     /// fallback.
     Hsl {
         /// Hue rotation in degrees. Range −180.0..=180.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         hue_shift: Param,
         /// Saturation multiplier. Range 0.0..=2.0 (neutral: 1.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_one"))]
         saturation: Param,
         /// Lightness offset. Range −1.0..=1.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         lightness: Param,
     },
     /// 3D colour LUT (the `lut3d` filter on the CPU path, `ff_render::LutNode` on
@@ -307,6 +395,7 @@ pub enum EffectKind {
     /// an unsupported extension) falls back to the CPU path.
     Lut {
         /// Path to the `.cube` / `.3dl` LUT file. Empty = identity.
+        #[cfg_attr(feature = "serde", serde(default))]
         path: String,
     },
     /// Chroma-key (green-screen removal): makes pixels near `key_color`
@@ -322,10 +411,13 @@ pub enum EffectKind {
     /// value on the CPU fallback (like [`Hsl`](Self::Hsl)).
     ChromaKey {
         /// Key colour in RGB, each channel `0.0..=1.0`.
+        #[cfg_attr(feature = "serde", serde(default = "key_color_default"))]
         key_color: [f32; 3],
         /// Match radius in `0.0..=1.0` (neutral: `0.0` removes nothing).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         similarity: Param,
         /// Edge softness in `0.0..=1.0` (`0.0` = hard edge).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         softness: Param,
     },
     /// Luma mask: multiplies the clip's alpha by its own BT.709 luma (the `geq`
@@ -339,6 +431,7 @@ pub enum EffectKind {
     /// needed.
     LumaMask {
         /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
+        #[cfg_attr(feature = "serde", serde(default))]
         invert: bool,
     },
     /// Rectangular shape mask: keeps the clip opaque inside the rectangle and clears
@@ -352,14 +445,19 @@ pub enum EffectKind {
     /// zero `width` or `height` masks nothing, so it compiles to no filter.
     ShapeMask {
         /// Left edge of the rectangle, in pixels.
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         x: Param,
         /// Top edge of the rectangle, in pixels.
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         y: Param,
         /// Rectangle width, in pixels (a constant `0` is a no-op).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         width: Param,
         /// Rectangle height, in pixels (a constant `0` is a no-op).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         height: Param,
         /// When `true`, keep the exterior and clear the interior.
+        #[cfg_attr(feature = "serde", serde(default))]
         invert: bool,
     },
     /// Motion blur (the `tblend` filter on the CPU path, `ff_render::MotionBlurNode`
@@ -377,9 +475,11 @@ pub enum EffectKind {
     MotionBlur {
         /// Shutter angle in degrees. Range 0.0..=360.0 (`0.0` = no blur, `180.0` =
         /// standard film blur). Keyframeable, but rendered at its `t = 0` value.
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         shutter_angle: Param,
         /// Trail-length sub-frame count (the GPU node clamps it to `2..=8`; the CPU
         /// `tblend` ignores it).
+        #[cfg_attr(feature = "serde", serde(default = "sub_frames_default"))]
         sub_frames: u8,
     },
     /// Escape hatch: a raw [`FilterStep`] the typed model has no variant for yet
@@ -404,6 +504,7 @@ pub enum EffectKind {
     /// [`Sharpen`](Self::Sharpen) and [`MotionBlur`](Self::MotionBlur)).
     Volume {
         /// Gain in decibels. Range −60.0..=30.0 (neutral: 0.0).
+        #[cfg_attr(feature = "serde", serde(default = "param_zero"))]
         gain_db: Param,
     },
     /// Escape hatch for a raw audio [`FilterStep`] the typed model has no variant for
@@ -1185,6 +1286,172 @@ mod tests {
 
     fn animated_track() -> AnimationTrack<f64> {
         AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 0.5, Easing::Linear))
+    }
+
+    /// The minimal payload for each `EffectKind` variant: `{}` for a variant whose
+    /// fields all have a neutral serde default, and the one required field for a
+    /// variant that has one (`Raw` / `AudioRaw` carry a whole `FilterStep`, which has
+    /// no neutral).
+    ///
+    /// The `match` is exhaustive with **no** `_` arm: a new variant fails to compile
+    /// until it declares its minimal payload here, which is what keeps
+    /// `MINIMAL_PAYLOADS` (and therefore the #1709 serde-default convention) applied to
+    /// every variant. Same technique as `domain` / `descriptor` and the parity
+    /// coverage meta-test (RK-003).
+    #[cfg(feature = "serde")]
+    fn minimal_payload_for(kind: &EffectKind) -> &'static str {
+        match kind {
+            EffectKind::ColorCorrect { .. } => r#"{"ColorCorrect":{}}"#,
+            EffectKind::Blur { .. } => r#"{"Blur":{}}"#,
+            EffectKind::Sharpen { .. } => r#"{"Sharpen":{}}"#,
+            EffectKind::Vignette { .. } => r#"{"Vignette":{}}"#,
+            EffectKind::FilmGrain { .. } => r#"{"FilmGrain":{}}"#,
+            EffectKind::Glow { .. } => r#"{"Glow":{}}"#,
+            EffectKind::ColorWheels { .. } => r#"{"ColorWheels":{}}"#,
+            EffectKind::Curves { .. } => r#"{"Curves":{}}"#,
+            EffectKind::Hsl { .. } => r#"{"Hsl":{}}"#,
+            EffectKind::Lut { .. } => r#"{"Lut":{}}"#,
+            EffectKind::ChromaKey { .. } => r#"{"ChromaKey":{}}"#,
+            EffectKind::LumaMask { .. } => r#"{"LumaMask":{}}"#,
+            EffectKind::ShapeMask { .. } => r#"{"ShapeMask":{}}"#,
+            EffectKind::MotionBlur { .. } => r#"{"MotionBlur":{}}"#,
+            EffectKind::Volume { .. } => r#"{"Volume":{}}"#,
+            EffectKind::Raw { .. } => r#"{"Raw":{"step":"HFlip"}}"#,
+            EffectKind::AudioRaw { .. } => r#"{"AudioRaw":{"step":"HFlip"}}"#,
+        }
+    }
+
+    /// The minimal payload of every `EffectKind` variant, kept in sync with the enum by
+    /// [`minimal_payload_for`]'s exhaustive match.
+    #[cfg(feature = "serde")]
+    const MINIMAL_PAYLOADS: &[&str] = &[
+        r#"{"ColorCorrect":{}}"#,
+        r#"{"Blur":{}}"#,
+        r#"{"Sharpen":{}}"#,
+        r#"{"Vignette":{}}"#,
+        r#"{"FilmGrain":{}}"#,
+        r#"{"Glow":{}}"#,
+        r#"{"ColorWheels":{}}"#,
+        r#"{"Curves":{}}"#,
+        r#"{"Hsl":{}}"#,
+        r#"{"Lut":{}}"#,
+        r#"{"ChromaKey":{}}"#,
+        r#"{"LumaMask":{}}"#,
+        r#"{"ShapeMask":{}}"#,
+        r#"{"MotionBlur":{}}"#,
+        r#"{"Volume":{}}"#,
+        r#"{"Raw":{"step":"HFlip"}}"#,
+        r#"{"AudioRaw":{"step":"HFlip"}}"#,
+    ];
+
+    /// Guards the pair above: every payload in `MINIMAL_PAYLOADS` must deserialize to a
+    /// variant that maps back to that same payload, so the list cannot drift from the
+    /// exhaustive match (and a newly added variant, forced into the match, is caught
+    /// here if it was not added to the list).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn minimal_payloads_should_cover_every_effect_kind_variant() {
+        let mut seen = std::collections::BTreeSet::new();
+        for json in MINIMAL_PAYLOADS {
+            let kind: EffectKind =
+                serde_json::from_str(json).unwrap_or_else(|e| panic!("{json} must load: {e}"));
+            let expected = minimal_payload_for(&kind);
+            assert_eq!(
+                *json, expected,
+                "{json} must be the payload declared for its variant"
+            );
+            assert!(seen.insert(expected), "{json} listed twice");
+        }
+        // 17 variants today; the exhaustive match makes adding one fail to compile, and
+        // this count makes forgetting to list it fail here.
+        assert_eq!(seen.len(), 17, "every EffectKind variant must be listed");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserializing_omitted_effect_fields_should_yield_descriptor_defaults() {
+        // #1709: a document written before a field existed must still load, with the
+        // missing field at its neutral — and that neutral must be the same one
+        // `descriptor()` reports, so a host's "reset to default" and an old document
+        // agree. Deserializing the *minimal* payload exercises every field at once: a
+        // field without a serde default would fail to deserialize here, so this also
+        // proves the convention is applied to every variant's fields.
+        for json in MINIMAL_PAYLOADS {
+            let kind: EffectKind =
+                serde_json::from_str(json).unwrap_or_else(|e| panic!("{json} must load: {e}"));
+            for p in kind.descriptor().params {
+                let name = p.name;
+                match p.value {
+                    ParamValue::Scalar {
+                        default, current, ..
+                    } => assert_eq!(
+                        current,
+                        Some(default),
+                        "{json} / {name}: serde default must equal the descriptor default"
+                    ),
+                    ParamValue::Bool { default, current } => {
+                        assert_eq!(current, default, "{json} / {name}");
+                    }
+                    ParamValue::Int {
+                        default, current, ..
+                    } => assert_eq!(current, default, "{json} / {name}"),
+                    // `descriptor()` reports no default for these, so the serde default
+                    // is simply the empty / neutral value.
+                    ParamValue::Path { current } => {
+                        assert!(current.is_empty(), "{json} / {name}");
+                    }
+                    ParamValue::Points { current } => {
+                        assert!(current.is_empty(), "{json} / {name}");
+                    }
+                    ParamValue::Color { current } => {
+                        assert_eq!(current, [0.0, 1.0, 0.0], "{json} / {name}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserializing_a_pre_temperature_color_correct_should_load() {
+        // The concrete #1658 regression: a ColorCorrect written before temperature/tint
+        // existed still loads, with those two at their neutral.
+        let json = r#"{"ColorCorrect":{"brightness":{"Const":0.2},
+            "contrast":{"Const":1.1},"saturation":{"Const":0.9}}}"#;
+        let kind: EffectKind = serde_json::from_str(json).expect("an older payload must load");
+        let EffectKind::ColorCorrect {
+            brightness,
+            temperature,
+            tint,
+            ..
+        } = &kind
+        else {
+            panic!("expected a ColorCorrect");
+        };
+        assert_eq!(
+            brightness.as_const(),
+            Some(0.2),
+            "stored value is preserved"
+        );
+        assert_eq!(temperature.as_const(), Some(0.0), "neutral temperature");
+        assert_eq!(tint.as_const(), Some(0.0), "neutral tint");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn effect_kind_should_round_trip_through_serde_with_neutral_defaults() {
+        // A document written by this version and read back is unchanged: the neutral
+        // defaults survive the round-trip rather than shifting on each save/load.
+        for json in MINIMAL_PAYLOADS {
+            let kind: EffectKind = serde_json::from_str(json).unwrap();
+            let written = serde_json::to_string(&kind).unwrap();
+            let back: EffectKind = serde_json::from_str(&written).unwrap();
+            assert_eq!(
+                format!("{:?}", kind.descriptor()),
+                format!("{:?}", back.descriptor()),
+                "{json} must round-trip unchanged"
+            );
+        }
     }
 
     #[test]
