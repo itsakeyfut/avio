@@ -353,7 +353,6 @@ impl Timeline {
                 lavfi_overlay.as_deref(),
                 any_video_solo,
                 (canvas_width, canvas_height),
-                frame_rate,
             )
             .and_then(|idx| crate::gpu_compositor::GpuCompositor::new().map(|core| (idx, core)))
         };
