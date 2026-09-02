@@ -145,6 +145,17 @@ const TOL_SHAPEMASK_MEAN: f64 = 4.0;
 // two frames; a single frame is unblended on both paths and would be vacuous (RK-015).
 // The margin covers GPU-driver rounding on other machines.
 const TOL_MOTIONBLUR_MEAN: f64 = 15.0;
+// Letterbox (#1661): the GPU fits the layer via `LayerTransform` (bilinear sampling in
+// `transform.wgsl`) where the CPU uses `scale=…:force_original_aspect_ratio=decrease` +
+// `pad` (sws). The fitted size mirrors FFmpeg's rounding, so the geometry is identical and
+// only the resampling differs. The 16:9-into-square fixture fits 1:1 (no resampling at
+// all): measured mean 0.0 here, bit-exact. The margin covers GPU-driver rounding elsewhere.
+const TOL_LETTERBOX_MEAN: f64 = 12.0;
+// The same parity where the fit *does* rescale (3:2 upscaled into a 100x66 band), so the
+// GPU's bilinear sampler meets sws's bicubic: measured mean 0.14 (max 1) here. A band
+// misplaced by one row would land far outside this, so the fitted-size rounding is what
+// this number actually certifies.
+const TOL_LETTERBOX_RESCALE_MEAN: f64 = 15.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -444,6 +455,104 @@ fn passthrough_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_PASSTHROUGH_MEAN,
         "GPU and CPU passthrough diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn letterbox_gpu_should_match_cpu_within_tolerance() {
+    // #1661: a 16:9 layer on a square canvas used to fall back to CPU, because the
+    // compositor stretched it where the CPU path fits and pads. It now letterboxes, so
+    // both routes must agree. Double-gated (adapter + filters).
+    let (fw, fh) = (64, 36);
+    let canvas = (64, 64);
+    let frame = VideoFrame::from_rgba(fw, fh, gradient_rgba(fw, fh)).unwrap();
+    let layer = base_layer(fw, fh, vec![]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, canvas) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, canvas) else {
+        panic!("a 16:9 layer on a square canvas must now composite on the GPU");
+    };
+    assert_eq!(gpu_out.len(), cpu.len());
+
+    // The bars are (64 - 36) / 2 = 14 rows top and bottom.
+    let bar = (canvas.1 - fh) / 2;
+    let top = box_mean_rgb(&gpu_out, canvas.0, 0, 0, canvas.0, bar);
+    let bottom = box_mean_rgb(&gpu_out, canvas.0, 0, canvas.1 - bar, canvas.0, canvas.1);
+    let band = box_mean_rgb(&gpu_out, canvas.0, 0, bar, canvas.0, canvas.1 - bar);
+    println!("letterbox GPU bars: top={top:?} bottom={bottom:?} band={band:?}");
+    // Non-vacuity, and the acceptance criterion itself: a *stretched* render fills the
+    // canvas, so its bar rows carry picture, while an all-black render would trivially
+    // match a black reference. Asserting both ends pins the geometry, not just the diff.
+    // RGB only: the compositor writes the canvas alpha to every output pixel (RK-024).
+    for (name, mean) in [("top", top), ("bottom", bottom)] {
+        assert!(
+            mean.iter().all(|c| *c < 2.0),
+            "the {name} letterbox bar must be black, got {mean:?} (a stretch fills it)"
+        );
+    }
+    assert!(
+        band.iter().any(|c| *c > 32.0),
+        "the letterboxed picture band must carry the source, got {band:?}"
+    );
+
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "letterbox GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_LETTERBOX_MEAN,
+        "GPU and CPU letterbox diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn letterbox_gpu_should_match_cpu_when_the_fit_rescales() {
+    // The 16:9-into-square case above fits 1:1 (64x36 into a 64x36 band), so it drives
+    // the placement but neither the resampling nor the size rounding. This one does
+    // both: a 3:2 source into a 100x100 canvas fits to 100x66 — the exact height is
+    // 66.67, which `av_rescale` takes to 67 and `force_divisible_by=2` back down to 66.
+    // Getting that rounding wrong offsets the whole band by a row against the CPU leg.
+    let (fw, fh) = (30, 20);
+    let canvas = (100, 100);
+    let frame = VideoFrame::from_rgba(fw, fh, gradient_rgba(fw, fh)).unwrap();
+    let layer = base_layer(fw, fh, vec![]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, canvas) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, canvas) else {
+        panic!("a 3:2 layer on a square canvas must composite on the GPU");
+    };
+
+    // The fitted band is 66 rows, so the bars are (100 - 66) / 2 = 17 rows each.
+    let bar = (canvas.1 - 66) / 2;
+    let top = box_mean_rgb(&gpu_out, canvas.0, 0, 0, canvas.0, bar);
+    let band = box_mean_rgb(&gpu_out, canvas.0, 0, bar, canvas.0, canvas.1 - bar);
+    println!("rescaled letterbox GPU bars: top={top:?} band={band:?}");
+    assert!(
+        top.iter().all(|c| *c < 2.0),
+        "the bar above a rescaled fit must be black, got {top:?}"
+    );
+    assert!(
+        band.iter().any(|c| *c > 32.0),
+        "the rescaled picture band must carry the source, got {band:?}"
+    );
+
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "rescaled letterbox GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_LETTERBOX_RESCALE_MEAN,
+        "GPU and CPU rescaled letterbox diverged beyond tolerance: mean={mean}"
     );
 }
 
@@ -1707,11 +1816,33 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
         "a positioned layer must fall back"
     );
 
-    // Aspect mismatch: a 64x48 frame on a square canvas would be stretched.
-    let square = base_layer(w, h, vec![]);
+    // Mixed aspects across layers (#1661): each layer is letterboxed into the canvas
+    // before compositing, while the CPU fits the *composited* result, so the two only
+    // agree when every layer lands in the same band. A 4:3 layer under a 1:1 one would
+    // give a band per layer -> fall back.
+    let tall = VideoFrame::from_rgba(h, h, gradient_rgba(h, h)).unwrap();
+    let wide_layer = base_layer(w, h, vec![]);
+    let square_layer = base_layer(h, h, vec![]);
     assert!(
-        gpu_composite(&mut gpu, &square, &frame, (48, 48)).is_none(),
-        "an aspect-mismatched frame must fall back"
+        gpu.composite(
+            &[(&wide_layer, &frame), (&square_layer, &tall)],
+            (48, 48),
+            Duration::ZERO,
+        )
+        .is_none(),
+        "layers of mixed aspect must fall back"
+    );
+
+    // An aspect so extreme that the fitted height rounds away to nothing (#1661): a
+    // 64x1 frame fits to 64x0 in a square canvas. A zero scale does not fail in
+    // `transform.wgsl` — it floors the divisor at 1e-4 and samples the layer entirely
+    // out of range — so without the guard this would render a silently black frame
+    // rather than fall back (RK-020).
+    let sliver = VideoFrame::from_rgba(w, 1, gradient_rgba(w, 1)).unwrap();
+    let sliver_layer = base_layer(w, 1, vec![]);
+    assert!(
+        gpu_composite(&mut gpu, &sliver_layer, &sliver, (w, w)).is_none(),
+        "an aspect whose fit rounds away to nothing must fall back"
     );
 
     // Unsupported blend mode (no ff-render equivalent).

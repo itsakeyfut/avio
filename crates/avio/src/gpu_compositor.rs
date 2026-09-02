@@ -3,19 +3,25 @@
 //! Owns the `ff-render` context and a cached `Compositor`, and composites a set of
 //! derived layers (any [`GpuLayerSource`]) with their decoded frames into an rgba
 //! buffer. Both the preview executor ([`GpuPreviewCompositor`](crate::GpuPreviewCompositor))
-//! and the export drain use it, so the mapping-to-GPU logic, the v1 identity/aspect
-//! gate, and the effect execution live in one place.
+//! and the export drain use it, so the mapping-to-GPU logic, the v1 identity gate, the
+//! letterbox, and the effect execution live in one place.
 //!
 //! It returns `None` on any unsupported layer ([`map_scene`] fallback, a non-identity
-//! transform, or an aspect mismatch) or any GPU error, so the caller falls back to the
-//! CPU compositor for that frame -- never a panic, never a partial result.
+//! model transform, or layers of mixed aspect) or any GPU error, so the caller falls
+//! back to the CPU compositor for that frame -- never a panic, never a partial result.
 //!
-//! v1 renders only layers that need no geometric placement (an identity transform and
-//! a frame whose aspect matches the canvas): the model's transform is in canvas pixels
-//! / clockwise degrees while `ff_render::LayerTransform` is UV-space / counter-clockwise
-//! radians, and the compositor stretches each layer to the canvas where the CPU path
-//! letterboxes. Matching those exactly is parity work (Br5), so those cases fall back
-//! to CPU rather than render wrong output.
+//! v1 renders only layers that need no geometric placement (an identity transform): the
+//! model's transform is in canvas pixels / clockwise degrees while
+//! `ff_render::LayerTransform` is UV-space / counter-clockwise radians, so a positioned
+//! or rotated layer falls back to CPU rather than render wrong output (RK-020).
+//!
+//! **Letterbox (#1661):** a frame whose aspect differs from the canvas is *fitted* into
+//! it, matching the CPU compositor's `scale=…:force_original_aspect_ratio=decrease` +
+//! `pad` pass instead of the compositor's default stretch (see [`fit_size`]). Since the
+//! CPU fits the *composited* result while this fits each layer before compositing, the
+//! two agree only when every layer lands in the same band, so a scene whose layers do
+//! not all share one aspect still falls back -- as does one whose aspect is extreme
+//! enough that a fitted side rounds away to nothing.
 //!
 //! **Per-frame cost (#1634):** an effected layer's `RenderGraph` is cached per layer
 //! position ([`CachedEffectGraph`]) and reused while its effect list compares equal, so
@@ -96,8 +102,8 @@ impl GpuCompositor {
     /// back to the CPU compositor.
     ///
     /// `None` means: `map_scene` reported an unsupported blend/composite/effect, a
-    /// layer has a non-identity transform or an aspect that does not match the canvas
-    /// (v1 gate), or a GPU error occurred. The caller must never see a wrong-but-
+    /// layer has a non-identity model transform (v1 gate), the layers do not all share
+    /// one aspect, or a GPU error occurred. The caller must never see a wrong-but-
     /// rendered frame.
     pub fn composite<L: GpuLayerSource>(
         &mut self,
@@ -112,7 +118,7 @@ impl GpuCompositor {
         };
         self.ensure_cache_size(layers.len());
 
-        let mut frame_layers = Vec::with_capacity(plan.layers.len());
+        let mut processed = Vec::with_capacity(plan.layers.len());
         for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers.iter()).enumerate() {
             // v1 renders only layers that need no geometric placement (see the module
             // docs); a non-identity transform falls back to CPU rather than render
@@ -122,16 +128,15 @@ impl GpuCompositor {
             }
             // The preview adapter does not own its frames, so a no-effects layer must
             // clone; `composite_owned` avoids this for the export drain.
-            let processed = if lp.effects.is_empty() {
+            let out = if lp.effects.is_empty() {
                 (*frame).clone()
             } else {
                 self.apply_effects(idx, lp, frame)?
             };
-            let layer = make_frame_layer(processed, lp, canvas)?;
-            frame_layers.push(layer);
+            processed.push((out, lp));
         }
 
-        self.finish(frame_layers, canvas)
+        self.finish(assemble(processed, canvas)?, canvas)
     }
 
     /// Like [`composite`](Self::composite) but takes ownership of the layer frames, so a
@@ -150,22 +155,21 @@ impl GpuCompositor {
         };
         self.ensure_cache_size(layers.len());
 
-        let mut frame_layers = Vec::with_capacity(plan.layers.len());
+        let mut processed = Vec::with_capacity(plan.layers.len());
         for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers).enumerate() {
             if !is_identity_transform(lp) {
                 return None;
             }
             // Owned: a no-effects layer moves its frame in, no clone.
-            let processed = if lp.effects.is_empty() {
+            let out = if lp.effects.is_empty() {
                 frame
             } else {
                 self.apply_effects(idx, lp, &frame)?
             };
-            let layer = make_frame_layer(processed, lp, canvas)?;
-            frame_layers.push(layer);
+            processed.push((out, lp));
         }
 
-        self.finish(frame_layers, canvas)
+        self.finish(assemble(processed, canvas)?, canvas)
     }
 
     /// Composites the built `frame_layers` on the (canvas-cached) `Compositor` to rgba.
@@ -405,26 +409,104 @@ fn is_cacheable(effects: &[GpuEffect]) -> bool {
         .any(|e| matches!(e, GpuEffect::LumaMask { .. }))
 }
 
-/// Wraps a processed layer frame in a [`FrameLayer`], or `None` when its aspect does not
-/// match the canvas (the compositor would stretch it where the CPU path letterboxes, so
-/// fall back to CPU rather than render distorted output).
-fn make_frame_layer(
-    processed: VideoFrame,
-    lp: &GpuLayerPlan,
+/// Wraps each processed layer frame in a [`FrameLayer`], letterboxing it into the canvas
+/// (#1661), or `None` when the frames do not all share one aspect or the fit degenerates.
+///
+/// The CPU compositor fits the **composited** result into the canvas, while this fits
+/// each layer *before* compositing. The two coincide exactly when every layer ends up in
+/// the same band, which is what the shared-aspect requirement enforces; a mixed-aspect
+/// scene falls back to CPU rather than render a band per layer (RK-020).
+fn assemble(
+    processed: Vec<(VideoFrame, &GpuLayerPlan)>,
     canvas: (u32, u32),
-) -> Option<FrameLayer> {
-    if u64::from(processed.width()) * u64::from(canvas.1)
-        != u64::from(processed.height()) * u64::from(canvas.0)
+) -> Option<Vec<FrameLayer>> {
+    let (first, _) = processed.first()?;
+    let (w0, h0) = (u64::from(first.width()), u64::from(first.height()));
+    if processed
+        .iter()
+        .any(|(f, _)| u64::from(f.width()) * h0 != u64::from(f.height()) * w0)
     {
         return None;
     }
-    Some(FrameLayer {
-        frame: processed,
-        transform: LayerTransform::default(),
-        blend_mode: lp.blend_mode,
-        opacity: lp.opacity,
-        z_order: lp.z_order,
+
+    let transform = letterbox_transform(first.width(), first.height(), canvas)?;
+    Some(
+        processed
+            .into_iter()
+            .map(|(frame, lp)| FrameLayer {
+                frame,
+                transform: transform.clone(),
+                blend_mode: lp.blend_mode,
+                opacity: lp.opacity,
+                z_order: lp.z_order,
+            })
+            .collect(),
+    )
+}
+
+/// The [`LayerTransform`] that fits an `fw` x `fh` frame inside `canvas`, letterboxing or
+/// pillarboxing the remainder, or `None` when the fit leaves no band to draw.
+///
+/// `transform.wgsl` samples `(uv - 0.5) / scale` and returns transparent outside `[0, 1]`,
+/// so a scale of `fit / canvas` draws the frame as a centred band of exactly that fraction
+/// of the canvas; `blend.wgsl` then leaves the canvas' black in the bars, matching the CPU
+/// path's `pad=…:color=black`. A frame that already matches the canvas aspect yields the
+/// identity, which `ff_render`'s compositor skips entirely -- so that (previously the only
+/// supported) case keeps its exact pixels and its per-frame cost.
+///
+/// Note that an **odd** canvas dimension never yields the identity: the fit rounds down to
+/// an even size, so a matching-aspect frame still scales (by one pixel) and centres half a
+/// pixel off the CPU's `pad=(ow-iw)/2`. That is `FFmpeg`'s own `force_divisible_by=2`
+/// behaviour, so the two paths still agree on geometry.
+fn letterbox_transform(fw: u32, fh: u32, canvas: (u32, u32)) -> Option<LayerTransform> {
+    let (fit_w, fit_h) = fit_size(fw, fh, canvas);
+    // An aspect extreme enough for one fitted side to round away to nothing has no band
+    // to draw. Passing that on as a zero scale would not fail loudly: `transform.wgsl`
+    // floors the divisor at 1e-4, so every sample lands outside `[0, 1]` and the layer
+    // disappears into a silently black frame -- exactly the wrong output this module
+    // must never produce (RK-020). The CPU leg cannot build its `scale` at that size
+    // either, so falling back is the honest answer.
+    if fit_w == 0 || fit_h == 0 {
+        return None;
+    }
+    if (fit_w, fit_h) == canvas {
+        return Some(LayerTransform::default());
+    }
+    Some(LayerTransform {
+        scale_x: ratio(fit_w, canvas.0),
+        scale_y: ratio(fit_h, canvas.1),
+        ..LayerTransform::default()
     })
+}
+
+/// `a / b` as an `f32`, for the pixel counts this module deals in.
+#[allow(clippy::cast_precision_loss)] // pixel dimensions are far inside f32's exact range
+fn ratio(a: u32, b: u32) -> f32 {
+    a as f32 / b as f32
+}
+
+/// The size an `fw` x `fh` frame scales to when fitted inside `canvas`, mirroring the CPU
+/// path's `scale=w:h:force_original_aspect_ratio=decrease:force_divisible_by=2`
+/// (`composition_inner.rs`): each side is the aspect-preserving candidate clamped to the
+/// canvas, then rounded **down** to a multiple of two.
+///
+/// Reproducing the rounding rather than using the exact real-valued ratio is what keeps
+/// the band boundary within a pixel of the CPU leg; the parity test measures the residue.
+/// A degenerate zero-sized frame yields the canvas, i.e. the compositor's plain stretch.
+#[allow(clippy::cast_possible_truncation)] // each side is clamped to the canvas, a u32
+fn fit_size(fw: u32, fh: u32, canvas: (u32, u32)) -> (u32, u32) {
+    if fw == 0 || fh == 0 {
+        return canvas;
+    }
+    let (cw, ch) = (u64::from(canvas.0), u64::from(canvas.1));
+    let (fw, fh) = (u64::from(fw), u64::from(fh));
+    // `av_rescale` rounds to nearest, half away from zero.
+    let rescale = |num: u64, den: u64| (num + den / 2) / den;
+    let even = |v: u64| v / 2 * 2;
+    (
+        even(rescale(ch * fw, fh).min(cw)) as u32,
+        even(rescale(cw * fh, fw).min(ch)) as u32,
+    )
 }
 
 /// Loads a `LutNode` from a `.cube` or `.3dl` file, or `None` when the extension is
@@ -498,4 +580,60 @@ fn is_identity_transform(lp: &GpuLayerPlan) -> bool {
         && (lp.scale_x - 1.0).abs() < 1e-6
         && (lp.scale_y - 1.0).abs() < 1e-6
         && lp.rotation.abs() < 1e-6
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_size_should_letterbox_a_wide_frame() {
+        // 16:9 into a square canvas: full width, bars top and bottom.
+        assert_eq!(fit_size(64, 36, (64, 64)), (64, 36));
+    }
+
+    #[test]
+    fn fit_size_should_pillarbox_a_tall_frame() {
+        // The mirror case, so the fit is not accidentally width-only.
+        assert_eq!(fit_size(36, 64, (64, 64)), (36, 64));
+    }
+
+    #[test]
+    fn fit_size_should_round_down_to_an_even_size() {
+        // 3:2 into a square: the exact fit is 66.67 rows, which `av_rescale` rounds to
+        // 67 and `force_divisible_by=2` then takes down to 66. Drives that branch on its
+        // own, since every other case here is already even.
+        assert_eq!(fit_size(30, 20, (100, 100)), (100, 66));
+    }
+
+    #[test]
+    fn letterbox_transform_should_scale_only_the_fitted_axis() {
+        let t = letterbox_transform(64, 36, (64, 64)).expect("a 16:9 fit has a band");
+        assert!((t.scale_x - 1.0).abs() < 1e-6, "full width: {}", t.scale_x);
+        assert!((t.scale_y - 0.5625).abs() < 1e-6, "36/64: {}", t.scale_y);
+        assert!(t.x.abs() < 1e-6 && t.y.abs() < 1e-6 && t.rotation.abs() < 1e-6);
+    }
+
+    #[test]
+    fn letterbox_transform_should_be_identity_for_a_canvas_aspect_frame() {
+        // The previously-only-supported shape must stay on the compositor's
+        // transform-free path, at both the canvas size and a larger one.
+        let same = letterbox_transform(64, 48, (64, 48)).expect("a matching aspect fits");
+        assert!(same.is_identity());
+        let larger = letterbox_transform(1920, 1080, (64, 36)).expect("a matching aspect fits");
+        assert!(larger.is_identity());
+    }
+
+    #[test]
+    fn letterbox_transform_should_reject_a_fit_that_rounds_away_to_nothing() {
+        // 64:1 into a square canvas: the fitted height is one row, which the
+        // even-rounding takes to zero. `transform.wgsl` floors the divisor at 1e-4, so a
+        // zero scale would not error -- it would sample the whole layer out of range and
+        // render a silently black frame. Falling back is the only correct answer.
+        assert_eq!(fit_size(4096, 64, (64, 64)), (64, 0));
+        assert!(letterbox_transform(4096, 64, (64, 64)).is_none());
+        // The mirror case, so the guard is not accidentally height-only.
+        assert_eq!(fit_size(64, 4096, (64, 64)), (0, 64));
+        assert!(letterbox_transform(64, 4096, (64, 64)).is_none());
+    }
 }

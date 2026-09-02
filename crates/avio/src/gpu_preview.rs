@@ -3,9 +3,9 @@
 //! Wraps [`GpuCompositor`](crate::gpu_compositor::GpuCompositor) as an
 //! `ff_preview::PreviewCompositor`, so the preview runner composites on the GPU by
 //! default and falls back to its built-in CPU compositor when the core returns `None`
-//! (an unsupported layer, no adapter, or a GPU error). All the compositing logic and
-//! the v1 identity/aspect gate live in the shared core; this file only adapts the
-//! preview layer type.
+//! (an unsupported layer, no adapter, or a GPU error). All the compositing logic, the
+//! v1 identity gate, and the letterbox live in the shared core; this file only adapts
+//! the preview layer type.
 
 use std::time::Duration;
 
