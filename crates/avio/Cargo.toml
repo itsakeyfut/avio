@@ -60,6 +60,12 @@ name = "composition_framerate"
 name = "timeline_preview_tests"
 required-features = ["preview"]
 
+# Preview-vs-export structural parity (#1664): drives the real preview runner, so it
+# needs `preview`. Kept in sync with the file's `#![cfg(feature = "preview")]`.
+[[test]]
+name = "preview_export_parity"
+required-features = ["preview"]
+
 # GPU/CPU parity + fallback tests (Br5): the GPU leg needs the `gpu` feature and the
 # runner-fallback leg needs `preview`. Kept in sync with the file's `#![cfg(all(...))]`.
 [[test]]
