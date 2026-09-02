@@ -42,7 +42,7 @@ use crate::track::Track;
 /// - every clip is a **file** source (a generated Solid/Text source has no decoder
 ///   here; it renders via lavfi on the CPU path),
 /// - hard cuts only (a transition needs an xfade node the GPU path lacks),
-/// - unity speed (the one-frame-per-output decode loop does not resample time),
+/// - unity speed (the drain conforms frame *rate* but does not resample time),
 /// - each clip's derived [`VideoLayer`] maps to [`GpuMapping::Gpu`] (a supported
 ///   blend / composite / effect set) with a **static, neutral transform** (RK-020:
 ///   the model's pixels/degrees are not `ff_render`'s UV/radians, so any placement
@@ -129,9 +129,10 @@ pub(crate) fn eligible_track(
             return None;
         }
         // The frame rate no longer has to match: the drain conforms the source to the
-        // timeline rate (#1660). A non-positive or non-finite source rate has no usable
-        // index mapping, so such a source still falls back to CPU rather than risking
-        // wrong output (RK-020).
+        // timeline rate from the frames' own timestamps (#1660). The rate is still
+        // required to be usable, since a source that reports none is one whose timing
+        // cannot be trusted at all — it stays on the CPU path rather than risking wrong
+        // output (RK-020).
         let src_fps = decoder.frame_rate();
         if !src_fps.is_finite() || src_fps <= 0.0 {
             return None;
@@ -141,20 +142,16 @@ pub(crate) fn eligible_track(
     Some(idx)
 }
 
-/// The source frame index that output frame `k` takes, conforming `src_fps` to
-/// `out_fps` by nearest-previous selection: `floor(k * src_fps / out_fps)`.
+/// The presentation time of output frame `k` **within the clip**, at the timeline rate.
 ///
-/// The same formula covers both directions — a slower source repeats an index
-/// (24 -> 30 gives `0,0,1,2,3,4,4,…`) and a faster one skips indices (60 -> 30 gives
-/// `0,2,4,…`) — and is the identity when the rates match. Callers guarantee
-/// `out_fps > 0` (the timeline rate) and `src_fps > 0` ([`eligible_track`]).
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn conform_source_index(k: u64, src_fps: f64, out_fps: f64) -> u64 {
-    (k as f64 * src_fps / out_fps).floor().max(0.0) as u64
+/// Conform compares this against the source's own frame timestamps rather than against
+/// a nominal rate: a container's reported frame rate is unreliable (a short clip's
+/// `avg_frame_rate` comes out as `n/(n-1) * fps`, e.g. 32.14 for a 15-frame 30 fps
+/// file), so driving the mapping from it would stretch or shorten the clip. The CPU
+/// path's `fps` filter is likewise PTS-driven, so this keeps both routes on one basis.
+#[allow(clippy::cast_precision_loss)] // frame index fits the f64 mantissa
+fn clip_output_time(k: u64, out_fps: f64) -> Duration {
+    Duration::from_secs_f64(k as f64 / out_fps)
 }
 
 /// Whether a layer's geometric transform is static and neutral for all `t` (no
@@ -252,35 +249,59 @@ pub(crate) fn drain_video_gpu(
                 produced += 1;
             }
         } else {
-            // Conform (#1660): output frame `k` takes source index
-            // `floor(k * src_fps / frame_rate)`, so a slower source repeats a frame and
+            // Conform (#1660), PTS-driven: hold the newest source frame whose timestamp
+            // is at or before this output's time, so a slower source repeats a frame and
             // a faster one skips frames while the clip keeps its on-screen duration.
+            // Timestamps rather than a nominal rate, because the reported rate is not
+            // trustworthy (see `clip_output_time`).
+            //
             // The held frame is *borrowed* because one source frame can serve several
             // outputs. `composite` clones it internally for a no-effects layer
             // (`gpu_compositor.rs`), so this path pays the per-output clone that the
             // matching-rate path avoids with `composite_owned` (#1634) — accepted for
             // v1 since conform is the uncommon case.
+            let base = clip.in_point.unwrap_or(Duration::ZERO);
             let mut held: Option<VideoFrame> = None;
-            let mut src_idx: u64 = 0;
+            let mut held_at = Duration::ZERO;
+            let mut pending: Option<(VideoFrame, Duration)> = None;
+            let mut eof = false;
             loop {
                 if frame_budget.is_some_and(|budget| produced >= budget) {
                     break;
                 }
-                let target = conform_source_index(produced, src_fps, frame_rate);
-                // Advance until the held frame is the one `target` selects. The first
-                // decoded frame is index 0, so it does not advance the counter.
-                while held.is_none() || src_idx < target {
-                    let Some(frame) = decoder.decode_one()? else {
-                        break; // EOF: handled below so a short clip stops cleanly.
-                    };
-                    if held.is_some() {
-                        src_idx += 1;
+                let want = clip_output_time(produced, frame_rate);
+                // Advance while the next source frame still starts at or before `want`;
+                // the last such frame is the one this output shows. `pending` carries the
+                // lookahead frame that already belongs to a later output.
+                loop {
+                    if let Some((frame, at)) = pending.take() {
+                        if held.is_none() || at <= want {
+                            held = Some(frame);
+                            held_at = at;
+                            continue;
+                        }
+                        pending = Some((frame, at));
+                        break;
                     }
-                    held = Some(frame);
+                    if eof {
+                        break;
+                    }
+                    match decoder.decode_one()? {
+                        Some(frame) => {
+                            let at = frame.timestamp().as_duration().saturating_sub(base);
+                            pending = Some((frame, at));
+                        }
+                        None => eof = true,
+                    }
                 }
-                let Some(frame) = held.as_ref().filter(|_| src_idx >= target) else {
-                    break; // EOF before the source reached this output's frame.
+                let Some(frame) = held.as_ref() else {
+                    break; // The clip decoded no frames at all.
                 };
+                // The source is spent and this output is past its last frame: the clip
+                // ends here, matching the pre-existing "shorter than declared" stop.
+                if eof && pending.is_none() && want > held_at {
+                    break;
+                }
                 let t = output_time(video_idx, frame_rate);
                 let composited = core.composite(&[(&layer, frame)], canvas, t);
                 emit_frame(
@@ -371,31 +392,55 @@ mod tests {
         )
     }
 
-    #[test]
-    fn conform_source_index_should_repeat_frames_when_source_is_slower() {
-        // 24 -> 30: five source frames cover six outputs, so two outputs share index 0
-        // and index 4 — the duplication that keeps the clip's on-screen duration.
-        let idx: Vec<u64> = (0..7)
-            .map(|k| conform_source_index(k, 24.0, 30.0))
-            .collect();
-        assert_eq!(idx, [0, 0, 1, 2, 3, 4, 4]);
+    /// Mirrors the drain's selection rule — show the last source frame whose
+    /// clip-relative timestamp is at or before the output's time — so the mapping is
+    /// verifiable without decoding. The drain streams and cannot pre-collect timestamps,
+    /// hence the small duplication; the integration tests cover the real pipeline.
+    fn conform_plan(src_pts: &[Duration], out_fps: f64, outputs: u64) -> Vec<usize> {
+        (0..outputs)
+            .map(|k| {
+                let want = clip_output_time(k, out_fps);
+                src_pts.iter().rposition(|at| *at <= want).unwrap_or(0)
+            })
+            .collect()
+    }
+
+    /// `count` frames at `fps`, as clip-relative timestamps.
+    fn pts_at(fps: f64, count: usize) -> Vec<Duration> {
+        #[allow(clippy::cast_precision_loss)]
+        (0..count)
+            .map(|i| Duration::from_secs_f64(i as f64 / fps))
+            .collect()
     }
 
     #[test]
-    fn conform_source_index_should_skip_frames_when_source_is_faster() {
+    fn conform_should_repeat_frames_when_source_is_slower() {
+        // 24 -> 30: outputs at k/30 fall on 24 fps frames 0,0,1,2,3,4,4 — the
+        // duplication that keeps the clip's on-screen duration.
+        let plan = conform_plan(&pts_at(24.0, 6), 30.0, 7);
+        assert_eq!(plan, [0, 0, 1, 2, 3, 4, 4]);
+    }
+
+    #[test]
+    fn conform_should_skip_frames_when_source_is_faster() {
         // 60 -> 30: every other source frame is dropped.
-        let idx: Vec<u64> = (0..5)
-            .map(|k| conform_source_index(k, 60.0, 30.0))
-            .collect();
-        assert_eq!(idx, [0, 2, 4, 6, 8]);
+        let plan = conform_plan(&pts_at(60.0, 9), 30.0, 5);
+        assert_eq!(plan, [0, 2, 4, 6, 8]);
     }
 
     #[test]
-    fn conform_source_index_should_be_identity_at_matching_rates() {
-        let idx: Vec<u64> = (0..5)
-            .map(|k| conform_source_index(k, 30.0, 30.0))
-            .collect();
-        assert_eq!(idx, [0, 1, 2, 3, 4]);
+    fn conform_should_be_identity_at_matching_rates() {
+        let plan = conform_plan(&pts_at(30.0, 5), 30.0, 5);
+        assert_eq!(plan, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn conform_should_ignore_a_misreported_container_rate() {
+        // The regression that motivated the PTS basis: a 15-frame 30 fps file reports
+        // `avg_frame_rate` 32.14 (= 15/14 * 30). Selection driven by that number would
+        // skip ahead and end the clip early; driven by timestamps it is the identity.
+        let plan = conform_plan(&pts_at(30.0, 15), 30.0, 15);
+        assert_eq!(plan, (0..15).collect::<Vec<_>>());
     }
 
     /// Encodes a tiny square video at `fps`, or `None` when the environment has no
@@ -422,10 +467,15 @@ mod tests {
     #[test]
     fn eligible_track_should_accept_a_source_whose_rate_differs_from_the_timeline() {
         // #1660: the probe pass no longer requires the source rate to match the
-        // timeline rate — the drain conforms it — so a 24 fps source in a 30 fps
-        // timeline stays on the GPU route instead of falling back to CPU. This is the
-        // gate that the end-to-end conform test relies on having been opened; without
-        // it that export would silently be produced by the CPU path instead.
+        // timeline rate — the drain conforms it — so a source whose rate differs stays
+        // on the GPU route instead of falling back to CPU.
+        //
+        // This gate mattered more than it looked: a container's reported rate is often
+        // *not* the nominal encode rate (a short clip reports `n/(n-1) * fps`, so the
+        // 15-frame 30 fps fixture reports 32.14), which meant the old equality check
+        // rejected even same-rate sources. The end-to-end "GPU route" export test was
+        // therefore silently exercising the CPU path. Keeping this assertion green is
+        // what stops that false green from coming back.
         let src = std::env::temp_dir().join("avio_eligible_24fps_probe.mp4");
         let _ = std::fs::remove_file(&src);
         if encode_probe_source(&src, 24.0).is_none() {
@@ -462,7 +512,7 @@ mod tests {
 
     #[test]
     fn eligible_track_should_reject_non_unity_speed() {
-        // The one-frame-per-output decode loop does not resample time -> CPU.
+        // The drain conforms frame rate but does not resample time -> CPU.
         let t = square_timeline(vec![Clip::new("a.mp4").with_speed(2.0)]);
         assert!(eligible(&t).is_none());
     }
