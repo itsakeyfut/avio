@@ -26,11 +26,34 @@ use std::time::Duration;
 
 use avio::{
     AnimatedValue, BlendMode, Clip, Color, CompositeOp, FilterStep, GpuCompositor, PixelFormat,
-    PlayerHandle, RealtimeLayer, Timeline, TimelinePlayer, VideoFrame,
+    PlayerHandle, RealtimeLayer, ScaleAlgorithm, Timeline, TimelinePlayer, VideoFrame,
 };
 use ff_filter::RealtimeComposer;
 use ff_preview::FrameSink;
 
+// Per-node tolerance table (#1663). Every mapped `GpuEffect` node has a probe-gated
+// GPU/CPU parity test with a calibrated tolerance; `avio::gpu`'s `parity_coverage`
+// meta-test enforces at compile time that every variant appears here. Columns:
+// GpuEffect node | parity test | CPU reference | tolerance const | measured (this build).
+//
+//   ColorGrade  | color_grade_gpu_should_match_cpu_within_tolerance          | eq          | TOL_COLOR_GRADE_MEAN  | mean ~6.6
+//   ColorGrade  | color_grade_temperature_tint_gpu_should_match_cpu_reference| eq + Rust   | TOL_GRADE_TEMPTINT_MEAN| mean ~0.4
+//   Scale       | scale_gpu_should_match_cpu_within_tolerance                | scale       | TOL_SCALE_MEAN        | mean ~0.14
+//   Blur        | blur_gpu_should_match_cpu_within_tolerance                 | gblur       | TOL_BLUR_MEAN         | mean ~9.0
+//   Sharpen     | sharpen_gpu_should_match_cpu_within_tolerance              | unsharp     | TOL_SHARPEN_MEAN      | mean ~0.7
+//   Vignette    | vignette_gpu_should_match_cpu_within_tolerance             | vignette    | TOL_VIGNETTE_MEAN     | calibrated
+//   FilmGrain   | film_grain_gpu_should_match_cpu_grain_strength            | noise (std) | TOL_FILMGRAIN_STD     | std ~10.9/11.1
+//   Glow        | glow_gpu_should_match_cpu_within_tolerance                 | gblur+blend | TOL_GLOW_MEAN         | calibrated
+//   ColorWheels | color_wheels_gpu_should_match_cpu_within_tolerance         | colorbalance| TOL_COLOR_WHEELS_MEAN | calibrated
+//   Curves      | curves_gpu_should_match_cpu_within_tolerance               | curves      | TOL_CURVES_MEAN       | calibrated
+//   Hsl         | hsl_gpu_should_match_cpu_within_tolerance                  | hue         | TOL_HSL_MEAN          | calibrated
+//   Lut         | lut_gpu_should_match_cpu_within_tolerance                  | lut3d       | TOL_LUT_MEAN          | calibrated
+//   ChromaKey   | chroma_key_gpu_should_match_cpu_within_tolerance           | colorkey(2L)| TOL_CHROMAKEY_MEAN    | calibrated
+//   LumaMask    | luma_mask_gpu_should_match_cpu_within_tolerance (+ _invert) | geq (2L)    | TOL_LUMAMASK_MEAN     | mean ~0.2
+//   ShapeMask   | shape_mask_gpu_should_match_cpu_within_tolerance (+ _invert)| geq (2L)    | TOL_SHAPEMASK_MEAN    | mean 0.0
+//   MotionBlur  | motion_blur_gpu_should_match_cpu_within_tolerance          | tblend      | TOL_MOTIONBLUR_MEAN   | mean 0.0
+// (Passthrough — no effect — is covered by passthrough_gpu_should_match_cpu_within_tolerance / TOL_PASSTHROUGH_MEAN.)
+//
 // Tolerances (mean absolute per-channel RGB difference, 0..255). Calibrated on the
 // dev machine; alpha is excluded (the compositor blends RGB over transparent black,
 // an alpha detail orthogonal to colour parity). Measured on this build: passthrough
@@ -45,6 +68,9 @@ const TOL_COLOR_GRADE_MEAN: f64 = 20.0; // GPU ColorGradeNode vs FFmpeg `eq`: ~6
 // just the offset, so the only divergence is quantisation/driver rounding: ~0.4 here.
 const TOL_GRADE_TEMPTINT_MEAN: f64 = 8.0;
 const TOL_BLUR_MEAN: f64 = 20.0; // GPU GaussianBlurNode vs FFmpeg `gblur`: ~9.0 here (different kernels)
+// GPU ScaleNode (bilinear) vs FFmpeg `scale` (bilinear): different resampler implementations,
+// so a loose calibrated tolerance on a downscaled gradient (~0.14 here).
+const TOL_SCALE_MEAN: f64 = 12.0;
 // GPU SharpenNode (RGB, fixed sigma) vs FFmpeg `unsharp` (luma-only, 5x5): ~0.7 here
 // (effect vs input ~7.9). Grey-calibrated: the test image is achromatic (R=G=B), where
 // an all-RGB node and a luma-only filter coincide; colored edges would diverge more.
@@ -558,6 +584,58 @@ fn blur_gpu_should_match_cpu_within_tolerance() {
     assert!(
         mean <= TOL_BLUR_MEAN,
         "GPU and CPU blur diverged beyond tolerance: mean={mean}"
+    );
+}
+
+#[test]
+fn scale_gpu_should_match_cpu_within_tolerance() {
+    // Scale parity: GPU ScaleNode (map_scene maps `Scale`) vs the CPU `scale` filter,
+    // both bilinear. Downscale a 64x48 gradient to 32x24 (same 4:3 aspect as the canvas,
+    // so the compositor does not fall back) and compare at the target size. Different
+    // resampler implementations, so a loose calibrated tolerance. Double-gated.
+    let (sw, sh) = (64, 48);
+    let (tw, th) = (32, 24);
+    let frame = VideoFrame::from_rgba(sw, sh, gradient_rgba(sw, sh)).unwrap();
+    let layer = base_layer(
+        sw,
+        sh,
+        vec![FilterStep::Scale {
+            width: tw,
+            height: th,
+            algorithm: ScaleAlgorithm::Bilinear,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite(&layer, &frame, (tw, th)) else {
+        return; // filters unavailable
+    };
+    let Some((gpu_out, gw, gh)) = gpu.composite(&[(&layer, &frame)], (tw, th), Duration::ZERO)
+    else {
+        panic!("a supported scaled layer must composite on the GPU");
+    };
+    // The Scale node actually ran: the output is the target size, not the source size.
+    assert_eq!(
+        (gw, gh),
+        (tw, th),
+        "the scaled output must be the target size"
+    );
+    assert_eq!(gpu_out.len(), cpu.len());
+    // Non-vacuity (RK-015): the downscaled gradient is not flat, so a bypassed scale (or a
+    // constant frame) would not produce this spread.
+    assert!(
+        max_abs_diff_rgb(&gpu_out, &vec![gpu_out[0]; gpu_out.len()]) > 20,
+        "the scaled gradient must vary across the frame (non-vacuous)"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!(
+        "scale GPU vs CPU: mean={mean:.3} max={}",
+        max_abs_diff_rgb(&gpu_out, &cpu)
+    );
+    assert!(
+        mean <= TOL_SCALE_MEAN,
+        "GPU and CPU scale diverged beyond tolerance: mean={mean}"
     );
 }
 
