@@ -113,6 +113,8 @@ mod gpu_compositor;
 mod gpu_export;
 #[cfg(all(feature = "gpu", feature = "preview"))]
 mod gpu_preview;
+#[cfg(feature = "gpu")]
+mod gpu_transition;
 mod ids;
 mod marker;
 mod timeline;
@@ -134,6 +136,8 @@ pub use gpu::{
 pub use gpu_compositor::GpuCompositor;
 #[cfg(all(feature = "gpu", feature = "preview"))]
 pub use gpu_preview::GpuPreviewCompositor;
+#[cfg(feature = "gpu")]
+pub use gpu_transition::{GpuTransition, map_transition};
 pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
 pub use timeline::{Timeline, TimelineBuilder};

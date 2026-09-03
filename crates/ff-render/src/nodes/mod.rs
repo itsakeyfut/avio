@@ -29,7 +29,9 @@ pub use hsl::HslNode;
 pub use lut::LutNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
-pub use transition::{DipToColorNode, DissolveTransitionNode, WipeTransitionNode};
+pub use transition::{
+    DipToColorNode, DissolveTransitionNode, FadeTransitionNode, WipeTransitionNode,
+};
 pub use upload::{YuvFormat, YuvUploadNode};
 pub use vignette::VignetteNode;
 

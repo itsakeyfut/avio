@@ -195,6 +195,11 @@ pub enum XfadeTransition {
     FadeGrays,
     /// Pixelize transition.
     Pixelize,
+    /// Dip through black: clip A fades to black, then black fades to clip B.
+    /// `progress = 0.5` is the fully black frame.
+    FadeBlack,
+    /// Dip through white, the mirror of [`FadeBlack`](Self::FadeBlack).
+    FadeWhite,
 }
 
 impl XfadeTransition {
@@ -216,6 +221,8 @@ impl XfadeTransition {
             Self::CircleClose => "circleclose",
             Self::FadeGrays => "fadegrays",
             Self::Pixelize => "pixelize",
+            Self::FadeBlack => "fadeblack",
+            Self::FadeWhite => "fadewhite",
         }
     }
 }

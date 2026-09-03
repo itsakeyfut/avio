@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use ff_render::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
-    DissolveTransitionNode, LumaMaskNode, OverlayNode, RenderContext, RenderGraph, RenderNode,
-    ScaleAlgorithm, ScaleNode, ShapeMaskNode, TransformNode, YuvFormat, YuvUploadNode,
+    DissolveTransitionNode, FadeTransitionNode, LumaMaskNode, OverlayNode, RenderContext,
+    RenderGraph, RenderNode, ScaleAlgorithm, ScaleNode, ShapeMaskNode, TransformNode, YuvFormat,
+    YuvUploadNode,
 };
 
 // Helpers
@@ -179,13 +180,13 @@ fn crossfade_gpu_half_factor_should_average_inputs() {
     );
 }
 
-// DissolveTransitionNode
+// FadeTransitionNode
 
-/// Clip A and clip B for the dissolve test. Every channel differs between the two and
+/// Clip A and clip B for the transition tests. Every channel differs between the two and
 /// none repeats within a frame, so a swapped pair, a dropped channel or a transposed one
 /// all show up. Mirrors the constants the CPU tests in `nodes/transition.rs` use.
-const DISSOLVE_A: [u8; 4] = [10, 200, 30, 255];
-const DISSOLVE_B: [u8; 4] = [210, 40, 130, 55];
+const FADE_A: [u8; 4] = [10, 200, 30, 255];
+const FADE_B: [u8; 4] = [210, 40, 130, 55];
 
 /// A 2x2 frame filled with one tagged colour.
 fn tagged(px: [u8; 4]) -> Vec<u8> {
@@ -193,13 +194,13 @@ fn tagged(px: [u8; 4]) -> Vec<u8> {
 }
 
 #[test]
-fn dissolve_gpu_half_progress_should_average_inputs() {
+fn fade_transition_gpu_half_progress_should_average_inputs() {
     let Some(ctx) = gpu_ctx() else { return };
-    let a = tagged(DISSOLVE_A);
-    let b = tagged(DISSOLVE_B);
-    let out = run_gpu(&ctx, DissolveTransitionNode::new(0.5, b, 2, 2), &a, 2, 2);
+    let a = tagged(FADE_A);
+    let b = tagged(FADE_B);
+    let out = run_gpu(&ctx, FadeTransitionNode::new(0.5, b, 2, 2), &a, 2, 2);
     for c in 0..4 {
-        let want = u8::midpoint(DISSOLVE_A[c], DISSOLVE_B[c]);
+        let want = u8::midpoint(FADE_A[c], FADE_B[c]);
         assert!(
             close(out[c], want, 8),
             "channel {c}: progress=0.5 must blend to ~{want}; got {}",
@@ -209,32 +210,89 @@ fn dissolve_gpu_half_progress_should_average_inputs() {
 }
 
 #[test]
-fn dissolve_gpu_progress_endpoints_should_be_each_clip() {
+fn fade_transition_gpu_progress_endpoints_should_be_each_clip() {
     // The 0.5 blend above is symmetric, so it cannot tell clip A from clip B. These
     // endpoints are what pin the direction on the GPU path.
     let Some(ctx) = gpu_ctx() else { return };
-    let a = tagged(DISSOLVE_A);
-    let b = tagged(DISSOLVE_B);
+    let a = tagged(FADE_A);
+    let b = tagged(FADE_B);
     let at_zero = run_gpu(
         &ctx,
-        DissolveTransitionNode::new(0.0, b.clone(), 2, 2),
+        FadeTransitionNode::new(0.0, b.clone(), 2, 2),
         &a,
         2,
         2,
     );
-    let at_one = run_gpu(&ctx, DissolveTransitionNode::new(1.0, b, 2, 2), &a, 2, 2);
+    let at_one = run_gpu(&ctx, FadeTransitionNode::new(1.0, b, 2, 2), &a, 2, 2);
     for c in 0..4 {
         assert!(
-            close(at_zero[c], DISSOLVE_A[c], 2),
+            close(at_zero[c], FADE_A[c], 2),
             "channel {c}: progress=0 must be clip A; got {}",
             at_zero[c]
         );
         assert!(
-            close(at_one[c], DISSOLVE_B[c], 2),
+            close(at_one[c], FADE_B[c], 2),
             "channel {c}: progress=1 must be clip B; got {}",
             at_one[c]
         );
     }
+}
+
+// DissolveTransitionNode
+
+#[test]
+fn dissolve_gpu_half_progress_should_threshold_pixels_not_blend_them() {
+    // The property that separates a dissolve from a fade, asserted on the GPU path in
+    // its own right (this file states independent expectations, not GPU-vs-CPU parity;
+    // the pixel-for-pixel agreement between the two hashes is checked by avio's
+    // transition parity suite). Black into white makes a mixed value unmistakable.
+    let Some(ctx) = gpu_ctx() else { return };
+    let (w, h) = (32u32, 32u32);
+    let a = solid_rgba(0, 0, 0, 255, w, h);
+    let b = solid_rgba(255, 255, 255, 255, w, h);
+    let out = run_gpu(&ctx, DissolveTransitionNode::new(0.5, b, w, h), &a, w, h);
+
+    let reds: Vec<u8> = out.chunks_exact(4).map(|px| px[0]).collect();
+    let mixed = reds.iter().filter(|v| (8..=247).contains(*v)).count();
+    let revealed = reds.iter().filter(|v| **v > 247).count();
+    println!(
+        "dissolve GPU @50%: revealed={revealed}/{} mixed={mixed}",
+        reds.len()
+    );
+    assert_eq!(
+        mixed, 0,
+        "a dissolve must never produce a mixed value; {mixed} pixels were between"
+    );
+    let ratio = revealed as f64 / reds.len() as f64;
+    assert!(
+        (0.35..=0.65).contains(&ratio),
+        "progress=0.5 should reveal about half of clip B, got {ratio:.3}"
+    );
+}
+
+#[test]
+fn dissolve_gpu_progress_endpoints_should_be_each_clip() {
+    // The 50% case above says nothing about direction; these pin it.
+    let Some(ctx) = gpu_ctx() else { return };
+    let (w, h) = (16u32, 16u32);
+    let a = solid_rgba(0, 0, 0, 255, w, h);
+    let b = solid_rgba(255, 255, 255, 255, w, h);
+    let at_zero = run_gpu(
+        &ctx,
+        DissolveTransitionNode::new(0.0, b.clone(), w, h),
+        &a,
+        w,
+        h,
+    );
+    let at_one = run_gpu(&ctx, DissolveTransitionNode::new(1.0, b, w, h), &a, w, h);
+    assert!(
+        at_zero.chunks_exact(4).all(|px| px[0] < 8),
+        "progress=0 must be entirely clip A"
+    );
+    assert!(
+        at_one.chunks_exact(4).all(|px| px[0] > 247),
+        "progress=1 must be entirely clip B"
+    );
 }
 
 // BlendModeNode

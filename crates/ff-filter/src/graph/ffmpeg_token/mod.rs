@@ -61,6 +61,8 @@ impl FfmpegToken for XfadeTransition {
             Self::CircleClose => "circleclose",
             Self::FadeGrays => "fadegrays",
             Self::Pixelize => "pixelize",
+            Self::FadeBlack => "fadeblack",
+            Self::FadeWhite => "fadewhite",
         })
     }
 }
