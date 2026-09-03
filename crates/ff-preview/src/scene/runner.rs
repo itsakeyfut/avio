@@ -73,6 +73,15 @@ pub struct SceneRunner {
     pub(super) rgba_a: Vec<u8>,
     pub(super) rgba_b: Vec<u8>,
     pub(super) blend_buf: Vec<u8>,
+    /// `xfade`'s dissolve noise, tabulated for the current frame size. The hash depends
+    /// only on the pixel coordinates, so recomputing it per frame was costing a 4 K
+    /// dissolve more than a whole 30 fps budget (#1736). Kept beside the rgba scratch
+    /// because it has the same lifetime: rebuilt when the frame size changes, held
+    /// across transitions so a dissolve does not pay for it again.
+    pub(super) dissolve_field: Vec<f32>,
+    /// The frame size `dissolve_field` was built for. `(0, 0)` until the first dissolve,
+    /// so no field is built for a timeline that never dissolves.
+    pub(super) dissolve_field_dims: (u32, u32),
     /// Width of the most recently presented primary-track frame; used to
     /// synthesise fill frames during primary-track gaps.
     pub(super) last_frame_w: u32,
@@ -101,6 +110,23 @@ pub struct SceneRunner {
     /// Timeline-global generated `lavfi` overlay, composited as the topmost layer
     /// (above every file overlay). `None` when the timeline set no `lavfi_overlay`.
     pub(super) lavfi: Option<LavfiOverlayState>,
+}
+
+/// Rebuilds `field` when it does not already hold [`xfade_frand_field`] for `w * h`,
+/// returning whether it did.
+///
+/// A free function rather than a method so the rule can be tested without a runner, and
+/// so the caller keeps `field` as a plain field it can lend out beside its other scratch
+/// buffers. The dimensions are tracked explicitly rather than inferred from the length:
+/// `w * h` alone cannot tell 1920x1080 from 1080x1920, and a transposed field would read
+/// the wrong pixel at every coordinate while looking the right size.
+fn ensure_dissolve_field(field: &mut Vec<f32>, dims: &mut (u32, u32), w: u32, h: u32) -> bool {
+    if *dims == (w, h) && field.len() == (w as usize) * (h as usize) {
+        return false;
+    }
+    *field = ff_filter::xfade_frand_field(w, h);
+    *dims = (w, h);
+    true
 }
 
 impl SceneRunner {
@@ -986,13 +1012,27 @@ impl SceneRunner {
                                 // writes into a buffer it does not own.
                                 self.rgba_a = blended;
                             } else {
+                                // Only `Dissolve` reads the field, and building one costs
+                                // what a whole frame of dissolve used to (47.4 ms at 4 K),
+                                // so a `Fade` must not pay for it.
+                                let field = if trans_kind == XfadeTransition::Dissolve {
+                                    ensure_dissolve_field(
+                                        &mut self.dissolve_field,
+                                        &mut self.dissolve_field_dims,
+                                        w,
+                                        h,
+                                    );
+                                    Some(self.dissolve_field.as_slice())
+                                } else {
+                                    None
+                                };
                                 inner::apply_xfade(
                                     trans_kind,
                                     &self.rgba_a,
                                     &self.rgba_b,
                                     alpha,
-                                    w,
-                                    h,
+                                    (w, h),
+                                    field,
                                     &mut self.blend_buf,
                                 );
                                 std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
@@ -1423,5 +1463,39 @@ mod tests {
         assert!(
             try_gpu_composite(Some(&mut gpu), &specs, &frames, (2, 2), Duration::ZERO).is_none()
         );
+    }
+
+    #[test]
+    fn ensure_dissolve_field_should_build_once_and_rebuild_on_a_size_change() {
+        // The acceptance criterion directly: a dissolve of n frames builds the field
+        // once, not n times, and a change of frame size does rebuild it.
+        let mut field = Vec::new();
+        let mut dims = (0, 0);
+
+        assert!(
+            ensure_dissolve_field(&mut field, &mut dims, 7, 5),
+            "the first frame of a dissolve has to build the field"
+        );
+        assert_eq!(field.len(), 35);
+        for _ in 0..10 {
+            assert!(
+                !ensure_dissolve_field(&mut field, &mut dims, 7, 5),
+                "every later frame at the same size must reuse it"
+            );
+        }
+
+        assert!(
+            ensure_dissolve_field(&mut field, &mut dims, 9, 4),
+            "a change of frame size has to rebuild"
+        );
+        assert_eq!(field.len(), 36);
+
+        // 5x7 has the same pixel count as 7x5, so a length check alone would reuse a
+        // transposed field and read the wrong pixel at every coordinate.
+        assert!(
+            ensure_dissolve_field(&mut field, &mut dims, 4, 9),
+            "a transposed frame is a different field, not the same one"
+        );
+        assert_eq!(field, ff_filter::xfade_frand_field(4, 9));
     }
 }

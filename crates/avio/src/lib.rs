@@ -89,9 +89,10 @@ pub use ff_encode::{BitrateMode, EncodeError};
 // AnimatedValue), animation authoring (AnimationTrack / Keyframe / Easing),
 // Clip::realtime_layer[_descriptor] returns, FilterError, and the EncoderConfig HwAccel setter.
 //
-// `ff_filter::xfade_frand` / `dissolve_mask` are deliberately **not** re-exported: they
-// are how the transition paths agree on `FFmpeg`'s pixel selection, not something the
-// editing surface asks for. A caller drives transitions through `Clip::with_transition`.
+// `ff_filter::xfade_frand` / `xfade_frand_field` / `dissolve_mask` are deliberately
+// **not** re-exported: they are how the transition paths agree on `FFmpeg`'s pixel
+// selection, not something the editing surface asks for. A caller drives transitions
+// through `Clip::with_transition`.
 pub use ff_filter::{
     AnimatedValue, AnimationTrack, BlendMode, CompositeOp, DrawTextOptions, Easing, EqBand,
     FilterError, FilterStep, HwAccel, Keyframe, PitchAlgo, RealtimeLayer, RealtimeLayerDescriptor,

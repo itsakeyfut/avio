@@ -1899,7 +1899,7 @@ fn cpu_transition_output(
     h: u32,
 ) -> Vec<u8> {
     let mut dst = Vec::new();
-    ff_preview::apply_xfade(kind, a, b, progress, w, h, &mut dst);
+    ff_preview::apply_xfade(kind, a, b, progress, (w, h), None, &mut dst);
     dst
 }
 

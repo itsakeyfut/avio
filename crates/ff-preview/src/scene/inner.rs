@@ -11,11 +11,21 @@ use ff_filter::{XfadeTransition, xfade_frand};
 /// Blends the outgoing frame `a` and incoming frame `b` (packed RGBA, `w*h*4`) at
 /// transition progress `alpha` (`0` = all A, `1` = all B) using the `xfade` `kind`.
 ///
+/// `dims` is the frame `(width, height)`, tupled the way the rest of this crate passes a
+/// size around (`PreviewCompositor::composite` takes `canvas: (u32, u32)`).
+///
 /// `wipe*`, `slide*`, `dissolve` and the `fadeblack` / `fadewhite` dips are rendered
 /// host-side here. `fade` and the geometric / mosaic kinds (`fadegrays`, `circleopen`,
 /// `circleclose`, `pixelize`) fall through to the linear cross-blend — exact fidelity
 /// for those is deferred to the GPU compositing work (#1365). Falls back to the linear
 /// blend when the buffers are mismatched or their length is not `w*h*4`.
+///
+/// `dissolve_field` is an optional [`ff_filter::xfade_frand_field`] for these dimensions, which
+/// only the `dissolve` kind reads. `None` computes the hash per pixel exactly as before,
+/// so passing it changes nothing but the cost; `Some` is what keeps a 4 K dissolve inside
+/// a 30 fps budget (#1736). A field whose length is not `w * h` is ignored rather than
+/// indexed: the length is the whole of what ties a cached field to a frame, and a stale
+/// one from a different size must not be trusted.
 ///
 /// Public because it is the reference the GPU transition nodes are compared against:
 /// `avio`'s transition parity tests run each `ff_render` node beside this function.
@@ -24,10 +34,11 @@ pub fn apply_xfade(
     a: &[u8],
     b: &[u8],
     alpha: f32,
-    w: u32,
-    h: u32,
+    dims: (u32, u32),
+    dissolve_field: Option<&[f32]>,
     dst: &mut Vec<u8>,
 ) {
+    let (w, h) = dims;
     let expected = (w as usize) * (h as usize) * 4;
     if a.len() != b.len() || a.len() != expected {
         blend_rgba(a, b, alpha, dst);
@@ -66,7 +77,7 @@ pub fn apply_xfade(
         XfadeTransition::SlideRight => slide(a, b, w, h, dst, -((p * wf) as i64), 0),
         XfadeTransition::SlideUp => slide(a, b, w, h, dst, 0, (p * hf) as i64),
         XfadeTransition::SlideDown => slide(a, b, w, h, dst, 0, -((p * hf) as i64)),
-        XfadeTransition::Dissolve => dissolve(a, b, w, h, dst, p),
+        XfadeTransition::Dissolve => dissolve(a, b, w, h, dst, p, dissolve_field),
         XfadeTransition::FadeBlack => dip(a, b, [0, 0, 0], dst, p),
         XfadeTransition::FadeWhite => dip(a, b, [255, 255, 255], dst, p),
         // `Fade` and the deferred geometric/mosaic kinds (plus any future variant of
@@ -107,18 +118,28 @@ fn slide(a: &[u8], b: &[u8], w: u32, h: u32, dst: &mut Vec<u8>, dx: i64, dy: i64
     }
 }
 
-/// Dissolve: reveal `b` at every pixel whose [`frand`] value has been passed by
+/// Dissolve: reveal `b` at every pixel whose [`xfade_frand`] value has been passed by
 /// `p`, which is `FFmpeg`'s own selection.
 ///
 /// `vf_xfade.c` writes it as `smooth = frand(x,y)*2 + progress*2 - 1.5` and picks A
 /// where `smooth >= 0.5`; with its `progress = 1 - p` that reduces to B where
 /// [`xfade_frand`]`(x, y) < p`.
-fn dissolve(a: &[u8], b: &[u8], w: u32, h: u32, dst: &mut Vec<u8>, p: f32) {
+///
+/// `field` is the same selection tabulated ([`ff_filter::xfade_frand_field`]); it is used only when
+/// its length matches this frame, so a field left over from another size falls back to
+/// computing rather than reading the wrong pixel.
+fn dissolve(a: &[u8], b: &[u8], w: u32, h: u32, dst: &mut Vec<u8>, p: f32, field: Option<&[f32]>) {
     dst.resize(a.len(), 0);
+    let field = field.filter(|f| f.len() == (w as usize) * (h as usize));
     for y in 0..h {
         for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let src = if xfade_frand(x, y) < p { b } else { a };
+            let n = (y * w + x) as usize;
+            let frand = match field {
+                Some(f) => f[n],
+                None => xfade_frand(x, y),
+            };
+            let i = n * 4;
+            let src = if frand < p { b } else { a };
             dst[i..i + 4].copy_from_slice(&src[i..i + 4]);
         }
     }
@@ -223,7 +244,7 @@ pub(super) fn blend_rgba(a: &[u8], b: &[u8], alpha: f32, dst: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ff_filter::xfade_frand;
+    use ff_filter::{xfade_frand, xfade_frand_field};
 
     #[test]
     fn blend_rgba_at_zero_alpha_should_return_a() {
@@ -277,7 +298,7 @@ mod tests {
     fn apply_xfade_fade_should_match_linear_blend() {
         let (a, b) = (frame(RED), frame(BLUE));
         let (mut x, mut y) = (Vec::new(), Vec::new());
-        apply_xfade(XfadeTransition::Fade, &a, &b, 0.5, 4, 1, &mut x);
+        apply_xfade(XfadeTransition::Fade, &a, &b, 0.5, (4, 1), None, &mut x);
         blend_rgba(&a, &b, 0.5, &mut y);
         assert_eq!(x, y, "Fade == linear blend");
     }
@@ -286,7 +307,15 @@ mod tests {
     fn apply_xfade_wiperight_half_should_fill_b_up_to_ffmpegs_integer_column() {
         let (a, b) = (frame(RED), frame(BLUE));
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::WipeRight, &a, &b, 0.5, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeRight,
+            &a,
+            &b,
+            0.5,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         // `FFmpeg` takes clip B where `x <= z` with the integer `z = width * progress`,
         // so `z = 2` puts *three* columns on B, not two. The inclusive comparison is the
         // whole of the one-column divergence #1732 fixed; a `x < w * p` threshold gives
@@ -301,7 +330,15 @@ mod tests {
     fn apply_xfade_wipeleft_half_should_fill_b_past_ffmpegs_integer_column() {
         let (a, b) = (frame(RED), frame(BLUE));
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::WipeLeft, &a, &b, 0.5, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeLeft,
+            &a,
+            &b,
+            0.5,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         // The mirror of `WipeRight`, and deliberately *not* its exact complement:
         // `FFmpeg` takes clip B where `x > z` with `z = width * (1 - progress) = 2`, so
         // only column 3 flips. The two rules together leave column 2 on B for one and on
@@ -325,9 +362,9 @@ mod tests {
             XfadeTransition::Dissolve,
         ] {
             let mut dst = Vec::new();
-            apply_xfade(kind, &a, &b, 0.0, 4, 1, &mut dst);
+            apply_xfade(kind, &a, &b, 0.0, (4, 1), None, &mut dst);
             assert_eq!(dst, a, "{kind:?} at progress 0 = all A");
-            apply_xfade(kind, &a, &b, 1.0, 4, 1, &mut dst);
+            apply_xfade(kind, &a, &b, 1.0, (4, 1), None, &mut dst);
             assert_eq!(dst, b, "{kind:?} at progress 1 = all B");
         }
     }
@@ -343,11 +380,27 @@ mod tests {
         let (a, b) = (frame(RED), frame(BLUE));
         let mut dst = Vec::new();
 
-        apply_xfade(XfadeTransition::WipeRight, &a, &b, 0.0, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeRight,
+            &a,
+            &b,
+            0.0,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         assert_eq!(&dst[0..4], &BLUE, "WipeRight at 0 keeps column 0 on B");
         assert_eq!(&dst[4..8], &RED, "the rest is still A");
 
-        apply_xfade(XfadeTransition::WipeLeft, &a, &b, 1.0, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeLeft,
+            &a,
+            &b,
+            1.0,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         assert_eq!(&dst[0..4], &RED, "WipeLeft at 1 keeps column 0 on A");
         assert_eq!(&dst[4..8], &BLUE, "the rest has flipped to B");
     }
@@ -370,7 +423,15 @@ mod tests {
         // 2x4 frame (h=4): a vertical wipe must split by *row*, not column.
         let (a, b) = (tagged(2, 4, 0), tagged(2, 4, 99));
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::WipeDown, &a, &b, 0.5, 2, 4, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeDown,
+            &a,
+            &b,
+            0.5,
+            (2, 4),
+            None,
+            &mut dst,
+        );
         // `FFmpeg` takes clip B where `y <= z` with the integer `z = height * progress`,
         // so `z = 2` puts rows 0..=2 on B and leaves only row 3 on A -- the same
         // inclusive edge as `WipeRight`, on the other axis (#1732).
@@ -389,7 +450,15 @@ mod tests {
         // 4x1: SlideLeft translates A left by p*w; B fills from the right edge.
         let (a, b) = (tagged(4, 1, 0), tagged(4, 1, 99));
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::SlideLeft, &a, &b, 0.5, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::SlideLeft,
+            &a,
+            &b,
+            0.5,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         // dx = 2. dst[x] = A[x+2] for x+2 < 4, else B[(x+2) mod 4].
         let src = |x: usize| dst[x * 4 + 2]; // base-B channel: 0 = A, 99 = B
         let col = |x: usize| dst[x * 4]; // R channel = source x-coordinate
@@ -406,7 +475,15 @@ mod tests {
         // A larger frame so the per-pixel hash yields both A and B at p=0.5.
         let (a, b) = (tagged(16, 16, 0), tagged(16, 16, 99));
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::Dissolve, &a, &b, 0.5, 16, 16, &mut dst);
+        apply_xfade(
+            XfadeTransition::Dissolve,
+            &a,
+            &b,
+            0.5,
+            (16, 16),
+            None,
+            &mut dst,
+        );
         let has_a = dst.chunks_exact(4).any(|p| p[2] == 0);
         let has_b = dst.chunks_exact(4).any(|p| p[2] == 99);
         assert!(has_a && has_b, "mid-progress dissolve mixes both A and B");
@@ -424,7 +501,7 @@ mod tests {
         let b: Vec<u8> = [255u8, 255, 255, 255].repeat(n);
         let mut dst = Vec::new();
         let p = 0.5;
-        apply_xfade(XfadeTransition::Dissolve, &a, &b, p, w, h, &mut dst);
+        apply_xfade(XfadeTransition::Dissolve, &a, &b, p, (w, h), None, &mut dst);
         for y in 0..h {
             for x in 0..w {
                 let i = ((y * w + x) * 4) as usize;
@@ -432,6 +509,84 @@ mod tests {
                 assert_eq!(dst[i], want, "pixel ({x}, {y}) must follow xfade_frand");
             }
         }
+    }
+
+    #[test]
+    fn apply_xfade_dissolve_with_a_cached_field_should_match_the_uncached_path() {
+        // What discharges "the rendered pixels are unchanged" (#1736). The parity suites
+        // keep calling this with `None`, so they check the *uncached* selection against
+        // FFmpeg; this checks the cached one against that, which makes the pair a chain
+        // rather than a circle.
+        //
+        // Non-square on purpose: a transposed lookup reads the wrong pixel at every
+        // coordinate but keeps the right length, and `w == h` would hide it.
+        const W: u32 = 7;
+        const H: u32 = 5;
+        let a = tagged(W, H, 0);
+        let b = tagged(W, H, 128);
+        let field = xfade_frand_field(W, H);
+
+        for p in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let (mut cached, mut uncached) = (Vec::new(), Vec::new());
+            apply_xfade(
+                XfadeTransition::Dissolve,
+                &a,
+                &b,
+                p,
+                (W, H),
+                None,
+                &mut uncached,
+            );
+            apply_xfade(
+                XfadeTransition::Dissolve,
+                &a,
+                &b,
+                p,
+                (W, H),
+                Some(&field),
+                &mut cached,
+            );
+            assert_eq!(
+                cached, uncached,
+                "the cached field must select byte-identically at progress {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_xfade_dissolve_should_ignore_a_field_of_the_wrong_size() {
+        // A field left over from another frame size must not be indexed. The length is
+        // the whole of what ties a cached field to a frame (RK-025), so a mismatch falls
+        // back to computing rather than reading a neighbouring pixel or panicking.
+        const W: u32 = 7;
+        const H: u32 = 5;
+        let a = tagged(W, H, 0);
+        let b = tagged(W, H, 128);
+        let stale = xfade_frand_field(W + 1, H + 1);
+
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        apply_xfade(
+            XfadeTransition::Dissolve,
+            &a,
+            &b,
+            0.5,
+            (W, H),
+            None,
+            &mut want,
+        );
+        apply_xfade(
+            XfadeTransition::Dissolve,
+            &a,
+            &b,
+            0.5,
+            (W, H),
+            Some(&stale),
+            &mut got,
+        );
+        assert_eq!(
+            got, want,
+            "a field sized for another frame must be refused, not indexed"
+        );
     }
 
     #[test]
@@ -446,7 +601,15 @@ mod tests {
         let mut darkest = (u8::MAX, 0u32);
         for i in 1..=9u32 {
             let p = i as f32 / 10.0;
-            apply_xfade(XfadeTransition::FadeBlack, &a, &b, p, 4, 1, &mut dst);
+            apply_xfade(
+                XfadeTransition::FadeBlack,
+                &a,
+                &b,
+                p,
+                (4, 1),
+                None,
+                &mut dst,
+            );
             let luma = dst[0].max(dst[1]).max(dst[2]);
             if luma < darkest.0 {
                 darkest = (luma, i);
@@ -463,7 +626,7 @@ mod tests {
     fn apply_xfade_deferred_kind_should_fall_back_to_fade() {
         let (a, b) = (frame(RED), frame(BLUE));
         let (mut x, mut y) = (Vec::new(), Vec::new());
-        apply_xfade(XfadeTransition::Pixelize, &a, &b, 0.3, 4, 1, &mut x);
+        apply_xfade(XfadeTransition::Pixelize, &a, &b, 0.3, (4, 1), None, &mut x);
         blend_rgba(&a, &b, 0.3, &mut y);
         assert_eq!(x, y, "deferred kinds render as the linear fade");
     }
@@ -473,7 +636,15 @@ mod tests {
         let a = frame(RED);
         let b = vec![9u8, 9];
         let mut dst = Vec::new();
-        apply_xfade(XfadeTransition::WipeRight, &a, &b, 0.5, 4, 1, &mut dst);
+        apply_xfade(
+            XfadeTransition::WipeRight,
+            &a,
+            &b,
+            0.5,
+            (4, 1),
+            None,
+            &mut dst,
+        );
         assert_eq!(dst, a, "mismatched → linear fallback copies A");
     }
 }
