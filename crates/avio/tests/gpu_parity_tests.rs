@@ -25,11 +25,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use avio::{
-    AnimatedValue, BlendMode, Clip, Color, CompositeOp, FilterStep, GpuCompositor, PixelFormat,
-    PlayerHandle, RealtimeLayer, ScaleAlgorithm, Timeline, TimelinePlayer, VideoFrame,
+    AnimatedValue, BlendMode, Clip, Color, CompositeOp, FilterStep, GpuCompositor, GpuTransition,
+    PixelFormat, PlayerHandle, RealtimeLayer, ScaleAlgorithm, Timeline, TimelinePlayer, VideoFrame,
+    map_transition,
 };
 use ff_filter::RealtimeComposer;
+use ff_filter::XfadeTransition;
 use ff_preview::FrameSink;
+use ff_render::{
+    DipToColorNode, DissolveTransitionNode, FadeTransitionNode, RenderContext, RenderGraph,
+    RenderNode, WipeTransitionNode,
+};
 
 // Per-node tolerance table (#1663). Every mapped `GpuEffect` node has a probe-gated
 // GPU/CPU parity test with a calibrated tolerance; `avio::gpu`'s `parity_coverage`
@@ -1796,6 +1802,166 @@ fn reset_effect_cache_should_reset_motion_blur_accumulation() {
         "after a reset the new clip's first frame must be unblended (no trail); got {}",
         out[0]
     );
+}
+
+// Transition mapping parity (#1657)
+
+/// Mean per-channel difference allowed between a GPU transition node and the CPU
+/// reference the preview runs (`ff_preview::apply_xfade`).
+///
+/// Measured **0.000 (max 0)** here for all eight kinds at progress 0 / 0.5 / 1: the
+/// wipes and the dissolve are hard per-pixel picks, and the fade and dip lerps round
+/// the same way on both sides. The margin covers a driver that rounds a lerp the other
+/// way (±1 per channel) and nothing more.
+///
+/// Deliberately not slack. A wholesale divergence — a dissolve hash that reveals a
+/// different *set* of pixels, or a mirrored wipe — lands near 127 and any bound would
+/// catch it; what a loose bound would hide is a *partial* regression, such as the dip's
+/// phase split shifting by a frame. That is the failure this suite exists to reject.
+const TOL_TRANSITION_MEAN: f64 = 2.0;
+
+/// A GPU context for the transition nodes, or `None` without an adapter.
+fn transition_ctx() -> Option<std::sync::Arc<RenderContext>> {
+    RenderContext::init_blocking().ok().map(std::sync::Arc::new)
+}
+
+/// Runs `node` over clip A on the GPU and reads the result back.
+fn run_transition_gpu(
+    ctx: &std::sync::Arc<RenderContext>,
+    node: impl RenderNode + 'static,
+    a: &[u8],
+    w: u32,
+    h: u32,
+) -> Vec<u8> {
+    RenderGraph::new(std::sync::Arc::clone(ctx))
+        .push(node)
+        .process_gpu(a, w, h)
+        .expect("process_gpu must succeed on a graph with a GPU context")
+}
+
+/// Runs the GPU node `kind` maps to, or `None` when it is a CPU-only kind.
+fn gpu_transition_output(
+    ctx: &std::sync::Arc<RenderContext>,
+    kind: XfadeTransition,
+    a: &[u8],
+    b: &[u8],
+    progress: f32,
+    w: u32,
+    h: u32,
+) -> Option<Vec<u8>> {
+    let out = match map_transition(kind)? {
+        GpuTransition::Fade => run_transition_gpu(
+            ctx,
+            FadeTransitionNode::new(progress, b.to_vec(), w, h),
+            a,
+            w,
+            h,
+        ),
+        GpuTransition::Dissolve => run_transition_gpu(
+            ctx,
+            DissolveTransitionNode::new(progress, b.to_vec(), w, h),
+            a,
+            w,
+            h,
+        ),
+        // Zero softness: the CPU reference has a hard edge, so a feathered GPU edge
+        // would diverge along the seam for reasons that have nothing to do with the
+        // mapping under test.
+        GpuTransition::Wipe { angle } => run_transition_gpu(
+            ctx,
+            WipeTransitionNode::new(progress, 0.0, angle, b.to_vec(), w, h),
+            a,
+            w,
+            h,
+        ),
+        GpuTransition::Dip { color } => run_transition_gpu(
+            ctx,
+            DipToColorNode::new(progress, color, b.to_vec(), w, h),
+            a,
+            w,
+            h,
+        ),
+    };
+    Some(out)
+}
+
+/// The CPU reference the preview actually runs for `kind`.
+fn cpu_transition_output(
+    kind: XfadeTransition,
+    a: &[u8],
+    b: &[u8],
+    progress: f32,
+    w: u32,
+    h: u32,
+) -> Vec<u8> {
+    let mut dst = Vec::new();
+    ff_preview::apply_xfade(kind, a, b, progress, w, h, &mut dst);
+    dst
+}
+
+#[test]
+fn every_mapped_transition_should_match_the_cpu_reference() {
+    // AC2: each mapped kind, against the CPU path the GPU node replaces. Progress 0.5
+    // plus both endpoints — 0 and 1 are what pin direction, since several kinds look
+    // alike at the midpoint (RK-015).
+    //
+    // For `dissolve` this is also the check that `dissolve.wgsl`'s hash matches the Rust
+    // one bit for bit: a different hash reveals the same *proportion* of clip B while
+    // choosing a different *set* of pixels, so only a per-pixel comparison sees it.
+    let Some(ctx) = transition_ctx() else {
+        return; // no adapter
+    };
+    let (w, h) = (32u32, 32u32);
+    let a = gradient_rgba(w, h);
+    let b = checkerboard_rgba(w, h, 4);
+
+    for kind in [
+        XfadeTransition::Fade,
+        XfadeTransition::Dissolve,
+        XfadeTransition::WipeLeft,
+        XfadeTransition::WipeRight,
+        XfadeTransition::WipeUp,
+        XfadeTransition::WipeDown,
+        XfadeTransition::FadeBlack,
+        XfadeTransition::FadeWhite,
+    ] {
+        for progress in [0.0f32, 0.5, 1.0] {
+            let gpu = gpu_transition_output(&ctx, kind, &a, &b, progress, w, h)
+                .unwrap_or_else(|| panic!("{kind:?} must map to a GPU node"));
+            let cpu = cpu_transition_output(kind, &a, &b, progress, w, h);
+            assert_eq!(gpu.len(), cpu.len(), "{kind:?} @{progress}: size mismatch");
+            let mean = mean_abs_diff_rgb(&gpu, &cpu);
+            println!(
+                "{kind:?} @{progress}: mean={mean:.3} max={}",
+                max_abs_diff_rgb(&gpu, &cpu)
+            );
+            assert!(
+                mean <= TOL_TRANSITION_MEAN,
+                "{kind:?} @{progress}: GPU and CPU diverged, mean={mean}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cpu_only_transitions_should_not_map_to_a_gpu_node() {
+    // The other half of AC2, and the reason the suite above can be strict: a kind with
+    // no faithful node returns `None` instead of an approximation.
+    for kind in [
+        XfadeTransition::SlideLeft,
+        XfadeTransition::SlideRight,
+        XfadeTransition::SlideUp,
+        XfadeTransition::SlideDown,
+        XfadeTransition::CircleOpen,
+        XfadeTransition::CircleClose,
+        XfadeTransition::FadeGrays,
+        XfadeTransition::Pixelize,
+    ] {
+        assert!(
+            map_transition(kind).is_none(),
+            "{kind:?} must stay on the CPU path"
+        );
+    }
 }
 
 #[test]

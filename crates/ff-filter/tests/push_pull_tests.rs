@@ -1477,7 +1477,7 @@ fn xfade_dissolve_at_half_progress_should_threshold_pixels_not_blend_them() {
 fn xfade_fade_at_half_progress_should_blend_pixels_not_threshold_them() {
     // The contrast that makes the assertion above meaningful: `fade` *is* the linear
     // cross-blend, so at 50% every pixel lands on one mid value. Recording both pins
-    // which FFmpeg token the linear `DissolveTransitionNode` (#1668) corresponds to.
+    // which FFmpeg token the linear fade transition node (#1668) corresponds to.
     if !filters_available() {
         println!("skipping: this FFmpeg build has no filters");
         return;

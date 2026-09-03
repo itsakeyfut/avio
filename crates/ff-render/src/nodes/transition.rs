@@ -1,5 +1,5 @@
-//! Two-clip transition nodes: a directional wipe, a linear dissolve, and a two-phase
-//! dip to a solid colour. Like [`CrossfadeNode`](super::crossfade::CrossfadeNode), the second clip
+//! Two-clip transition nodes: a directional wipe, a linear fade, a per-pixel dissolve,
+//! and a two-phase dip to a solid colour. Like [`CrossfadeNode`](super::crossfade::CrossfadeNode), the second clip
 //! (B) is carried as RGBA bytes in the node and uploaded to a GPU texture at render
 //! time: a single render graph has one source, so B cannot arrive as a second GPU
 //! input. Clip A is the node's input (`inputs[0]` / the `process_cpu` argument).
@@ -22,15 +22,23 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 
 /// Directional wipe that reveals clip B behind a moving edge.
 ///
-/// `progress = 0` outputs clip A, `progress = 1` outputs clip B, and the edge sweeps
-/// across the frame between them along `angle` (radians: `0` = left→right,
-/// `π/2` = top→bottom). `softness` feathers the edge (normalised units).
+/// `progress = 0` outputs clip A, `progress = 1` outputs clip B, and an edge sweeps
+/// across the frame between them. `angle` (radians) points along the axis clip B
+/// **grows from**, because the mask fills where the projection
+/// exceeds the sweeping threshold: at `angle = 0` clip B enters from the **right** and
+/// the edge travels right-to-left; at `angle = π/2` it enters from the **bottom**.
+///
+/// That is the opposite of how `FFmpeg` names its `xfade` wipes — `wiperight` sweeps its
+/// edge rightward, so clip B enters from the left and maps to `angle = π` (RK-020).
+///
+/// `softness` feathers the edge (normalised units).
 pub struct WipeTransitionNode {
     /// Transition progress `[0, 1]`: 0 = clip A, 1 = clip B.
     pub progress: f32,
     /// Edge feather half-width in normalised units (0 = hard edge).
     pub softness: f32,
-    /// Wipe direction in radians (0 = left→right, `π/2` = top→bottom).
+    /// Axis clip B grows from, in radians: `0` = from the right, `π/2` = from the
+    /// bottom. See the type docs — this is the opposite of the `FFmpeg` wipe names.
     pub angle: f32,
     /// Clip B as RGBA bytes (`to_width × to_height × 4`).
     pub to_rgba: Vec<u8>,
@@ -67,6 +75,9 @@ impl WipeTransitionNode {
 
     /// The B-weight (`mask`) at a normalised pixel centre. Shared by the CPU and GPU
     /// paths (`wipe.wgsl` uses the identical formula) so they agree.
+    ///
+    /// Clip B occupies the side where `proj` exceeds `center`, and `center` sweeps down
+    /// as `progress` rises — so B fills in from the **high** end of the projected axis.
     fn mask_at(&self, uv_x: f32, uv_y: f32) -> f32 {
         let (ax, ay) = (self.angle.cos(), self.angle.sin());
         let reach = f32::midpoint(ax.abs(), ay.abs());
@@ -106,9 +117,13 @@ impl RenderNodeCpu for WipeTransitionNode {
     }
 }
 
-// DissolveTransitionNode
+// FadeTransitionNode
 
-/// Linear dissolve: clip A mixed into clip B by `progress`.
+/// Linear cross-blend: clip A mixed into clip B by `progress`.
+///
+/// This is `FFmpeg`'s `xfade=transition=fade`, not its `dissolve` — `dissolve` reveals
+/// clip B one pixel at a time and never produces a mixed value (see
+/// [`DissolveTransitionNode`]).
 ///
 /// `progress = 0` outputs clip A, `progress = 1` outputs clip B, and every value
 /// between is the per-channel mix of the two (alpha included, as the sibling
@@ -120,6 +135,82 @@ impl RenderNodeCpu for WipeTransitionNode {
 /// is therefore the same operation as [`CrossfadeNode`](super::crossfade::CrossfadeNode),
 /// exposed with the `progress` / `to_rgba` shape the rest of this module uses so a
 /// transition set can be mapped uniformly.
+///
+/// Like its siblings this node renders to an `Rgba8Unorm` target (the shared
+/// `build_pipeline` hard-codes that format), so it does not run in an `Rgba16Float`
+/// graph.
+pub struct FadeTransitionNode {
+    /// Transition progress `[0, 1]`: 0 = clip A, 1 = clip B.
+    pub progress: f32,
+    /// Clip B as RGBA bytes (`to_width × to_height × 4`).
+    pub to_rgba: Vec<u8>,
+    /// Width of `to_rgba`.
+    pub to_width: u32,
+    /// Height of `to_rgba`.
+    pub to_height: u32,
+    #[cfg(feature = "wgpu")]
+    pipeline: std::sync::OnceLock<TransitionPipeline>,
+}
+
+impl FadeTransitionNode {
+    /// Creates a fade from clip A (the node input) to clip B (`to_rgba`).
+    #[must_use]
+    pub fn new(progress: f32, to_rgba: Vec<u8>, to_width: u32, to_height: u32) -> Self {
+        Self {
+            progress,
+            to_rgba,
+            to_width,
+            to_height,
+            #[cfg(feature = "wgpu")]
+            pipeline: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl RenderNodeCpu for FadeTransitionNode {
+    fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
+        if self.to_rgba.len() != rgba.len() {
+            log::warn!(
+                "FadeTransitionNode::process_cpu skipped: size mismatch a={} b={}",
+                rgba.len(),
+                self.to_rgba.len()
+            );
+            return;
+        }
+        for (a, b) in rgba.iter_mut().zip(self.to_rgba.iter()) {
+            *a = lerp_u8(f32::from(*a), f32::from(*b), self.progress);
+        }
+    }
+}
+
+// DissolveTransitionNode
+
+/// A deterministic per-pixel hash in `[0.0, 1.0)`.
+///
+/// Kept bit-identical to `ff-preview`'s host-side `hash01` and to `dissolve.wgsl`, so
+/// the CPU fallback, the GPU node and the preview's own transition all reveal the same
+/// pixels. A different hash would reveal the same *proportion* of clip B while choosing
+/// a different *set* of pixels, which a ratio check cannot detect.
+fn hash01(x: u32, y: u32) -> f32 {
+    let mut h = x
+        .wrapping_mul(374_761_393)
+        .wrapping_add(y.wrapping_mul(668_265_263));
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h ^= h >> 16;
+    // Top 24 bits over 2^24: max = (2^24 - 1) / 2^24 = 1 - 2^-24, exactly representable
+    // in f32 and strictly < 1.0, so `progress > hash01` reveals every pixel at
+    // progress 1 and none at progress 0.
+    #[allow(clippy::cast_precision_loss)] // 24 bits fit f32's mantissa exactly
+    {
+        (h >> 8) as f32 / (1u32 << 24) as f32
+    }
+}
+
+/// Per-pixel dissolve: clip B is revealed one pixel at a time as `progress` rises.
+///
+/// This is `FFmpeg`'s `xfade=transition=dissolve`. Unlike
+/// [`FadeTransitionNode`] every output pixel is *fully* clip A or *fully* clip B — at
+/// 50% the frame holds only the two source values and no mixture of them.
 ///
 /// Like its siblings this node renders to an `Rgba8Unorm` target (the shared
 /// `build_pipeline` hard-codes that format), so it does not run in an `Rgba16Float`
@@ -153,7 +244,7 @@ impl DissolveTransitionNode {
 }
 
 impl RenderNodeCpu for DissolveTransitionNode {
-    fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
+    fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32) {
         if self.to_rgba.len() != rgba.len() {
             log::warn!(
                 "DissolveTransitionNode::process_cpu skipped: size mismatch a={} b={}",
@@ -162,8 +253,13 @@ impl RenderNodeCpu for DissolveTransitionNode {
             );
             return;
         }
-        for (a, b) in rgba.iter_mut().zip(self.to_rgba.iter()) {
-            *a = lerp_u8(f32::from(*a), f32::from(*b), self.progress);
+        for y in 0..h {
+            for x in 0..w {
+                if self.progress > hash01(x, y) {
+                    let i = ((y * w + x) * 4) as usize;
+                    rgba[i..i + 4].copy_from_slice(&self.to_rgba[i..i + 4]);
+                }
+            }
         }
     }
 }
@@ -512,6 +608,46 @@ impl super::RenderNode for WipeTransitionNode {
 }
 
 #[cfg(feature = "wgpu")]
+impl super::RenderNode for FadeTransitionNode {
+    fn input_count(&self) -> usize {
+        2
+    }
+
+    fn process(
+        &self,
+        inputs: &[&wgpu::Texture],
+        outputs: &[&wgpu::Texture],
+        ctx: &crate::context::RenderContext,
+    ) {
+        let Some(tex_a) = inputs.first() else {
+            log::warn!("FadeTransitionNode::process called with no inputs");
+            return;
+        };
+        let Some(output) = outputs.first() else {
+            log::warn!("FadeTransitionNode::process called with no outputs");
+            return;
+        };
+        // `crossfade.wgsl` is this node's shader: same binding layout as the other
+        // transitions, and its one `f32` uniform is `progress` (see the type docs).
+        let pd = self.pipeline.get_or_init(|| {
+            build_pipeline(
+                &ctx.device,
+                include_str!("../shaders/crossfade.wgsl"),
+                "Dissolve",
+                16,
+            )
+        });
+        ctx.queue.write_buffer(
+            &pd.uniform_buf,
+            0,
+            &pack_f32(&[self.progress, 0.0, 0.0, 0.0]),
+        );
+        let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
+        run_pass(ctx, pd, tex_a, &to_tex, output, "Dissolve pass");
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl super::RenderNode for DissolveTransitionNode {
     fn input_count(&self) -> usize {
         2
@@ -531,12 +667,10 @@ impl super::RenderNode for DissolveTransitionNode {
             log::warn!("DissolveTransitionNode::process called with no outputs");
             return;
         };
-        // `crossfade.wgsl` is this node's shader: same binding layout as the other
-        // transitions, and its one `f32` uniform is `progress` (see the type docs).
         let pd = self.pipeline.get_or_init(|| {
             build_pipeline(
                 &ctx.device,
-                include_str!("../shaders/crossfade.wgsl"),
+                include_str!("../shaders/dissolve.wgsl"),
                 "Dissolve",
                 16,
             )
@@ -651,34 +785,34 @@ mod tests {
     /// Clip A and clip B of the dissolve tests: every channel differs between the two
     /// and no channel repeats within a frame, so a swapped pair, a dropped channel or a
     /// transposed one all show up in the assertions below.
-    const DISSOLVE_A: [u8; 4] = [10, 200, 30, 255];
-    const DISSOLVE_B: [u8; 4] = [210, 40, 130, 55];
+    const FADE_A: [u8; 4] = [10, 200, 30, 255];
+    const FADE_B: [u8; 4] = [210, 40, 130, 55];
 
     #[test]
-    fn dissolve_progress_zero_should_be_clip_a() {
-        let node = DissolveTransitionNode::new(0.0, DISSOLVE_B.to_vec(), 1, 1);
-        let mut rgba = DISSOLVE_A.to_vec();
+    fn fade_transition_progress_zero_should_be_clip_a() {
+        let node = FadeTransitionNode::new(0.0, FADE_B.to_vec(), 1, 1);
+        let mut rgba = FADE_A.to_vec();
         node.process_cpu(&mut rgba, 1, 1);
-        assert_eq!(rgba, DISSOLVE_A, "progress=0 must output clip A");
+        assert_eq!(rgba, FADE_A, "progress=0 must output clip A");
     }
 
     #[test]
-    fn dissolve_progress_one_should_be_clip_b() {
-        let node = DissolveTransitionNode::new(1.0, DISSOLVE_B.to_vec(), 1, 1);
-        let mut rgba = DISSOLVE_A.to_vec();
+    fn fade_transition_progress_one_should_be_clip_b() {
+        let node = FadeTransitionNode::new(1.0, FADE_B.to_vec(), 1, 1);
+        let mut rgba = FADE_A.to_vec();
         node.process_cpu(&mut rgba, 1, 1);
-        assert_eq!(rgba, DISSOLVE_B, "progress=1 must output clip B");
+        assert_eq!(rgba, FADE_B, "progress=1 must output clip B");
     }
 
     #[test]
-    fn dissolve_half_should_average_the_pair() {
+    fn fade_transition_half_should_average_the_pair() {
         // The acceptance criterion. On its own it cannot tell A from B (the mix is
         // symmetric at 0.5); the endpoint tests above are what pin the direction.
-        let node = DissolveTransitionNode::new(0.5, DISSOLVE_B.to_vec(), 1, 1);
-        let mut rgba = DISSOLVE_A.to_vec();
+        let node = FadeTransitionNode::new(0.5, FADE_B.to_vec(), 1, 1);
+        let mut rgba = FADE_A.to_vec();
         node.process_cpu(&mut rgba, 1, 1);
         for (c, got) in rgba.iter().enumerate() {
-            let want = f32::midpoint(f32::from(DISSOLVE_A[c]), f32::from(DISSOLVE_B[c]));
+            let want = f32::midpoint(f32::from(FADE_A[c]), f32::from(FADE_B[c]));
             assert!(
                 (f32::from(*got) - want).abs() <= 1.0,
                 "channel {c}: got {got} want {want}"
@@ -687,9 +821,71 @@ mod tests {
     }
 
     #[test]
+    fn fade_transition_size_mismatch_should_leave_rgba_unchanged() {
+        let node = FadeTransitionNode::new(0.5, vec![200u8; 8], 2, 1); // 2 px of B
+        let original = FADE_A.to_vec(); // 1 px of A
+        let mut rgba = original.clone();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, original, "size mismatch must be a no-op");
+    }
+
+    #[test]
+    fn dissolve_progress_zero_should_be_clip_a() {
+        // `progress > hash01` and `hash01 >= 0`, so nothing is revealed at 0.
+        let node = DissolveTransitionNode::new(0.0, vec![210u8, 40, 130, 55], 1, 1);
+        let a = vec![10u8, 200, 30, 255];
+        let mut rgba = a.clone();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, a, "progress=0 must output clip A");
+    }
+
+    #[test]
+    fn dissolve_progress_one_should_be_clip_b() {
+        // `hash01` is strictly < 1, so every pixel is revealed at 1.
+        let b = vec![210u8, 40, 130, 55];
+        let node = DissolveTransitionNode::new(1.0, b.clone(), 1, 1);
+        let mut rgba = vec![10u8, 200, 30, 255];
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, b, "progress=1 must output clip B");
+    }
+
+    #[test]
+    fn dissolve_half_should_threshold_pixels_not_blend_them() {
+        // The property that separates this node from `FadeTransitionNode`: at 50% every
+        // pixel is still fully one clip or the other, and roughly half have flipped.
+        let (w, h) = (32u32, 32u32);
+        let n = (w * h) as usize;
+        let a: Vec<u8> = [0u8, 0, 0, 255].repeat(n);
+        let b: Vec<u8> = [255u8, 255, 255, 255].repeat(n);
+        let node = DissolveTransitionNode::new(0.5, b, w, h);
+        let mut rgba = a.clone();
+        node.process_cpu(&mut rgba, w, h);
+
+        let mut distinct: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|px| px[0]).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct,
+            vec![0, 255],
+            "a dissolve must never produce a mixed value; got {distinct:?}"
+        );
+        let revealed = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] == 255)
+            .count();
+        let ratio = revealed as f64 / n as f64;
+        assert!(
+            (0.35..=0.65).contains(&ratio),
+            "progress=0.5 should reveal about half of clip B, got {ratio:.3}"
+        );
+    }
+
+    #[test]
     fn dissolve_size_mismatch_should_leave_rgba_unchanged() {
-        let node = DissolveTransitionNode::new(0.5, vec![200u8; 8], 2, 1); // 2 px of B
-        let original = DISSOLVE_A.to_vec(); // 1 px of A
+        let node = DissolveTransitionNode::new(1.0, vec![200u8; 8], 2, 1);
+        let original = vec![10u8, 200, 30, 255];
         let mut rgba = original.clone();
         node.process_cpu(&mut rgba, 1, 1);
         assert_eq!(rgba, original, "size mismatch must be a no-op");

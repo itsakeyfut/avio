@@ -11,12 +11,15 @@ use ff_filter::XfadeTransition;
 /// Blends the outgoing frame `a` and incoming frame `b` (packed RGBA, `w*h*4`) at
 /// transition progress `alpha` (`0` = all A, `1` = all B) using the `xfade` `kind`.
 ///
-/// `wipe*`, `slide*`, and `dissolve` are rendered host-side here. `fade` and the
-/// geometric / mosaic kinds (`fadegrays`, `circleopen`, `circleclose`, `pixelize`)
-/// fall through to the linear cross-dissolve — exact fidelity for those is deferred
-/// to the GPU compositing work (#1365). Falls back to the linear blend when the
-/// buffers are mismatched or their length is not `w*h*4`.
-pub(super) fn apply_xfade(
+/// `wipe*`, `slide*`, `dissolve` and the `fadeblack` / `fadewhite` dips are rendered
+/// host-side here. `fade` and the geometric / mosaic kinds (`fadegrays`, `circleopen`,
+/// `circleclose`, `pixelize`) fall through to the linear cross-blend — exact fidelity
+/// for those is deferred to the GPU compositing work (#1365). Falls back to the linear
+/// blend when the buffers are mismatched or their length is not `w*h*4`.
+///
+/// Public because it is the reference the GPU transition nodes are compared against:
+/// `avio`'s transition parity tests run each `ff_render` node beside this function.
+pub fn apply_xfade(
     kind: XfadeTransition,
     a: &[u8],
     b: &[u8],
@@ -42,6 +45,8 @@ pub(super) fn apply_xfade(
         XfadeTransition::SlideUp => slide(a, b, w, h, dst, 0, (p * hf) as i64),
         XfadeTransition::SlideDown => slide(a, b, w, h, dst, 0, -((p * hf) as i64)),
         XfadeTransition::Dissolve => dissolve(a, b, w, h, dst, p),
+        XfadeTransition::FadeBlack => dip(a, b, [0, 0, 0], dst, p),
+        XfadeTransition::FadeWhite => dip(a, b, [255, 255, 255], dst, p),
         // `Fade` and the deferred geometric/mosaic kinds (plus any future variant of
         // this `#[non_exhaustive]` enum) render as the linear cross-dissolve.
         _ => blend_rgba(a, b, alpha, dst),
@@ -93,7 +98,44 @@ fn dissolve(a: &[u8], b: &[u8], w: u32, h: u32, dst: &mut Vec<u8>, p: f32) {
     }
 }
 
+/// Two-phase dip: clip A fades to `color`, then `color` fades to clip B. `p = 0.5` is
+/// the fully solid frame. Alpha rides along so a dip over transparency stays sane.
+fn dip(a: &[u8], b: &[u8], color: [u8; 3], dst: &mut Vec<u8>, p: f32) {
+    dst.resize(a.len(), 0);
+    let solid = [color[0], color[1], color[2], 255u8];
+    // First half blends A -> colour, second half colour -> B; both legs run at twice
+    // the outer rate so the dip is complete exactly at the midpoint.
+    let second_half = p >= 0.5;
+    let (clip, t) = if second_half {
+        (b, (p - 0.5) * 2.0)
+    } else {
+        (a, p * 2.0)
+    };
+    for (i, out) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let j = i * 4;
+        for c in 0..4 {
+            // Phase 1 runs clip -> colour, phase 2 colour -> clip; the direction is
+            // fixed for the whole frame, so only the endpoints swap here.
+            let (from, to) = if second_half {
+                (f32::from(solid[c]), f32::from(clip[j + c]))
+            } else {
+                (f32::from(clip[j + c]), f32::from(solid[c]))
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                out[c] = (from + (to - from) * t + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
 /// A cheap deterministic per-pixel hash in `[0.0, 1.0)`.
+///
+/// Mirrored bit-for-bit by `ff_render`'s `DissolveTransitionNode` and its
+/// `dissolve.wgsl`, so the CPU and GPU dissolves reveal the same pixels rather than
+/// merely the same *proportion* of them. Changing it here changes only this copy;
+/// `avio`'s transition parity suite is what catches the drift, and that needs a GPU
+/// adapter to run.
 fn hash01(x: u32, y: u32) -> f32 {
     let mut h = x
         .wrapping_mul(374_761_393)
