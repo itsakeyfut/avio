@@ -33,29 +33,46 @@ use crate::derive;
 use crate::error::TimelineError;
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuMapping, map_scene};
 use crate::gpu_compositor::GpuCompositor;
-use crate::gpu_transition::{GpuTransition, map_transition};
+use crate::gpu_transition::map_transition;
 use crate::track::Track;
 
 /// Whether the GPU export renders `kind` itself, or leaves the whole export to the CPU.
 ///
-/// Narrower than [`map_transition`], deliberately. That mapping was verified against
-/// `ff_preview::apply_xfade` (#1657), but the export replaces `FFmpeg`'s own `xfade`
-/// filter, and the two references do not agree everywhere. Measured against the CPU
-/// export on the same window frames, with this pipeline's GPU-vs-CPU noise floor at
-/// mean 1.4 for a hard cut:
+/// Every kind [`map_transition`] covers **except `Dissolve`**, now that each node
+/// reproduces `FFmpeg`'s own
+/// formula rather than an approximation of it (#1732). Worst-frame mean between the two
+/// export routes, as printed by
+/// `gpu_export_tests::gpu_export_should_match_the_cpu_export_for_every_rendered_transition`
+/// (so the numbers are reproducible from the suite that guards them, not from a
+/// throwaway harness):
 ///
-/// | kind | mean | why |
-/// |---|---|---|
-/// | `Fade` | 1.99 | agrees |
-/// | wipes | 2.5-3.9 | right direction, seam column off by ~1 px |
-/// | `Dissolve` | 54.5 | same proportion of clip B, different PRNG, so a different pixel set |
-/// | `FadeBlack` / `FadeWhite` | ~78 | `FFmpeg` dips through a smoothstep with a 0.2 phase; the node dips linearly |
+/// | kind | mean |
+/// |---|---|
+/// | `Fade` | 2.0 |
+/// | `WipeLeft` / `WipeRight` / `WipeUp` / `WipeDown` | 2.1 - 2.3 |
+/// | `FadeBlack` / `FadeWhite` | 2.0 - 2.1 |
 ///
-/// So only `Fade` is rendered here; every other kind falls back rather than export
-/// something the model did not ask for (RK-020). Widening this is what fixing the
-/// node-vs-`FFmpeg` divergence unlocks.
+/// A hard cut's own GPU-vs-CPU floor on the same sources is 1.4, so every rendered kind
+/// sits just above the colour round trip and nowhere near a real divergence.
+///
+/// **`Dissolve` is excluded, and not because of its formula.** Its selection is
+/// `ff_filter::xfade_frand`, which is `sinf` of an argument large enough that the result
+/// depends on the libm evaluating it. The GPU route builds the mask with **Rust's**
+/// `sinf` while the CPU route runs **`FFmpeg`'s**, and the two agree only where their
+/// libms do: measured worst-frame mean 3.6 between the routes on Windows but 6.6 on
+/// macOS, i.e. a different set of pixels turning over. A viewer toggling force-CPU would
+/// see different noise for the same timeline, so the export declines it rather than
+/// render what the other route would not (RK-020). Nothing else here depends on libm
+/// agreement -- the blends are arithmetic and the wipes are integer comparisons.
+///
+/// This was `Fade`-only before #1732, when the nodes were pinned to
+/// `ff_preview::apply_xfade` and that reference had itself drifted from `FFmpeg` --
+/// `Dissolve` chose a different set of pixels (mean 54) and the dips followed a
+/// different curve (mean 78). The function stays as the export's explicit policy point:
+/// a kind that maps to a node but does *not* reproduce `FFmpeg` belongs on the CPU, and
+/// this is where it would be excluded (RK-020).
 fn export_maps_to_gpu(kind: XfadeTransition) -> bool {
-    matches!(map_transition(kind), Some(GpuTransition::Fade))
+    !matches!(kind, XfadeTransition::Dissolve) && map_transition(kind).is_some()
 }
 
 /// A transition's length in output frames at the timeline rate.
@@ -600,12 +617,22 @@ pub(crate) fn drain_video_gpu(
         let inc_layer = transitionless_layer(next, track, canvas);
         core.reset_effect_cache();
 
+        // The node the incoming clip's kind renders as. Resolved once per boundary: it
+        // is a pure function of the kind. `None` here is fine when `window` is 0 -- that
+        // is just a hard cut -- so it is only an error inside the loop below.
+        let node = next.transition.and_then(map_transition);
+
         // The transition window: both clips are composited to the canvas separately and
         // then blended, matching the CPU route where `xfade` is the trailing step of the
         // incoming layer's chain. Progress runs `0 .. (window-1)/window`, so the first
         // output is the outgoing clip untouched and the incoming clip's own frame
         // `window` is the first one shown alone -- the CPU route's mapping, measured.
         for j in 0..window {
+            let Some(node) = node else {
+                return Err(TimelineError::TimelineRenderFailed {
+                    reason: "gpu export: transitioned clip lost its GPU node".to_string(),
+                });
+            };
             let t = output_time(video_idx, frame_rate);
             let Some(outgoing) = cur.next()? else {
                 break; // The outgoing clip ran out early; end the transition with it.
@@ -624,7 +651,7 @@ pub(crate) fn drain_video_gpu(
             #[allow(clippy::cast_precision_loss)] // window frame counts fit the mantissa
             let progress = j as f32 / window as f32;
             let blended = core
-                .crossfade(progress, &a_rgba, b_rgba, w, h)
+                .transition(node, progress, &a_rgba, b_rgba, w, h)
                 .ok_or_else(|| TimelineError::TimelineRenderFailed {
                     reason: format!(
                         "gpu export: the transition blend failed at progress {progress}"
@@ -895,26 +922,55 @@ mod tests {
     }
 
     #[test]
-    fn export_maps_to_gpu_should_accept_only_fade() {
-        // #1657's mapping was verified against `ff_preview::apply_xfade`; the export's
-        // reference is FFmpeg's own `xfade`, and measured against that only `Fade`
-        // agrees. Pin the narrowing so widening it is a deliberate act.
-        assert!(export_maps_to_gpu(XfadeTransition::Fade));
+    fn export_maps_to_gpu_should_accept_every_libm_independent_kind() {
+        // #1732 brought each node onto `FFmpeg`'s own formula, so the export no longer
+        // holds back the kinds whose agreement is pure arithmetic. Before that only
+        // `Fade` agreed with the CPU export, because the nodes were pinned to a reference
+        // that had itself drifted.
         for kind in [
-            XfadeTransition::Dissolve,
+            XfadeTransition::Fade,
             XfadeTransition::WipeLeft,
             XfadeTransition::WipeRight,
             XfadeTransition::WipeUp,
             XfadeTransition::WipeDown,
             XfadeTransition::FadeBlack,
             XfadeTransition::FadeWhite,
-            XfadeTransition::SlideLeft,
-            XfadeTransition::Pixelize,
         ] {
             assert!(
-                !export_maps_to_gpu(kind),
-                "{kind:?} does not match the CPU export and must fall back"
+                export_maps_to_gpu(kind),
+                "{kind:?} agrees with the CPU export and must render on the GPU"
             );
+        }
+    }
+
+    #[test]
+    fn export_maps_to_gpu_should_reject_dissolve_despite_it_mapping() {
+        // The one kind that maps to a node and still stays on the CPU. Its selection is
+        // `sinf` of a large argument, so which pixels turn over depends on the libm: the
+        // GPU route uses Rust's and the CPU route FFmpeg's, and they agree on Windows
+        // (worst-frame mean 3.6 between the routes) but not macOS (6.6). Rendering it
+        // would give a viewer different noise depending on the route they took.
+        assert!(
+            map_transition(XfadeTransition::Dissolve).is_some(),
+            "Dissolve still maps to a node -- the preview and the parity suites use it"
+        );
+        assert!(
+            !export_maps_to_gpu(XfadeTransition::Dissolve),
+            "Dissolve must stay on the CPU export"
+        );
+    }
+
+    #[test]
+    fn export_maps_to_gpu_should_reject_a_kind_with_no_node() {
+        // The other half: a kind with no faithful node still keeps the whole export on
+        // the CPU rather than being approximated by one that merely looks similar.
+        for kind in [
+            XfadeTransition::SlideLeft,
+            XfadeTransition::CircleOpen,
+            XfadeTransition::FadeGrays,
+            XfadeTransition::Pixelize,
+        ] {
+            assert!(!export_maps_to_gpu(kind), "{kind:?} has no GPU node");
         }
     }
 
@@ -978,13 +1034,13 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_a_transition_kind_the_gpu_renders_differently() {
-        // `Dissolve` maps to a GPU node (#1657) but picks a different pixel set than
-        // FFmpeg's (mean 54), so the export keeps it on the CPU.
+    fn eligible_track_should_reject_a_transition_kind_with_no_gpu_node() {
+        // `SlideLeft` needs a translating sampler no node provides, so the whole export
+        // stays on the CPU rather than rendering something else.
         let t = square_timeline(vec![
             placed("a.mp4", 0.0, 1.0),
             placed("b.mp4", 1.0, 1.0)
-                .with_transition(XfadeTransition::Dissolve, Duration::from_millis(500)),
+                .with_transition(XfadeTransition::SlideLeft, Duration::from_millis(500)),
         ]);
         assert!(eligible(&t).is_none());
     }

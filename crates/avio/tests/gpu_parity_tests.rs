@@ -1857,9 +1857,13 @@ fn gpu_transition_output(
             w,
             h,
         ),
+        // The mask comes from the same function the CPU reference uses, which is the
+        // point: `FFmpeg`'s dissolve noise is not reproducible in `WGSL` (its argument
+        // outgrows `f32` well before 1080p), so both paths read one CPU-built selection
+        // instead of two implementations hoping to agree (#1732).
         GpuTransition::Dissolve => run_transition_gpu(
             ctx,
-            DissolveTransitionNode::new(progress, b.to_vec(), w, h),
+            DissolveTransitionNode::new(ff_filter::dissolve_mask(w, h, progress), b.to_vec(), w, h),
             a,
             w,
             h,

@@ -19,5 +19,5 @@ pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
 pub use types::{
     DrawTextOptions, EqBand, HwAccel, PitchAlgo, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition,
-    YadifMode,
+    YadifMode, dissolve_mask, xfade_frand,
 };

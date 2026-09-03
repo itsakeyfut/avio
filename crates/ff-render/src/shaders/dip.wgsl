@@ -1,5 +1,10 @@
-// Two-phase dip to a solid colour: clip A fades to the dip colour over the first
-// half of progress, then the colour fades to clip B over the second half.
+// Two-phase dip through a solid colour, reproducing FFmpeg's `fadeblack` /
+// `fadewhite` (`vf_xfade.c`, FADEBLACK_TRANSITION). The colour is reached about a
+// fifth of the way in and held through the middle -- not a linear ramp to the
+// midpoint. Mirrors `DipToColorNode::process_cpu` so the CPU and GPU paths agree.
+//
+// `u.color` may sit outside [0, 1]: FFmpeg dips to luma 0 / 255, which expands past
+// the displayable range. Nothing clamps until the write to the Rgba8Unorm target.
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -36,11 +41,15 @@ struct DipUniforms {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let dip = vec4<f32>(u.color.rgb, 1.0);
-    if (u.progress < 0.5) {
-        let color_a = textureSample(tex_a, samp, in.uv);
-        return mix(color_a, dip, u.progress * 2.0);
-    }
-    let color_b = textureSample(tex_b, samp, in.uv);
-    return mix(dip, color_b, (u.progress - 0.5) * 2.0);
+    // FFmpeg's progress is the complement of ours.
+    let g = 1.0 - u.progress;
+    let phase = 0.2;
+    let s1 = smoothstep(1.0 - phase, 1.0, g);
+    let s2 = smoothstep(phase, 1.0, g);
+    let bg = vec4<f32>(u.color.rgb, 1.0);
+    let a = textureSample(tex_a, samp, in.uv);
+    let b = textureSample(tex_b, samp, in.uv);
+    let leaving  = a * s1 + bg * (1.0 - s1);
+    let arriving = bg * s2 + b * (1.0 - s2);
+    return leaving * g + arriving * (1.0 - g);
 }

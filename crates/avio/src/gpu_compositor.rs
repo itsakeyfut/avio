@@ -42,13 +42,14 @@ use std::time::Duration;
 
 use ff_format::VideoFrame;
 use ff_render::{
-    ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, FadeTransitionNode,
-    FilmGrainNode, FrameLayer, GaussianBlurNode, GlowNode, HslNode, LayerTransform, LumaMaskNode,
-    LutNode, MotionBlurNode, RenderContext, RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode,
-    VignetteNode,
+    ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, DipToColorNode,
+    DissolveTransitionNode, FadeTransitionNode, FilmGrainNode, FrameLayer, GaussianBlurNode,
+    GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode, MotionBlurNode, RenderContext,
+    RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode, VignetteNode, WipeTransitionNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
+use crate::gpu_transition::GpuTransition;
 
 /// A per-layer effect [`RenderGraph`] cached across frames so an effected layer does
 /// not recompile its node pipelines every frame (#1634). Keyed by the exact effect
@@ -172,36 +173,53 @@ impl GpuCompositor {
         self.finish(assemble(processed, canvas)?, canvas)
     }
 
-    /// Cross-fades the composited canvas frame `a` into `b` at `progress` (`0` = all
-    /// `a`, `1` = all `b`), returning the blended rgba or `None` on a GPU error.
+    /// Runs `transition` over the composited canvas frames `a` and `b` at `progress`
+    /// (`0` = all `a`, `1` = all `b`), returning the blended rgba or `None` on a GPU
+    /// error.
     ///
     /// Both buffers are already-composited `w` x `h` canvases, so the transition sits
     /// *after* compositing -- matching the CPU route, where `xfade` is the trailing step
     /// of the incoming layer's chain (`composition_inner.rs`).
     ///
-    /// Only a linear cross-fade, because it is the only kind whose GPU node agrees with
-    /// `FFmpeg`'s `xfade` filter. #1657 verified the whole mapped set against
-    /// `ff_preview::apply_xfade`, but the export's reference is `FFmpeg` itself, and
-    /// measured against it only `Fade` lands inside this pipeline's own GPU-vs-CPU noise
-    /// (mean 1.99 against a 1.4 baseline); `Dissolve` picks a different pixel set
-    /// (mean 54) and the dip kinds follow a different curve entirely (mean 78). The
-    /// narrowing itself lives in `gpu_export`'s `export_maps_to_gpu`.
+    /// Every node here reproduces `FFmpeg`'s own formula for its kind (#1732), which is
+    /// what lets the export use them at all: the export replaces `FFmpeg`'s `xfade`, so a
+    /// node that merely looks similar would ship a different picture than the CPU route.
+    /// `gpu_export`'s `export_maps_to_gpu` decides which kinds are allowed through.
     ///
-    /// The node owns clip B's pixels and compiles its pipeline in a per-instance
-    /// `OnceLock`, so each call builds and compiles one -- accepted for v1 since a
-    /// transition is `duration x fps` frames of an offline export (#1659).
-    pub(crate) fn crossfade(
+    /// Each call builds a node, which compiles its pipeline in a per-instance `OnceLock`
+    /// -- accepted for v1 since a transition is `duration x fps` frames of an offline
+    /// export (#1659).
+    pub(crate) fn transition(
         &mut self,
+        transition: GpuTransition,
         progress: f32,
         a: &[u8],
         b: Vec<u8>,
         w: u32,
         h: u32,
     ) -> Option<Vec<u8>> {
-        RenderGraph::new(Arc::clone(&self.ctx))
-            .push(FadeTransitionNode::new(progress, b, w, h))
-            .process_gpu(a, w, h)
-            .ok()
+        let graph = RenderGraph::new(Arc::clone(&self.ctx));
+        let graph = match transition {
+            GpuTransition::Fade => graph.push(FadeTransitionNode::new(progress, b, w, h)),
+            // The mask is built here rather than in the shader: `FFmpeg`'s dissolve noise
+            // outgrows `f32` well before 1080p, so a `WGSL` copy would reveal a different
+            // set of pixels than the CPU reference (`ff_filter::xfade_frand`).
+            GpuTransition::Dissolve => graph.push(DissolveTransitionNode::new(
+                ff_filter::dissolve_mask(w, h, progress),
+                b,
+                w,
+                h,
+            )),
+            // Zero softness: `FFmpeg`'s wipes have a hard edge, and that is also what
+            // switches the node onto its integer-column rule.
+            GpuTransition::Wipe { angle } => {
+                graph.push(WipeTransitionNode::new(progress, 0.0, angle, b, w, h))
+            }
+            GpuTransition::Dip { color } => {
+                graph.push(DipToColorNode::new(progress, color, b, w, h))
+            }
+        };
+        graph.process_gpu(a, w, h).ok()
     }
 
     /// Composites the built `frame_layers` on the (canvas-cached) `Compositor` to rgba.

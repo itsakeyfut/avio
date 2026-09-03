@@ -54,5 +54,5 @@ pub use graph::{
     FilterGraphBuilder, FilterStep, HwAccel, LavfiSource, LayerSource, MultiTrackAudioMixer,
     MultiTrackComposer, PitchAlgo, ProxySource, RealtimeComposer, RealtimeLayer,
     RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, SolidSource, TextSource, ToneMap,
-    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
+    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode, dissolve_mask, xfade_frand,
 };

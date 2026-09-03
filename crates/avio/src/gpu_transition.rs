@@ -33,13 +33,32 @@ pub enum GpuTransition {
         /// Wipe direction in radians.
         angle: f32,
     },
-    /// Two-phase dip through a solid colour (`ff_render::DipToColorNode`), RGB in
-    /// `[0, 1]`.
+    /// Two-phase dip through a solid colour (`ff_render::DipToColorNode`).
+    ///
+    /// `color` is RGB and normally within `[0, 1]`, but the `FFmpeg` dips deliberately
+    /// fall *outside* it — see this module's `DIP_BLACK`. Nothing clamps it until the
+    /// node's final write, and rounding it back into range would put the middle of the
+    /// dip up to 18.6 away from the export.
     Dip {
-        /// Dip colour.
+        /// Dip colour, RGB; may sit outside `[0, 1]`.
         color: [f32; 3],
     },
 }
+
+/// The dip endpoint for `fadeblack`, in the node's normalised RGB.
+///
+/// Not `0.0`. `FFmpeg` dips toward **luma 0** (`vf_xfade.c` sets `black[0] = 0`), which
+/// in the limited-range `yuv420p` the export runs through sits *below* displayable black,
+/// and it mixes there before anything converts to RGB. Expanding the endpoint out of
+/// limited range and leaving the clamp to the final write reproduces that exactly,
+/// because the conversion is affine and so commutes with the blend. Mixing toward RGB 0
+/// instead lands up to 18.6 away through the middle of the dip -- measured, and the
+/// difference between a mean of 18.7 and 2.7 against a real export (#1732).
+const DIP_BLACK: f32 = (0.0 - 16.0 / 255.0) * (255.0 / 219.0);
+
+/// The dip endpoint for `fadewhite`; see [`DIP_BLACK`]. `FFmpeg` uses luma 255, which
+/// expands just above 1.0.
+const DIP_WHITE: f32 = (1.0 - 16.0 / 255.0) * (255.0 / 219.0);
 
 /// The GPU node for `kind`, or `None` when it has no equivalent and must stay on the
 /// CPU path.
@@ -68,10 +87,10 @@ pub fn map_transition(kind: XfadeTransition) -> Option<GpuTransition> {
             angle: std::f32::consts::FRAC_PI_2,
         }),
         XfadeTransition::FadeBlack => Some(GpuTransition::Dip {
-            color: [0.0, 0.0, 0.0],
+            color: [DIP_BLACK; 3],
         }),
         XfadeTransition::FadeWhite => Some(GpuTransition::Dip {
-            color: [1.0, 1.0, 1.0],
+            color: [DIP_WHITE; 3],
         }),
         // Slides need a translating sampler, and the geometric / mosaic kinds need
         // nodes that do not exist yet; all stay on the CPU path.
@@ -116,13 +135,13 @@ mod tests {
         (
             XfadeTransition::FadeBlack,
             GpuTransition::Dip {
-                color: [0.0, 0.0, 0.0],
+                color: [DIP_BLACK; 3],
             },
         ),
         (
             XfadeTransition::FadeWhite,
             GpuTransition::Dip {
-                color: [1.0, 1.0, 1.0],
+                color: [DIP_WHITE; 3],
             },
         ),
     ];
@@ -173,6 +192,33 @@ mod tests {
                 "{kind:?} is listed as both mapped and CPU-only"
             );
         }
+    }
+
+    #[test]
+    fn dip_endpoints_should_sit_outside_the_displayable_range() {
+        // The one unit conversion in the dip mapping, and the whole of the divergence it
+        // fixes: `FFmpeg` dips to luma 0 / 255 in limited range, which expands past both
+        // ends of `[0, 1]`. Rounding these back into range would put the middle of the
+        // dip up to 18.6 away from the export (#1732), so pin that they are outside.
+        assert!(
+            DIP_BLACK < 0.0,
+            "fadeblack must dip below displayable black, got {DIP_BLACK}"
+        );
+        assert!(
+            DIP_WHITE > 1.0,
+            "fadewhite must dip above displayable white, got {DIP_WHITE}"
+        );
+        // The two ends overshoot by *different* amounts, because limited-range luma is
+        // 16..=235: 16 of headroom below, 20 above. A symmetric pair here would mean the
+        // expansion had been simplified into something that is not FFmpeg's.
+        assert!(
+            (DIP_BLACK - (-16.0 / 219.0)).abs() < 1e-6,
+            "got {DIP_BLACK}"
+        );
+        assert!(
+            (DIP_WHITE - (239.0 / 219.0)).abs() < 1e-6,
+            "got {DIP_WHITE}"
+        );
     }
 
     #[test]
