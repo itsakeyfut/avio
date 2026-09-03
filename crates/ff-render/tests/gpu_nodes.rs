@@ -240,17 +240,38 @@ fn fade_transition_gpu_progress_endpoints_should_be_each_clip() {
 
 // DissolveTransitionNode
 
+/// A mask revealing every `nth` pixel, as an irregular stand-in for a real selection.
+///
+/// The node takes its selection as an input rather than deriving one, so these tests
+/// supply their own; `avio`'s `xfade_reference_parity` is what pins the real mask
+/// against `FFmpeg`.
+fn nth_mask(w: u32, h: u32, nth: usize) -> Vec<u8> {
+    let n = (w * h) as usize;
+    let mut mask = vec![0u8; n * 4];
+    for i in 0..n {
+        if i % nth == 0 {
+            mask[i * 4..i * 4 + 4].fill(255);
+        }
+    }
+    mask
+}
+
 #[test]
-fn dissolve_gpu_half_progress_should_threshold_pixels_not_blend_them() {
+fn dissolve_gpu_should_threshold_pixels_not_blend_them() {
     // The property that separates a dissolve from a fade, asserted on the GPU path in
-    // its own right (this file states independent expectations, not GPU-vs-CPU parity;
-    // the pixel-for-pixel agreement between the two hashes is checked by avio's
-    // transition parity suite). Black into white makes a mixed value unmistakable.
+    // its own right (this file states independent expectations, not GPU-vs-CPU parity).
+    // Black into white makes a mixed value unmistakable.
     let Some(ctx) = gpu_ctx() else { return };
     let (w, h) = (32u32, 32u32);
     let a = solid_rgba(0, 0, 0, 255, w, h);
     let b = solid_rgba(255, 255, 255, 255, w, h);
-    let out = run_gpu(&ctx, DissolveTransitionNode::new(0.5, b, w, h), &a, w, h);
+    let out = run_gpu(
+        &ctx,
+        DissolveTransitionNode::new(nth_mask(w, h, 2), b, w, h),
+        &a,
+        w,
+        h,
+    );
 
     let reds: Vec<u8> = out.chunks_exact(4).map(|px| px[0]).collect();
     let mixed = reds.iter().filter(|v| (8..=247).contains(*v)).count();
@@ -266,32 +287,39 @@ fn dissolve_gpu_half_progress_should_threshold_pixels_not_blend_them() {
     let ratio = revealed as f64 / reds.len() as f64;
     assert!(
         (0.35..=0.65).contains(&ratio),
-        "progress=0.5 should reveal about half of clip B, got {ratio:.3}"
+        "an every-other-pixel mask should reveal about half of clip B, got {ratio:.3}"
     );
 }
 
 #[test]
-fn dissolve_gpu_progress_endpoints_should_be_each_clip() {
-    // The 50% case above says nothing about direction; these pin it.
+fn dissolve_gpu_mask_endpoints_should_be_each_clip() {
+    // The half case above says nothing about which way the mask reads; these pin it.
     let Some(ctx) = gpu_ctx() else { return };
     let (w, h) = (16u32, 16u32);
+    let n = (w * h) as usize;
     let a = solid_rgba(0, 0, 0, 255, w, h);
     let b = solid_rgba(255, 255, 255, 255, w, h);
     let at_zero = run_gpu(
         &ctx,
-        DissolveTransitionNode::new(0.0, b.clone(), w, h),
+        DissolveTransitionNode::new(vec![0u8; n * 4], b.clone(), w, h),
         &a,
         w,
         h,
     );
-    let at_one = run_gpu(&ctx, DissolveTransitionNode::new(1.0, b, w, h), &a, w, h);
+    let at_one = run_gpu(
+        &ctx,
+        DissolveTransitionNode::new(vec![255u8; n * 4], b, w, h),
+        &a,
+        w,
+        h,
+    );
     assert!(
         at_zero.chunks_exact(4).all(|px| px[0] < 8),
-        "progress=0 must be entirely clip A"
+        "an unset mask must be entirely clip A"
     );
     assert!(
         at_one.chunks_exact(4).all(|px| px[0] > 247),
-        "progress=1 must be entirely clip B"
+        "a set mask must be entirely clip B"
     );
 }
 

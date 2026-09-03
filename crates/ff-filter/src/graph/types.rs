@@ -157,6 +157,53 @@ pub enum PitchAlgo {
     Rubberband,
 }
 
+/// `FFmpeg`'s per-pixel noise for `xfade=dissolve` (`vf_xfade.c::frand`), keyed by
+/// integer pixel coordinates and returning a value in `[0, 1)`.
+///
+/// Transcribed literally from the pinned C, and the literalness is load-bearing. The
+/// argument reaches ~110 000 at 1080p, where `f32` resolves to about 0.008 and the
+/// `* 43758.545` then the fractional part amplify any difference into an unrelated
+/// value, so **the argument must be accumulated in `f32`**: computing it in `f64` yields
+/// a pixel set 48% different from `FFmpeg`'s. With the `f32` argument, Rust's `f32::sin`
+/// reproduces `FFmpeg`'s `sinf` for every pixel at every progress -- both measured
+/// against a real export (#1732).
+///
+/// Lives here, beside [`XfadeTransition`], because it is a property of that transition
+/// and every consumer needs the *same* one: the CPU reference in `ff-preview`, the GPU
+/// node's mask in `ff-render`, and the export path in `avio` would otherwise each carry
+/// a copy of arithmetic that has to agree bit for bit.
+#[must_use]
+pub fn xfade_frand(x: u32, y: u32) -> f32 {
+    #[allow(clippy::cast_precision_loss)] // pixel coordinates are exact in f32
+    let arg = (x as f32) * 12.9898 + (y as f32) * 78.233;
+    let r = arg.sin() * 43758.545;
+    r - r.floor()
+}
+
+/// The per-pixel selection `xfade=dissolve` makes at `progress`, as an RGBA mask: `255`
+/// where clip B shows through, `0` where clip A does.
+///
+/// `vf_xfade.c` writes the choice as `smooth = frand(x,y)*2 + progress*2 - 1.5`, taking
+/// clip A where `smooth >= 0.5`; with `FFmpeg`'s `progress` running 1 -> 0 that reduces
+/// to clip B wherever [`xfade_frand`] is below `progress` in this crate's convention.
+///
+/// Exists as a *mask* so the GPU path can render the same dissolve: the hash cannot be
+/// recomputed in `WGSL` (see [`xfade_frand`]), so `ff_render::DissolveTransitionNode`
+/// takes this instead and the two paths agree by construction.
+#[must_use]
+pub fn dissolve_mask(w: u32, h: u32, progress: f32) -> Vec<u8> {
+    let mut mask = vec![0u8; (w as usize) * (h as usize) * 4];
+    for y in 0..h {
+        for x in 0..w {
+            if xfade_frand(x, y) < progress {
+                let i = ((y * w + x) * 4) as usize;
+                mask[i..i + 4].fill(255);
+            }
+        }
+    }
+    mask
+}
+
 /// Transition type for the `xfade` cross-dissolve filter.
 ///
 /// Used with [`super::FilterGraphBuilder::xfade`].
@@ -326,4 +373,48 @@ pub struct DrawTextOptions {
     pub box_color: Option<String>,
     /// Background box border width in pixels. Ignored when `box_color` is `None`.
     pub box_border_width: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dissolve_mask, xfade_frand};
+
+    #[test]
+    fn xfade_frand_should_stay_in_the_unit_interval() {
+        // `dissolve_mask`'s `frand < progress` relies on the range: a value at or above
+        // 1 would never be revealed even at full progress, and a negative one would be
+        // revealed immediately.
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let v = xfade_frand(x, y);
+                assert!((0.0..1.0).contains(&v), "frand({x}, {y}) = {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn dissolve_mask_endpoints_should_be_empty_then_full() {
+        assert!(dissolve_mask(16, 16, 0.0).iter().all(|&m| m == 0));
+        assert!(dissolve_mask(16, 16, 1.0).iter().all(|&m| m == 255));
+    }
+
+    #[test]
+    fn dissolve_mask_should_reveal_about_progress_worth_of_pixels() {
+        // `frand` stands in for a uniform draw, so the revealed fraction tracks progress.
+        // Loose on purpose: the exact set is pinned against a real `FFmpeg` export by
+        // `avio`'s `xfade_reference_parity`, and pinning it twice would only duplicate
+        // that without adding a way to be wrong.
+        let (w, h) = (64u32, 64u32);
+        let total = f64::from(w * h);
+        for (progress, want) in [(0.25f32, 0.25f64), (0.5, 0.5), (0.75, 0.75)] {
+            let mask = dissolve_mask(w, h, progress);
+            let set = mask.chunks_exact(4).filter(|px| px[0] == 255).count();
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = set as f64 / total;
+            assert!(
+                (ratio - want).abs() < 0.08,
+                "progress {progress} revealed {ratio:.3}, expected about {want}"
+            );
+        }
+    }
 }

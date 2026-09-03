@@ -38,13 +38,36 @@ struct WipeUniforms {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex_a));
     let a = vec2<f32>(cos(u.angle), sin(u.angle));
+    let color_a = textureSample(tex_a, samp, in.uv);
+    let color_b = textureSample(tex_b, samp, in.uv);
+
+    // A hard edge along one of the four axes is one of FFmpeg's wipes, which compares
+    // the integer pixel index against an integer edge. Reproduce that exactly rather
+    // than thresholding in normalised space -- the two put the seam one column apart,
+    // which a per-pixel comparison sees. Mirrors `WipeTransitionNode::mask_at`.
+    if (u.softness <= 0.0) {
+        let px = vec2<i32>(floor(in.uv * dims));
+        let axis = 0.999;
+        if (a.x > axis) {
+            return select(color_a, color_b, px.x > i32(dims.x * (1.0 - u.progress)));
+        }
+        if (a.x < -axis) {
+            return select(color_a, color_b, px.x <= i32(dims.x * u.progress));
+        }
+        if (a.y > axis) {
+            return select(color_a, color_b, px.y > i32(dims.y * (1.0 - u.progress)));
+        }
+        if (a.y < -axis) {
+            return select(color_a, color_b, px.y <= i32(dims.y * u.progress));
+        }
+    }
+
     let reach = 0.5 * (abs(a.x) + abs(a.y));
     let hw = max(u.softness, 1e-3);
     let center = mix(0.5 + reach + hw, 0.5 - reach - hw, u.progress);
     let proj = dot(in.uv - vec2<f32>(0.5), a) + 0.5;
     let mask = smoothstep(center - hw, center + hw, proj);
-    let color_a = textureSample(tex_a, samp, in.uv);
-    let color_b = textureSample(tex_b, samp, in.uv);
     return mix(color_a, color_b, mask);
 }

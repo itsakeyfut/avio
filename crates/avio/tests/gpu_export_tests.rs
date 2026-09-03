@@ -204,13 +204,15 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
 
 /// Per-frame mean absolute RGB difference between the two routes' exports.
 ///
-/// Calibrated (#1659): this pipeline's floor is a **hard cut**, where the routes still
-/// differ because the GPU one round-trips yuv -> rgba -> yuv while the CPU one stays in
-/// yuv throughout the filter graph. Measured on the structured sources below, a hard cut
-/// comes out at mean 1.4 / max 7, and the faded transition at ~2. The bound is well
-/// clear of that and still far from anything a real divergence would produce: the wrong
-/// blend direction reads as mean ~127, and a mismatched transition kind as 54-78.
-const TOL_TRANSITION_MEAN: f64 = 5.0;
+/// Calibrated (#1659, widened in #1732): this pipeline's floor is a **hard cut**, where
+/// the routes still differ because the GPU one round-trips yuv -> rgba -> yuv while the
+/// CPU one stays in yuv throughout the filter graph. Measured on the structured sources
+/// below, a hard cut comes out at mean 1.4 / max 7; the transitions land at 2.3 (`Fade`,
+/// the dips), 2.4-2.6 (the wipes) and 4.2 (`Dissolve`, whose per-pixel scatter is the
+/// worst case for 4:2:0 chroma). The bound clears those and is still far from anything a
+/// real divergence would produce: the wrong blend direction reads as mean ~127, and a
+/// transition rendered as the wrong kind as ~50.
+const TOL_TRANSITION_MEAN: f64 = 6.0;
 
 /// Encodes a spatially structured, colourful source: a horizontal ramp in R, a vertical
 /// one in G, and `phase` shifting B so the two clips differ everywhere.
@@ -281,8 +283,8 @@ fn mean_abs_diff_rgb(a: &[u8], b: &[u8]) -> f64 {
     sum / denom
 }
 
-/// #1659: a cross-fade into the track's last clip exports on the GPU and lands on the
-/// CPU export's pixels.
+/// #1659 / #1732: a transition into the track's last clip exports on the GPU and lands
+/// on the CPU export's pixels, for every kind the export renders.
 ///
 /// **Why the frame count is the load-bearing assertion.** The CPU route's `xfade`
 /// overlaps the two clips, so the track comes out `transition` shorter: two 1 s clips at
@@ -297,9 +299,13 @@ fn mean_abs_diff_rgb(a: &[u8], b: &[u8]) -> f64 {
 /// `gpu_export::tests::eligible_track_should_accept_a_fade_into_the_last_clip`, which
 /// asserts this exact shape is eligible; with an adapter present (checked below) those
 /// two facts leave no other route.
+///
+/// The kinds beyond `Fade` are only here because #1732 brought each node onto FFmpeg's
+/// own formula. Before that the GPU route declined them, and this loop would have been
+/// comparing two CPU exports.
 #[cfg(feature = "gpu")]
 #[test]
-fn gpu_export_should_match_the_cpu_export_for_a_faded_transition() {
+fn gpu_export_should_match_the_cpu_export_for_every_rendered_transition() {
     use std::time::Duration;
 
     use ff_filter::XfadeTransition;
@@ -320,73 +326,82 @@ fn gpu_export_should_match_the_cpu_export_for_a_faded_transition() {
         return; // no GPU adapter -> the GPU leg is unreachable here
     }
 
-    let build = || {
-        Timeline::builder()
-            .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
-            .video_track(vec![
-                Clip::new(&a).trim(Duration::ZERO, Duration::from_secs(1)),
-                Clip::new(&b)
-                    .offset(Duration::from_secs(1))
-                    .trim(Duration::ZERO, Duration::from_secs(1))
-                    .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
-            ])
-            .build()
-            .ok()
-    };
-    let (Some(gpu_timeline), Some(cpu_timeline)) = (build(), build()) else {
-        return; // source codec unavailable -> skip
-    };
+    for kind in [
+        XfadeTransition::Fade,
+        XfadeTransition::Dissolve,
+        XfadeTransition::WipeLeft,
+        XfadeTransition::WipeRight,
+        XfadeTransition::WipeUp,
+        XfadeTransition::WipeDown,
+        XfadeTransition::FadeBlack,
+        XfadeTransition::FadeWhite,
+    ] {
+        let build = || {
+            Timeline::builder()
+                .canvas(CANVAS, CANVAS)
+                .frame_rate(30.0)
+                .video_track(vec![
+                    Clip::new(&a).trim(Duration::ZERO, Duration::from_secs(1)),
+                    Clip::new(&b)
+                        .offset(Duration::from_secs(1))
+                        .trim(Duration::ZERO, Duration::from_secs(1))
+                        .with_transition(kind, Duration::from_millis(500)),
+                ])
+                .build()
+                .ok()
+        };
+        let (Some(gpu_timeline), Some(cpu_timeline)) = (build(), build()) else {
+            return; // source codec unavailable -> skip
+        };
 
-    let out_gpu = test_output_path("gpuexport_tr_gpu.mp4");
-    let out_cpu = test_output_path("gpuexport_tr_cpu.mp4");
-    let _gg = FileGuard::new(out_gpu.clone());
-    let _gc = FileGuard::new(out_cpu.clone());
-    if !render_or_skip(gpu_timeline.render(&out_gpu, export_config()))
-        || !render_or_skip(cpu_timeline.render_forcing_cpu(&out_cpu, export_config()))
-    {
-        return;
-    }
+        let out_gpu = test_output_path("gpuexport_tr_gpu.mp4");
+        let out_cpu = test_output_path("gpuexport_tr_cpu.mp4");
+        let _gg = FileGuard::new(out_gpu.clone());
+        let _gc = FileGuard::new(out_cpu.clone());
+        if !render_or_skip(gpu_timeline.render(&out_gpu, export_config()))
+            || !render_or_skip(cpu_timeline.render_forcing_cpu(&out_cpu, export_config()))
+        {
+            return;
+        }
 
-    let gpu = decode_rgba(&out_gpu);
-    let cpu = decode_rgba(&out_cpu);
-    if gpu.is_empty() || cpu.is_empty() {
-        return; // decoder unavailable -> skip
-    }
+        let gpu = decode_rgba(&out_gpu);
+        let cpu = decode_rgba(&out_cpu);
+        if gpu.is_empty() || cpu.is_empty() {
+            return; // decoder unavailable -> skip
+        }
 
-    // The transition ran: the track is a window shorter than the hard cut would be.
-    // Expect against what the sources actually decode, since an encode/decode round trip
-    // can lose a frame and that shortfall would otherwise read as a transition bug.
-    let hard_cut = decode_rgba(&a).len() + decode_rgba(&b).len();
-    let expected = hard_cut - WINDOW;
-    assert!(
-        (expected - 1..=expected + 1).contains(&gpu.len()),
-        "a {WINDOW}-frame transition should shorten the {hard_cut}-frame hard cut to \
+        // The transition ran: the track is a window shorter than the hard cut would be.
+        // Expect against what the sources actually decode, since an encode/decode round trip
+        // can lose a frame and that shortfall would otherwise read as a transition bug.
+        let hard_cut = decode_rgba(&a).len() + decode_rgba(&b).len();
+        let expected = hard_cut - WINDOW;
+        assert!(
+            (expected - 1..=expected + 1).contains(&gpu.len()),
+            "a {WINDOW}-frame transition should shorten the {hard_cut}-frame hard cut to \
          ~{expected}, got {}",
-        gpu.len()
-    );
-    assert_eq!(
-        gpu.len(),
-        cpu.len(),
-        "both routes must export the same number of frames"
-    );
+            gpu.len()
+        );
+        assert_eq!(
+            gpu.len(),
+            cpu.len(),
+            "both routes must export the same number of frames"
+        );
 
-    let worst = gpu
-        .iter()
-        .zip(cpu.iter())
-        .enumerate()
-        .map(|(i, (g, c))| (mean_abs_diff_rgb(g, c), i))
-        .fold((0f64, 0usize), |acc, x| if x.0 > acc.0 { x } else { acc });
-    println!(
-        "faded transition: worst frame {} mean={:.3}",
-        worst.1, worst.0
-    );
-    assert!(
-        worst.0 <= TOL_TRANSITION_MEAN,
-        "GPU and CPU exports diverged at frame {}: mean={:.3} (tolerance {TOL_TRANSITION_MEAN})",
-        worst.1,
-        worst.0
-    );
+        let worst = gpu
+            .iter()
+            .zip(cpu.iter())
+            .enumerate()
+            .map(|(i, (g, c))| (mean_abs_diff_rgb(g, c), i))
+            .fold((0f64, 0usize), |acc, x| if x.0 > acc.0 { x } else { acc });
+        println!("{kind:?}: worst frame {} mean={:.3}", worst.1, worst.0);
+        assert!(
+            worst.0 <= TOL_TRANSITION_MEAN,
+            "{kind:?}: GPU and CPU exports diverged at frame {}: mean={:.3} \
+         (tolerance {TOL_TRANSITION_MEAN})",
+            worst.1,
+            worst.0
+        );
+    }
 }
 
 #[test]

@@ -12,6 +12,15 @@ fn lerp_u8(a: f32, b: f32, t: f32) -> u8 {
     (a + (b - a) * t + 0.5).clamp(0.0, 255.0) as u8
 }
 
+/// `FFmpeg`'s fixed dip phase (`vf_xfade.c`, `FADEBLACK_TRANSITION`): the fraction of
+/// the transition spent reaching the solid colour at each end.
+///
+/// It is what makes the dip *not* a linear ramp -- the solid colour is reached about a
+/// fifth of the way in and held through the middle, where a linear dip would only touch
+/// it at the midpoint. The linear version this replaced diverged from a real export by a
+/// mean of 78 (#1732).
+const DIP_PHASE: f32 = 0.2;
+
 /// `smoothstep(e0, e1, x)`; callers guarantee `e1 > e0`.
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -73,13 +82,46 @@ impl WipeTransitionNode {
         }
     }
 
-    /// The B-weight (`mask`) at a normalised pixel centre. Shared by the CPU and GPU
-    /// paths (`wipe.wgsl` uses the identical formula) so they agree.
+    /// The B-weight (`mask`) for the pixel at `(x, y)` on a `w` x `h` grid. Shared by
+    /// the CPU and GPU paths (`wipe.wgsl` uses the identical formula) so they agree.
     ///
     /// Clip B occupies the side where `proj` exceeds `center`, and `center` sweeps down
-    /// as `progress` rises — so B fills in from the **high** end of the projected axis.
-    fn mask_at(&self, uv_x: f32, uv_y: f32) -> f32 {
+    /// as `progress` rises -- so B fills in from the **high** end of the projected axis.
+    ///
+    /// A hard edge (`softness == 0`) along one of the four axes takes an exact integer
+    /// rule instead, because those are the four `FFmpeg` wipes and the export has to be
+    /// able to reproduce them. `FFmpeg` compares the pixel index against an integer edge
+    /// `z` (`vf_xfade.c`, `WIPE*_TRANSITION`), which puts the seam half a pixel away from
+    /// where a normalised threshold puts it -- one column, but a column that a per-pixel
+    /// comparison sees (#1732). The rule is deliberately asymmetric at the endpoints,
+    /// matching `FFmpeg`: the `-x` axis already shows one column of B at progress 0.
+    ///
+    /// A feathered or off-axis wipe has no `FFmpeg` counterpart to match and keeps the
+    /// smoothstep.
+    fn mask_at(&self, x: u32, y: u32, w: u32, h: u32) -> f32 {
         let (ax, ay) = (self.angle.cos(), self.angle.sin());
+        if self.softness <= 0.0 {
+            const AXIS: f32 = 0.999;
+            #[allow(clippy::cast_precision_loss)]
+            let (wf, hf) = (w as f32, h as f32);
+            // `z` truncates exactly as C's `const int z = width * progress` does.
+            #[allow(clippy::cast_possible_truncation)]
+            let edge = |extent: f32, at: f32| (extent * at) as i64;
+            if ax > AXIS {
+                return f32::from(i64::from(x) > edge(wf, 1.0 - self.progress));
+            }
+            if ax < -AXIS {
+                return f32::from(i64::from(x) <= edge(wf, self.progress));
+            }
+            if ay > AXIS {
+                return f32::from(i64::from(y) > edge(hf, 1.0 - self.progress));
+            }
+            if ay < -AXIS {
+                return f32::from(i64::from(y) <= edge(hf, self.progress));
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let (uv_x, uv_y) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
         let reach = f32::midpoint(ax.abs(), ay.abs());
         // Floor the half-width so a zero softness is a near-hard, division-safe edge.
         let hw = self.softness.max(1e-3);
@@ -102,11 +144,10 @@ impl RenderNodeCpu for WipeTransitionNode {
             );
             return;
         }
-        let (wf, hf) = (w as f32, h as f32);
         for y in 0..h {
             for x in 0..w {
                 let idx = ((y * w + x) * 4) as usize;
-                let mask = self.mask_at((x as f32 + 0.5) / wf, (y as f32 + 0.5) / hf);
+                let mask = self.mask_at(x, y, w, h);
                 for c in 0..4 {
                     let a = f32::from(rgba[idx + c]);
                     let b = f32::from(self.to_rgba[idx + c]);
@@ -185,39 +226,28 @@ impl RenderNodeCpu for FadeTransitionNode {
 
 // DissolveTransitionNode
 
-/// A deterministic per-pixel hash in `[0.0, 1.0)`.
+/// Per-pixel dissolve: clip B shows through wherever the supplied `mask` is set.
 ///
-/// Kept bit-identical to `ff-preview`'s host-side `hash01` and to `dissolve.wgsl`, so
-/// the CPU fallback, the GPU node and the preview's own transition all reveal the same
-/// pixels. A different hash would reveal the same *proportion* of clip B while choosing
-/// a different *set* of pixels, which a ratio check cannot detect.
-fn hash01(x: u32, y: u32) -> f32 {
-    let mut h = x
-        .wrapping_mul(374_761_393)
-        .wrapping_add(y.wrapping_mul(668_265_263));
-    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
-    h ^= h >> 16;
-    // Top 24 bits over 2^24: max = (2^24 - 1) / 2^24 = 1 - 2^-24, exactly representable
-    // in f32 and strictly < 1.0, so `progress > hash01` reveals every pixel at
-    // progress 1 and none at progress 0.
-    #[allow(clippy::cast_precision_loss)] // 24 bits fit f32's mantissa exactly
-    {
-        (h >> 8) as f32 / (1u32 << 24) as f32
-    }
-}
-
-/// Per-pixel dissolve: clip B is revealed one pixel at a time as `progress` rises.
+/// This is `FFmpeg`'s `xfade=transition=dissolve`. Unlike [`FadeTransitionNode`] every
+/// output pixel is *fully* clip A or *fully* clip B, never a mixture of them — the node
+/// selects, it does not blend.
 ///
-/// This is `FFmpeg`'s `xfade=transition=dissolve`. Unlike
-/// [`FadeTransitionNode`] every output pixel is *fully* clip A or *fully* clip B — at
-/// 50% the frame holds only the two source values and no mixture of them.
+/// It takes no progress of its own: which pixels have turned over is entirely the mask's
+/// decision, and `ff_filter::dissolve_mask` is what turns a progress into one.
 ///
 /// Like its siblings this node renders to an `Rgba8Unorm` target (the shared
 /// `build_pipeline` hard-codes that format), so it does not run in an `Rgba16Float`
 /// graph.
 pub struct DissolveTransitionNode {
-    /// Transition progress `[0, 1]`: 0 = clip A, 1 = clip B.
-    pub progress: f32,
+    /// Per-pixel selection as an RGBA mask: `255` shows clip B, `0` shows clip A.
+    ///
+    /// Supplied rather than computed. `FFmpeg`'s dissolve keys off
+    /// `fract(sinf(x*12.9898 + y*78.233) * 43758.545)`, whose argument reaches ~110 000
+    /// at 1080p -- past where `f32` holds it steadily, so the value is not reproducible
+    /// across implementations and a `WGSL` copy would reveal a different set of pixels
+    /// than the CPU reference. `ff_filter::dissolve_mask` builds this once and both
+    /// paths read it (#1732).
+    pub mask: Vec<u8>,
     /// Clip B as RGBA bytes (`to_width × to_height × 4`).
     pub to_rgba: Vec<u8>,
     /// Width of `to_rgba`.
@@ -229,11 +259,12 @@ pub struct DissolveTransitionNode {
 }
 
 impl DissolveTransitionNode {
-    /// Creates a dissolve from clip A (the node input) to clip B (`to_rgba`).
+    /// Creates a dissolve from clip A (the node input) to clip B (`to_rgba`), revealing B
+    /// wherever `mask` is set. Build `mask` with `ff_filter::dissolve_mask`.
     #[must_use]
-    pub fn new(progress: f32, to_rgba: Vec<u8>, to_width: u32, to_height: u32) -> Self {
+    pub fn new(mask: Vec<u8>, to_rgba: Vec<u8>, to_width: u32, to_height: u32) -> Self {
         Self {
-            progress,
+            mask,
             to_rgba,
             to_width,
             to_height,
@@ -244,21 +275,25 @@ impl DissolveTransitionNode {
 }
 
 impl RenderNodeCpu for DissolveTransitionNode {
-    fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32) {
-        if self.to_rgba.len() != rgba.len() {
+    fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
+        if self.to_rgba.len() != rgba.len() || self.mask.len() != rgba.len() {
             log::warn!(
-                "DissolveTransitionNode::process_cpu skipped: size mismatch a={} b={}",
+                "DissolveTransitionNode::process_cpu skipped: size mismatch a={} b={} mask={}",
                 rgba.len(),
-                self.to_rgba.len()
+                self.to_rgba.len(),
+                self.mask.len()
             );
             return;
         }
-        for y in 0..h {
-            for x in 0..w {
-                if self.progress > hash01(x, y) {
-                    let i = ((y * w + x) * 4) as usize;
-                    rgba[i..i + 4].copy_from_slice(&self.to_rgba[i..i + 4]);
-                }
+        for ((px, b), m) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.to_rgba.as_chunks::<4>().0)
+            .zip(self.mask.as_chunks::<4>().0)
+        {
+            if m[0] >= 128 {
+                *px = *b;
             }
         }
     }
@@ -269,9 +304,15 @@ impl RenderNodeCpu for DissolveTransitionNode {
 /// Two-phase transition: clip A fades to a solid `color`, then the colour fades to
 /// clip B. `progress = 0.5` is the fully solid dip (a fade-to-black/white/brand dip).
 pub struct DipToColorNode {
-    /// Transition progress `[0, 1]`: 0 = clip A, 0.5 = solid `color`, 1 = clip B.
+    /// Transition progress `[0, 1]`: 0 = clip A, 1 = clip B, with `color` solid across
+    /// the middle (see this module's `DIP_PHASE`).
     pub progress: f32,
-    /// Dip colour in RGB `[0, 1]` (e.g. `[0, 0, 0]` for fade-to-black).
+    /// Dip colour in RGB, normally `[0, 1]`.
+    ///
+    /// Values **outside** that range are meaningful and are not clamped until the final
+    /// write: reproducing `FFmpeg`'s `fadeblack` / `fadewhite` needs the dip endpoint to
+    /// be the luma level 0 / 255 expanded out of limited range, which lands just outside
+    /// `[0, 1]`. `avio`'s `map_transition` is what supplies those values.
     pub color: [f32; 3],
     /// Clip B as RGBA bytes (`to_width × to_height × 4`).
     pub to_rgba: Vec<u8>,
@@ -307,23 +348,6 @@ impl DipToColorNode {
 
 impl RenderNodeCpu for DipToColorNode {
     fn process_cpu(&self, rgba: &mut [u8], _w: u32, _h: u32) {
-        let dip = [
-            self.color[0] * 255.0,
-            self.color[1] * 255.0,
-            self.color[2] * 255.0,
-            255.0,
-        ];
-        if self.progress < 0.5 {
-            // Phase 1: clip A -> dip colour. Clip B is not needed yet.
-            let t = self.progress * 2.0;
-            for px in rgba.as_chunks_mut::<4>().0 {
-                for c in 0..4 {
-                    px[c] = lerp_u8(f32::from(px[c]), dip[c], t);
-                }
-            }
-            return;
-        }
-        // Phase 2: dip colour -> clip B.
         if self.to_rgba.len() != rgba.len() {
             log::warn!(
                 "DipToColorNode::process_cpu skipped: size mismatch a={} b={}",
@@ -332,7 +356,17 @@ impl RenderNodeCpu for DipToColorNode {
             );
             return;
         }
-        let t = (self.progress - 0.5) * 2.0;
+        let bg = [
+            self.color[0] * 255.0,
+            self.color[1] * 255.0,
+            self.color[2] * 255.0,
+            255.0,
+        ];
+        // `FFmpeg`'s progress is the complement of ours, and both curves are constant
+        // over the frame, so they are evaluated once rather than per pixel.
+        let g = 1.0 - self.progress;
+        let s1 = smoothstep(1.0 - DIP_PHASE, 1.0, g);
+        let s2 = smoothstep(DIP_PHASE, 1.0, g);
         for (px, b) in rgba
             .as_chunks_mut::<4>()
             .0
@@ -340,7 +374,11 @@ impl RenderNodeCpu for DipToColorNode {
             .zip(self.to_rgba.as_chunks::<4>().0)
         {
             for c in 0..4 {
-                px[c] = lerp_u8(dip[c], f32::from(b[c]), t);
+                let leaving = f32::from(px[c]) * s1 + bg[c] * (1.0 - s1);
+                let arriving = bg[c] * s2 + f32::from(b[c]) * (1.0 - s2);
+                // `lerp_u8(a, b, t)` is `a + (b - a) * t`, so this is
+                // `leaving * g + arriving * (1 - g)` -- FFmpeg's outer `mix`.
+                px[c] = lerp_u8(arriving, leaving, g);
             }
         }
     }
@@ -371,40 +409,50 @@ fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 /// Builds the shared transition pipeline: bind group `tex_a` / `tex_b` / sampler /
-/// uniform, and a uniform buffer of `uniform_size` bytes.
+/// uniform, a uniform buffer of `uniform_size` bytes, and -- when `mask` is set -- a
+/// third texture at binding 4 carrying a per-pixel selection mask.
+///
+/// Only `DissolveTransitionNode` asks for the mask. The other three shaders declare
+/// exactly the four bindings above, so handing them a layout entry they never read would
+/// be dead surface.
 #[cfg(feature = "wgpu")]
 fn build_pipeline(
     device: &wgpu::Device,
     shader_src: &str,
     label: &str,
     uniform_size: u64,
+    mask: bool,
 ) -> TransitionPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
     });
+    let mut entries = vec![
+        tex_entry(0),
+        tex_entry(1),
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ];
+    if mask {
+        entries.push(tex_entry(4));
+    }
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
-        entries: &[
-            tex_entry(0),
-            tex_entry(1),
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
+        entries: &entries,
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
@@ -509,33 +557,42 @@ fn run_pass(
     pd: &TransitionPipeline,
     tex_a: &wgpu::Texture,
     tex_b: &wgpu::Texture,
+    mask: Option<&wgpu::Texture>,
     output: &wgpu::Texture,
     label: &str,
 ) {
     let a_view = tex_a.create_view(&wgpu::TextureViewDescriptor::default());
     let b_view = tex_b.create_view(&wgpu::TextureViewDescriptor::default());
+    let mask_view = mask.map(|m| m.create_view(&wgpu::TextureViewDescriptor::default()));
     let out_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut bind_entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&a_view),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(&b_view),
+        },
+        wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::Sampler(&pd.sampler),
+        },
+        wgpu::BindGroupEntry {
+            binding: 3,
+            resource: pd.uniform_buf.as_entire_binding(),
+        },
+    ];
+    if let Some(view) = mask_view.as_ref() {
+        bind_entries.push(wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::TextureView(view),
+        });
+    }
     let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout: &pd.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&a_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&b_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&pd.sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: pd.uniform_buf.as_entire_binding(),
-            },
-        ],
+        entries: &bind_entries,
     });
     let mut encoder = ctx
         .device
@@ -595,6 +652,7 @@ impl super::RenderNode for WipeTransitionNode {
                 include_str!("../shaders/wipe.wgsl"),
                 "Wipe",
                 16,
+                false,
             )
         });
         ctx.queue.write_buffer(
@@ -603,7 +661,7 @@ impl super::RenderNode for WipeTransitionNode {
             &pack_f32(&[self.progress, self.softness, self.angle, 0.0]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, output, "Wipe pass");
+        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Wipe pass");
     }
 }
 
@@ -633,8 +691,9 @@ impl super::RenderNode for FadeTransitionNode {
             build_pipeline(
                 &ctx.device,
                 include_str!("../shaders/crossfade.wgsl"),
-                "Dissolve",
+                "Fade",
                 16,
+                false,
             )
         });
         ctx.queue.write_buffer(
@@ -643,7 +702,7 @@ impl super::RenderNode for FadeTransitionNode {
             &pack_f32(&[self.progress, 0.0, 0.0, 0.0]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, output, "Dissolve pass");
+        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Fade pass");
     }
 }
 
@@ -667,21 +726,28 @@ impl super::RenderNode for DissolveTransitionNode {
             log::warn!("DissolveTransitionNode::process called with no outputs");
             return;
         };
+        // The only transition that binds a third texture, so the only one that asks
+        // `build_pipeline` for the mask entry.
         let pd = self.pipeline.get_or_init(|| {
             build_pipeline(
                 &ctx.device,
                 include_str!("../shaders/dissolve.wgsl"),
                 "Dissolve",
                 16,
+                true,
             )
         });
-        ctx.queue.write_buffer(
-            &pd.uniform_buf,
-            0,
-            &pack_f32(&[self.progress, 0.0, 0.0, 0.0]),
-        );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, output, "Dissolve pass");
+        let mask_tex = upload_frame(ctx, &self.mask, self.to_width, self.to_height);
+        run_pass(
+            ctx,
+            pd,
+            tex_a,
+            &to_tex,
+            Some(&mask_tex),
+            output,
+            "Dissolve pass",
+        );
     }
 }
 
@@ -706,7 +772,13 @@ impl super::RenderNode for DipToColorNode {
             return;
         };
         let pd = self.pipeline.get_or_init(|| {
-            build_pipeline(&ctx.device, include_str!("../shaders/dip.wgsl"), "Dip", 32)
+            build_pipeline(
+                &ctx.device,
+                include_str!("../shaders/dip.wgsl"),
+                "Dip",
+                32,
+                false,
+            )
         });
         ctx.queue.write_buffer(
             &pd.uniform_buf,
@@ -723,7 +795,7 @@ impl super::RenderNode for DipToColorNode {
             ]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, output, "Dip pass");
+        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Dip pass");
     }
 }
 
@@ -742,32 +814,52 @@ mod tests {
     }
 
     #[test]
-    fn wipe_progress_one_should_be_clip_b() {
-        let b = vec![200u8, 210, 220, 255];
-        let node = WipeTransitionNode::new(1.0, 0.0, 0.0, b.clone(), 1, 1);
-        let mut rgba = vec![10u8, 20, 30, 255];
-        node.process_cpu(&mut rgba, 1, 1);
-        for (got, want) in rgba.iter().zip(b.iter()) {
-            assert!(
-                (i32::from(*got) - i32::from(*want)).abs() <= 1,
-                "progress=1 must output clip B; got {got} want {want}"
+    fn wipe_at_progress_one_should_keep_ffmpegs_final_column() {
+        // `FFmpeg`'s edge is an integer and its comparison is strict, so the last column
+        // never flips: at progress 1 the axis-`+x` rule is `x > floor(w * 0)` = `x > 0`,
+        // leaving column 0 on clip A. Reproducing that asymmetry is the point -- the
+        // export has to land on FFmpeg's pixels, not on a tidier convention (#1732).
+        let a = vec![
+            10u8, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
+        ];
+        let b = vec![
+            200u8, 210, 220, 255, 200, 210, 220, 255, 200, 210, 220, 255, 200, 210, 220, 255,
+        ];
+        let node = WipeTransitionNode::new(1.0, 0.0, 0.0, b, 4, 1);
+        let mut rgba = a.clone();
+        node.process_cpu(&mut rgba, 4, 1);
+        assert_eq!(
+            &rgba[0..4],
+            &a[0..4],
+            "column 0 stays on clip A at progress 1"
+        );
+        for x in 1..4 {
+            assert_eq!(
+                &rgba[x * 4..x * 4 + 3],
+                &[200, 210, 220],
+                "column {x} must be clip B at progress 1"
             );
         }
     }
 
     #[test]
-    fn wipe_half_hard_should_split_left_a_right_b() {
-        // A 2×1 frame, angle=0, softness=0: left pixel = A, right pixel = B.
-        let a = vec![10u8, 20, 30, 255, 10, 20, 30, 255];
-        let b = vec![200u8, 210, 220, 255, 200, 210, 220, 255];
-        let node = WipeTransitionNode::new(0.5, 0.0, 0.0, b, 2, 1);
+    fn wipe_hard_edge_should_land_on_ffmpegs_integer_column() {
+        // 8x1, angle 0 (axis +x), softness 0, progress 0.5. `FFmpeg`'s WIPELEFT computes
+        // `z = width * (1 - progress) = 4` and takes clip B where `x > z`, so columns
+        // 0..=4 are A and 5..=7 are B -- an asymmetric split, not four and four. A
+        // normalised threshold puts the seam a column earlier, which is the entire
+        // divergence this rule fixes (#1732).
+        let a: Vec<u8> = (0..8).flat_map(|_| [10u8, 20, 30, 255]).collect();
+        let b: Vec<u8> = (0..8).flat_map(|_| [200u8, 210, 220, 255]).collect();
+        let node = WipeTransitionNode::new(0.5, 0.0, 0.0, b, 8, 1);
         let mut rgba = a.clone();
-        node.process_cpu(&mut rgba, 2, 1);
-        assert_eq!(&rgba[0..4], &[10, 20, 30, 255], "left half must be clip A");
-        for (got, want) in rgba[4..8].iter().zip([200u8, 210, 220, 255].iter()) {
-            assert!(
-                (i32::from(*got) - i32::from(*want)).abs() <= 1,
-                "right half must be clip B"
+        node.process_cpu(&mut rgba, 8, 1);
+        for x in 0..8 {
+            let want: [u8; 3] = if x > 4 { [200, 210, 220] } else { [10, 20, 30] };
+            assert_eq!(
+                &rgba[x * 4..x * 4 + 3],
+                &want,
+                "column {x} at progress 0.5 (FFmpeg edge z=4)"
             );
         }
     }
@@ -830,65 +922,69 @@ mod tests {
     }
 
     #[test]
-    fn dissolve_progress_zero_should_be_clip_a() {
-        // `progress > hash01` and `hash01 >= 0`, so nothing is revealed at 0.
-        let node = DissolveTransitionNode::new(0.0, vec![210u8, 40, 130, 55], 1, 1);
+    fn dissolve_with_an_empty_mask_should_be_clip_a() {
+        let node = DissolveTransitionNode::new(vec![0u8; 4], vec![210u8, 40, 130, 55], 1, 1);
         let a = vec![10u8, 200, 30, 255];
         let mut rgba = a.clone();
         node.process_cpu(&mut rgba, 1, 1);
-        assert_eq!(rgba, a, "progress=0 must output clip A");
+        assert_eq!(rgba, a, "an unset mask must leave clip A");
     }
 
     #[test]
-    fn dissolve_progress_one_should_be_clip_b() {
-        // `hash01` is strictly < 1, so every pixel is revealed at 1.
+    fn dissolve_with_a_full_mask_should_be_clip_b() {
         let b = vec![210u8, 40, 130, 55];
-        let node = DissolveTransitionNode::new(1.0, b.clone(), 1, 1);
+        let node = DissolveTransitionNode::new(vec![255u8; 4], b.clone(), 1, 1);
         let mut rgba = vec![10u8, 200, 30, 255];
         node.process_cpu(&mut rgba, 1, 1);
-        assert_eq!(rgba, b, "progress=1 must output clip B");
+        assert_eq!(rgba, b, "a set mask must reveal clip B");
     }
 
     #[test]
-    fn dissolve_half_should_threshold_pixels_not_blend_them() {
-        // The property that separates this node from `FadeTransitionNode`: at 50% every
-        // pixel is still fully one clip or the other, and roughly half have flipped.
-        let (w, h) = (32u32, 32u32);
+    fn dissolve_should_follow_the_mask_pixel_for_pixel() {
+        // The property that separates this node from `FadeTransitionNode`: it *selects*,
+        // so every pixel stays fully one clip or the other, and which one is the mask's
+        // decision rather than the node's. Pinning the selection exactly (not "about
+        // half") is what makes the node reusable for `FFmpeg`'s own dissolve, whose mask
+        // is computed elsewhere precisely because it cannot be recomputed here.
+        let (w, h) = (8u32, 4u32);
         let n = (w * h) as usize;
         let a: Vec<u8> = [0u8, 0, 0, 255].repeat(n);
         let b: Vec<u8> = [255u8, 255, 255, 255].repeat(n);
-        let node = DissolveTransitionNode::new(0.5, b, w, h);
+        // An irregular pattern, so a node that ignored the mask and thresholded on its
+        // own could not coincidentally agree.
+        let mut mask = vec![0u8; n * 4];
+        for i in 0..n {
+            if i % 3 == 0 {
+                mask[i * 4..i * 4 + 4].fill(255);
+            }
+        }
+        let node = DissolveTransitionNode::new(mask, b, w, h);
         let mut rgba = a.clone();
         node.process_cpu(&mut rgba, w, h);
-
-        let mut distinct: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|px| px[0]).collect();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert_eq!(
-            distinct,
-            vec![0, 255],
-            "a dissolve must never produce a mixed value; got {distinct:?}"
-        );
-        let revealed = rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|px| px[0] == 255)
-            .count();
-        let ratio = revealed as f64 / n as f64;
-        assert!(
-            (0.35..=0.65).contains(&ratio),
-            "progress=0.5 should reveal about half of clip B, got {ratio:.3}"
-        );
+        for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
+            let want = if i % 3 == 0 { 255 } else { 0 };
+            assert_eq!(px[0], want, "pixel {i} must follow the mask");
+        }
     }
 
     #[test]
     fn dissolve_size_mismatch_should_leave_rgba_unchanged() {
-        let node = DissolveTransitionNode::new(1.0, vec![200u8; 8], 2, 1);
+        let node = DissolveTransitionNode::new(vec![255u8; 8], vec![200u8; 8], 2, 1);
         let original = vec![10u8, 200, 30, 255];
         let mut rgba = original.clone();
         node.process_cpu(&mut rgba, 1, 1);
         assert_eq!(rgba, original, "size mismatch must be a no-op");
+    }
+
+    #[test]
+    fn dissolve_mask_size_mismatch_should_leave_rgba_unchanged() {
+        // Clip B is the right size but the mask is not: still a no-op rather than a
+        // partially-applied frame.
+        let node = DissolveTransitionNode::new(vec![255u8; 8], vec![200u8; 4], 1, 1);
+        let original = vec![10u8, 200, 30, 255];
+        let mut rgba = original.clone();
+        node.process_cpu(&mut rgba, 1, 1);
+        assert_eq!(rgba, original, "a mask size mismatch must be a no-op");
     }
 
     #[test]
@@ -902,15 +998,47 @@ mod tests {
     }
 
     #[test]
-    fn dip_half_black_should_be_black() {
+    fn dip_at_half_should_follow_ffmpegs_phased_curve() {
+        // The midpoint is *not* the solid frame -- that is the linear dip this replaced.
+        // With `FFmpeg`'s curve at progress 0.5 (so its own progress is 0.5 too):
+        //   s1 = smoothstep(0.8, 1, 0.5) = 0            -> leaving  = bg = 0
+        //   s2 = smoothstep(0.2, 1, 0.5) = 0.31640625   -> arriving = 200 * 0.68359 = 136.7
+        //   out = 0 * 0.5 + 136.7 * 0.5                 = 68
+        // Pinning the arithmetic rather than a vague "dark" keeps the phase honest: a
+        // linear dip would read 0 here.
         let b = vec![200u8, 200, 200, 255];
         let node = DipToColorNode::new(0.5, [0.0, 0.0, 0.0], b, 1, 1);
         let mut rgba = vec![120u8, 130, 140, 255];
         node.process_cpu(&mut rgba, 1, 1);
-        assert_eq!(
-            &rgba[0..3],
-            &[0, 0, 0],
-            "progress=0.5 with black dip must be a black frame"
+        for (i, got) in rgba[0..3].iter().enumerate() {
+            assert!(
+                (i32::from(*got) - 68).abs() <= 1,
+                "progress=0.5 must follow FFmpeg's phased curve (~68) at {i}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn dip_should_be_darkest_before_the_midpoint() {
+        // `FFmpeg`'s `phase` of 0.2 puts the solid stretch in the first part of the
+        // transition, not at the centre. Sampling across progress, the darkest frame must
+        // land nearer 0.2 than 0.5 -- the property the old linear dip got backwards.
+        let b = vec![200u8, 200, 200, 255];
+        let darkest = (1..=9)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let p = i as f32 / 10.0;
+                let node = DipToColorNode::new(p, [0.0, 0.0, 0.0], b.clone(), 1, 1);
+                let mut rgba = vec![120u8, 130, 140, 255];
+                node.process_cpu(&mut rgba, 1, 1);
+                (rgba[0], i)
+            })
+            .min()
+            .map(|(_, i)| i)
+            .expect("the sweep is non-empty");
+        assert!(
+            darkest <= 3,
+            "the dip must bottom out in its first phase (<= 0.3), got progress 0.{darkest}"
         );
     }
 
@@ -954,26 +1082,65 @@ mod gpu_tests {
     }
 
     #[test]
-    fn wipe_gpu_progress_one_should_be_clip_b() {
+    fn dissolve_gpu_should_follow_the_mask() {
         let Some(ctx) = ctx() else {
             return;
         };
-        let a = vec![10u8, 20, 30, 255];
-        let b = vec![200u8, 210, 220, 255];
+        // The dissolve is the only transition that binds a third texture, so this is the
+        // only test that exercises `build_pipeline`'s mask entry and `run_pass` binding
+        // it. An irregular pattern, so a shader that ignored the mask could not agree by
+        // coincidence; and `textureLoad`, not `textureSample`, so the linear sampler
+        // cannot blur a per-pixel decision.
+        let (w, h) = (8u32, 4u32);
+        let n = (w * h) as usize;
+        let a: Vec<u8> = [0u8, 0, 0, 255].repeat(n);
+        let b: Vec<u8> = [255u8, 255, 255, 255].repeat(n);
+        let mut mask = vec![0u8; n * 4];
+        for i in 0..n {
+            if i % 3 == 0 {
+                mask[i * 4..i * 4 + 4].fill(255);
+            }
+        }
         let out = RenderGraph::new(Arc::clone(&ctx))
-            .push(WipeTransitionNode::new(1.0, 0.0, 0.0, b.clone(), 1, 1))
-            .process_gpu(&a, 1, 1)
-            .expect("gpu wipe");
-        for i in 0..3 {
+            .push(DissolveTransitionNode::new(mask, b, w, h))
+            .process_gpu(&a, w, h)
+            .expect("gpu dissolve");
+        for (i, px) in out.as_chunks::<4>().0.iter().enumerate() {
+            let want: u8 = if i % 3 == 0 { 255 } else { 0 };
             assert!(
-                (i32::from(out[i]) - i32::from(b[i])).abs() <= 2,
-                "GPU wipe progress=1 must output clip B at {i}"
+                (i32::from(px[0]) - i32::from(want)).abs() <= 2,
+                "GPU pixel {i} must follow the mask: got {} want {want}",
+                px[0]
             );
         }
     }
 
     #[test]
-    fn dip_gpu_half_black_should_be_black() {
+    fn wipe_gpu_should_land_on_ffmpegs_integer_column() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // The CPU mirror of this is `wipe_hard_edge_should_land_on_ffmpegs_integer_column`;
+        // the shader has to agree column for column or the export and the preview drift.
+        let a: Vec<u8> = (0..8).flat_map(|_| [10u8, 20, 30, 255]).collect();
+        let b: Vec<u8> = (0..8).flat_map(|_| [200u8, 210, 220, 255]).collect();
+        let out = RenderGraph::new(Arc::clone(&ctx))
+            .push(WipeTransitionNode::new(0.5, 0.0, 0.0, b, 8, 1))
+            .process_gpu(&a, 8, 1)
+            .expect("gpu wipe");
+        for x in 0..8 {
+            let want: [u8; 3] = if x > 4 { [200, 210, 220] } else { [10, 20, 30] };
+            for i in 0..3 {
+                assert!(
+                    (i32::from(out[x * 4 + i]) - i32::from(want[i])).abs() <= 2,
+                    "GPU column {x} channel {i} at progress 0.5 (FFmpeg edge z=4)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dip_gpu_at_half_should_match_the_cpu_curve() {
         let Some(ctx) = ctx() else {
             return;
         };
@@ -983,10 +1150,12 @@ mod gpu_tests {
             .push(DipToColorNode::new(0.5, [0.0, 0.0, 0.0], b, 1, 1))
             .process_gpu(&a, 1, 1)
             .expect("gpu dip");
+        // Same arithmetic as `dip_at_half_should_follow_ffmpegs_phased_curve`.
         for i in 0..3 {
             assert!(
-                out[i] <= 2,
-                "GPU dip progress=0.5 (black) must be ~0 at {i}"
+                (i32::from(out[i]) - 68).abs() <= 2,
+                "GPU dip at progress 0.5 must follow FFmpeg's curve (~68) at {i}, got {}",
+                out[i]
             );
         }
     }
