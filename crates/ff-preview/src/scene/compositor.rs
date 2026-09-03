@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use ff_filter::RealtimeLayer;
+use ff_filter::{RealtimeLayer, XfadeTransition};
 use ff_format::VideoFrame;
 
 /// An external compositor the preview runner can use in place of its built-in CPU
@@ -29,4 +29,31 @@ pub trait PreviewCompositor: Send {
         canvas: (u32, u32),
         t: Duration,
     ) -> Option<(Vec<u8>, u32, u32)>;
+
+    /// Blend the outgoing frame `a` into the incoming frame `b` at `progress`
+    /// (`0` = all `a`, `1` = all `b`) for the `xfade` `kind`, both packed RGBA of
+    /// `w * h * 4` bytes.
+    ///
+    /// Returns `Some(rgba)` on success, or `None` to leave the frame to the runner's
+    /// CPU `apply_xfade` — which is the answer for a kind the implementor does not
+    /// render, a missing adapter, a GPU error, and a kind it renders correctly but
+    /// slower. Declining must never leave the runner in a bad state.
+    ///
+    /// Defaults to `None`, so an implementor that only composites is unaffected.
+    ///
+    /// This sits beside `composite` rather than in a trait of its own because both
+    /// exist for the same reason — reaching `ff-render`, which depends on this crate —
+    /// and one injected object means one GPU context rather than two.
+    fn blend(
+        &mut self,
+        kind: XfadeTransition,
+        a: &[u8],
+        b: &[u8],
+        progress: f32,
+        w: u32,
+        h: u32,
+    ) -> Option<Vec<u8>> {
+        let _ = (kind, a, b, progress, w, h);
+        None
+    }
 }

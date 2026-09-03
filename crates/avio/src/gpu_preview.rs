@@ -9,11 +9,46 @@
 
 use std::time::Duration;
 
-use ff_filter::RealtimeLayer;
+use ff_filter::{RealtimeLayer, XfadeTransition};
 use ff_format::VideoFrame;
 use ff_preview::PreviewCompositor;
 
 use crate::gpu_compositor::GpuCompositor;
+use crate::gpu_transition::{GpuTransition, map_transition};
+
+/// The transition node to render `kind` on, or `None` to leave it on the runner's CPU
+/// path.
+///
+/// Note that the runner does not currently reach any transition for an engine-derived
+/// scene (#1737): it arms at the incoming clip's offset and needs the outgoing clip to
+/// overlap that window, which `avio` never produces. This routing is therefore correct
+/// but dormant until that is fixed.
+///
+/// Narrower than [`map_transition`], and the reason is measurement rather than fidelity:
+/// after #1732 every mapped node produces the same pixels as `apply_xfade`, so this only
+/// decides *where* the work happens. The GPU has to pay two uploads and a readback per
+/// frame, which only the dips earn back — their formula is three `mix`es around two
+/// `smoothstep`s per channel, the heaviest per-pixel arithmetic of the set. Measured
+/// against the CPU path, over three repeats:
+///
+/// | kind | 1080p | 4K |
+/// |---|---|---|
+/// | `FadeBlack` / `FadeWhite` | **2.2x faster** (5.5 vs 12.0 ms) | **1.4x faster** (32 vs 48 ms) |
+/// | `Fade` | 1.2x (5.7 vs 7.3 ms) | tie (30 vs 29 ms) |
+/// | `WipeRight` | 4.4x *slower* (5.4 vs 1.2 ms) | 7.3x *slower* (51 vs 7 ms) |
+/// | `Dissolve` | 2.6x *slower* | 2.1x *slower* |
+///
+/// So only the dips route here. A wipe is a per-row `memcpy` on the CPU and can never
+/// win against a transfer; `Fade` is a single lerp, and its margin sits inside the
+/// run-to-run spread at 4K. `Dissolve` looks worst of all here, but its problem is that
+/// the mask is built on the CPU and *then* uploaded -- caching that field makes the CPU
+/// path 7-9x faster and is #1736, which is where dissolve gets fixed.
+fn preview_transition_node(kind: XfadeTransition) -> Option<GpuTransition> {
+    match map_transition(kind)? {
+        node @ GpuTransition::Dip { .. } => Some(node),
+        GpuTransition::Fade | GpuTransition::Dissolve | GpuTransition::Wipe { .. } => None,
+    }
+}
 
 /// Preview adapter over [`GpuCompositor`]: composites the runner's layers on the GPU,
 /// falling back to `None` (the runner's CPU path) on unsupported content or a GPU error.
@@ -45,11 +80,25 @@ impl PreviewCompositor for GpuPreviewCompositor {
     ) -> Option<(Vec<u8>, u32, u32)> {
         self.core.composite(layers, canvas, t)
     }
+
+    fn blend(
+        &mut self,
+        kind: XfadeTransition,
+        a: &[u8],
+        b: &[u8],
+        progress: f32,
+        w: u32,
+        h: u32,
+    ) -> Option<Vec<u8>> {
+        let node = preview_transition_node(kind)?;
+        self.core.transition(node, progress, a, b.to_vec(), w, h)
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use ff_filter::XfadeTransition;
     use ff_filter::{
         AnimatedValue, BlendMode, CompositeOp, RealtimeLayer, RealtimeLayerDescriptor,
     };
@@ -57,6 +106,55 @@ mod tests {
 
     use super::*;
     use crate::{Clip, Timeline, TimelinePlayer};
+
+    #[test]
+    fn preview_should_route_only_the_dips_to_the_gpu() {
+        // The policy is measured, not assumed: the dips are the only kinds whose GPU
+        // render beats the CPU one once the two uploads and the readback are paid for
+        // (1080p 2.2x, 4K 1.4x, over three repeats). See `preview_transition_node`.
+        for kind in [XfadeTransition::FadeBlack, XfadeTransition::FadeWhite] {
+            assert!(
+                matches!(
+                    preview_transition_node(kind),
+                    Some(GpuTransition::Dip { .. })
+                ),
+                "{kind:?} is measurably faster on the GPU and must route there"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_should_keep_the_cheaper_kinds_on_the_cpu() {
+        // These all map to a node (#1657) and render identically (#1732); routing them
+        // to the GPU would only be slower. `Fade` is here because its margin sits inside
+        // the run-to-run spread at 4K, `WipeRight` because a per-row memcpy cannot lose
+        // to a transfer, and `Dissolve` because its CPU-built mask is the real cost --
+        // fixed by #1736, not by moving it.
+        for kind in [
+            XfadeTransition::Fade,
+            XfadeTransition::Dissolve,
+            XfadeTransition::WipeLeft,
+            XfadeTransition::WipeRight,
+            XfadeTransition::WipeUp,
+            XfadeTransition::WipeDown,
+        ] {
+            assert!(
+                map_transition(kind).is_some(),
+                "{kind:?} still maps to a node; only the routing declines it"
+            );
+            assert!(
+                preview_transition_node(kind).is_none(),
+                "{kind:?} is faster on the CPU and must not route to the GPU"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_should_decline_a_kind_with_no_node() {
+        for kind in [XfadeTransition::SlideLeft, XfadeTransition::Pixelize] {
+            assert!(preview_transition_node(kind).is_none());
+        }
+    }
 
     fn identity_layer(w: u32, h: u32) -> RealtimeLayer {
         let desc = RealtimeLayerDescriptor {

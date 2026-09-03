@@ -951,16 +951,37 @@ impl SceneRunner {
                             let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
                                 / trans_dur.as_secs_f32())
                             .clamp(0.0, 1.0);
-                            inner::apply_xfade(
+                            // Offer the blend to the injected GPU path first; `None`
+                            // falls through to the CPU one below, which covers an
+                            // unrendered kind, no adapter, and a GPU error alike.
+                            if let Some(blended) = try_gpu_blend(
+                                self.gpu_compositor.as_mut(),
                                 trans_kind,
                                 &self.rgba_a,
                                 &self.rgba_b,
                                 alpha,
                                 w,
                                 h,
-                                &mut self.blend_buf,
-                            );
-                            std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
+                            ) {
+                                // Moved in, not copied into the scratch buffer: the
+                                // readback already owns a correctly sized `Vec`, so
+                                // taking it costs nothing while routing it through
+                                // `blend_buf` would add a full-frame memcpy. The CPU
+                                // branch below swaps instead because `apply_xfade`
+                                // writes into a buffer it does not own.
+                                self.rgba_a = blended;
+                            } else {
+                                inner::apply_xfade(
+                                    trans_kind,
+                                    &self.rgba_a,
+                                    &self.rgba_b,
+                                    alpha,
+                                    w,
+                                    h,
+                                    &mut self.blend_buf,
+                                );
+                                std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
+                            }
                         }
 
                         // Update overlays (held-frame, advanced by PTS) and composite
@@ -1207,6 +1228,35 @@ fn try_gpu_composite(
     gpu.composite(&pairs, canvas, t)
 }
 
+/// Offer a transition blend to the injected compositor, or `None` when there is none
+/// registered or it declines.
+///
+/// Mirrors [`try_gpu_composite`]: the runner keeps one `if let Some` shape for "the GPU
+/// answered" and treats every other case, including no injection at all, as the CPU path.
+fn try_gpu_blend(
+    gpu: Option<&mut Box<dyn PreviewCompositor>>,
+    kind: XfadeTransition,
+    a: &[u8],
+    b: &[u8],
+    progress: f32,
+    w: u32,
+    h: u32,
+) -> Option<Vec<u8>> {
+    let blended = gpu?.blend(kind, a, b, progress, w, h)?;
+    // A short buffer would be written straight into `rgba_a` and read as a frame, so
+    // check the length here rather than trusting the implementor (the trait is public).
+    if blended.len() == (w as usize) * (h as usize) * 4 {
+        Some(blended)
+    } else {
+        log::warn!(
+            "preview: GPU blend returned {} bytes, expected {}; falling back to the CPU path",
+            blended.len(),
+            (w as usize) * (h as usize) * 4
+        );
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,6 +1277,90 @@ mod tests {
             self.calls.set(self.calls.get() + 1);
             self.result.clone()
         }
+    }
+
+    /// A `PreviewCompositor` whose `blend` returns a fixed buffer, to drive the
+    /// transition seam. `composite` is never the subject here.
+    struct MockBlender {
+        result: Option<Vec<u8>>,
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl PreviewCompositor for MockBlender {
+        fn composite(
+            &mut self,
+            _layers: &[(&RealtimeLayer, &VideoFrame)],
+            _canvas: (u32, u32),
+            _t: Duration,
+        ) -> Option<(Vec<u8>, u32, u32)> {
+            None
+        }
+
+        fn blend(
+            &mut self,
+            _kind: XfadeTransition,
+            _a: &[u8],
+            _b: &[u8],
+            _progress: f32,
+            _w: u32,
+            _h: u32,
+        ) -> Option<Vec<u8>> {
+            self.calls.set(self.calls.get() + 1);
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn try_gpu_blend_should_return_none_without_a_compositor() {
+        let (a, b) = (vec![0u8; 2 * 2 * 4], vec![255u8; 2 * 2 * 4]);
+        assert!(try_gpu_blend(None, XfadeTransition::Fade, &a, &b, 0.5, 2, 2).is_none());
+    }
+
+    #[test]
+    fn try_gpu_blend_should_use_the_compositor_result_when_some() {
+        let (a, b) = (vec![0u8; 2 * 2 * 4], vec![255u8; 2 * 2 * 4]);
+        let want = vec![7u8; 2 * 2 * 4];
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockBlender {
+            result: Some(want.clone()),
+            calls: std::cell::Cell::new(0),
+        });
+        let out = try_gpu_blend(Some(&mut gpu), XfadeTransition::Fade, &a, &b, 0.5, 2, 2);
+        assert_eq!(out, Some(want));
+    }
+
+    #[test]
+    fn try_gpu_blend_should_return_none_when_the_compositor_declines() {
+        let (a, b) = (vec![0u8; 2 * 2 * 4], vec![255u8; 2 * 2 * 4]);
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockBlender {
+            result: None,
+            calls: std::cell::Cell::new(0),
+        });
+        assert!(try_gpu_blend(Some(&mut gpu), XfadeTransition::Fade, &a, &b, 0.5, 2, 2).is_none());
+    }
+
+    #[test]
+    fn try_gpu_blend_should_reject_a_wrongly_sized_buffer() {
+        // The result is written straight into `rgba_a` and read back as a frame, so a
+        // short buffer has to fall back rather than corrupt the next composite. The
+        // trait is public, so this is not a should-not-happen.
+        let (a, b) = (vec![0u8; 2 * 2 * 4], vec![255u8; 2 * 2 * 4]);
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockBlender {
+            result: Some(vec![7u8; 3]),
+            calls: std::cell::Cell::new(0),
+        });
+        assert!(try_gpu_blend(Some(&mut gpu), XfadeTransition::Fade, &a, &b, 0.5, 2, 2).is_none());
+    }
+
+    #[test]
+    fn try_gpu_blend_should_default_to_none_for_a_composite_only_implementor() {
+        // The trait's default: an existing `PreviewCompositor` that predates this seam
+        // keeps working and simply never takes the GPU blend.
+        let (a, b) = (vec![0u8; 2 * 2 * 4], vec![255u8; 2 * 2 * 4]);
+        let mut gpu: Box<dyn PreviewCompositor> = Box::new(MockCompositor {
+            result: None,
+            calls: std::cell::Cell::new(0),
+        });
+        assert!(try_gpu_blend(Some(&mut gpu), XfadeTransition::Fade, &a, &b, 0.5, 2, 2).is_none());
     }
 
     fn one_spec_and_frame() -> (Vec<RealtimeLayer>, Vec<VideoFrame>) {
