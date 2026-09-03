@@ -66,6 +66,11 @@ const H: u32 = 64;
 const CLIP_FRAMES: usize = 30;
 /// Transition length in output frames: 0.5 s at 30 fps.
 const WINDOW: usize = 15;
+/// Frames written into each source file. A transition is fed by the outgoing clip's
+/// *handle* -- its frames past the out-point (ADR-0009) -- so a source cut flush to the
+/// clip would clamp the blend away entirely. Twice the window, because a container
+/// reports its duration one frame interval short of what was pushed.
+const SOURCE_FRAMES: usize = CLIP_FRAMES + 2 * WINDOW;
 
 /// Bound for the flat leg. Measured worst-frame means: wipes 1.0, `Dissolve` 1.0,
 /// `Fade` 2.0, `FadeWhite` 2.3, `FadeBlack` 2.7 — the encode round trip's own floor.
@@ -108,15 +113,15 @@ fn export_config() -> EncoderConfig {
         .build()
 }
 
-/// Encodes `CLIP_FRAMES` frames of `rgba`, or `None` when the environment has no usable
-/// encoder (skip).
+/// Encodes `SOURCE_FRAMES` frames of `rgba`, or `None` when the environment has no
+/// usable encoder (skip).
 fn encode_source(path: &std::path::Path, rgba: &[u8]) -> Option<()> {
     let mut enc = VideoEncoder::create(path)
         .video(W, H, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .build()
         .ok()?;
-    for _ in 0..CLIP_FRAMES {
+    for _ in 0..SOURCE_FRAMES {
         enc.push_video(&VideoFrame::from_rgba(W, H, rgba.to_vec()).ok()?)
             .ok()?;
     }
@@ -226,13 +231,15 @@ fn worst_window_divergence(
     }
 
     let (fa, fb, exported) = (decode_rgba(a), decode_rgba(b), decode_rgba(&out));
-    if fa.len() < CLIP_FRAMES || fb.len() < WINDOW || exported.len() < CLIP_FRAMES {
+    if fa.len() < CLIP_FRAMES + WINDOW || fb.len() < WINDOW || exported.len() < CLIP_FRAMES + WINDOW
+    {
         return None; // decoder unavailable or a short round trip -> skip
     }
 
-    // The transition occupies outputs `CLIP_FRAMES - WINDOW ..< CLIP_FRAMES`, showing
-    // clip A's tail against clip B's head (#1659 measured this mapping against the CPU
-    // export, and `gpu_export`'s drain reproduces it).
+    // The transition occupies outputs `CLIP_FRAMES ..< CLIP_FRAMES + WINDOW`: it starts
+    // where clip B was authored and blends B's head against clip A's *handle*, the
+    // frames past A's out-point (ADR-0009). It used to sit a window earlier, when the
+    // export overlapped the clips and lost `WINDOW` frames off the timeline.
     let mut worst = (0f64, 0usize);
     for j in 0..WINDOW {
         #[allow(clippy::cast_precision_loss)]
@@ -240,14 +247,14 @@ fn worst_window_divergence(
         let mut reference = Vec::new();
         ff_preview::apply_xfade(
             kind,
-            &fa[(CLIP_FRAMES - WINDOW) + j],
+            &fa[CLIP_FRAMES + j],
             &fb[j],
             progress,
             W,
             H,
             &mut reference,
         );
-        let mean = mean_abs_diff_rgb(&exported[(CLIP_FRAMES - WINDOW) + j], &reference);
+        let mean = mean_abs_diff_rgb(&exported[CLIP_FRAMES + j], &reference);
         if mean > worst.0 {
             worst = (mean, j);
         }

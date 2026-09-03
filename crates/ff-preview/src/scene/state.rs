@@ -159,6 +159,9 @@ pub(super) struct ClipState {
     pub(super) xfade_dur: Duration,
     /// The `xfade` transition kind for that crossfade (`None` = default `Fade`).
     pub(super) xfade_kind: Option<XfadeTransition>,
+    /// Video-only extension past `timeline_end`, feeding the crossfade into the next
+    /// clip. Timeline time, like the `xfade_dur` it matches. `Duration::ZERO` = none.
+    pub(super) video_handle: Duration,
     /// Audio track handle — `None` if the clip has no audio stream.
     pub(super) audio_track: Option<AudioTrackHandle>,
     /// Playback speed multiplier from `Clip::speed` (`1.0` = normal).

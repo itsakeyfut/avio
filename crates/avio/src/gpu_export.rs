@@ -105,7 +105,17 @@ fn budget_frames(clip: &Clip, frame_rate: f64) -> Option<u64> {
 /// the CPU route (there is no preceding clip to cross-fade from).
 fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> VideoLayer {
     if clip.transition.is_none() {
-        return derive::video_layer(clip, 0, &track.automation, canvas.0, canvas.1, None, None);
+        // `Placement::default()`: the drain runs the transition itself, and reads past the
+        // out-point through `ClipSource` rather than through a widened trim.
+        return derive::video_layer(
+            clip,
+            0,
+            &track.automation,
+            canvas.0,
+            canvas.1,
+            &derive::Placement::default(),
+            None,
+        );
     }
     let mut without = clip.clone();
     without.transition = None;
@@ -115,7 +125,7 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
         &track.automation,
         canvas.0,
         canvas.1,
-        None,
+        &derive::Placement::default(),
         None,
     )
 }
@@ -208,7 +218,6 @@ pub(crate) fn eligible_track(
             && !eligible_transition(
                 &track.clips[i - 1],
                 &track.clips[i],
-                i == last,
                 blendable[i - 1] && blendable[i],
                 frame_rate,
             )
@@ -295,32 +304,34 @@ fn is_neutral_composite(plan: &GpuLayerPlan) -> bool {
 /// Everything here is a *fallback* condition, not an error: a rejected transition keeps
 /// the whole export on the CPU route, which handles all of these.
 ///
-/// - **Last clip only.** The CPU route places a clip that *follows* a transitioned one
-///   at its own absolute `OffsetPts` while the `xfade` output has shrunk by the
-///   transition's duration, so a mid-track transition opens a hole (measured: 15 frames
-///   of pure black for a 0.5 s transition at 30 fps), and chained transitions fire early
-///   and overlap. Those are CPU bugs; reproducing them here would fix them in place.
+/// A transition on any clip qualifies. The "last clip only" restriction this carried
+/// before ADR-0009 existed because the CPU route shrank its output by the transition's
+/// duration while later clips kept their absolute `OffsetPts`, which opened a hole
+/// (measured: 15 frames of pure black for a 0.5 s transition at 30 fps) and made chained
+/// transitions fire early. Placement now preserves the timeline length on both routes,
+/// so there is nothing left for the restriction to guard (#1731).
+///
 /// - **A kind both routes render alike** ([`export_maps_to_gpu`]).
 /// - **Both clips of known duration**, so every bound below is checkable up front rather
 ///   than discovered at EOF.
-/// - **A window of at least one frame that fits both clips.** A sub-frame duration has
-///   no frames to blend, and `FFmpeg` clamps an over-long one to offset 0 and then
-///   truncates it into a near hard cut (measured), which is not what the model asked
-///   for. RK-020: the degenerate corner of a reproduced formula is exactly where silent
-///   wrong output comes from.
+/// - **A window of at least one frame that fits the incoming clip head.** A sub-frame
+///   duration has no frames to blend, and a window longer than the incoming clip would
+///   consume more head than it has. The outgoing clip's *body* is deliberately not a
+///   bound: the blend reads its handle, not its on-screen frames. RK-020: the degenerate
+///   corner of a reproduced formula is exactly where silent wrong output comes from.
+/// - **A handle long enough to cover the whole window.** When it is not,
+///   `transition::effective_duration` shortens the blend on both routes; the GPU one
+///   declines the timeline rather than reproduce a clamp, which costs only a fallback.
+///
+/// The checks are ordered so every I/O-free rejection happens first: the handle is the
+/// one fact that needs the source opened, so it is asked for last.
 /// - **Both clips are `blendable`** ([`is_neutral_composite`] and no stateful effect).
 ///   The window composites the two alternately at the *same* layer position and blends
 ///   the results, so a cached effect graph would evict its neighbour's every frame
 ///   (RK-025) and a non-identity solo composite would reach the blend already applied
 ///   (RK-020).
-fn eligible_transition(
-    outgoing: &Clip,
-    incoming: &Clip,
-    is_last: bool,
-    blendable: bool,
-    frame_rate: f64,
-) -> bool {
-    if !is_last || !blendable {
+fn eligible_transition(outgoing: &Clip, incoming: &Clip, blendable: bool, frame_rate: f64) -> bool {
+    if !blendable {
         return false;
     }
     let Some(kind) = incoming.transition else {
@@ -329,25 +340,46 @@ fn eligible_transition(
     if !export_maps_to_gpu(kind) {
         return false;
     }
-    let (Some(incoming_budget), Some(outgoing_budget)) = (
+    // The outgoing budget is still required to be known: the drain runs it to the end
+    // before the window opens, and an end-of-file clip has no counted tail to run.
+    let (Some(incoming_budget), Some(_outgoing_budget)) = (
         budget_frames(incoming, frame_rate),
         budget_frames(outgoing, frame_rate),
     ) else {
         return false;
     };
-    let window = window_frames(incoming.transition_duration, frame_rate);
-    window >= 1 && window <= incoming_budget && window <= outgoing_budget
+    let authored = window_frames(incoming.transition_duration, frame_rate);
+    if authored < 1 || authored > incoming_budget {
+        return false;
+    }
+    // The only check that opens a file, so it runs once everything structural has
+    // passed. Equality, not `>=`: a clamped window is a transition the model did not ask
+    // for, and the CPU route renders that case correctly on its own.
+    window_frames(
+        crate::transition::effective_duration(outgoing, incoming),
+        frame_rate,
+    ) == authored
 }
 
-/// The transition window (in output frames) that `clip` takes out of its predecessor's
-/// tail, or `0` when it carries none.
+/// The transition window (in output frames) for the transition into `incoming`, or `0`
+/// when it carries none. `effective` is that boundary's entry from
+/// `transition::effective_durations`, which the caller resolves once for the whole track.
+///
+/// The window comes out of neither body: it is fed by the outgoing handle and the
+/// incoming head, so the track still runs for the sum of the two budgets (ADR-0009). The
+/// duration is the same rule the CPU route derives its `xfade` from, so the two cannot
+/// blend across different spans.
 ///
 /// Only reached for a track [`eligible_track`] accepted, so a transition here is already
-/// known to be a mapped kind with a window that fits both clips. One that is not would
-/// otherwise be rendered as a cross-fade in place of what the model asked for, so it
-/// surfaces as an error instead (RK-020).
-fn transition_window(clip: &Clip, frame_rate: f64) -> Result<u64, TimelineError> {
-    let Some(kind) = clip.transition else {
+/// known to be a mapped kind with a window that fits. One that is not would otherwise be
+/// rendered as a cross-fade in place of what the model asked for, so it surfaces as an
+/// error instead (RK-020).
+fn transition_window(
+    incoming: &Clip,
+    effective: Duration,
+    frame_rate: f64,
+) -> Result<u64, TimelineError> {
+    let Some(kind) = incoming.transition else {
         return Ok(0);
     };
     if !export_maps_to_gpu(kind) {
@@ -357,7 +389,7 @@ fn transition_window(clip: &Clip, frame_rate: f64) -> Result<u64, TimelineError>
             ),
         });
     }
-    Ok(window_frames(clip.transition_duration, frame_rate))
+    Ok(window_frames(effective, frame_rate))
 }
 
 /// The presentation time of output frame `k` **within the clip**, at the timeline rate.
@@ -407,6 +439,10 @@ enum Pulled<'a> {
 struct ClipSource {
     decoder: VideoDecoder,
     /// Output frames this clip contributes, or `None` to drain to end-of-file.
+    ///
+    /// [`allow_handle`](ClipSource::allow_handle) raises it for the transition window:
+    /// the blend reads the outgoing clip *past* its out-point, so the extra frames are
+    /// its handle rather than part of its on-screen body (ADR-0009).
     budget: Option<u64>,
     produced: u64,
     frame_rate: f64,
@@ -465,9 +501,16 @@ impl ClipSource {
         })
     }
 
-    /// Output frames this clip has left, or `None` when it drains to end-of-file.
-    fn remaining(&self) -> Option<u64> {
-        self.budget.map(|b| b.saturating_sub(self.produced))
+    /// Lets this clip yield `frames` more than its trimmed duration, so the transition
+    /// window can read its handle.
+    ///
+    /// The handle is real material: `transition::effective_duration` clamped the window
+    /// to what the source holds past the out-point, so this does not invent frames. A
+    /// source that still runs out early stops the window, as it always did.
+    fn allow_handle(&mut self, frames: u64) {
+        if let Some(budget) = self.budget.as_mut() {
+            *budget = budget.saturating_add(frames);
+        }
     }
 
     /// The frame for this clip's next output, or `None` when the clip is finished --
@@ -554,11 +597,11 @@ fn fell_back(what: &str) -> TimelineError {
 /// the unchanged encoder. `on_progress` is invoked after each pushed frame;
 /// returning `false` cancels with [`TimelineError::Cancelled`].
 ///
-/// Clips are concatenated, except that a transition on the track's last clip overlaps
-/// it with its predecessor (#1659). The CPU route's `xfade` starts the incoming clip
-/// `duration` earlier and blends across that span, so the track ends up
-/// `duration` shorter -- measured, and reproduced here by ending the outgoing clip's
-/// solo run a window early and then blending the two clips frame for frame.
+/// Clips are concatenated, and a transition changes none of that length (ADR-0009):
+/// each clip runs its whole budget, and the window that follows is fed by the outgoing
+/// clip's *handle* (frames past its out-point) blended against the incoming clip's head.
+/// The incoming clip then resumes from where the window left it, so the track still runs
+/// for the sum of the budgets -- the same total the CPU route now produces.
 ///
 /// The caller has already established eligibility ([`eligible_track`]), so a
 /// mid-export fallback from the compositor is a should-not-happen and surfaces as
@@ -579,6 +622,10 @@ pub(crate) fn drain_video_gpu(
         return Ok(());
     };
 
+    // One pass for the whole track: each boundary is both a clip's own transition and
+    // its predecessor's handle, and resolving it is what opens the source file.
+    let boundaries = crate::transition::effective_durations(clips);
+
     let mut video_idx: u32 = 0;
     let mut cur = ClipSource::open(first, frame_rate)?;
     let mut cur_layer = transitionless_layer(first, track, canvas);
@@ -587,17 +634,18 @@ pub(crate) fn drain_video_gpu(
     core.reset_effect_cache();
 
     for i in 0..clips.len() {
-        // What the *next* clip's transition takes out of this clip's solo run.
+        // What the *next* clip's transition blends across. It comes out of this clip's
+        // handle, not its body, so the solo run below is unaffected by it.
         let window = match clips.get(i + 1) {
-            Some(next) => transition_window(next, frame_rate)?,
+            Some(next) => transition_window(next, boundaries[i + 1], frame_rate)?,
             None => 0,
         };
 
-        // This clip alone, down to the tail the transition needs.
-        while cur.remaining().is_none_or(|left| left > window) {
+        // This clip alone, for its whole budget.
+        loop {
             let t = output_time(video_idx, frame_rate);
             let Some(pulled) = cur.next()? else {
-                break; // EOF before the budget: the clip is shorter than declared.
+                break; // Budget spent, or EOF first (a clip shorter than declared).
             };
             let composited = composite_pulled(core, &cur_layer, pulled, canvas, t);
             emit_frame(
@@ -613,6 +661,9 @@ pub(crate) fn drain_video_gpu(
         let Some(next) = clips.get(i + 1) else {
             break;
         };
+        // Past the out-point for the length of the window: those frames are the handle
+        // the blend reads, and are not part of the clip's on-screen duration.
+        cur.allow_handle(window);
         let mut inc = ClipSource::open(next, frame_rate)?;
         let inc_layer = transitionless_layer(next, track, canvas);
         core.reset_effect_cache();
@@ -627,6 +678,9 @@ pub(crate) fn drain_video_gpu(
         // incoming layer's chain. Progress runs `0 .. (window-1)/window`, so the first
         // output is the outgoing clip untouched and the incoming clip's own frame
         // `window` is the first one shown alone -- the CPU route's mapping, measured.
+        //
+        // The incoming clip keeps the frames it spends here out of its own solo run on
+        // the next iteration, which is what makes the window cost the track nothing.
         for j in 0..window {
             let Some(node) = node else {
                 return Err(TimelineError::TimelineRenderFailed {
@@ -643,7 +697,7 @@ pub(crate) fn drain_video_gpu(
                 // The incoming clip ran out early. The outgoing frame just composited
                 // goes unused: it belonged to this output, which now has nothing to
                 // blend it with. Only reachable when a source is shorter than declared,
-                // since eligibility bounds the window by both clips' budgets.
+                // since eligibility bounds the window by the incoming clip budget.
                 break;
             };
             let (b_rgba, _, _) = composite_pulled(core, &inc_layer, incoming, canvas, t)
@@ -821,8 +875,11 @@ mod tests {
             .video_codec(VideoCodec::Mpeg4)
             .build()
             .ok()?;
-        // A few flat frames are enough: only the stream header (size, rate) is probed.
-        for i in 0..4 {
+        // Two seconds' worth. The header (size, rate) would fit in a handful of
+        // frames, but eligibility also asks how much material sits past a clip's
+        // out-point (ADR-0009), and a 4-frame file has none -- which would make every
+        // transition here clamp to a hard cut and reject.
+        for i in 0..60 {
             let frame = VideoFrame::new_black(w, h, PF::Yuv420p, i);
             enc.push_video(&frame).ok()?;
         }
@@ -905,13 +962,14 @@ mod tests {
 
     #[test]
     fn window_frames_should_match_the_cpu_route_measurement() {
-        // The number the whole transition path is built on. Measured against the CPU
-        // export: two 1 s clips at 30 fps with a 0.5 s `Fade` produce 45 output frames
-        // where a hard cut produces 60, i.e. the window is 15 and the track shortens by
-        // exactly that.
+        // The number the whole transition path is built on: a 0.5 s transition at 30 fps
+        // blends across 15 outputs. It comes out of neither clip's body -- the outgoing
+        // clip's handle feeds it -- so two 1 s clips still produce 60 frames, the
+        // hard-cut length (ADR-0009). Before that decision the same 15 frames were
+        // *subtracted*, giving 45.
         let window = window_frames(Duration::from_millis(500), 30.0);
         assert_eq!(window, 15);
-        assert_eq!(30 + 30 - window, 45);
+        assert_eq!(30 + 30, 60);
     }
 
     #[test]
@@ -1001,17 +1059,66 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_a_transition_on_a_middle_clip() {
-        // The CPU route places a clip *after* a transitioned one at its own absolute
-        // offset while the xfade output has shrunk, opening a hole (measured: 15 black
-        // frames). That is a CPU bug, so the GPU route declines rather than reproduce it.
+    fn eligible_track_should_accept_a_transition_on_a_middle_clip() {
+        // This used to be rejected, and had to be: the CPU route placed a clip *after* a
+        // transitioned one at its own absolute offset while the xfade output had shrunk,
+        // opening a hole (measured: 15 black frames). Reproducing that here would have
+        // fixed the bug in place. ADR-0009 removed the shrink, so the restriction has
+        // nothing left to guard and a middle-clip transition belongs on the GPU route
+        // like any other (#1731).
+        //
+        // Probe-backed: eligibility ends in the probe pass, and the transition pass now
+        // asks the source for its handle, so fake paths would reject for the wrong
+        // reason and this test would pass without asserting anything.
+        let src = std::env::temp_dir().join("avio_eligible_middle_tr_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
         let t = square_timeline(vec![
-            placed("a.mp4", 0.0, 1.0),
-            placed("b.mp4", 1.0, 1.0)
+            placed(&path, 0.0, 1.0),
+            placed(&path, 1.0, 1.0)
                 .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
-            placed("c.mp4", 2.0, 1.0),
+            placed(&path, 2.0, 1.0),
         ]);
-        assert!(eligible(&t).is_none());
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            eligible_now,
+            Some(0),
+            "a transition on a middle clip must be GPU-eligible once placement preserves \
+             the timeline length"
+        );
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_with_no_handle_to_feed_it() {
+        // The clamp seen from eligibility: a clip trimmed flush to the end of its source
+        // has nothing past its out-point, so the effective duration is zero and the
+        // window rounds to no frames. Both routes render a hard cut there, and the GPU
+        // one declines rather than blend across a window it cannot fill.
+        let src = std::env::temp_dir().join("avio_eligible_no_handle_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
+        let Ok(info) = ff_probe::open(&src) else {
+            let _ = std::fs::remove_file(&src);
+            return;
+        };
+        let flush = info.duration().as_secs_f64();
+        let t = square_timeline(vec![
+            placed(&path, 0.0, flush),
+            placed(&path, flush, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert!(
+            eligible_now.is_none(),
+            "with no handle the transition clamps to a hard cut, which the GPU route \
+             leaves to the CPU one"
+        );
     }
 
     #[test]
@@ -1046,15 +1153,29 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_a_transition_longer_than_the_outgoing_clip() {
-        // FFmpeg clamps the offset to 0 and truncates the blend into a near hard cut
-        // (measured), which is not what the model asked for -> CPU.
+    fn eligible_track_should_accept_a_transition_longer_than_the_outgoing_clip_body() {
+        // This used to be rejected, because the window was taken *out of* the outgoing
+        // clip and a 0.3 s clip has no 0.5 s to give. The window now comes from the
+        // handle instead (ADR-0009), so the clip's on-screen length stops being a bound
+        // and only the source's material past the out-point matters -- which this
+        // 2-second fixture has plenty of.
+        let src = std::env::temp_dir().join("avio_eligible_short_body_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
         let t = square_timeline(vec![
-            placed("a.mp4", 0.0, 0.3),
-            placed("b.mp4", 0.3, 1.0)
+            placed(&path, 0.0, 0.3),
+            placed(&path, 0.3, 1.0)
                 .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
         ]);
-        assert!(eligible(&t).is_none());
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            eligible_now,
+            Some(0),
+            "the outgoing clip's body no longer bounds the window; its handle does"
+        );
     }
 
     #[test]

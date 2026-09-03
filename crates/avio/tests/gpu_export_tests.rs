@@ -311,13 +311,16 @@ fn gpu_export_should_match_the_cpu_export_for_every_rendered_transition() {
 
     const CLIP_FRAMES: usize = 30; // 1 s at 30 fps
     const WINDOW: usize = 15; // 0.5 s at 30 fps
+    // The blend reads the outgoing clip's handle -- its frames past the out-point
+    // (ADR-0009) -- so the source has to hold more than the clip trims out of it.
+    const SOURCE_FRAMES: usize = CLIP_FRAMES + 2 * WINDOW;
 
     let a = test_output_path("gpuexport_tr_a.mp4");
     let b = test_output_path("gpuexport_tr_b.mp4");
     let _ga = FileGuard::new(a.clone());
     let _gb = FileGuard::new(b.clone());
-    if make_structured_source(&a, CLIP_FRAMES, 0).is_none()
-        || make_structured_source(&b, CLIP_FRAMES, 100).is_none()
+    if make_structured_source(&a, SOURCE_FRAMES, 0).is_none()
+        || make_structured_source(&b, SOURCE_FRAMES, 100).is_none()
     {
         return; // encoder unavailable -> skip
     }
@@ -372,15 +375,15 @@ fn gpu_export_should_match_the_cpu_export_for_every_rendered_transition() {
             return; // decoder unavailable -> skip
         }
 
-        // The transition ran: the track is a window shorter than the hard cut would be.
-        // Expect against what the sources actually decode, since an encode/decode round trip
-        // can lose a frame and that shortfall would otherwise read as a transition bug.
-        let hard_cut = decode_rgba(&a).len() + decode_rgba(&b).len();
-        let expected = hard_cut - WINDOW;
+        // The transition preserves the timeline length (ADR-0009): both clips are
+        // trimmed to a second, so the track runs for two whatever the transition does.
+        // Its own length is what the two routes must agree on frame for frame below;
+        // this is the guard that the drain did not silently drop or double the window.
+        let expected = CLIP_FRAMES * 2;
         assert!(
             (expected - 1..=expected + 1).contains(&gpu.len()),
-            "a {WINDOW}-frame transition should shorten the {hard_cut}-frame hard cut to \
-         ~{expected}, got {}",
+            "a {WINDOW}-frame transition must leave the {expected}-frame timeline its \
+         length, got {}",
             gpu.len()
         );
         assert_eq!(

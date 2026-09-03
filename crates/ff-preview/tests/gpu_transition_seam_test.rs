@@ -11,14 +11,11 @@
 //! No adapter is involved: this pins the *seam*, not the GPU. `avio`'s
 //! `gpu_preview_transition_test` covers the real nodes, probe-gated.
 //!
-//! **The fixture overlaps its two clips, which the engine does not currently do.** The
-//! runner arms a transition at the incoming clip's offset and blends for `xfade_dur`, so
-//! the outgoing clip has to still be producing frames across that window — but `avio`
-//! passes `clip.offset` through unchanged, and a normal crossfade puts clip B exactly
-//! where clip A ends. Measured on a derived scene: `overlap = 0ns`, and the blend is
-//! reached 0 times against 13 for an overlapping one. That is #1737; until it lands this
-//! suite pins the seam rather than its reachability, and the seam is dormant in
-//! production.
+//! The fixture places its two clips back to back and gives the outgoing one a
+//! `video_handle`, which is the shape `avio` now derives (ADR-0009). It used to overlap
+//! them instead, because without a handle the runner advanced to the incoming clip
+//! before it could arm the blend and the seam was reached 0 times — that was #1737, and
+//! a fixture the engine never produced was hiding it (RK-015).
 //!
 //! Probe-gated (RK-002): skips when the shared asset cannot be opened.
 
@@ -125,11 +122,15 @@ fn layer_desc() -> RealtimeLayerDescriptor {
     }
 }
 
+/// The transition duration, and equally the handle the outgoing clip needs to feed it.
+const XFADE: Duration = Duration::from_millis(400);
+
 fn placement(
     offset: Duration,
     in_point: Duration,
     dur: Duration,
     xfade: Option<XfadeTransition>,
+    handle: Duration,
 ) -> ScenePlacement {
     ScenePlacement {
         source: SceneSource::File(asset()),
@@ -138,11 +139,12 @@ fn placement(
         out_point: Some(in_point + dur),
         speed: 1.0,
         xfade_dur: if xfade.is_some() {
-            Duration::from_millis(400)
+            XFADE
         } else {
             Duration::ZERO
         },
         xfade_kind: xfade,
+        video_handle: handle,
         opacity: 1.0,
         layer: layer_desc(),
         fade_in: Duration::ZERO,
@@ -161,20 +163,21 @@ fn transitioned_scene() -> Scene {
         lavfi_overlay: None,
         video_tracks: vec![SceneVideoTrack {
             placements: vec![
-                // Overlapping on purpose; see the module docs. An engine-derived scene
-                // has `overlap = 0ns` and never reaches the blend at all (#1737), so a
-                // faithful fixture would test nothing here.
+                // Back to back, and the outgoing clip carries the handle the blend
+                // reads — the shape `Timeline::to_scene` derives (ADR-0009).
                 placement(
                     Duration::ZERO,
                     Duration::ZERO,
                     Duration::from_millis(1200),
                     None,
+                    XFADE,
                 ),
                 placement(
-                    Duration::from_millis(600),
+                    Duration::from_millis(1200),
                     Duration::from_secs(2),
                     Duration::from_millis(1200),
                     Some(XfadeTransition::FadeBlack),
+                    Duration::ZERO,
                 ),
             ],
         }],

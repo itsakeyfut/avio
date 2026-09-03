@@ -1625,7 +1625,15 @@ mod tests {
             .with_speed(2.0)
             .with_color_correction(0.5, 1.2, 0.8);
         let auto = TrackAutomation::default();
-        let video_layer = crate::derive::video_layer(&clip, 0, &auto, 1920, 1080, None, None);
+        let video_layer = crate::derive::video_layer(
+            &clip,
+            0,
+            &auto,
+            1920,
+            1080,
+            &crate::derive::Placement::default(),
+            None,
+        );
         let descriptor = crate::derive::realtime_descriptor(&clip, &auto, 1920, 1080);
 
         let from_export = map_scene(

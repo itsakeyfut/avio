@@ -612,14 +612,27 @@ impl SceneRunner {
                     let clip_tl_start = self.clips[active].timeline_start;
                     let clip_tl_end = self.clips[active].timeline_end;
                     let clip_speed = self.clips[active].speed;
+                    // Frames past `out_point` that feed the crossfade into the next
+                    // clip (ADR-0009). Without it this clip ends exactly where the next
+                    // one starts, the branch below advances, and the transition-entry
+                    // check further down is never reached — which is why an
+                    // engine-derived scene never blended (#1737).
+                    let handle = self.clips[active].video_handle;
 
                     // Skip frames before in_point (e.g. right after a seek).
                     if f_pts < clip_in {
                         continue;
                     }
 
-                    // Treat frames past out_point as EOF for this clip.
-                    let past_out = clip_out.is_some_and(|op| f_pts >= op);
+                    // The handle in source time, to compare against `out_point` and
+                    // `f_pts`: at speed 2.0 half a second of blend is a second of source.
+                    let src_handle = if (clip_speed - 1.0).abs() < 1e-9 {
+                        handle
+                    } else {
+                        handle.mul_f64(clip_speed)
+                    };
+                    // Treat frames past out_point (plus the handle) as EOF for this clip.
+                    let past_out = clip_out.is_some_and(|op| f_pts >= op + src_handle);
                     let elapsed = f_pts.saturating_sub(clip_in);
                     // Remap source PTS → timeline PTS via speed factor.
                     // For speed=2.0 the clip occupies half the timeline duration;
@@ -629,7 +642,9 @@ impl SceneRunner {
                     } else {
                         elapsed.div_f64(clip_speed)
                     };
-                    let past_end = clip_tl_start + tl_elapsed >= clip_tl_end;
+                    // `handle` is already timeline time, so it adds to the timeline
+                    // extent directly.
+                    let past_end = clip_tl_start + tl_elapsed >= clip_tl_end + handle;
 
                     if past_out || past_end {
                         let old_active = active;

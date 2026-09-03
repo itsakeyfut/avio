@@ -104,6 +104,7 @@ impl SceneRunner {
             self.clips[i].speed = new_speed;
             self.clips[i].xfade_dur = p.xfade_dur;
             self.clips[i].xfade_kind = p.xfade_kind;
+            self.clips[i].video_handle = p.video_handle;
             rebuild_held_on_resize(
                 &mut self.clips[i].decode_buf,
                 &p.source,
@@ -211,6 +212,7 @@ mod tests {
             speed: 1.0,
             xfade_dur: Duration::ZERO,
             xfade_kind: None,
+            video_handle: Duration::ZERO,
             opacity: 1.0,
             layer,
             fade_in: Duration::ZERO,
