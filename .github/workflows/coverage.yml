@@ -37,9 +37,13 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       # Full FFmpeg (all filters), matching the macOS test leg in ci.yml, so
-      # filter/integration tests actually run under instrumentation.
+      # filter/integration tests actually run under instrumentation. Pinned to the
+      # same formula for the same reason (#1728); see the note in ci.yml.
       - name: Install FFmpeg (macOS)
-        run: brew install ffmpeg pkg-config
+        id: ffmpeg
+        run: |
+          brew install ffmpeg@8 pkg-config
+          echo "prefix=$(brew --prefix ffmpeg@8)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,6 +58,10 @@ jobs:
       # Same coverage surface as the test job (`--all --all-features`).
       - name: Collect coverage
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        env:
+          # Scoped to this step, not $GITHUB_ENV: only ff-sys/build.rs wants it, and
+          # taiki-e/install-action above must keep seeing the real Homebrew root.
+          HOMEBREW_PREFIX: ${{ steps.ffmpeg.outputs.prefix }}
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7

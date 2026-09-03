@@ -61,13 +61,33 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/setup-ffmpeg
 
+      # Pinned (#1728). Homebrew's `ffmpeg` moved to 9.x, which drops the deprecated
+      # AVCodec arrays ff-encode reads, and broke every PR overnight. The README
+      # supports 7.x and 8.x, so Linux stays on the pinned 7.1 source build and macOS
+      # covers 8.x. Pinned to the *major*: ffmpeg@8 tracks 8.x rather than an exact
+      # version like the Linux leg's 7.1, because FFmpeg does not remove API within a
+      # major and this leg should still catch real 8.x breakage.
+      #
+      # ffmpeg@8 is keg-only, so ff-sys/build.rs has to be pointed at its keg:
+      # configure_macos() calls try_homebrew() *before* the pkg-config fallback, so
+      # PKG_CONFIG_PATH alone would let whatever `ffmpeg` the image has linked win over
+      # the pin. The prefix goes to a step output rather than $GITHUB_ENV so it reaches
+      # only the cargo step -- HOMEBREW_PREFIX otherwise names the Homebrew root, and
+      # the other steps (rust-cache, install-action) must keep seeing the real one.
       - name: Install FFmpeg (macOS)
+        id: ffmpeg
         if: runner.os == 'macOS'
-        run: brew install ffmpeg pkg-config
+        run: |
+          brew install ffmpeg@8 pkg-config
+          echo "prefix=$(brew --prefix ffmpeg@8)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Empty on Linux, where the step above is skipped. Harmless: HOMEBREW_PREFIX is
+      # only read by configure_macos(), which never runs there.
       - run: cargo test --all --all-features
+        env:
+          HOMEBREW_PREFIX: ${{ steps.ffmpeg.outputs.prefix }}
 
   # --------------------------------------------------------------------------
   # Windows (MSVC) compile check. FFmpeg is deliberately NOT installed here:
