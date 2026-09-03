@@ -42,6 +42,12 @@ jobs:
       - name: Install FFmpeg (macOS)
         id: ffmpeg
         run: |
+          # `brew update` first: the pin resolves only if the runner's formula index
+          # knows `ffmpeg@8`, and `macos-latest` currently rotates between two images
+          # whose Homebrew snapshots disagree about that. Image 20260728 has it and
+          # 20260831 does not, so without this the same commit passes or fails depending
+          # on which one it lands on.
+          brew update
           brew install ffmpeg@8 pkg-config
           echo "prefix=$(brew --prefix ffmpeg@8)" >> "$GITHUB_OUTPUT"
 
