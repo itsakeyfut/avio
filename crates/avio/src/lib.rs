@@ -123,6 +123,7 @@ mod ids;
 mod marker;
 mod timeline;
 mod track;
+mod transition;
 mod validate;
 
 pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};

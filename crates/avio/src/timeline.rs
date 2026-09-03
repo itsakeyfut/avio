@@ -374,9 +374,12 @@ impl Timeline {
         // 2. Build video composition graph (CPU path).
         let mut video_graph = None;
         if build_cpu_video && !video_tracks.is_empty() {
-            // Per-track end-offset (seconds) of the last clip, used to compute
-            // the xfade `offset` arg when the next clip has a transition.
-            let mut prev_end_by_track: HashMap<usize, f64> = HashMap::new();
+            // Per-track running length (seconds) of the composited stream, used as
+            // the xfade `offset` arg when the next clip has a transition. It
+            // accumulates the *authored* durations: a transition preserves the
+            // timeline length, so the stream is as long as a hard cut would be
+            // (ADR-0009), and each clip's offset is its own authored start.
+            let mut stream_len_by_track: HashMap<usize, f64> = HashMap::new();
 
             // Generate the canvas/conform at the timeline rate — the same rate
             // the encoder uses below. A hardcoded mismatch stretches the video
@@ -391,9 +394,18 @@ impl Timeline {
                 if !track.is_active(any_video_solo) {
                     continue;
                 }
+                // The shared placement rule, resolved once for the whole track: each
+                // boundary is both one clip's own transition and its predecessor's
+                // handle, and resolving it per clip probes the same source twice.
+                let boundaries = crate::transition::effective_durations(&track.clips);
                 for (clip_idx, clip) in track.clips.iter().enumerate() {
-                    let prev_end =
-                        (clip_idx > 0).then(|| *prev_end_by_track.get(&track_idx).unwrap_or(&0.0));
+                    let stream_start = (clip_idx > 0)
+                        .then(|| *stream_len_by_track.get(&track_idx).unwrap_or(&0.0));
+                    let transition_dur = boundaries[clip_idx];
+                    let handle = boundaries
+                        .get(clip_idx + 1)
+                        .copied()
+                        .unwrap_or(Duration::ZERO);
 
                     // When a proxy is set, probe the original source resolution so
                     // the decoded proxy frames can be scaled back up to full size.
@@ -424,13 +436,20 @@ impl Timeline {
                         &track.automation,
                         canvas_width,
                         canvas_height,
-                        prev_end,
+                        &derive::Placement {
+                            stream_start,
+                            transition: transition_dur,
+                            handle,
+                        },
                         proxy,
                     ));
 
-                    // Track how many seconds this clip contributes, so the next
+                    // Accumulate how many seconds this clip contributes, so the next
                     // transition on the same track can compute the correct offset.
-                    let end_secs = match clip.duration() {
+                    // Accumulated, not replaced: chained transitions each need their
+                    // own clip's start along the whole stream, not the predecessor's
+                    // length alone (#1731).
+                    let source_secs = match clip.duration() {
                         Some(d) => d.as_secs_f64(),
                         None => clip
                             .source_path()
@@ -443,7 +462,13 @@ impl Timeline {
                                 }
                             }),
                     };
-                    prev_end_by_track.insert(track_idx, end_secs);
+                    // The clip's span *on the composited stream*, which `Speed` has
+                    // already scaled by the time `xfade` sees it: the offset is a
+                    // position along that stream, not along the source. Accumulating
+                    // source seconds overstates every later clip's start by the speed
+                    // factor (#1739 hides the consequence for now; see `composited_secs`).
+                    let end_secs = crate::transition::composited_secs(source_secs, clip.speed);
+                    *stream_len_by_track.entry(track_idx).or_insert(0.0) += end_secs;
                 }
             }
             // Lavfi overlay sits above all regular tracks.
@@ -1106,22 +1131,35 @@ impl TimelineBuilder {
 /// Projects one video clip into a [`ScenePlacement`](ff_preview::ScenePlacement).
 /// `is_base` selects the V1 base track, where a crossfade transition contributes a
 /// `xfade_dur`; overlays force zero (matching the compositor).
+///
+/// `transition` and `handle` are this clip's two placement quantities under ADR-0009:
+/// how long its own transition really lasts, and how far past its out-point it has to
+/// keep producing video for the next clip's. Both come from the caller, which resolves
+/// the whole track through `transition::effective_durations` -- the same rule the export
+/// derives from, so the two routes cannot disagree. Overlays force both to zero,
+/// matching the compositor.
 #[cfg(feature = "preview")]
 fn video_placement(
     clip: &Clip,
     is_base: bool,
+    transition: Duration,
+    handle: Duration,
     automation: &crate::track::TrackAutomation,
     canvas_width: u32,
     canvas_height: u32,
 ) -> ff_preview::ScenePlacement {
-    let xfade_dur = if is_base && clip.transition.is_some() {
-        clip.transition_duration
+    let (xfade_dur, video_handle) = if is_base {
+        (transition, handle)
     } else {
-        Duration::ZERO
+        (Duration::ZERO, Duration::ZERO)
     };
     // Carry the transition kind (not just its duration) so preview renders the
     // actual xfade kind; overlays force no transition (matching the compositor).
-    let xfade_kind = if is_base { clip.transition } else { None };
+    let xfade_kind = if xfade_dur.is_zero() {
+        None
+    } else {
+        clip.transition
+    };
     ff_preview::ScenePlacement {
         // File clips decode; generated (Text/Solid) clips are rendered by the runner
         // via ff-filter's SolidSource/TextSource (the same filters export uses).
@@ -1136,6 +1174,7 @@ fn video_placement(
         speed: clip.speed.max(0.01),
         xfade_dur,
         xfade_kind,
+        video_handle,
         opacity: clip.opacity.clamp(0.0, 1.0),
         // The single derive: preview and export build their video layers from the
         // same `avio::derive`, so the timeline-level animations (scale/rotation and
@@ -1184,12 +1223,21 @@ fn audio_placement(
 #[cfg(feature = "preview")]
 impl Timeline {
     /// Projects this timeline into a primitive [`Scene`](ff_preview::Scene) for the
-    /// real-time preview runner. This is a pure model projection — no probing or
-    /// I/O; media-dependent resolution (durations, audio presence, frame size)
-    /// happens later in [`ScenePlayer::open`](ff_preview::ScenePlayer::open).
+    /// real-time preview runner. Media-dependent resolution (durations, audio
+    /// presence, frame size) happens later in
+    /// [`ScenePlayer::open`](ff_preview::ScenePlayer::open).
     ///
     /// Video track `0` is the V1 base (crossfade transitions apply); tracks `1..`
     /// are overlays (transitions forced off, matching the compositor).
+    ///
+    /// This is otherwise a pure model projection, with one exception: a **transition
+    /// boundary** is probed, because its duration is clamped to the handle the
+    /// outgoing clip has left (ADR-0009) and only the source knows how long that is.
+    /// Both routes read it through the same `transition::effective_durations`, so
+    /// preview and export cannot blend over different spans. The base track's
+    /// boundaries are resolved in one pass, so the cost is one probe per *transition* —
+    /// not per clip, and not two per transition — and a timeline without transitions
+    /// still re-derives with no I/O at all.
     #[must_use]
     pub fn to_scene(&self) -> ff_preview::Scene {
         // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in the
@@ -1202,13 +1250,24 @@ impl Timeline {
             .enumerate()
             .map(|(track_idx, track)| ff_preview::SceneVideoTrack {
                 placements: if track.is_active(any_video_solo) {
+                    // Resolved once per track, and only for the base track: overlays
+                    // force their transitions off, so probing them would be pure cost.
+                    let boundaries = if track_idx == 0 {
+                        crate::transition::effective_durations(&track.clips)
+                    } else {
+                        Vec::new()
+                    };
+                    let at = |i: usize| boundaries.get(i).copied().unwrap_or(Duration::ZERO);
                     track
                         .clips
                         .iter()
-                        .map(|clip| {
+                        .enumerate()
+                        .map(|(clip_idx, clip)| {
                             video_placement(
                                 clip,
                                 track_idx == 0,
+                                at(clip_idx),
+                                at(clip_idx + 1),
                                 &track.automation,
                                 self.canvas_width,
                                 self.canvas_height,
@@ -1309,12 +1368,22 @@ mod tests {
             matches!(base.layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < f64::EPSILON)
         );
 
+        // The clamp, seen from the projection: none of these paths is a real file, so
+        // the handle behind clip 0 is unknown and the boundary degrades to a hard cut
+        // (ADR-0009). The media-backed case -- where the kind and the full duration do
+        // reach the placement -- is
+        // `preview_transition_reach::a_derived_scene_should_give_the_outgoing_clip_the_handle_its_transition_needs`,
+        // which needs an encoded source and so cannot live here.
         let base1 = &scene.video_tracks[0].placements[1];
-        assert_eq!(base1.xfade_dur, Duration::from_millis(750));
         assert_eq!(
-            base1.xfade_kind,
-            Some(XfadeTransition::Fade),
-            "base track carries the xfade kind"
+            base1.xfade_dur,
+            Duration::ZERO,
+            "an unreadable source has no handle to feed a transition"
+        );
+        assert_eq!(
+            base1.xfade_kind, None,
+            "a transition clamped to nothing must not leave its kind behind, or the \
+             runner would arm a zero-length blend"
         );
 
         let overlay = &scene.video_tracks[1].placements[0];

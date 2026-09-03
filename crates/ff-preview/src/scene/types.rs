@@ -99,6 +99,17 @@ pub struct ScenePlacement {
     /// when there is no transition; the runner defaults to `Fade` if a duration is
     /// set without a kind.
     pub xfade_kind: Option<XfadeTransition>,
+    /// How far past `out_point` this placement may keep producing **video**, to feed
+    /// the crossfade into the *next* placement. `Duration::ZERO` = not at all.
+    ///
+    /// A transition occupies the incoming placement head and blends it against these
+    /// frames, so the outgoing placement has to survive that window without being
+    /// lengthened: `out_point` stays where it is (it bounds this placement audio and
+    /// its timeline extent), and only the video decode runs on.
+    ///
+    /// **Timeline time**, like `xfade_dur` — the runner converts to source time with
+    /// `speed` where it compares against a source PTS.
+    pub video_handle: Duration,
     /// Per-clip opacity in `[0.0, 1.0]`.
     pub opacity: f32,
     /// The dimension-free compositing description (effects, blend, position, and the

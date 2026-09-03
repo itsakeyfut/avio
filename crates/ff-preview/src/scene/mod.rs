@@ -228,6 +228,7 @@ impl ScenePlayer {
             out_point: Option<Duration>,
             xfade_dur: Duration,
             xfade_kind: Option<XfadeTransition>,
+            video_handle: Duration,
             has_audio: bool,
             /// Video frame dimensions — used to pre-populate `last_frame_w/h` so the
             /// gap-fill loop can synthesise black frames before the first real frame.
@@ -296,6 +297,7 @@ impl ScenePlayer {
                 out_point: p.out_point,
                 xfade_dur: p.xfade_dur,
                 xfade_kind: p.xfade_kind,
+                video_handle: p.video_handle,
                 has_audio,
                 video_w,
                 video_h,
@@ -362,6 +364,7 @@ impl ScenePlayer {
                 out_point: p.out_point,
                 xfade_dur: p.xfade_dur,
                 xfade_kind: p.xfade_kind,
+                video_handle: p.video_handle,
                 audio_track: audio_track_handles[i].clone(),
                 speed: p.speed,
                 opacity: p.opacity,
@@ -448,6 +451,8 @@ impl ScenePlayer {
                     out_point: p.out_point,
                     xfade_dur: Duration::ZERO,
                     xfade_kind: None,
+                    // Overlays carry no transition, so there is nothing to feed.
+                    video_handle: Duration::ZERO,
                     audio_track: None,
                     speed: p.speed,
                     opacity: p.opacity,

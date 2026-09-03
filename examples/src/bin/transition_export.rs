@@ -26,7 +26,12 @@ fn main() -> BoxResult<()> {
     };
     let (canvas_w, canvas_h, fps) = (v.width(), v.height(), v.fps());
 
-    // ── Two 1s clips with a 0.5s crossfade overlap on V1 ──────────────────────
+    // ── Two 1s clips back to back, with a 0.5s crossfade into the second ──────
+    //
+    // The clips tile the timeline: a transition does not overlap them and does not
+    // shorten the result (ADR-0009). It is fed by the first clip's *handle* -- the
+    // frames past its out-point -- which this input has, being longer than the 1s
+    // trimmed out of it.
     let clip_len = Duration::from_secs(1);
     let xfade = Duration::from_millis(500);
     let output = tmp.path().join("transition.mp4");
@@ -37,7 +42,7 @@ fn main() -> BoxResult<()> {
             Clip::new(&input).trim(Duration::ZERO, clip_len),
             Clip::new(&input)
                 .trim(Duration::ZERO, clip_len)
-                .offset(clip_len.saturating_sub(xfade))
+                .offset(clip_len)
                 .with_transition(XfadeTransition::Fade, xfade),
         ])
         .build()?;
@@ -64,8 +69,13 @@ fn main() -> BoxResult<()> {
                 "output dims match canvas",
                 out_w == canvas_w && out_h == canvas_h,
             );
-            // Two 1s clips overlapped by 0.5s -> ~1.5s of content.
-            report.check("output has crossfaded duration (> one clip)", out_dur > 1.0);
+            // Two 1s clips and a transition that costs the timeline nothing: ~2s,
+            // the same length a hard cut would produce.
+            let expected = clip_len.as_secs_f64() * 2.0;
+            report.check(
+                "transition preserves the hard-cut duration",
+                (out_dur - expected).abs() < 0.2,
+            );
         }
         Err(e) => {
             println!("  (could not re-probe output: {e})");

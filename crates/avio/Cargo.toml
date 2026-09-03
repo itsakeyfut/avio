@@ -60,6 +60,12 @@ name = "composition_framerate"
 name = "timeline_preview_tests"
 required-features = ["preview"]
 
+# The preview reaches its transition on an engine-derived scene (#1737): drives the
+# real runner, so it needs `preview`. Kept in sync with the file's `#![cfg(...)]`.
+[[test]]
+name = "preview_transition_reach"
+required-features = ["preview"]
+
 # Preview-vs-export structural parity (#1664): drives the real preview runner, so it
 # needs `preview`. Kept in sync with the file's `#![cfg(feature = "preview")]`.
 [[test]]
