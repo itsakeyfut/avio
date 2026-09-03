@@ -56,8 +56,16 @@ version-specific tokens are gated behind an `ffmpeg8` cfg in `ff-sys`.
 | Platform | Command |
 |---|---|
 | Ubuntu / Debian | `sudo apt install libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev pkg-config` |
-| macOS | `brew install ffmpeg pkg-config` |
+| macOS | `brew install ffmpeg@8 pkg-config` (see the note below) |
 | Windows | Install via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install ffmpeg:x64-windows` |
+
+On macOS, install the **versioned** formula: Homebrew's plain `ffmpeg` is 9.x, which is
+outside the supported range and fails to build (`no field 'sample_fmts' on type 'AVCodec'`).
+`ffmpeg@8` is keg-only, so point the build at its keg — the same thing CI does:
+
+```sh
+export HOMEBREW_PREFIX="$(brew --prefix ffmpeg@8)"
+```
 
 Verify: `ffmpeg -version` (must show `7.x` or `8.x`)
 
