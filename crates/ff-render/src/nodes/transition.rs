@@ -55,8 +55,6 @@ pub struct WipeTransitionNode {
     pub to_width: u32,
     /// Height of `to_rgba`.
     pub to_height: u32,
-    #[cfg(feature = "wgpu")]
-    pipeline: std::sync::OnceLock<TransitionPipeline>,
 }
 
 impl WipeTransitionNode {
@@ -77,8 +75,6 @@ impl WipeTransitionNode {
             to_rgba,
             to_width,
             to_height,
-            #[cfg(feature = "wgpu")]
-            pipeline: std::sync::OnceLock::new(),
         }
     }
 
@@ -189,8 +185,6 @@ pub struct FadeTransitionNode {
     pub to_width: u32,
     /// Height of `to_rgba`.
     pub to_height: u32,
-    #[cfg(feature = "wgpu")]
-    pipeline: std::sync::OnceLock<TransitionPipeline>,
 }
 
 impl FadeTransitionNode {
@@ -202,8 +196,6 @@ impl FadeTransitionNode {
             to_rgba,
             to_width,
             to_height,
-            #[cfg(feature = "wgpu")]
-            pipeline: std::sync::OnceLock::new(),
         }
     }
 }
@@ -254,8 +246,6 @@ pub struct DissolveTransitionNode {
     pub to_width: u32,
     /// Height of `to_rgba`.
     pub to_height: u32,
-    #[cfg(feature = "wgpu")]
-    pipeline: std::sync::OnceLock<TransitionPipeline>,
 }
 
 impl DissolveTransitionNode {
@@ -268,8 +258,6 @@ impl DissolveTransitionNode {
             to_rgba,
             to_width,
             to_height,
-            #[cfg(feature = "wgpu")]
-            pipeline: std::sync::OnceLock::new(),
         }
     }
 }
@@ -320,8 +308,6 @@ pub struct DipToColorNode {
     pub to_width: u32,
     /// Height of `to_rgba`.
     pub to_height: u32,
-    #[cfg(feature = "wgpu")]
-    pipeline: std::sync::OnceLock<TransitionPipeline>,
 }
 
 impl DipToColorNode {
@@ -340,8 +326,6 @@ impl DipToColorNode {
             to_rgba,
             to_width,
             to_height,
-            #[cfg(feature = "wgpu")]
-            pipeline: std::sync::OnceLock::new(),
         }
     }
 }
@@ -386,8 +370,18 @@ impl RenderNodeCpu for DipToColorNode {
 
 // GPU path (shared 2-input plumbing)
 
+/// Identifies a compiled transition pipeline: every input `build_pipeline` bakes in
+/// except the shader source, which the label stands for.
 #[cfg(feature = "wgpu")]
-struct TransitionPipeline {
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub(crate) struct TransitionPipelineKey {
+    pub(crate) label: &'static str,
+    pub(crate) uniform_size: u64,
+    pub(crate) mask: bool,
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) struct TransitionPipeline {
     render_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -406,6 +400,49 @@ fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
+}
+
+/// The compiled pipeline for `label`, built once per device and reused afterwards.
+///
+/// Transition nodes are constructed per frame (they own the incoming clip's pixels), so
+/// without this the shader would be compiled per frame: measured at roughly 5 ms a time,
+/// which a 30 fps preview cannot spend. The pipeline is a pure function of the shader and
+/// the layout, so one entry serves every node of that kind on this device (#1726).
+#[cfg(feature = "wgpu")]
+fn cached_pipeline(
+    ctx: &crate::context::RenderContext,
+    label: &'static str,
+    shader_src: &str,
+    uniform_size: u64,
+    mask: bool,
+) -> std::sync::Arc<TransitionPipeline> {
+    let mut cache = match ctx.transition_pipelines.lock() {
+        Ok(guard) => guard,
+        // A poisoned lock means another thread panicked mid-build. The cache holds only
+        // derived data, so recovering it is safe and better than propagating the panic
+        // into a render pass.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Keyed by everything `build_pipeline` bakes in, not by the label alone. The four
+    // labels happen to determine the rest today, but nothing enforces that, and a fifth
+    // node reusing a label would otherwise be handed another shader's pipeline (RK-025:
+    // a cache key has to reflect every input the cached thing was built from). The
+    // colour target is absent because `build_pipeline` hard-codes `Rgba8Unorm` for all
+    // of them; if that ever varies it belongs in this key too.
+    let key = TransitionPipelineKey {
+        label,
+        uniform_size,
+        mask,
+    };
+    std::sync::Arc::clone(cache.entry(key).or_insert_with(|| {
+        std::sync::Arc::new(build_pipeline(
+            &ctx.device,
+            shader_src,
+            label,
+            uniform_size,
+            mask,
+        ))
+    }))
 }
 
 /// Builds the shared transition pipeline: bind group `tex_a` / `tex_b` / sampler /
@@ -646,22 +683,14 @@ impl super::RenderNode for WipeTransitionNode {
             log::warn!("WipeTransitionNode::process called with no outputs");
             return;
         };
-        let pd = self.pipeline.get_or_init(|| {
-            build_pipeline(
-                &ctx.device,
-                include_str!("../shaders/wipe.wgsl"),
-                "Wipe",
-                16,
-                false,
-            )
-        });
+        let pd = cached_pipeline(ctx, "Wipe", include_str!("../shaders/wipe.wgsl"), 16, false);
         ctx.queue.write_buffer(
             &pd.uniform_buf,
             0,
             &pack_f32(&[self.progress, self.softness, self.angle, 0.0]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Wipe pass");
+        run_pass(ctx, &pd, tex_a, &to_tex, None, output, "Wipe pass");
     }
 }
 
@@ -687,22 +716,20 @@ impl super::RenderNode for FadeTransitionNode {
         };
         // `crossfade.wgsl` is this node's shader: same binding layout as the other
         // transitions, and its one `f32` uniform is `progress` (see the type docs).
-        let pd = self.pipeline.get_or_init(|| {
-            build_pipeline(
-                &ctx.device,
-                include_str!("../shaders/crossfade.wgsl"),
-                "Fade",
-                16,
-                false,
-            )
-        });
+        let pd = cached_pipeline(
+            ctx,
+            "Fade",
+            include_str!("../shaders/crossfade.wgsl"),
+            16,
+            false,
+        );
         ctx.queue.write_buffer(
             &pd.uniform_buf,
             0,
             &pack_f32(&[self.progress, 0.0, 0.0, 0.0]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Fade pass");
+        run_pass(ctx, &pd, tex_a, &to_tex, None, output, "Fade pass");
     }
 }
 
@@ -728,20 +755,18 @@ impl super::RenderNode for DissolveTransitionNode {
         };
         // The only transition that binds a third texture, so the only one that asks
         // `build_pipeline` for the mask entry.
-        let pd = self.pipeline.get_or_init(|| {
-            build_pipeline(
-                &ctx.device,
-                include_str!("../shaders/dissolve.wgsl"),
-                "Dissolve",
-                16,
-                true,
-            )
-        });
+        let pd = cached_pipeline(
+            ctx,
+            "Dissolve",
+            include_str!("../shaders/dissolve.wgsl"),
+            16,
+            true,
+        );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
         let mask_tex = upload_frame(ctx, &self.mask, self.to_width, self.to_height);
         run_pass(
             ctx,
-            pd,
+            &pd,
             tex_a,
             &to_tex,
             Some(&mask_tex),
@@ -771,15 +796,7 @@ impl super::RenderNode for DipToColorNode {
             log::warn!("DipToColorNode::process called with no outputs");
             return;
         };
-        let pd = self.pipeline.get_or_init(|| {
-            build_pipeline(
-                &ctx.device,
-                include_str!("../shaders/dip.wgsl"),
-                "Dip",
-                32,
-                false,
-            )
-        });
+        let pd = cached_pipeline(ctx, "Dip", include_str!("../shaders/dip.wgsl"), 32, false);
         ctx.queue.write_buffer(
             &pd.uniform_buf,
             0,
@@ -795,7 +812,7 @@ impl super::RenderNode for DipToColorNode {
             ]),
         );
         let to_tex = upload_frame(ctx, &self.to_rgba, self.to_width, self.to_height);
-        run_pass(ctx, pd, tex_a, &to_tex, None, output, "Dip pass");
+        run_pass(ctx, &pd, tex_a, &to_tex, None, output, "Dip pass");
     }
 }
 
@@ -1079,6 +1096,63 @@ mod gpu_tests {
             Ok(ctx) => Some(Arc::new(ctx)),
             Err(_) => None,
         }
+    }
+
+    #[test]
+    fn transition_pipeline_should_be_compiled_once_across_frames() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // AC2 of #1726: a transition node carries the incoming clip's pixels, so it is
+        // rebuilt every frame. Without the shared cache each rebuild recompiled the
+        // shader -- about 5 ms, which a 30 fps preview cannot spend. Drive several
+        // frames of one kind and assert the device compiled it once.
+        let (w, h) = (8u32, 8u32);
+        let n = (w * h) as usize;
+        let a: Vec<u8> = [10u8, 20, 30, 255].repeat(n);
+        let b: Vec<u8> = [200u8, 210, 220, 255].repeat(n);
+        let before = ctx.transition_pipeline_count();
+        for i in 0..5 {
+            #[allow(clippy::cast_precision_loss)]
+            let progress = i as f32 / 5.0;
+            let out = RenderGraph::new(Arc::clone(&ctx))
+                .push(FadeTransitionNode::new(progress, b.clone(), w, h))
+                .process_gpu(&a, w, h)
+                .expect("gpu fade");
+            assert_eq!(out.len(), a.len());
+        }
+        assert_eq!(
+            ctx.transition_pipeline_count() - before,
+            1,
+            "five frames of one kind must compile one pipeline, not five"
+        );
+    }
+
+    #[test]
+    fn transition_pipelines_should_be_cached_per_kind() {
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // The other half: the cache is keyed by shader, so different kinds must not
+        // collide onto one entry and render as each other.
+        let (w, h) = (8u32, 8u32);
+        let n = (w * h) as usize;
+        let a: Vec<u8> = [10u8, 20, 30, 255].repeat(n);
+        let b: Vec<u8> = [200u8, 210, 220, 255].repeat(n);
+        let before = ctx.transition_pipeline_count();
+        let _ = RenderGraph::new(Arc::clone(&ctx))
+            .push(FadeTransitionNode::new(0.5, b.clone(), w, h))
+            .process_gpu(&a, w, h)
+            .expect("gpu fade");
+        let _ = RenderGraph::new(Arc::clone(&ctx))
+            .push(WipeTransitionNode::new(0.5, 0.0, 0.0, b, w, h))
+            .process_gpu(&a, w, h)
+            .expect("gpu wipe");
+        assert_eq!(
+            ctx.transition_pipeline_count() - before,
+            2,
+            "two kinds must hold two entries"
+        );
     }
 
     #[test]
