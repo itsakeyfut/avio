@@ -207,10 +207,9 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
 /// Calibrated (#1659, widened in #1732): this pipeline's floor is a **hard cut**, where
 /// the routes still differ because the GPU one round-trips yuv -> rgba -> yuv while the
 /// CPU one stays in yuv throughout the filter graph. Measured on the structured sources
-/// below, a hard cut comes out at mean 1.4 / max 7; the transitions land at 2.3 (`Fade`,
-/// the dips), 2.4-2.6 (the wipes) and 4.2 (`Dissolve`, whose per-pixel scatter is the
-/// worst case for 4:2:0 chroma). The bound clears those and is still far from anything a
-/// real divergence would produce: the wrong blend direction reads as mean ~127, and a
+/// below, a hard cut comes out at mean 1.4 / max 7, and the transitions the export
+/// renders land at 1.9-2.3. The bound clears those with room for platform variation and
+/// is still far from anything a real divergence would produce: the wrong blend direction reads as mean ~127, and a
 /// transition rendered as the wrong kind as ~50.
 const TOL_TRANSITION_MEAN: f64 = 6.0;
 
@@ -326,9 +325,12 @@ fn gpu_export_should_match_the_cpu_export_for_every_rendered_transition() {
         return; // no GPU adapter -> the GPU leg is unreachable here
     }
 
+    // `Dissolve` is absent on purpose: the export declines it (its pixel set depends on
+    // libm agreement between Rust and FFmpeg), so both legs here would be CPU renders and
+    // the comparison would pass without exercising anything. The rejection itself is
+    // asserted by `gpu_export::tests::export_maps_to_gpu_should_reject_dissolve_despite_it_mapping`.
     for kind in [
         XfadeTransition::Fade,
-        XfadeTransition::Dissolve,
         XfadeTransition::WipeLeft,
         XfadeTransition::WipeRight,
         XfadeTransition::WipeUp,

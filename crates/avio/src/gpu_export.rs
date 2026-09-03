@@ -38,7 +38,8 @@ use crate::track::Track;
 
 /// Whether the GPU export renders `kind` itself, or leaves the whole export to the CPU.
 ///
-/// Every kind [`map_transition`] covers, now that each node reproduces `FFmpeg`'s own
+/// Every kind [`map_transition`] covers **except `Dissolve`**, now that each node
+/// reproduces `FFmpeg`'s own
 /// formula rather than an approximation of it (#1732). Worst-frame mean between the two
 /// export routes, as printed by
 /// `gpu_export_tests::gpu_export_should_match_the_cpu_export_for_every_rendered_transition`
@@ -50,10 +51,19 @@ use crate::track::Track;
 /// | `Fade` | 2.0 |
 /// | `WipeLeft` / `WipeRight` / `WipeUp` / `WipeDown` | 2.1 - 2.3 |
 /// | `FadeBlack` / `FadeWhite` | 2.0 - 2.1 |
-/// | `Dissolve` | 3.6 |
 ///
-/// A hard cut's own GPU-vs-CPU floor on the same sources is 1.4, so every kind sits just
-/// above the colour round trip and nowhere near a real divergence.
+/// A hard cut's own GPU-vs-CPU floor on the same sources is 1.4, so every rendered kind
+/// sits just above the colour round trip and nowhere near a real divergence.
+///
+/// **`Dissolve` is excluded, and not because of its formula.** Its selection is
+/// `ff_filter::xfade_frand`, which is `sinf` of an argument large enough that the result
+/// depends on the libm evaluating it. The GPU route builds the mask with **Rust's**
+/// `sinf` while the CPU route runs **`FFmpeg`'s**, and the two agree only where their
+/// libms do: measured worst-frame mean 3.6 between the routes on Windows but 6.6 on
+/// macOS, i.e. a different set of pixels turning over. A viewer toggling force-CPU would
+/// see different noise for the same timeline, so the export declines it rather than
+/// render what the other route would not (RK-020). Nothing else here depends on libm
+/// agreement -- the blends are arithmetic and the wipes are integer comparisons.
 ///
 /// This was `Fade`-only before #1732, when the nodes were pinned to
 /// `ff_preview::apply_xfade` and that reference had itself drifted from `FFmpeg` --
@@ -62,7 +72,7 @@ use crate::track::Track;
 /// a kind that maps to a node but does *not* reproduce `FFmpeg` belongs on the CPU, and
 /// this is where it would be excluded (RK-020).
 fn export_maps_to_gpu(kind: XfadeTransition) -> bool {
-    map_transition(kind).is_some()
+    !matches!(kind, XfadeTransition::Dissolve) && map_transition(kind).is_some()
 }
 
 /// A transition's length in output frames at the timeline rate.
@@ -912,14 +922,13 @@ mod tests {
     }
 
     #[test]
-    fn export_maps_to_gpu_should_accept_every_mapped_kind() {
+    fn export_maps_to_gpu_should_accept_every_libm_independent_kind() {
         // #1732 brought each node onto `FFmpeg`'s own formula, so the export no longer
-        // has to hold anything back: what maps, renders. Before that only `Fade` agreed
-        // with the CPU export, because the nodes were pinned to a reference that had
-        // itself drifted.
+        // holds back the kinds whose agreement is pure arithmetic. Before that only
+        // `Fade` agreed with the CPU export, because the nodes were pinned to a reference
+        // that had itself drifted.
         for kind in [
             XfadeTransition::Fade,
-            XfadeTransition::Dissolve,
             XfadeTransition::WipeLeft,
             XfadeTransition::WipeRight,
             XfadeTransition::WipeUp,
@@ -929,9 +938,26 @@ mod tests {
         ] {
             assert!(
                 export_maps_to_gpu(kind),
-                "{kind:?} maps and must render on the GPU"
+                "{kind:?} agrees with the CPU export and must render on the GPU"
             );
         }
+    }
+
+    #[test]
+    fn export_maps_to_gpu_should_reject_dissolve_despite_it_mapping() {
+        // The one kind that maps to a node and still stays on the CPU. Its selection is
+        // `sinf` of a large argument, so which pixels turn over depends on the libm: the
+        // GPU route uses Rust's and the CPU route FFmpeg's, and they agree on Windows
+        // (worst-frame mean 3.6 between the routes) but not macOS (6.6). Rendering it
+        // would give a viewer different noise depending on the route they took.
+        assert!(
+            map_transition(XfadeTransition::Dissolve).is_some(),
+            "Dissolve still maps to a node -- the preview and the parity suites use it"
+        );
+        assert!(
+            !export_maps_to_gpu(XfadeTransition::Dissolve),
+            "Dissolve must stay on the CPU export"
+        );
     }
 
     #[test]

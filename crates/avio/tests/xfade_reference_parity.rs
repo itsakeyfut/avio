@@ -32,8 +32,11 @@
 //!
 //! `Dissolve` is deliberately absent from the structured leg: its selection is per-pixel
 //! scatter, the worst case for 4:2:0, so it reads ~34 there no matter how exact the
-//! selection is. It has no direction to check either, so the flat leg (where a wrong hash
-//! reads 54 against a bound of 3.5) is the whole of its coverage here.
+//! selection is. It has no direction to check either, so the flat leg is the whole of its
+//! coverage here — and on a bound of its own, because it is the one kind whose agreement
+//! depends on two libms matching rather than on arithmetic (see
+//! `TOL_FLAT_DISSOLVE_MEAN`). That same dependence is why the GPU *export* declines
+//! `Dissolve` outright.
 //!
 //! Probe-gated (RK-002): the source encode and the export skip gracefully when the
 //! environment cannot run them.
@@ -69,6 +72,16 @@ const WINDOW: usize = 15;
 /// A wrong formula is nowhere near it: the linear dip this replaced read 18.7 here and
 /// the previous dissolve hash read 54.
 const TOL_FLAT_MEAN: f64 = 3.5;
+
+/// Bound for `Dissolve`, which is the one kind whose agreement is not pure arithmetic.
+///
+/// Its selection is `xfade_frand`, i.e. `sinf` of an argument large enough that the
+/// result depends on the libm evaluating it — Rust's here, `FFmpeg`'s in the export. They
+/// agree exactly on some platforms (0% of pixels disagreeing, measured on Windows) and
+/// approximately on others, so this leg pins that the formula is *right* while leaving
+/// room for the platform to disagree about a few pixels. It is still an order of
+/// magnitude below the 54 an unrelated hash produces, which is what this guards against.
+const TOL_FLAT_DISSOLVE_MEAN: f64 = 12.0;
 
 /// Bound for the structured leg. Measured worst-frame means: `FadeBlack` 2.8, `Fade` 3.0,
 /// `FadeWhite` 3.0, wipes 3.4–4.7. The wipes sit higher because their seam falls on a
@@ -258,8 +271,13 @@ fn apply_xfade_should_match_the_export_formula_for_every_mapped_kind() {
             return; // environment cannot run the export -> skip the whole suite
         };
         println!("flat {kind:?}: worst mean={mean:.3} (window frame {frame})");
+        let bound = if *kind == XfadeTransition::Dissolve {
+            TOL_FLAT_DISSOLVE_MEAN
+        } else {
+            TOL_FLAT_MEAN
+        };
         assert!(
-            mean <= TOL_FLAT_MEAN,
+            mean <= bound,
             "{kind:?}: the preview reference diverges from the export by {mean:.3} at \
              window frame {frame} (tolerance {TOL_FLAT_MEAN}); the formula does not match \
              FFmpeg's"
