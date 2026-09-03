@@ -339,8 +339,8 @@ impl Timeline {
             }
         }
 
-        // GPU export decision (Br4, #1627): an eligible single-track hard-cut
-        // timeline with an available adapter composites on the GPU; otherwise the CPU
+        // GPU export decision (Br4, #1627): an eligible single-track timeline with an
+        // available adapter composites on the GPU; otherwise the CPU
         // MultiTrackComposer path below runs unchanged. Decided here so the CPU
         // composition graph is not built when the GPU export path will run. No
         // adapter, force-CPU, or an ineligible timeline all fall back to CPU.
@@ -353,6 +353,7 @@ impl Timeline {
                 lavfi_overlay.as_deref(),
                 any_video_solo,
                 (canvas_width, canvas_height),
+                frame_rate,
             )
             .and_then(|idx| crate::gpu_compositor::GpuCompositor::new().map(|core| (idx, core)))
         };

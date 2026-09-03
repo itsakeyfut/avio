@@ -9,45 +9,118 @@
 //! it back to rgba, and pushes it to the unchanged encoder (whose own sws converts
 //! rgba -> yuv420p).
 //!
-//! v1 handles only a **single active video track of contiguous hard cuts** at unity
-//! speed whose every clip is a file source that maps to the GPU with an identity
-//! transform. A source whose frame rate differs from the timeline's is conformed by the
-//! drain (#1660), repeating or skipping source frames so the clip keeps its on-screen
-//! duration, and one whose aspect differs from the canvas is letterboxed by the shared
-//! compositing core (#1661). Anything else keeps the whole export on the
-//! CPU `MultiTrackComposer` path (see [`eligible_track`]); multi-track / overlay GPU
-//! export is a follow-up.
+//! v1 handles only a **single active video track** at unity speed whose every clip is a
+//! file source that maps to the GPU with an identity transform. A source whose frame
+//! rate differs from the timeline's is conformed by the drain (#1660), repeating or
+//! skipping source frames so the clip keeps its on-screen duration, and one whose aspect
+//! differs from the canvas is letterboxed by the shared compositing core (#1661). The
+//! clips are otherwise hard cuts, except for a single **cross-fade into the track's last
+//! clip** (#1659). Anything else keeps the whole export on the CPU
+//! `MultiTrackComposer` path (see [`eligible_track`]); multi-track / overlay GPU export
+//! is a follow-up.
 
 use std::time::{Duration, Instant};
 
 use ff_decode::{SeekMode, VideoDecoder};
 use ff_encode::VideoEncoder;
-use ff_filter::{AnimatedValue, VideoLayer};
+use ff_filter::{AnimatedValue, VideoLayer, XfadeTransition};
 use ff_format::{PixelFormat, VideoFrame};
 use ff_pipeline::Progress;
+use ff_render::BlendMode as RenderBlendMode;
 
+use crate::clip::Clip;
 use crate::derive;
 use crate::error::TimelineError;
-use crate::gpu::{GpuMapping, map_scene};
+use crate::gpu::{GpuEffect, GpuLayerPlan, GpuMapping, map_scene};
 use crate::gpu_compositor::GpuCompositor;
+use crate::gpu_transition::{GpuTransition, map_transition};
 use crate::track::Track;
+
+/// Whether the GPU export renders `kind` itself, or leaves the whole export to the CPU.
+///
+/// Narrower than [`map_transition`], deliberately. That mapping was verified against
+/// `ff_preview::apply_xfade` (#1657), but the export replaces `FFmpeg`'s own `xfade`
+/// filter, and the two references do not agree everywhere. Measured against the CPU
+/// export on the same window frames, with this pipeline's GPU-vs-CPU noise floor at
+/// mean 1.4 for a hard cut:
+///
+/// | kind | mean | why |
+/// |---|---|---|
+/// | `Fade` | 1.99 | agrees |
+/// | wipes | 2.5-3.9 | right direction, seam column off by ~1 px |
+/// | `Dissolve` | 54.5 | same proportion of clip B, different PRNG, so a different pixel set |
+/// | `FadeBlack` / `FadeWhite` | ~78 | `FFmpeg` dips through a smoothstep with a 0.2 phase; the node dips linearly |
+///
+/// So only `Fade` is rendered here; every other kind falls back rather than export
+/// something the model did not ask for (RK-020). Widening this is what fixing the
+/// node-vs-`FFmpeg` divergence unlocks.
+fn export_maps_to_gpu(kind: XfadeTransition) -> bool {
+    matches!(map_transition(kind), Some(GpuTransition::Fade))
+}
+
+/// A transition's length in output frames at the timeline rate.
+///
+/// This is exactly how many outputs the CPU route's `xfade` consumes: measured on a
+/// 30 fps timeline, a 0.5 s transition between two 1 s clips turns the hard cut's 60
+/// output frames into 45, blending across the 15 in between.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn window_frames(d: Duration, frame_rate: f64) -> u64 {
+    (d.as_secs_f64() * frame_rate).round().max(0.0) as u64
+}
+
+/// A clip's output-frame budget (its trimmed duration at the timeline rate), or `None`
+/// when the clip runs to end-of-file.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn budget_frames(clip: &Clip, frame_rate: f64) -> Option<u64> {
+    clip.duration()
+        .map(|d| (d.as_secs_f64() * frame_rate).round().max(0.0) as u64)
+}
+
+/// The clip's export [`VideoLayer`], with any transition removed.
+///
+/// The drain runs the transition itself (see [`drain_video_gpu`]), so the layer must not
+/// also carry a `FilterStep::XFade` -- `map_scene` does not map that step, so the whole
+/// timeline would fall back. Passing `prev_end: None` keeps the step out too, but makes
+/// `derive` log "transition on a track's first clip ignored" for every eligible clip,
+/// which is not what happened; clearing the field says what is meant.
+///
+/// A transition on the track's *first* clip is genuinely ignored, matching `derive` on
+/// the CPU route (there is no preceding clip to cross-fade from).
+fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> VideoLayer {
+    if clip.transition.is_none() {
+        return derive::video_layer(clip, 0, &track.automation, canvas.0, canvas.1, None, None);
+    }
+    let mut without = clip.clone();
+    without.transition = None;
+    derive::video_layer(
+        &without,
+        0,
+        &track.automation,
+        canvas.0,
+        canvas.1,
+        None,
+        None,
+    )
+}
 
 /// Decides whether a timeline can be exported on the GPU export path, returning the
 /// index of the single eligible video track, or `None` to keep the whole export on
 /// the CPU `MultiTrackComposer` path.
 ///
-/// v1 is deliberately narrow (structural + contiguity checks are I/O-free; only the
-/// probe pass reads each source):
+/// v1 is deliberately narrow (structural, transition and contiguity checks are I/O-free;
+/// only the probe pass reads each source):
 /// - no lavfi overlay (a second compositing layer v1 does not handle),
 /// - exactly one **active** video track with at least one clip,
 /// - every clip is a **file** source (a generated Solid/Text source has no decoder
 ///   here; it renders via lavfi on the CPU path),
-/// - hard cuts only (a transition needs an xfade node the GPU path lacks),
 /// - unity speed (the drain conforms frame *rate* but does not resample time),
 /// - each clip's derived [`VideoLayer`] maps to [`GpuMapping::Gpu`] (a supported
 ///   blend / composite / effect set) with a **static, neutral transform** (RK-020:
 ///   the model's pixels/degrees are not `ff_render`'s UV/radians, so any placement
 ///   falls back),
+/// - at most one transition, on the track's **last** clip, of a kind the GPU renders
+///   the same way the CPU export does (see [`export_maps_to_gpu`]) -- the rest of the
+///   restrictions are spelled out in [`eligible_transition`],
 /// - the clips **tile the timeline with no gap or overlap** (each `clip.offset`
 ///   equals the sum of the preceding clips' durations): the decode loop concatenates
 ///   clips in order without honouring `clip.offset`, so a leading gap, an inter-clip
@@ -63,6 +136,7 @@ pub(crate) fn eligible_track(
     lavfi_overlay: Option<&str>,
     any_video_solo: bool,
     canvas: (u32, u32),
+    frame_rate: f64,
 ) -> Option<usize> {
     if lavfi_overlay.is_some() {
         return None;
@@ -83,18 +157,44 @@ pub(crate) fn eligible_track(
 
     // Structural pass (no I/O): reject before any source probe so an ineligible
     // clip anywhere on the track keeps the export on the CPU path deterministically.
-    for clip in &track.clips {
-        if clip.source_path().is_none() || clip.transition.is_some() {
-            return None;
-        }
+    //
+    // `blendable[i]` records whether clip `i` may take part in a transition: its node
+    // effects carry no cross-frame state, and its solo composite is the identity. Both
+    // matter only at a transition, where two clips share one layer slot and are
+    // composited before they are blended (see `eligible_transition`).
+    let mut blendable = vec![false; track.clips.len()];
+    for (i, clip) in track.clips.iter().enumerate() {
+        clip.source_path()?;
         if (clip.speed - 1.0).abs() > 1e-9 {
             return None;
         }
-        let layer = derive::video_layer(clip, 0, &track.automation, canvas.0, canvas.1, None, None);
-        if !matches!(
-            map_scene(std::slice::from_ref(&layer), canvas, Duration::ZERO),
-            GpuMapping::Gpu(_)
-        ) || !is_static_neutral_transform(&layer)
+        let layer = transitionless_layer(clip, track, canvas);
+        let GpuMapping::Gpu(plan) = map_scene(std::slice::from_ref(&layer), canvas, Duration::ZERO)
+        else {
+            return None;
+        };
+        if !is_static_neutral_transform(&layer) {
+            return None;
+        }
+        blendable[i] = plan
+            .layers
+            .iter()
+            .all(|l| is_neutral_composite(l) && !l.effects.iter().any(is_stateful_effect));
+    }
+
+    // Transition pass (no I/O). A transition on the *first* clip is ignored rather than
+    // rejected, matching `derive` on the CPU route: there is no preceding clip to
+    // cross-fade from, so both routes render a plain clip (`transitionless_layer`).
+    let last = track.clips.len() - 1;
+    for i in 1..track.clips.len() {
+        if track.clips[i].transition.is_some()
+            && !eligible_transition(
+                &track.clips[i - 1],
+                &track.clips[i],
+                i == last,
+                blendable[i - 1] && blendable[i],
+                frame_rate,
+            )
         {
             return None;
         }
@@ -104,8 +204,13 @@ pub(crate) fn eligible_track(
     // honouring `clip.offset`, so it only matches the CPU compositor when the clips
     // tile the timeline with no gap or overlap. Each clip must start exactly where the
     // previous ended; only the final clip may run to end-of-file (unknown duration).
+    //
+    // A transitioned clip keeps this requirement even though `xfade` ignores its
+    // `OffsetPts` entirely (measured: moving clip B by a second changes nothing on the
+    // CPU route). Rejecting a gap the CPU would have swallowed only costs a fallback,
+    // and it keeps the accepted set to timelines whose model placement both routes read
+    // the same way.
     let mut expected = Duration::ZERO;
-    let last = track.clips.len() - 1;
     for (i, clip) in track.clips.iter().enumerate() {
         if clip.offset != expected {
             return None;
@@ -138,6 +243,106 @@ pub(crate) fn eligible_track(
     Some(idx)
 }
 
+/// Whether an effect's node carries state across the frames it processes.
+///
+/// Only [`GpuEffect::MotionBlur`], whose exposure trail *is* its cross-frame reuse
+/// (RK-025). Every other mapped effect is fully determined by its `GpuEffect` value, so
+/// two clips sharing one cached graph get the same output either way.
+fn is_stateful_effect(effect: &GpuEffect) -> bool {
+    matches!(effect, GpuEffect::MotionBlur { .. })
+}
+
+/// Whether a layer's solo composite onto the empty canvas is the identity, so blending
+/// *after* it gives the same answer as blending before.
+///
+/// The transition window composites each clip alone and then blends the two, while the
+/// CPU route blends first (`xfade`) and composites the result. The orders commute only
+/// for a layer the solo composite leaves alone. A partially transparent one does not
+/// survive it: `blend.wgsl` computes `mix(base.rgb, blend_rgb, overlay.a * opacity)`
+/// against the canvas' transparent black, so an `opacity` of 0.5 reaches the blend
+/// already darkened, while on the CPU it only sets clip B's alpha -- which `xfade`
+/// ignores, mixing full-strength RGB and letting the overlay apply the opacity
+/// afterwards. Measured on a 0.5 s `Fade`: luma diverged by 26 at a static opacity of
+/// 0.5 and by 42 with an animated one, *inside the window only* (RK-020).
+///
+/// A non-`Normal` blend mode composes against the canvas in the same place and so has
+/// the same problem. `CompositeOp` needs no check here: `map_scene` already rejects
+/// anything but `Over` for the whole timeline.
+fn is_neutral_composite(plan: &GpuLayerPlan) -> bool {
+    (plan.opacity - 1.0).abs() < 1e-6 && plan.blend_mode == RenderBlendMode::Normal
+}
+
+/// Whether the transition on `incoming` -- the clip cross-faded *into*, whose
+/// predecessor on the track is `outgoing` -- is one the GPU export renders itself.
+///
+/// Everything here is a *fallback* condition, not an error: a rejected transition keeps
+/// the whole export on the CPU route, which handles all of these.
+///
+/// - **Last clip only.** The CPU route places a clip that *follows* a transitioned one
+///   at its own absolute `OffsetPts` while the `xfade` output has shrunk by the
+///   transition's duration, so a mid-track transition opens a hole (measured: 15 frames
+///   of pure black for a 0.5 s transition at 30 fps), and chained transitions fire early
+///   and overlap. Those are CPU bugs; reproducing them here would fix them in place.
+/// - **A kind both routes render alike** ([`export_maps_to_gpu`]).
+/// - **Both clips of known duration**, so every bound below is checkable up front rather
+///   than discovered at EOF.
+/// - **A window of at least one frame that fits both clips.** A sub-frame duration has
+///   no frames to blend, and `FFmpeg` clamps an over-long one to offset 0 and then
+///   truncates it into a near hard cut (measured), which is not what the model asked
+///   for. RK-020: the degenerate corner of a reproduced formula is exactly where silent
+///   wrong output comes from.
+/// - **Both clips are `blendable`** ([`is_neutral_composite`] and no stateful effect).
+///   The window composites the two alternately at the *same* layer position and blends
+///   the results, so a cached effect graph would evict its neighbour's every frame
+///   (RK-025) and a non-identity solo composite would reach the blend already applied
+///   (RK-020).
+fn eligible_transition(
+    outgoing: &Clip,
+    incoming: &Clip,
+    is_last: bool,
+    blendable: bool,
+    frame_rate: f64,
+) -> bool {
+    if !is_last || !blendable {
+        return false;
+    }
+    let Some(kind) = incoming.transition else {
+        return false;
+    };
+    if !export_maps_to_gpu(kind) {
+        return false;
+    }
+    let (Some(incoming_budget), Some(outgoing_budget)) = (
+        budget_frames(incoming, frame_rate),
+        budget_frames(outgoing, frame_rate),
+    ) else {
+        return false;
+    };
+    let window = window_frames(incoming.transition_duration, frame_rate);
+    window >= 1 && window <= incoming_budget && window <= outgoing_budget
+}
+
+/// The transition window (in output frames) that `clip` takes out of its predecessor's
+/// tail, or `0` when it carries none.
+///
+/// Only reached for a track [`eligible_track`] accepted, so a transition here is already
+/// known to be a mapped kind with a window that fits both clips. One that is not would
+/// otherwise be rendered as a cross-fade in place of what the model asked for, so it
+/// surfaces as an error instead (RK-020).
+fn transition_window(clip: &Clip, frame_rate: f64) -> Result<u64, TimelineError> {
+    let Some(kind) = clip.transition else {
+        return Ok(0);
+    };
+    if !export_maps_to_gpu(kind) {
+        return Err(TimelineError::TimelineRenderFailed {
+            reason: format!(
+                "gpu export: transition {kind:?} has no GPU node (precluded by eligibility)"
+            ),
+        });
+    }
+    Ok(window_frames(clip.transition_duration, frame_rate))
+}
+
 /// The presentation time of output frame `k` **within the clip**, at the timeline rate.
 ///
 /// Conform compares this against the source's own frame timestamps rather than against
@@ -162,10 +367,181 @@ fn is_static_neutral_transform(layer: &VideoLayer) -> bool {
         && matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9)
 }
 
+/// The frame one clip shows for one output, and whether the drain may take it.
+///
+/// The distinction is [`GpuCompositor::composite_owned`]'s (#1634): a matching-rate clip
+/// decodes one frame per output and can move it into the compositor, while a conformed
+/// clip may show one held frame for several outputs and can only lend it.
+enum Pulled<'a> {
+    /// Freshly decoded and no longer needed by the source: move it.
+    Owned(VideoFrame),
+    /// Held for this and possibly later outputs: borrow it.
+    Held(&'a VideoFrame),
+}
+
+/// One clip's decoded frames, delivered one output frame at a time.
+///
+/// The drain used to inline this as two loops (matching-rate and PTS-conform) inside
+/// `for clip in &track.clips`, which cannot serve a transition: that needs the outgoing
+/// clip's tail and the incoming clip's head *alternately*, so both have to be resumable
+/// (#1659). Pulling them frame by frame also keeps the drain O(1) in memory -- buffering
+/// the incoming clip's head instead would cost a canvas per window frame (124 MB for
+/// 0.5 s of 1080p30).
+struct ClipSource {
+    decoder: VideoDecoder,
+    /// Output frames this clip contributes, or `None` to drain to end-of-file.
+    budget: Option<u64>,
+    produced: u64,
+    frame_rate: f64,
+    /// The source's rate matches the timeline's: one decoded frame per output.
+    one_to_one: bool,
+    /// Clip-relative zero, so a trimmed clip's timestamps start at 0.
+    base: Duration,
+    /// The newest source frame at or before the current output's time. One source frame
+    /// serves several outputs when conforming up, hence held rather than consumed.
+    held: Option<VideoFrame>,
+    held_at: Duration,
+    /// Lookahead: decoded, but belongs to a later output than the current one.
+    pending: Option<(VideoFrame, Duration)>,
+    eof: bool,
+}
+
+impl ClipSource {
+    /// Opens `clip`'s source, seeking to its in-point.
+    ///
+    /// Decodes straight to rgba: the shared core's effect pass reads rgba, and the
+    /// compositor and readback stay in one format (the encoder's own sws converts
+    /// rgba -> yuv420p on push).
+    fn open(clip: &Clip, frame_rate: f64) -> Result<Self, TimelineError> {
+        let src = clip
+            .source_path()
+            .ok_or_else(|| TimelineError::TimelineRenderFailed {
+                reason: "gpu export: clip lost its file source".to_string(),
+            })?;
+        let mut decoder = VideoDecoder::open(src)
+            .output_format(PixelFormat::Rgba)
+            .build()?;
+        // Eligibility guarantees a positive, finite rate, so the conform maths is well
+        // defined; fall back to the timeline rate defensively.
+        let src_fps = {
+            let f = decoder.frame_rate();
+            if f.is_finite() && f > 0.0 {
+                f
+            } else {
+                frame_rate
+            }
+        };
+        if let Some(in_point) = clip.in_point {
+            decoder.seek(in_point, SeekMode::Exact)?;
+        }
+        Ok(Self {
+            decoder,
+            budget: budget_frames(clip, frame_rate),
+            produced: 0,
+            frame_rate,
+            one_to_one: (src_fps - frame_rate).abs() <= 1e-3,
+            base: clip.in_point.unwrap_or(Duration::ZERO),
+            held: None,
+            held_at: Duration::ZERO,
+            pending: None,
+            eof: false,
+        })
+    }
+
+    /// Output frames this clip has left, or `None` when it drains to end-of-file.
+    fn remaining(&self) -> Option<u64> {
+        self.budget.map(|b| b.saturating_sub(self.produced))
+    }
+
+    /// The frame for this clip's next output, or `None` when the clip is finished --
+    /// its budget is spent, or its source ran out first (a clip shorter than declared).
+    fn next(&mut self) -> Result<Option<Pulled<'_>>, TimelineError> {
+        if self.budget.is_some_and(|b| self.produced >= b) {
+            return Ok(None);
+        }
+        if self.one_to_one {
+            let Some(frame) = self.decoder.decode_one()? else {
+                return Ok(None);
+            };
+            self.produced += 1;
+            return Ok(Some(Pulled::Owned(frame)));
+        }
+
+        // Conform (#1660), PTS-driven: hold the newest source frame whose timestamp is
+        // at or before this output's time, so a slower source repeats a frame and a
+        // faster one skips frames while the clip keeps its on-screen duration.
+        // Timestamps rather than a nominal rate, because the reported rate is not
+        // trustworthy (see `clip_output_time`).
+        let want = clip_output_time(self.produced, self.frame_rate);
+        // Advance while the next source frame still starts at or before `want`; the last
+        // such frame is the one this output shows.
+        loop {
+            if let Some((frame, at)) = self.pending.take() {
+                if self.held.is_none() || at <= want {
+                    self.held = Some(frame);
+                    self.held_at = at;
+                    continue;
+                }
+                self.pending = Some((frame, at));
+                break;
+            }
+            if self.eof {
+                break;
+            }
+            match self.decoder.decode_one()? {
+                Some(frame) => {
+                    let at = frame.timestamp().as_duration().saturating_sub(self.base);
+                    self.pending = Some((frame, at));
+                }
+                None => self.eof = true,
+            }
+        }
+        if self.held.is_none() {
+            return Ok(None); // The clip decoded no frames at all.
+        }
+        // The source is spent and this output is past its last frame: the clip ends
+        // here, matching the matching-rate path's "shorter than declared" stop.
+        if self.eof && self.pending.is_none() && want > self.held_at {
+            return Ok(None);
+        }
+        self.produced += 1;
+        Ok(self.held.as_ref().map(Pulled::Held))
+    }
+}
+
+/// Composites one clip's frame into the canvas, moving it in when the source has
+/// finished with it.
+fn composite_pulled(
+    core: &mut GpuCompositor,
+    layer: &VideoLayer,
+    pulled: Pulled<'_>,
+    canvas: (u32, u32),
+    t: Duration,
+) -> Option<(Vec<u8>, u32, u32)> {
+    match pulled {
+        Pulled::Owned(frame) => core.composite_owned(vec![(layer, frame)], canvas, t),
+        Pulled::Held(frame) => core.composite(&[(layer, frame)], canvas, t),
+    }
+}
+
+/// The error for a composite that fell back mid-export, which eligibility has already
+/// precluded -- surfaced rather than allowed to become wrong output.
+fn fell_back(what: &str) -> TimelineError {
+    TimelineError::TimelineRenderFailed {
+        reason: format!("gpu export: {what} fell back mid-export (precluded by eligibility)"),
+    }
+}
+
 /// Drains an eligible single video track to the encoder on the GPU: decode each
 /// clip's frames in order, composite each on the GPU, read it back, and push it to
 /// the unchanged encoder. `on_progress` is invoked after each pushed frame;
 /// returning `false` cancels with [`TimelineError::Cancelled`].
+///
+/// Clips are concatenated, except that a transition on the track's last clip overlaps
+/// it with its predecessor (#1659). The CPU route's `xfade` starts the incoming clip
+/// `duration` earlier and blends across that span, so the track ends up
+/// `duration` shorter -- measured, and reproduced here by ending the outgoing clip's
+/// solo run a window early and then blending the two clips frame for frame.
 ///
 /// The caller has already established eligibility ([`eligible_track`]), so a
 /// mid-export fallback from the compositor is a should-not-happen and surfaces as
@@ -181,136 +557,91 @@ pub(crate) fn drain_video_gpu(
     start: Instant,
     total_frames: Option<u64>,
 ) -> Result<(), TimelineError> {
+    let clips = &track.clips;
+    let Some(first) = clips.first() else {
+        return Ok(());
+    };
+
     let mut video_idx: u32 = 0;
-    for clip in &track.clips {
-        let src = clip
-            .source_path()
-            .ok_or_else(|| TimelineError::TimelineRenderFailed {
-                reason: "gpu export: clip lost its file source".to_string(),
-            })?;
-        // Decode straight to rgba: the shared core's effect pass reads rgba, and the
-        // compositor and readback stay in one format (the encoder's own sws converts
-        // rgba -> yuv420p on push).
-        let mut decoder = VideoDecoder::open(src)
-            .output_format(PixelFormat::Rgba)
-            .build()?;
-        // Eligibility guarantees a positive, finite rate, so the conform maths below is
-        // well defined; fall back to the timeline rate defensively.
-        let src_fps = {
-            let f = decoder.frame_rate();
-            if f.is_finite() && f > 0.0 {
-                f
-            } else {
-                frame_rate
-            }
+    let mut cur = ClipSource::open(first, frame_rate)?;
+    let mut cur_layer = transitionless_layer(first, track, canvas);
+    // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
+    // exposure trail) must not accumulate across a cut into the next clip (RK-025).
+    core.reset_effect_cache();
+
+    for i in 0..clips.len() {
+        // What the *next* clip's transition takes out of this clip's solo run.
+        let window = match clips.get(i + 1) {
+            Some(next) => transition_window(next, frame_rate)?,
+            None => 0,
         };
-        if let Some(in_point) = clip.in_point {
-            decoder.seek(in_point, SeekMode::Exact)?;
+
+        // This clip alone, down to the tail the transition needs.
+        while cur.remaining().is_none_or(|left| left > window) {
+            let t = output_time(video_idx, frame_rate);
+            let Some(pulled) = cur.next()? else {
+                break; // EOF before the budget: the clip is shorter than declared.
+            };
+            let composited = composite_pulled(core, &cur_layer, pulled, canvas, t);
+            emit_frame(
+                composited,
+                encoder,
+                &mut video_idx,
+                on_progress,
+                start,
+                total_frames,
+            )?;
         }
 
-        // Output-frame budget for this clip (its trimmed duration at the timeline
-        // rate); `None` when the clip runs to end-of-file, so it drains until EOF.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let frame_budget: Option<u64> = clip
-            .duration()
-            .map(|d| (d.as_secs_f64() * frame_rate).round().max(0.0) as u64);
-
-        let layer = derive::video_layer(clip, 0, &track.automation, canvas.0, canvas.1, None, None);
-
-        // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
-        // exposure trail) must not accumulate across the cut into this clip (RK-025).
+        let Some(next) = clips.get(i + 1) else {
+            break;
+        };
+        let mut inc = ClipSource::open(next, frame_rate)?;
+        let inc_layer = transitionless_layer(next, track, canvas);
         core.reset_effect_cache();
 
-        let mut produced: u64 = 0;
-        if (src_fps - frame_rate).abs() <= 1e-3 {
-            // Matching rates: one decoded frame per output frame, moved into the
-            // compositor so a no-effects layer avoids a full-frame clone (#1634).
-            loop {
-                if frame_budget.is_some_and(|budget| produced >= budget) {
-                    break;
-                }
-                let Some(frame) = decoder.decode_one()? else {
-                    break; // EOF before the budget: the clip is shorter than declared.
-                };
-                let t = output_time(video_idx, frame_rate);
-                let composited = core.composite_owned(vec![(&layer, frame)], canvas, t);
-                emit_frame(
-                    composited,
-                    encoder,
-                    &mut video_idx,
-                    on_progress,
-                    start,
-                    total_frames,
-                )?;
-                produced += 1;
-            }
-        } else {
-            // Conform (#1660), PTS-driven: hold the newest source frame whose timestamp
-            // is at or before this output's time, so a slower source repeats a frame and
-            // a faster one skips frames while the clip keeps its on-screen duration.
-            // Timestamps rather than a nominal rate, because the reported rate is not
-            // trustworthy (see `clip_output_time`).
-            //
-            // The held frame is *borrowed* because one source frame can serve several
-            // outputs. `composite` clones it internally for a no-effects layer
-            // (`gpu_compositor.rs`), so this path pays the per-output clone that the
-            // matching-rate path avoids with `composite_owned` (#1634) — accepted for
-            // v1 since conform is the uncommon case.
-            let base = clip.in_point.unwrap_or(Duration::ZERO);
-            let mut held: Option<VideoFrame> = None;
-            let mut held_at = Duration::ZERO;
-            let mut pending: Option<(VideoFrame, Duration)> = None;
-            let mut eof = false;
-            loop {
-                if frame_budget.is_some_and(|budget| produced >= budget) {
-                    break;
-                }
-                let want = clip_output_time(produced, frame_rate);
-                // Advance while the next source frame still starts at or before `want`;
-                // the last such frame is the one this output shows. `pending` carries the
-                // lookahead frame that already belongs to a later output.
-                loop {
-                    if let Some((frame, at)) = pending.take() {
-                        if held.is_none() || at <= want {
-                            held = Some(frame);
-                            held_at = at;
-                            continue;
-                        }
-                        pending = Some((frame, at));
-                        break;
-                    }
-                    if eof {
-                        break;
-                    }
-                    match decoder.decode_one()? {
-                        Some(frame) => {
-                            let at = frame.timestamp().as_duration().saturating_sub(base);
-                            pending = Some((frame, at));
-                        }
-                        None => eof = true,
-                    }
-                }
-                let Some(frame) = held.as_ref() else {
-                    break; // The clip decoded no frames at all.
-                };
-                // The source is spent and this output is past its last frame: the clip
-                // ends here, matching the pre-existing "shorter than declared" stop.
-                if eof && pending.is_none() && want > held_at {
-                    break;
-                }
-                let t = output_time(video_idx, frame_rate);
-                let composited = core.composite(&[(&layer, frame)], canvas, t);
-                emit_frame(
-                    composited,
-                    encoder,
-                    &mut video_idx,
-                    on_progress,
-                    start,
-                    total_frames,
-                )?;
-                produced += 1;
-            }
+        // The transition window: both clips are composited to the canvas separately and
+        // then blended, matching the CPU route where `xfade` is the trailing step of the
+        // incoming layer's chain. Progress runs `0 .. (window-1)/window`, so the first
+        // output is the outgoing clip untouched and the incoming clip's own frame
+        // `window` is the first one shown alone -- the CPU route's mapping, measured.
+        for j in 0..window {
+            let t = output_time(video_idx, frame_rate);
+            let Some(outgoing) = cur.next()? else {
+                break; // The outgoing clip ran out early; end the transition with it.
+            };
+            let (a_rgba, w, h) = composite_pulled(core, &cur_layer, outgoing, canvas, t)
+                .ok_or_else(|| fell_back("the outgoing clip"))?;
+            let Some(incoming) = inc.next()? else {
+                // The incoming clip ran out early. The outgoing frame just composited
+                // goes unused: it belonged to this output, which now has nothing to
+                // blend it with. Only reachable when a source is shorter than declared,
+                // since eligibility bounds the window by both clips' budgets.
+                break;
+            };
+            let (b_rgba, _, _) = composite_pulled(core, &inc_layer, incoming, canvas, t)
+                .ok_or_else(|| fell_back("the incoming clip"))?;
+            #[allow(clippy::cast_precision_loss)] // window frame counts fit the mantissa
+            let progress = j as f32 / window as f32;
+            let blended = core
+                .crossfade(progress, &a_rgba, b_rgba, w, h)
+                .ok_or_else(|| TimelineError::TimelineRenderFailed {
+                    reason: format!(
+                        "gpu export: the transition blend failed at progress {progress}"
+                    ),
+                })?;
+            emit_frame(
+                Some((blended, w, h)),
+                encoder,
+                &mut video_idx,
+                on_progress,
+                start,
+                total_frames,
+            )?;
         }
+
+        cur = inc;
+        cur_layer = inc_layer;
     }
     Ok(())
 }
@@ -327,8 +658,9 @@ fn output_time(video_idx: u32, frame_rate: f64) -> Duration {
 /// Takes the composite *result* rather than the compositor so the caller keeps the
 /// choice of moving the frame in (`composite_owned`, the matching-rate path) or
 /// borrowing it (`composite`, the conform path, where one source frame can serve
-/// several outputs). A `None` means a frame fell back mid-export, which eligibility
-/// has already precluded, so it surfaces as an error rather than wrong output.
+/// several outputs), and so the transition window can pass its blended frame through
+/// the same push. A `None` means a frame fell back mid-export, which eligibility has
+/// already precluded, so it surfaces as an error rather than wrong output.
 fn emit_frame(
     composited: Option<(Vec<u8>, u32, u32)>,
     encoder: &mut VideoEncoder,
@@ -362,7 +694,7 @@ fn emit_frame(
 mod tests {
     use std::time::Duration;
 
-    use ff_filter::XfadeTransition;
+    use ff_filter::{BlendMode, FilterStep, XfadeTransition};
     use ff_format::Color;
 
     use super::*;
@@ -385,7 +717,18 @@ mod tests {
             timeline.lavfi_overlay.as_deref(),
             timeline.video_tracks.iter().any(|t| t.solo),
             (timeline.canvas_width, timeline.canvas_height),
+            timeline.frame_rate,
         )
+    }
+
+    /// A clip of `secs` seconds starting at `at`, so a track built from these tiles the
+    /// timeline and clears the contiguity pass -- what the transition cases need, since
+    /// a bare `Clip::new` has no duration and is rejected before the transition is ever
+    /// looked at.
+    fn placed(path: &str, at: f64, secs: f64) -> Clip {
+        Clip::new(path)
+            .offset(Duration::from_secs_f64(at))
+            .trim(Duration::ZERO, Duration::from_secs_f64(secs))
     }
 
     /// Mirrors the drain's selection rule — show the last source frame whose
@@ -534,13 +877,240 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_a_transition() {
-        // A cross-fade needs an xfade node the GPU path lacks -> CPU.
+    fn window_frames_should_match_the_cpu_route_measurement() {
+        // The number the whole transition path is built on. Measured against the CPU
+        // export: two 1 s clips at 30 fps with a 0.5 s `Fade` produce 45 output frames
+        // where a hard cut produces 60, i.e. the window is 15 and the track shortens by
+        // exactly that.
+        let window = window_frames(Duration::from_millis(500), 30.0);
+        assert_eq!(window, 15);
+        assert_eq!(30 + 30 - window, 45);
+    }
+
+    #[test]
+    fn window_frames_should_round_a_sub_frame_duration_to_zero() {
+        // The value `eligible_transition`'s `window >= 1` check keys off: a transition
+        // too short to own an output frame has nothing to blend.
+        assert_eq!(window_frames(Duration::from_millis(10), 30.0), 0);
+    }
+
+    #[test]
+    fn export_maps_to_gpu_should_accept_only_fade() {
+        // #1657's mapping was verified against `ff_preview::apply_xfade`; the export's
+        // reference is FFmpeg's own `xfade`, and measured against that only `Fade`
+        // agrees. Pin the narrowing so widening it is a deliberate act.
+        assert!(export_maps_to_gpu(XfadeTransition::Fade));
+        for kind in [
+            XfadeTransition::Dissolve,
+            XfadeTransition::WipeLeft,
+            XfadeTransition::WipeRight,
+            XfadeTransition::WipeUp,
+            XfadeTransition::WipeDown,
+            XfadeTransition::FadeBlack,
+            XfadeTransition::FadeWhite,
+            XfadeTransition::SlideLeft,
+            XfadeTransition::Pixelize,
+        ] {
+            assert!(
+                !export_maps_to_gpu(kind),
+                "{kind:?} does not match the CPU export and must fall back"
+            );
+        }
+    }
+
+    #[test]
+    fn eligible_track_should_accept_a_fade_into_the_last_clip() {
+        // #1659: the structural pass no longer rejects every transition. Probe-backed
+        // because eligibility ends in the probe pass, which needs a real file -- and
+        // because this test is what proves the *route* is taken: `render()` falls back
+        // silently, so the end-to-end parity test alone could not tell a GPU export from
+        // a CPU one.
+        let src = std::env::temp_dir().join("avio_eligible_fade_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
         let t = square_timeline(vec![
-            Clip::new("a.mp4"),
-            Clip::new("b.mp4").with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+            placed(&path, 0.0, 1.0),
+            placed(&path, 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            eligible_now,
+            Some(0),
+            "a Fade into the last clip must be GPU-eligible after #1659"
+        );
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_on_a_middle_clip() {
+        // The CPU route places a clip *after* a transitioned one at its own absolute
+        // offset while the xfade output has shrunk, opening a hole (measured: 15 black
+        // frames). That is a CPU bug, so the GPU route declines rather than reproduce it.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0),
+            placed("b.mp4", 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+            placed("c.mp4", 2.0, 1.0),
         ]);
         assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_ignore_a_transition_on_the_first_clip() {
+        // `derive` drops a transition that has no preceding clip to cross-fade from, so
+        // the CPU route renders a plain clip; the drain's `transitionless_layer` does the
+        // same. Eligibility must therefore not reject on it.
+        let src = std::env::temp_dir().join("avio_eligible_first_tr_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
+        let t = square_timeline(vec![
+            placed(&path, 0.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(eligible_now, Some(0));
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_kind_the_gpu_renders_differently() {
+        // `Dissolve` maps to a GPU node (#1657) but picks a different pixel set than
+        // FFmpeg's (mean 54), so the export keeps it on the CPU.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0),
+            placed("b.mp4", 1.0, 1.0)
+                .with_transition(XfadeTransition::Dissolve, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_longer_than_the_outgoing_clip() {
+        // FFmpeg clamps the offset to 0 and truncates the blend into a near hard cut
+        // (measured), which is not what the model asked for -> CPU.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 0.3),
+            placed("b.mp4", 0.3, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_sub_frame_transition() {
+        // A window of zero frames has nothing to blend (RK-020: the degenerate corner of
+        // a reproduced formula is where silent wrong output comes from).
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0),
+            placed("b.mp4", 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(10)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_into_a_clip_of_unknown_duration() {
+        // Without a duration the window cannot be checked against the incoming clip up
+        // front, only discovered at EOF -> CPU.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0),
+            Clip::new("b.mp4")
+                .offset(Duration::from_secs(1))
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_beside_a_stateful_effect() {
+        // The window composites both clips at the same layer position, so their cached
+        // effect graphs evict each other every frame -- restarting a MotionBlur trail on
+        // both (RK-025). Only a stateful node cares, so only it is gated.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0).with_video_effect(FilterStep::MotionBlur {
+                shutter_angle_degrees: 180.0,
+                sub_frames: 4,
+            }),
+            placed("b.mp4", 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_beside_a_transparent_clip() {
+        // The window composites each clip alone and *then* blends, while the CPU route
+        // blends first and composites the result. A partially transparent clip does not
+        // survive that reordering: it reaches the blend already darkened against the
+        // canvas, where the CPU's `xfade` would have mixed its full-strength RGB.
+        // Measured on a 0.5 s Fade: luma diverged by 26 at opacity 0.5 (42 animated),
+        // inside the window only. Nothing panics and no frame falls back, so only this
+        // gate stands between that and a silently wrong export (RK-020).
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0),
+            placed("b.mp4", 1.0, 1.0)
+                .with_opacity(0.5)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_reject_a_transition_beside_a_non_normal_blend() {
+        // Same reordering, other axis: a blend mode composes against the canvas in the
+        // same place opacity does, so it cannot survive the solo composite either.
+        let t = square_timeline(vec![
+            placed("a.mp4", 0.0, 1.0).with_blend_mode(BlendMode::Multiply),
+            placed("b.mp4", 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+        ]);
+        assert!(eligible(&t).is_none());
+    }
+
+    #[test]
+    fn eligible_track_should_accept_a_transparent_clip_without_a_transition() {
+        // The other half of the two gates above: opacity alone is fine, because without
+        // a transition nothing blends after the solo composite. Keeps the rejections
+        // attributable to the transition rather than reading as a blanket ban.
+        let src = std::env::temp_dir().join("avio_eligible_opacity_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
+        let t = square_timeline(vec![
+            placed(&path, 0.0, 1.0).with_opacity(0.5),
+            placed(&path, 1.0, 1.0),
+        ]);
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(eligible_now, Some(0));
+    }
+
+    #[test]
+    fn eligible_track_should_accept_a_stateful_effect_without_a_transition() {
+        // The other half of the gate above: MotionBlur alone is fine (the drain resets
+        // the effect cache at each clip boundary), so the rejection above is the
+        // transition's doing and not a blanket ban.
+        let src = std::env::temp_dir().join("avio_eligible_motionblur_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_string_lossy().into_owned();
+        let t = square_timeline(vec![
+            placed(&path, 0.0, 1.0).with_video_effect(FilterStep::MotionBlur {
+                shutter_angle_degrees: 180.0,
+                sub_frames: 4,
+            }),
+            placed(&path, 1.0, 1.0),
+        ]);
+        let eligible_now = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(eligible_now, Some(0));
     }
 
     #[test]
