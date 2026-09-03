@@ -202,6 +202,193 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
     );
 }
 
+/// Per-frame mean absolute RGB difference between the two routes' exports.
+///
+/// Calibrated (#1659): this pipeline's floor is a **hard cut**, where the routes still
+/// differ because the GPU one round-trips yuv -> rgba -> yuv while the CPU one stays in
+/// yuv throughout the filter graph. Measured on the structured sources below, a hard cut
+/// comes out at mean 1.4 / max 7, and the faded transition at ~2. The bound is well
+/// clear of that and still far from anything a real divergence would produce: the wrong
+/// blend direction reads as mean ~127, and a mismatched transition kind as 54-78.
+const TOL_TRANSITION_MEAN: f64 = 5.0;
+
+/// Encodes a spatially structured, colourful source: a horizontal ramp in R, a vertical
+/// one in G, and `phase` shifting B so the two clips differ everywhere.
+///
+/// Deliberately not `make_source_file`'s flat fill. On a solid colour a fade, a wipe and
+/// a dissolve produce near-identical frames, so a flat fixture cannot tell a correct
+/// blend from a mirrored or mis-keyed one (RK-022).
+fn make_structured_source(path: &std::path::Path, frames: usize, phase: u8) -> Option<()> {
+    use ff_encode::VideoEncoder;
+    use ff_format::VideoFrame;
+
+    let mut enc = VideoEncoder::create(path)
+        .video(CANVAS, CANVAS, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .build()
+        .ok()?;
+    for _ in 0..frames {
+        let mut rgba = vec![0u8; (CANVAS * CANVAS * 4) as usize];
+        for y in 0..CANVAS {
+            for x in 0..CANVAS {
+                let o = ((y * CANVAS + x) * 4) as usize;
+                rgba[o] = u8::try_from(x * 255 / CANVAS)
+                    .unwrap_or(255)
+                    .wrapping_add(phase);
+                rgba[o + 1] = u8::try_from(y * 255 / CANVAS).unwrap_or(255);
+                rgba[o + 2] = 128u8.wrapping_sub(phase);
+                rgba[o + 3] = 255;
+            }
+        }
+        enc.push_video(&VideoFrame::from_rgba(CANVAS, CANVAS, rgba).ok()?)
+            .ok()?;
+    }
+    enc.finish().ok()?;
+    Some(())
+}
+
+/// Every decoded frame of `path` as rgba.
+fn decode_rgba(path: &std::path::Path) -> Vec<Vec<u8>> {
+    let Ok(mut d) = VideoDecoder::open(path)
+        .output_format(ff_format::PixelFormat::Rgba)
+        .build()
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    while let Ok(Some(f)) = d.decode_one() {
+        if let Some(plane) = f.plane(0) {
+            out.push(plane.to_vec());
+        }
+    }
+    out
+}
+
+/// Mean absolute difference over the RGB channels (alpha is meaningless here).
+fn mean_abs_diff_rgb(a: &[u8], b: &[u8]) -> f64 {
+    let n = a.len().min(b.len()) / 4;
+    if n == 0 {
+        return f64::MAX;
+    }
+    let mut sum = 0f64;
+    for i in 0..n {
+        for c in 0..3 {
+            sum += f64::from(a[i * 4 + c].abs_diff(b[i * 4 + c]));
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let denom = (n * 3) as f64;
+    sum / denom
+}
+
+/// #1659: a cross-fade into the track's last clip exports on the GPU and lands on the
+/// CPU export's pixels.
+///
+/// **Why the frame count is the load-bearing assertion.** The CPU route's `xfade`
+/// overlaps the two clips, so the track comes out `transition` shorter: two 1 s clips at
+/// 30 fps with a 0.5 s fade give 45 frames, not the hard cut's 60. An export that
+/// silently dropped the transition would produce 60 and fail here, which no pixel
+/// tolerance could catch on its own.
+///
+/// **Why this test does not prove the route on its own.** `render()` falls back to CPU
+/// without saying so, so if the timeline were ineligible both legs here would be CPU
+/// exports and agree perfectly -- the false green that made #1660's export test exercise
+/// the CPU path for months. What closes it is
+/// `gpu_export::tests::eligible_track_should_accept_a_fade_into_the_last_clip`, which
+/// asserts this exact shape is eligible; with an adapter present (checked below) those
+/// two facts leave no other route.
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_export_should_match_the_cpu_export_for_a_faded_transition() {
+    use std::time::Duration;
+
+    use ff_filter::XfadeTransition;
+
+    const CLIP_FRAMES: usize = 30; // 1 s at 30 fps
+    const WINDOW: usize = 15; // 0.5 s at 30 fps
+
+    let a = test_output_path("gpuexport_tr_a.mp4");
+    let b = test_output_path("gpuexport_tr_b.mp4");
+    let _ga = FileGuard::new(a.clone());
+    let _gb = FileGuard::new(b.clone());
+    if make_structured_source(&a, CLIP_FRAMES, 0).is_none()
+        || make_structured_source(&b, CLIP_FRAMES, 100).is_none()
+    {
+        return; // encoder unavailable -> skip
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return; // no GPU adapter -> the GPU leg is unreachable here
+    }
+
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new(&a).trim(Duration::ZERO, Duration::from_secs(1)),
+                Clip::new(&b)
+                    .offset(Duration::from_secs(1))
+                    .trim(Duration::ZERO, Duration::from_secs(1))
+                    .with_transition(XfadeTransition::Fade, Duration::from_millis(500)),
+            ])
+            .build()
+            .ok()
+    };
+    let (Some(gpu_timeline), Some(cpu_timeline)) = (build(), build()) else {
+        return; // source codec unavailable -> skip
+    };
+
+    let out_gpu = test_output_path("gpuexport_tr_gpu.mp4");
+    let out_cpu = test_output_path("gpuexport_tr_cpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let _gc = FileGuard::new(out_cpu.clone());
+    if !render_or_skip(gpu_timeline.render(&out_gpu, export_config()))
+        || !render_or_skip(cpu_timeline.render_forcing_cpu(&out_cpu, export_config()))
+    {
+        return;
+    }
+
+    let gpu = decode_rgba(&out_gpu);
+    let cpu = decode_rgba(&out_cpu);
+    if gpu.is_empty() || cpu.is_empty() {
+        return; // decoder unavailable -> skip
+    }
+
+    // The transition ran: the track is a window shorter than the hard cut would be.
+    // Expect against what the sources actually decode, since an encode/decode round trip
+    // can lose a frame and that shortfall would otherwise read as a transition bug.
+    let hard_cut = decode_rgba(&a).len() + decode_rgba(&b).len();
+    let expected = hard_cut - WINDOW;
+    assert!(
+        (expected - 1..=expected + 1).contains(&gpu.len()),
+        "a {WINDOW}-frame transition should shorten the {hard_cut}-frame hard cut to \
+         ~{expected}, got {}",
+        gpu.len()
+    );
+    assert_eq!(
+        gpu.len(),
+        cpu.len(),
+        "both routes must export the same number of frames"
+    );
+
+    let worst = gpu
+        .iter()
+        .zip(cpu.iter())
+        .enumerate()
+        .map(|(i, (g, c))| (mean_abs_diff_rgb(g, c), i))
+        .fold((0f64, 0usize), |acc, x| if x.0 > acc.0 { x } else { acc });
+    println!(
+        "faded transition: worst frame {} mean={:.3}",
+        worst.1, worst.0
+    );
+    assert!(
+        worst.0 <= TOL_TRANSITION_MEAN,
+        "GPU and CPU exports diverged at frame {}: mean={:.3} (tolerance {TOL_TRANSITION_MEAN})",
+        worst.1,
+        worst.0
+    );
+}
+
 #[test]
 fn render_with_progress_forcing_cpu_should_report_progress_and_export() {
     let src = test_output_path("gpuexport_progress_src.mp4");
