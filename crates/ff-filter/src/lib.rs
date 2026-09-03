@@ -55,4 +55,5 @@ pub use graph::{
     MultiTrackComposer, PitchAlgo, ProxySource, RealtimeComposer, RealtimeLayer,
     RealtimeLayerDescriptor, Rgb, ScaleAlgorithm, SolidSource, TextSource, ToneMap,
     VideoConcatenator, VideoLayer, XfadeTransition, YadifMode, dissolve_mask, xfade_frand,
+    xfade_frand_field,
 };

@@ -90,7 +90,7 @@ fn gpu_preview_blend_should_match_the_cpu_reference_for_every_routed_kind() {
             assert_eq!(out.len(), a.len(), "{kind:?} @{progress}: size mismatch");
 
             let mut reference = Vec::new();
-            ff_preview::apply_xfade(*kind, &a, &b, progress, W, H, &mut reference);
+            ff_preview::apply_xfade(*kind, &a, &b, progress, (W, H), None, &mut reference);
             let mean = mean_abs_diff_rgb(&out, &reference);
             println!("{kind:?} @{progress}: mean={mean:.3}");
             assert!(

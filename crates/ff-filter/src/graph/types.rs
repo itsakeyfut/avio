@@ -180,6 +180,62 @@ pub fn xfade_frand(x: u32, y: u32) -> f32 {
     r - r.floor()
 }
 
+/// [`xfade_frand`] tabulated for a whole frame, row-major: `field[y * w + x]`.
+///
+/// The hash depends only on the pixel coordinates, so a dissolve that recomputes it every
+/// frame is doing the same work `n` times. Building it once costs what one frame used to
+/// (measured in release at 12.0 ms for 1080p and 47.4 ms for 4K), and every later frame
+/// of the transition then reads it (1.7 ms and 7.7 ms), which is what brings a 4 K
+/// dissolve back inside a 30 fps budget: 49.0 ms per frame today against 7.7 ms cached,
+/// where the budget is 33.3 ms (#1736).
+///
+/// Held by the caller, because only the caller knows when the frame size changes: the
+/// length is the whole of what ties a field to a frame, so a consumer must check
+/// `field.len() == w * h` before trusting one rather than assume its own dimensions still
+/// hold. `ff_preview::apply_xfade` does exactly that and falls back to computing.
+#[must_use]
+pub fn xfade_frand_field(w: u32, h: u32) -> Vec<f32> {
+    let mut field = Vec::with_capacity((w as usize) * (h as usize));
+    for y in 0..h {
+        for x in 0..w {
+            field.push(xfade_frand(x, y));
+        }
+    }
+    field
+}
+
+#[cfg(test)]
+mod frand_field_tests {
+    use super::{xfade_frand, xfade_frand_field};
+
+    #[test]
+    fn xfade_frand_field_should_tabulate_xfade_frand_at_every_pixel() {
+        // Deliberately not square: `w * h` alone cannot tell a row-major field from a
+        // transposed one, so only a non-square frame catches an x/y swap.
+        const W: u32 = 7;
+        const H: u32 = 5;
+        let field = xfade_frand_field(W, H);
+        assert_eq!(field.len(), (W as usize) * (H as usize));
+        for y in 0..H {
+            for x in 0..W {
+                let n = (y * W + x) as usize;
+                assert_eq!(
+                    field[n],
+                    xfade_frand(x, y),
+                    "field[{n}] must be frand({x}, {y}) exactly: the dissolve agrees with \
+                     FFmpeg pixel for pixel, so an approximation here reveals a different set"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn xfade_frand_field_should_be_empty_for_a_zero_dimension() {
+        assert!(xfade_frand_field(0, 4).is_empty());
+        assert!(xfade_frand_field(4, 0).is_empty());
+    }
+}
+
 /// The per-pixel selection `xfade=dissolve` makes at `progress`, as an RGBA mask: `255`
 /// where clip B shows through, `0` where clip A does.
 ///

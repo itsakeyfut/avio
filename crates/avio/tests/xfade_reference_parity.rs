@@ -250,8 +250,8 @@ fn worst_window_divergence(
             &fa[CLIP_FRAMES + j],
             &fb[j],
             progress,
-            W,
-            H,
+            (W, H),
+            None,
             &mut reference,
         );
         let mean = mean_abs_diff_rgb(&exported[CLIP_FRAMES + j], &reference);

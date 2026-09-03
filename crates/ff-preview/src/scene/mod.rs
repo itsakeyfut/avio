@@ -609,6 +609,8 @@ impl ScenePlayer {
             rgba_a: Vec::new(),
             rgba_b: Vec::new(),
             blend_buf: Vec::new(),
+            dissolve_field: Vec::new(),
+            dissolve_field_dims: (0, 0),
             last_frame_w: initial_last_w,
             last_frame_h: initial_last_h,
             gap_buf: Vec::new(),
