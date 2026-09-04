@@ -18,8 +18,8 @@ pub use blur::{GaussianBlurNode, MotionBlurNode, SharpenNode};
 pub use color_grade::ColorGradeNode;
 pub use color_wheels::ColorWheelsNode;
 pub use composite::{
-    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, LumaMaskNode, ShapeMaskNode,
-    TransformNode,
+    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, CompositeOp, LumaMaskNode,
+    ShapeMaskNode, TransformNode,
 };
 pub use crossfade::CrossfadeNode;
 pub use curves::CurvesNode;

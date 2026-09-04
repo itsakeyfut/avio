@@ -11,9 +11,10 @@
 // this file `a` = base (canvas) and `b` = overlay (layer). The helper functions
 // mirror `nodes/composite/blend_math.rs` one for one.
 //
-// Alpha convention: the canvas carries premultiplied RGB composited against an
-// opaque black backdrop, and its alpha is src-over coverage. See the note at the
-// end of `fs_main`.
+// Alpha convention: the canvas carries premultiplied RGB blended against an
+// opaque black backdrop, and its alpha is coverage. The final step is a
+// Porter-Duff composite selected by `u.composite`; see the note at the end of
+// `fs_main`.
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -49,8 +50,10 @@ struct BlendUniforms {
     // mode needs a row there and a `case` below.
     mode:    u32,
     opacity: f32,
-    _pad0:   f32,
-    _pad1:   f32,
+    // The `CompositeOp` discriminant, pinned by
+    // `composite_op_discriminants_should_match_the_shader_codes`.
+    composite: u32,
+    _pad1:     f32,
 }
 
 const PI: f32 = 3.14159265358979323846;
@@ -375,21 +378,46 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         default  { blend_rgb = b; }
     }
 
-    // Apply opacity: modulate blend result against base using overlay.a * opacity.
-    // FFmpeg computes `dst = A + (expr - A) * opacity`, and A is the base here.
-    // The clamp reproduces the float-to-8-bit conversion for the modes the
-    // `DEPTH == 32` branch leaves outside [0, 1].
+    // Composite. `blend_rgb` is the straight source colour, so premultiply it
+    // and apply the operator's Fa/Fb: this is W3C's
+    // `Co = as * Fa * Cs + ab * Fb * Cb` with `s = as * Cs` and `d = ab * Cb`
+    // substituted, which reduces to `co = s * Fa + d * Fb`. Mirrors
+    // `blend_math::composite_rgba` one for one (#1670).
     //
-    // Alpha accumulates as src-over coverage (#1750). The RGB above is
-    // deliberately *not* reweighted by the backdrop alpha the way W3C's
-    // `Cs' = (1 - ab) * Cs + ab * B(Cb, Cs)` would: it composites against an
-    // opaque black backdrop, which is what the CPU compositor's
-    // `color=c=#000000` canvas does, and ADR-0007 keeps that the reference.
-    // `FrameLayer.opacity` is not clamped, so an out-of-range value extrapolates
-    // here exactly as it does in the `mix` above; the `Rgba8Unorm` write
-    // saturates either way, which is why neither needs its own clamp.
-    let effective_alpha = overlay.a * u.opacity;
-    let out_rgb = mix(base.rgb, blend_rgb, effective_alpha);
-    let out_a = effective_alpha + base.a * (1.0 - effective_alpha);
+    // `Over` is algebraically the `mix(base.rgb, blend_rgb, sa)` it replaced, so
+    // the 44-mode agreement test stays the regression net for it.
+    //
+    // The blend above is deliberately *not* reweighted by the backdrop alpha the
+    // way W3C's `Cs' = (1 - ab) * Cs + ab * B(Cb, Cs)` would: it blends against
+    // an opaque black backdrop, which is what the CPU compositor's
+    // `color=c=#000000` canvas does, and ADR-0007 keeps that the reference. The
+    // clamp reproduces the float-to-8-bit conversion for the modes the
+    // `DEPTH == 32` branch leaves outside [0, 1]; `FrameLayer.opacity` is not
+    // clamped either, so an out-of-range value extrapolates and the
+    // `Rgba8Unorm` write saturates.
+    let sa = overlay.a * u.opacity;
+    let s = blend_rgb * sa;
+    let d = base.rgb;
+    let da = base.a;
+
+    var fa: f32;
+    var fb: f32;
+    switch u.composite {
+        // Over
+        case 0u { fa = 1.0;      fb = 1.0 - sa; }
+        // Under
+        case 1u { fa = 1.0 - da; fb = 1.0;      }
+        // In
+        case 2u { fa = da;       fb = 0.0;      }
+        // Out
+        case 3u { fa = 1.0 - da; fb = 0.0;      }
+        // Atop
+        case 4u { fa = da;       fb = 1.0 - sa; }
+        // Xor
+        case 5u { fa = 1.0 - da; fb = 1.0 - sa; }
+        default { fa = 1.0;      fb = 1.0 - sa; }
+    }
+    let out_rgb = s * fa + d * fb;
+    let out_a = sa * fa + da * fb;
     return vec4<f32>(clamp(out_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), out_a);
 }

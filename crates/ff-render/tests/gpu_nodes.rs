@@ -15,10 +15,10 @@
 use std::sync::Arc;
 
 use ff_render::{
-    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
-    DissolveTransitionNode, FadeTransitionNode, LumaMaskNode, OverlayNode, RenderContext,
-    RenderGraph, RenderNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode,
-    TransformNode, YuvFormat, YuvUploadNode,
+    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CompositeOp,
+    CrossfadeNode, DissolveTransitionNode, FadeTransitionNode, LumaMaskNode, OverlayNode,
+    RenderContext, RenderGraph, RenderNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode,
+    ShapeMaskNode, TransformNode, YuvFormat, YuvUploadNode,
 };
 
 // Helpers
@@ -466,6 +466,64 @@ fn blend_gpu_should_match_the_cpu_path_for_a_semi_transparent_overlay() {
         );
     }
 }
+
+/// Every Porter-Duff operator, shader against the Rust.
+///
+/// `blend_math.rs`'s table pins the Rust to the W3C `Fa`/`Fb` definitions; this
+/// pins the shader to the Rust, so the two together tie the GPU output to the
+/// spec (#1670).
+///
+/// Both alphas sit strictly inside `(0, 1)` and differ, or `In`, `Out` and
+/// `Atop` degenerate into each other. The final assert is the load-bearing one:
+/// the six operators must produce six distinct pixels, so a shader that ignored
+/// `u.composite` and always composited `Over` would fail rather than agree with
+/// a CPU path making the same mistake.
+#[test]
+fn composite_gpu_should_match_the_cpu_path_for_every_op() {
+    let Some(ctx) = gpu_ctx() else { return };
+
+    let base = solid_rgba(40, 90, 200, 102, 2, 2); // da = 0.4
+    let overlay = solid_rgba(170, 60, 30, 153, 2, 2); // sa = 0.6
+
+    let mut seen = Vec::new();
+    for op in ALL_COMPOSITE_OPS {
+        let mut node = BlendModeNode::new(BlendMode::Normal, 1.0, overlay.clone(), 2, 2);
+        node.composite_op = op;
+        let mut cpu = base.clone();
+        node.process_cpu(&mut cpu, 2, 2);
+        let gpu = run_gpu(&ctx, node, &base, 2, 2);
+
+        for ch in 0..4 {
+            assert!(
+                close(gpu[ch], cpu[ch], 2),
+                "{op:?} channel {ch}: GPU {} vs CPU {}",
+                gpu[ch],
+                cpu[ch]
+            );
+        }
+        seen.push([cpu[0], cpu[1], cpu[2], cpu[3]]);
+    }
+
+    let mut distinct = seen.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        6,
+        "the six operators must give distinct results; got {seen:?}"
+    );
+}
+
+/// Kept in the same order as the `CompositeOp` discriminants; the enum's own
+/// `composite_op_discriminants_should_match_the_shader_codes` pins those.
+const ALL_COMPOSITE_OPS: [CompositeOp; 6] = [
+    CompositeOp::Over,
+    CompositeOp::Under,
+    CompositeOp::In,
+    CompositeOp::Out,
+    CompositeOp::Atop,
+    CompositeOp::Xor,
+];
 
 /// Kept in the same order as the `BlendMode` discriminants; the enum's own
 /// `blend_mode_discriminants_should_match_the_shader_mode_codes` pins those.

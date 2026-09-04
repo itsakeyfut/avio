@@ -31,7 +31,7 @@ mod compositor_inner;
 
 use ff_format::VideoFrame;
 
-use crate::nodes::BlendMode;
+use crate::nodes::{BlendMode, CompositeOp};
 
 // LayerTransform
 
@@ -86,7 +86,14 @@ pub struct FrameLayer {
     /// 2D affine transform applied before compositing.
     pub transform: LayerTransform,
     /// Blend mode used when compositing this layer over layers below.
+    ///
+    /// Only meaningful with [`CompositeOp::Over`]: the editing model does not
+    /// combine the two, so `avio::gpu::map_scene` emits `Normal` for a layer
+    /// whose composite operator is anything else.
     pub blend_mode: BlendMode,
+    /// Porter-Duff operator deciding how much of this layer and the canvas
+    /// below survive. Defaults to [`CompositeOp::Over`].
+    pub composite_op: CompositeOp,
     /// Layer opacity (`0.0` = transparent, `1.0` = fully opaque).
     pub opacity: f32,
     /// Z-order — lower values are further back. Layers are sorted ascending
@@ -236,6 +243,7 @@ mod tests {
             frame: make_frame(),
             transform: LayerTransform::default(),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             opacity: 1.0,
             z_order: 0,
         };
@@ -250,6 +258,7 @@ mod tests {
                 frame: make_frame(),
                 transform: LayerTransform::default(),
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 opacity: 1.0,
                 z_order: 3,
             },
@@ -257,6 +266,7 @@ mod tests {
                 frame: make_frame(),
                 transform: LayerTransform::default(),
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 opacity: 1.0,
                 z_order: 1,
             },
@@ -264,6 +274,7 @@ mod tests {
                 frame: make_frame(),
                 transform: LayerTransform::default(),
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 opacity: 1.0,
                 z_order: 2,
             },

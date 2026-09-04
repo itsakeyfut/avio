@@ -2505,7 +2505,7 @@ fn composite_in_should_produce_black_where_bottom_is_black() {
 }
 
 #[test]
-fn composite_atop_should_use_bottom_alpha_for_output() {
+fn composite_atop_should_combine_both_layers_by_luma() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)
@@ -2547,7 +2547,7 @@ fn composite_atop_should_use_bottom_alpha_for_output() {
 }
 
 #[test]
-fn composite_xor_identical_shapes_should_produce_zero_alpha() {
+fn composite_xor_identical_luma_should_produce_black() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
     let mut graph = match FilterGraph::builder()
         .trim(0.0, 5.0)

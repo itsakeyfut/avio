@@ -487,6 +487,7 @@ fn assemble(
                 frame,
                 transform: transform.clone(),
                 blend_mode: lp.blend_mode,
+                composite_op: lp.composite_op,
                 opacity: lp.opacity,
                 z_order: lp.z_order,
             })

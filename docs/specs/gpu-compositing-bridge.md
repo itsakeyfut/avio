@@ -109,12 +109,11 @@ tracked in **#1630**.
 | `x`/`y`/`scale`/`rotation` transform | evaluated at frame `t` -> the layer's `LayerTransform` scalars | **covered** (all layers) |
 | `opacity` | evaluated at `t` -> `FrameLayer.opacity` | **covered** (all layers) |
 | `blend_mode: ff_filter::BlendMode` (40) | `ff_render::BlendMode`, **all 40** (#1669; 14 before that) | **covered** (every mode; no blend mode forces a fallback). The GPU formulas reproduce `FFmpeg`'s `vf_blend`, so the GPU and the CPU compositor render a mode alike -- see [ADR-0010](../adr/0010-gpu-blend-modes-follow-ffmpeg.md) for the reference, the `A`=base/`B`=overlay pad wiring, and the bitwise-mode exception. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
-| `composite_op: Over` | plain top-over-bottom composite | **covered** |
+| `composite_op: ff_filter::CompositeOp` (6) | `ff_render::CompositeOp`, **all 6** (#1670; `Over` only before that) | **covered** (every operator). The GPU evaluates the W3C Porter-Duff `Fa`/`Fb` definitions on premultiplied colour, which needs the coverage alpha #1750 added. The filter path builds `In`/`Out`/`Atop`/`Xor` from `blend`'s `all_expr` on `yuv420p` instead, which is per-channel arithmetic rather than alpha compositing. Preview and export both composite on the GPU, so the split is not between them: **those four render one way with an adapter and another whenever the whole-frame fallback swaps in the filter path** (a headless machine, a forced-CPU run, a frame that falls back for an unrelated reason). ADR-0007 makes the CPU the correctness reference, so this is a gap to close, not a property to rely on -- tracked by #1753. |
 | `FilterStep::Eq` (from a const `EffectKind::ColorCorrect`) | `GpuEffect::ColorGrade` -> `ColorGradeNode { brightness, contrast, saturation, temperature=0, tint=0 }` | **covered** |
 | `FilterStep::EqAnimated` | `ColorGrade` (params at `t`) **only when gamma is neutral at `t`** (ff-render ColorGrade has no gamma) | **covered** (gamma-neutral); non-neutral gamma -> **fallback** |
 | plain `FilterStep::Scale { width, height, algorithm }` | `GpuEffect::Scale` -> `ScaleNode` (ff-render uses a linear filter for all algorithms; `Fast` maps to `Bilinear`) | **covered** |
 | temporal steps: `Trim` / `ResetPts` / `OffsetPts` / `Speed` | skipped (decode-scheduling, applied upstream) | **skipped** (not a fallback) |
-| `composite_op: Under`/`In`/`Out`/`Atop`/`Xor` | -- | **fallback** (#1630) |
 | other colour: `Hue`, `Curves`, `Gamma`, `Vignette`, `WhiteBalance`, `ColorBalanceAnimated`, `ThreeWayCC`, `ParametricEq` | -- | **fallback** (#1630) |
 | `FitToAspect` / `FillToAspect` (fit with pad/crop) | -- | **fallback** (#1630; `ScaleNode` is a plain resize) |
 | animated geometry `ScaleAnimated` / `RotateAnimated` | -- | **fallback** (#1630; ADR-0005 neutralizes the scalar, so v1 falls back rather than lose the animation) |
@@ -133,7 +132,7 @@ Fallback is decided **per composited frame**, at whole-frame granularity:
 - If `RenderContext::init()` fails (no adapter) or a force-CPU override is set, **every** frame composites on
   the existing CPU path.
 - Otherwise, before compositing a frame, a **capability check** walks the frame's layer set. If any layer
-  carries a step with no node in the table above (or a composite operator other than `Over`), that
+  carries a step with no node in the table above, that
   **whole frame** composites on the existing CPU compositor (`MultiTrackComposer` for export,
   `RealtimeComposer` for preview) instead of the GPU path. Otherwise the frame goes GPU.
 - A `GpuFrameSink`-style degrade also applies at runtime: a GPU error on a frame falls through to the CPU path
@@ -168,8 +167,8 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
 
 ## Deferred beyond v0.18.0
 
-- Full node coverage (blur/LUT/glow/curves colour science, xfade kinds on GPU, Porter-Duff In/Out/Atop/Xor,
-  BT.709 YUV upload). The blend modes landed in #1669.
+- Full node coverage (blur/LUT/glow/curves colour science, xfade kinds on GPU, BT.709 YUV upload). The
+  blend modes landed in #1669 and the Porter-Duff operators in #1670.
 - Zero-copy GPU->encoder for export (v1 reads back to CPU and reuses the existing encoder).
 - Exact preview==export pixel convergence (the CPU compositors themselves are not bit-identical across the
   rgba/yuv420p seam, per the C4 Q2 deferral in `engine-and-primitives.md`).

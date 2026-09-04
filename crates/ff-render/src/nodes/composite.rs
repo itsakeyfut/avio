@@ -8,17 +8,19 @@
 mod blend_math;
 mod blend_mode;
 mod chroma_key;
+mod composite_op;
 mod helpers;
 mod masks;
 mod transform;
 
 pub use blend_mode::{BlendMode, BlendModeNode};
 pub use chroma_key::ChromaKeyNode;
+pub use composite_op::CompositeOp;
 pub use masks::{AlphaMatteNode, LumaMaskNode, ShapeMaskNode};
 pub use transform::TransformNode;
 
 #[cfg(feature = "wgpu")]
 pub(crate) use helpers::{
-    fullscreen_pipeline, linear_sampler, submit_render_pass, two_tex_sampler_uniform_bgl,
-    upload_rgba_texture,
+    blend_uniform_bytes, fullscreen_pipeline, linear_sampler, submit_render_pass,
+    two_tex_sampler_uniform_bgl, upload_rgba_texture,
 };

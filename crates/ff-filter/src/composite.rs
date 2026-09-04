@@ -2,15 +2,34 @@
 
 // CompositeOp
 
-/// Porter-Duff alpha-compositing operator for combining two video layers.
+/// Porter-Duff compositing operator for combining two video layers.
 ///
-/// Unlike [`BlendMode`](crate::BlendMode) (which operates on pixel values), these
-/// operators combine layers by their alpha channels. At least the top layer must
-/// carry an alpha channel (e.g. `rgba` or `yuva420p`).
+/// # What the filter path actually computes
 ///
-/// There is no `blend all_mode` token for Porter-Duff compositing, so this type
-/// has no `FfmpegToken` impl; each operator maps to a specific `FFmpeg` construction
-/// (`overlay` or `blend` with a per-channel expression) in the filter graph.
+/// `Over` and `Under` are built with the `overlay` filter and are genuine alpha
+/// compositing. **`In`, `Out`, `Atop` and `Xor` are not**: they are built with
+/// `blend`'s `all_expr`, which applies one expression to every plane, and the
+/// composite chain normalises both inputs to `yuv420p` first, a format with no
+/// alpha plane. So they evaluate the Porter-Duff formula with each colour
+/// channel standing in for alpha (`In` reduces to a per-channel multiply).
+///
+/// That is a workaround, not a design: `FFmpeg` has no Porter-Duff filter, and
+/// `all_expr` can only reference the same plane of both inputs, so it cannot
+/// express a colour term that depends on the *other* input's alpha. Reaching the
+/// real operators through libavfilter needs `alphaextract` plus a second
+/// `blend`.
+///
+/// The GPU compositor implements the W3C / Porter-Duff definitions properly
+/// (#1670). Preview and export both composite on the GPU, so the split is not
+/// between them: these four render one way with an adapter and another whenever
+/// the whole-frame fallback swaps in this filter path (a headless machine, a
+/// forced-CPU run). Closing that is #1753.
+///
+/// Unlike [`BlendMode`](crate::BlendMode), which is a colour function of two
+/// pixels, these are meant to be alpha algebra. There is no `blend all_mode`
+/// token for Porter-Duff compositing, so this type has no `FfmpegToken` impl;
+/// each operator maps to a specific `FFmpeg` construction (`overlay` or `blend`
+/// with a per-channel expression) in the filter graph.
 // Open catalog: the Porter-Duff operator set is added to incrementally.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -27,7 +46,9 @@ pub enum CompositeOp {
     /// Built via `overlay` with swapped input order.
     Under,
 
-    /// Top layer masked by the bottom layer's alpha (intersection).
+    /// Intended as the top layer masked by the bottom layer's alpha
+    /// (intersection). On the filter path the expression runs per colour plane,
+    /// so it reduces to a per-channel multiply; see the type docs.
     ///
     /// Built via `blend` with `c0_expr='B*A/255'`.
     In,
