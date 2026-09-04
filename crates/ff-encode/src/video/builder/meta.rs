@@ -93,6 +93,48 @@ impl VideoEncoderBuilder {
         self
     }
 
+    /// Set a codec-*private* option by name, for the long tail that has no typed
+    /// builder (`x264-params`, `aq-mode`, `psy-rd`, ...).
+    ///
+    /// Applies to the **video** codec only. A video output's audio track opens
+    /// its own codec context, which this does not reach; use
+    /// [`AudioEncoder`](crate::AudioEncoder) for audio-only output that needs
+    /// the same escape hatch.
+    ///
+    /// Repeatable, and applied in call order via `av_opt_set` on the codec's
+    /// `priv_data` before `avcodec_open2`, **after**
+    /// [`codec_options()`](Self::codec_options) — so a key named here overrides
+    /// the same key set through the typed API.
+    ///
+    /// # Escape-hatch semantics
+    ///
+    /// Prefer [`codec_options()`](Self::codec_options): it is validated at
+    /// compile time and portable across encoders. Nothing here is checked until
+    /// `FFmpeg` sees it, and keys are codec-specific.
+    ///
+    /// Unlike the typed options, which log and continue when an encoder does not
+    /// support them, an option rejected here fails
+    /// [`build()`](Self::build) with [`crate::EncodeError::InvalidConfig`] — the
+    /// key was named explicitly, so dropping it silently would defeat the
+    /// purpose. The consequence is worth planning for: a configuration carrying
+    /// libx264 keys will fail once the caller switches to a hardware encoder.
+    ///
+    /// ```no_run
+    /// # use ff_encode::VideoEncoder;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let encoder = VideoEncoder::create("out.mp4")
+    ///     .video(1920, 1080, 30.0)
+    ///     .codec_opt("x264-params", "keyint=48:min-keyint=48")
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn codec_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.codec_opts.push((key.into(), value.into()));
+        self
+    }
+
     /// Set per-codec encoding options.
     ///
     /// Applied via `av_opt_set` before `avcodec_open2` during [`build()`](Self::build).

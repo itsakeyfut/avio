@@ -120,6 +120,7 @@ impl VideoEncoderInner {
         hardware_encoder: crate::HardwareEncoder,
         two_pass: bool,
         codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
+        codec_opts: &[(String, String)],
         pixel_format: Option<&ff_format::PixelFormat>,
         color_space: Option<ff_format::ColorSpace>,
         color_transfer: Option<ff_format::ColorTransfer>,
@@ -202,6 +203,11 @@ impl VideoEncoderInner {
             // codec initialisation.
             Self::apply_codec_options(&mut codec_ctx, opts, &encoder_name);
         }
+
+        // After the typed options, so a key the caller named by hand wins. This
+        // one propagates rather than warning: the caller asked for the key
+        // specifically, so a rejection is a configuration error.
+        crate::shared::codec_opts::apply_codec_opts(&mut codec_ctx, codec_opts, &encoder_name)?;
 
         // Apply explicit pixel format override (takes priority over codec-option auto-select).
         if let Some(fmt) = pixel_format {

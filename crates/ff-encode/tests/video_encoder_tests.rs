@@ -1298,6 +1298,156 @@ fn test_encode_many_frames() {
 }
 
 // ============================================================================
+// Codec-Private Option Escape Hatch (#1604)
+// ============================================================================
+
+/// Build the reference encoder used by the escape-hatch tests, with no
+/// `codec_opt` applied.
+///
+/// This is the **baseline probe**. The tests below must distinguish "this
+/// encoder is not in the FFmpeg build" from "a codec option was wrongly
+/// accepted or rejected", and with this feature an unrecognised option is itself
+/// a `build()` error. Gating on `build()` failing (as the two-pass test below
+/// does) would collapse those two cases and leave the tests permanently green.
+/// So: if the option-free build fails, the encoder is unavailable and the test
+/// skips; if it succeeds, every later assertion runs unconditionally.
+fn baseline_builds(path: &std::path::Path) -> bool {
+    VideoEncoder::create(path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .build()
+        .is_ok()
+}
+
+#[test]
+fn codec_opt_unknown_key_should_fail_the_build() {
+    let output_path = test_output_path("codec_opt_unknown.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+    if !baseline_builds(&output_path) {
+        println!("Skipping: the mpeg4 encoder is unavailable in this FFmpeg build");
+        return;
+    }
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .codec_opt("no_such_option_xyz", "1")
+        .build();
+
+    match result {
+        Ok(_) => panic!("an unknown codec option must not be accepted silently"),
+        Err(EncodeError::InvalidConfig { reason }) => {
+            assert!(
+                reason.contains("no_such_option_xyz"),
+                "the error must name the rejected key; got {reason:?}"
+            );
+        }
+        Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+    }
+}
+
+#[test]
+fn codec_opt_should_be_accepted_by_a_real_encoder() {
+    let output_path = test_output_path("codec_opt_accepted.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+    if !baseline_builds(&output_path) {
+        println!("Skipping: the mpeg4 encoder is unavailable in this FFmpeg build");
+        return;
+    }
+
+    // `mpegvideo`-family encoders expose `mpv_flags` as a private option, so this
+    // exercises a key the typed builders do not cover, on an encoder present in
+    // essentially any FFmpeg build.
+    let mut encoder = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .codec_opt("mpv_flags", "+strict_gop")
+        .build()
+        .expect("a valid codec-private option must not break the build");
+
+    for _ in 0..5 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("push should succeed");
+    }
+    encoder.finish().expect("finish should succeed");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
+fn codec_opt_unknown_key_should_fail_a_two_pass_configuration() {
+    // Note what this does *not* cover: `build()` only sets up pass 1, so this
+    // rejects the key at the pass-1 site even though the builder asked for two
+    // passes. Pass 2 constructs its own codec context during `finish()`, which
+    // `codec_opt_should_survive_a_full_two_pass_encode` reaches instead.
+    let output_path = test_output_path("codec_opt_two_pass.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+    if !baseline_builds(&output_path) {
+        println!("Skipping: the mpeg4 encoder is unavailable in this FFmpeg build");
+        return;
+    }
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .bitrate_mode(BitrateMode::Cbr(500_000))
+        .preset(Preset::Ultrafast)
+        .two_pass()
+        .codec_opt("no_such_option_xyz", "1")
+        .build();
+
+    match result {
+        Ok(_) => panic!("an unknown codec option must not be accepted in two-pass mode"),
+        Err(EncodeError::InvalidConfig { reason }) => {
+            assert!(
+                reason.contains("no_such_option_xyz"),
+                "the error must name the rejected key; got {reason:?}"
+            );
+        }
+        Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+    }
+}
+
+#[test]
+fn codec_opt_should_survive_a_full_two_pass_encode() {
+    // Pass 2 rebuilds its own codec context and re-applies the escape hatch, so
+    // this is the only test that reaches that site: it runs the encode to
+    // completion, and a pass-2 application that errored (wrong context, applied
+    // after open) would surface here as a `finish()` failure.
+    //
+    // It cannot detect the site being *omitted* — an unapplied option simply
+    // does not change the output — so that remains a review checkpoint rather
+    // than something a black-box test can pin.
+    let output_path = test_output_path("codec_opt_two_pass_full.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+    if !baseline_builds(&output_path) {
+        println!("Skipping: the mpeg4 encoder is unavailable in this FFmpeg build");
+        return;
+    }
+
+    let mut encoder = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .bitrate_mode(BitrateMode::Cbr(500_000))
+        .preset(Preset::Ultrafast)
+        .two_pass()
+        .codec_opt("mpv_flags", "+strict_gop")
+        .build()
+        .expect("a valid codec-private option must not break a two-pass build");
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("push should succeed");
+    }
+    encoder
+        .finish()
+        .expect("pass 2 must accept the same codec-private option");
+    assert_valid_output_file(&output_path);
+}
+
+// ============================================================================
 // Two-Pass Tests
 // ============================================================================
 

@@ -59,6 +59,8 @@ pub struct VideoEncoderBuilder {
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
     pub(crate) codec_options: Option<VideoCodecOptions>,
+    /// Codec-private options set by name, applied after `codec_options`.
+    pub(crate) codec_opts: Vec<(String, String)>,
     pub(crate) video_codec_explicit: bool,
     pub(crate) audio_codec_explicit: bool,
     pub(crate) pixel_format: Option<ff_format::PixelFormat>,
@@ -96,6 +98,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("chapters", &self.chapters)
             .field("subtitle_passthrough", &self.subtitle_passthrough)
             .field("codec_options", &self.codec_options)
+            .field("codec_opts", &self.codec_opts)
             .field("video_codec_explicit", &self.video_codec_explicit)
             .field("audio_codec_explicit", &self.audio_codec_explicit)
             .field("pixel_format", &self.pixel_format)
@@ -131,6 +134,7 @@ impl VideoEncoderBuilder {
             chapters: Vec::new(),
             subtitle_passthrough: None,
             codec_options: None,
+            codec_opts: Vec::new(),
             video_codec_explicit: false,
             audio_codec_explicit: false,
             pixel_format: None,
@@ -601,6 +605,7 @@ impl VideoEncoder {
             chapters: builder.chapters,
             subtitle_passthrough: builder.subtitle_passthrough,
             codec_options: builder.codec_options,
+            codec_opts: builder.codec_opts,
             pixel_format: builder.pixel_format,
             hdr10_metadata: builder.hdr10_metadata,
             color_space: builder.color_space,
@@ -809,6 +814,42 @@ impl Drop for VideoEncoder {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn codec_opt_should_collect_pairs_in_order() {
+        // Order is preserved because it decides the outcome for a repeated key,
+        // and because comma-joined values like `x264-params` are position
+        // sensitive.
+        let builder = VideoEncoder::create("out.mp4")
+            .codec_opt("x264-params", "keyint=48")
+            .codec_opt("aq-mode", "2")
+            .codec_opt("x264-params", "keyint=24");
+        assert_eq!(
+            builder.codec_opts,
+            vec![
+                ("x264-params".to_string(), "keyint=48".to_string()),
+                ("aq-mode".to_string(), "2".to_string()),
+                ("x264-params".to_string(), "keyint=24".to_string()),
+            ],
+            "pairs must be kept in call order, duplicates included"
+        );
+    }
+
+    #[test]
+    fn codec_opt_should_appear_in_the_builder_debug() {
+        // `VideoEncoderBuilder` writes its `Debug` by hand, so a new field is
+        // silently missing from debug output unless it is added there too.
+        let builder = VideoEncoder::create("out.mp4").codec_opt("aq-mode", "2");
+        let rendered = format!("{builder:?}");
+        assert!(
+            rendered.contains("codec_opts"),
+            "the field must be listed in the manual Debug impl; got {rendered}"
+        );
+        assert!(
+            rendered.contains("aq-mode"),
+            "the value must be rendered, not just the field name; got {rendered}"
+        );
+    }
+
     use super::super::encoder_inner::{VideoEncoderConfig, VideoEncoderInner};
     use super::*;
     use crate::HardwareEncoder;
@@ -873,6 +914,7 @@ mod tests {
                 chapters: Vec::new(),
                 subtitle_passthrough: None,
                 codec_options: None,
+                codec_opts: Vec::new(),
                 pixel_format: None,
                 hdr10_metadata: None,
                 color_space: None,

@@ -33,6 +33,52 @@ fn push_synthetic_audio(
     }
 }
 
+/// Build the reference audio encoder with no `codec_opt` applied.
+///
+/// The **baseline probe** for the escape-hatch test below: with this feature an
+/// unrecognised option is itself a `build()` error, so gating on `build()`
+/// failing would make "the encoder is missing from this FFmpeg build"
+/// indistinguishable from "a codec option was wrongly accepted", leaving the
+/// test permanently green.
+fn baseline_audio_builds(path: &str) -> bool {
+    AudioEncoder::create(path)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+        .is_ok()
+}
+
+#[test]
+fn audio_codec_opt_unknown_key_should_fail_the_build() {
+    // The audio encoder opens its own codec context, so the escape hatch has a
+    // third application site; without it these options vanish for audio-only
+    // output while video keeps working.
+    let output_path = test_output_path("audio_codec_opt_unknown.m4a");
+    let _guard = FileGuard::new(output_path.clone());
+    let path = output_path.to_str().expect("utf-8 path");
+    if !baseline_audio_builds(path) {
+        println!("Skipping: the aac encoder is unavailable in this FFmpeg build");
+        return;
+    }
+
+    let result = AudioEncoder::create(path)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .codec_opt("no_such_option_xyz", "1")
+        .build();
+
+    match result {
+        Ok(_) => panic!("an unknown codec option must not be accepted silently"),
+        Err(EncodeError::InvalidConfig { reason }) => {
+            assert!(
+                reason.contains("no_such_option_xyz"),
+                "the error must name the rejected key; got {reason:?}"
+            );
+        }
+        Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_audio_encoder_aac_stereo() {
     let output_path = "test_output_audio_stereo.m4a";

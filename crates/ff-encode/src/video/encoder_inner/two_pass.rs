@@ -271,6 +271,15 @@ impl VideoEncoderInner {
             Self::apply_codec_options(&mut codec_ctx, opts, &encoder_name);
         }
 
+        // Pass 2 builds its own codec context, so the escape hatch is applied
+        // again here; skipping it would drop every option in two-pass mode while
+        // single-pass kept working.
+        crate::shared::codec_opts::apply_codec_opts(
+            &mut codec_ctx,
+            &config.codec_opts,
+            &encoder_name,
+        )?;
+
         // Apply explicit pixel format override for pass 2 (mirrors pass 1).
         if let Some(fmt) = config.pixel_format.as_ref() {
             codec_ctx.set_pix_fmt(pixel_format_to_av(*fmt));
