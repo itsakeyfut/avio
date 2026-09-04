@@ -50,6 +50,8 @@ pub mod swscale;
 
 // Sub-modules
 #[cfg(not(docsrs))]
+mod bsf;
+#[cfg(not(docsrs))]
 mod buffersink;
 #[cfg(not(docsrs))]
 mod codec;
@@ -74,6 +76,8 @@ mod scale_context;
 mod utils;
 
 // Re-exports
+#[cfg(not(docsrs))]
+pub use bsf::BsfContext;
 #[cfg(not(docsrs))]
 pub use buffersink::{BufferSinkOutcome, buffersink_get_frame};
 #[cfg(not(docsrs))]

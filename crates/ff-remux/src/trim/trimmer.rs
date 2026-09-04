@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::error::RemuxError;
 
-use super::trim_inner;
+use super::trim_inner::{self, BsfSpec};
 
 /// Trim a media file to a time range using stream copy (no re-encode).
 ///
@@ -28,6 +28,7 @@ pub struct StreamCopyTrimmer {
     output: PathBuf,
     start_sec: f64,
     end_sec: f64,
+    bsf: BsfSpec,
 }
 
 impl StreamCopyTrimmer {
@@ -47,7 +48,38 @@ impl StreamCopyTrimmer {
             output: output.into(),
             start_sec,
             end_sec,
+            bsf: BsfSpec::default(),
         }
+    }
+
+    /// Applies a bitstream filter chain to every video stream.
+    ///
+    /// `spec` is the syntax `ffmpeg -bsf` takes: a comma-separated chain whose
+    /// elements may carry options, e.g. `"dump_extra"` or
+    /// `"h264_metadata=level=40,extract_extradata"`.
+    ///
+    /// This is only for filters `FFmpeg` does **not** apply on its own. libavformat
+    /// already inserts the filter a container requires — copying H.264 from MP4 into
+    /// MPEG-TS produces Annex B with nothing set here — so this exists for the
+    /// explicit ones (`extract_extradata`, `dump_extra`, the `*_metadata` family).
+    /// See ADR-0011.
+    ///
+    /// An unregistered or malformed spec fails in [`run`](Self::run) with
+    /// [`RemuxError::InvalidConfig`].
+    #[must_use]
+    pub fn video_bsf(mut self, spec: impl Into<String>) -> Self {
+        self.bsf.video = Some(spec.into());
+        self
+    }
+
+    /// Applies a bitstream filter chain to every audio stream.
+    ///
+    /// See [`video_bsf`](Self::video_bsf) for the spec syntax and when to reach for
+    /// this at all.
+    #[must_use]
+    pub fn audio_bsf(mut self, spec: impl Into<String>) -> Self {
+        self.bsf.audio = Some(spec.into());
+        self
     }
 
     /// Execute the trim operation.
@@ -72,7 +104,13 @@ impl StreamCopyTrimmer {
             self.start_sec,
             self.end_sec,
         );
-        trim_inner::run_trim(&self.input, &self.output, self.start_sec, self.end_sec)
+        trim_inner::run_trim(
+            &self.input,
+            &self.output,
+            self.start_sec,
+            self.end_sec,
+            &self.bsf,
+        )
     }
 }
 
@@ -103,6 +141,7 @@ pub struct StreamCopyTrim {
     start: Duration,
     end: Duration,
     output: PathBuf,
+    bsf: BsfSpec,
 }
 
 impl StreamCopyTrim {
@@ -122,7 +161,26 @@ impl StreamCopyTrim {
             start,
             end,
             output: output.into(),
+            bsf: BsfSpec::default(),
         }
+    }
+
+    /// Applies a bitstream filter chain to every video stream.
+    ///
+    /// See [`StreamCopyTrimmer::video_bsf`] for the spec syntax and when it is needed.
+    #[must_use]
+    pub fn video_bsf(mut self, spec: impl Into<String>) -> Self {
+        self.bsf.video = Some(spec.into());
+        self
+    }
+
+    /// Applies a bitstream filter chain to every audio stream.
+    ///
+    /// See [`StreamCopyTrimmer::video_bsf`] for the spec syntax and when it is needed.
+    #[must_use]
+    pub fn audio_bsf(mut self, spec: impl Into<String>) -> Self {
+        self.bsf.audio = Some(spec.into());
+        self
     }
 
     /// Execute the trim operation.
@@ -147,7 +205,7 @@ impl StreamCopyTrim {
             self.input.display(),
             self.output.display(),
         );
-        trim_inner::run_trim(&self.input, &self.output, start_sec, end_sec)
+        trim_inner::run_trim(&self.input, &self.output, start_sec, end_sec, &self.bsf)
     }
 }
 

@@ -34,6 +34,7 @@ const SAFE_LAYER: &[(&str, &str)] = &[
     ),
     ("hwdevice.rs", include_str!("../src/hwdevice.rs")),
     ("buffersink.rs", include_str!("../src/buffersink.rs")),
+    ("bsf.rs", include_str!("../src/bsf.rs")),
     ("avcodec.rs", include_str!("../src/avcodec.rs")),
     ("avformat.rs", include_str!("../src/avformat.rs")),
     ("swscale.rs", include_str!("../src/swscale.rs")),

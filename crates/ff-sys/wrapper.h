@@ -22,6 +22,7 @@
 // Codec
 #include <libavcodec/avcodec.h>
 #include <libavcodec/packet.h>
+#include <libavcodec/bsf.h>
 
 // Scaling
 #include <libswscale/swscale.h>
