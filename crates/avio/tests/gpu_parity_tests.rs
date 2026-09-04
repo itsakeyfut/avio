@@ -61,8 +61,11 @@ use ff_render::{
 // (Passthrough — no effect — is covered by passthrough_gpu_should_match_cpu_within_tolerance / TOL_PASSTHROUGH_MEAN.)
 //
 // Tolerances (mean absolute per-channel RGB difference, 0..255). Calibrated on the
-// dev machine; alpha is excluded (the compositor blends RGB over transparent black,
-// an alpha detail orthogonal to colour parity). Measured on this build: passthrough
+// dev machine; alpha is excluded because the two legs mean different things by it,
+// not because the GPU discards it. The CPU leg composites onto an opaque `color`
+// canvas and ends in `format=rgba`, so its alpha is 255 everywhere; the GPU's is
+// src-over coverage since #1750, pinned by the ff-render compositor tests.
+// Measured on this build: passthrough
 // is pixel-exact (mean 0.0), colour grade is mean 6.6 (max 33). The thresholds keep a
 // margin for GPU-driver rounding while staying tight enough to fail on a real
 // divergence (a stretch/letterbox/axis-swap of the gradient is tens of levels).

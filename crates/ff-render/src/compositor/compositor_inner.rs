@@ -771,6 +771,95 @@ mod tests {
         );
     }
 
+    /// Before #1750 the composited alpha was `base.a`, i.e. the zero-initialised
+    /// canvas alpha, so it read back 0 for every input and nothing about coverage
+    /// could be asserted at all. It is now src-over coverage.
+    #[test]
+    fn compositor_should_accumulate_alpha_from_a_semi_transparent_layer() {
+        let Some(ctx) = gpu_ctx() else {
+            return;
+        };
+        let (w, h) = (4u32, 4u32);
+        let rgba = [200u8, 120, 60, 255].repeat((w * h) as usize);
+
+        let mut compositor = crate::Compositor::new(Arc::clone(&ctx), w, h);
+        let mut layers = vec![crate::FrameLayer {
+            frame: VideoFrame::from_rgba(w, h, rgba).expect("layer frame"),
+            transform: crate::LayerTransform::default(),
+            blend_mode: BlendMode::Normal,
+            opacity: 0.5,
+            z_order: 0,
+        }];
+        let tex = compositor.composite(&mut layers).expect("compositor path");
+        let out = readback(&ctx, &tex, w, h);
+
+        // ea = 1.0 * 0.5 and ab = 0 on the empty canvas, so ao = 0.5, and the RGB
+        // is premultiplied by it: (200, 120, 60) * 0.5. Asserting both together is
+        // what pins the convention the module docs state; alpha alone would leave
+        // "is the RGB premultiplied or straight?" unanswered.
+        for px in out.chunks_exact(4) {
+            assert!(
+                (i32::from(px[3]) - 128).abs() <= 2,
+                "a half-opacity layer over the empty canvas must read back alpha ~128; got {}",
+                px[3]
+            );
+            for (ch, want) in [100, 60, 30].into_iter().enumerate() {
+                assert!(
+                    (i32::from(px[ch]) - want).abs() <= 2,
+                    "RGB must be premultiplied by the coverage alpha;                      channel {ch} expected ~{want}, got {} (straight would be {})",
+                    px[ch],
+                    want * 2
+                );
+            }
+        }
+    }
+
+    /// The property #1670's Porter-Duff operators consume: alpha is coverage, so
+    /// the region a layer does not reach stays at zero.
+    #[test]
+    fn compositor_should_leave_uncovered_regions_transparent() {
+        let Some(ctx) = gpu_ctx() else {
+            return;
+        };
+        let (w, h) = (4u32, 4u32);
+        let rgba = [200u8, 120, 60, 255].repeat((w * h) as usize);
+
+        // `transform.wgsl` samples `(uv - 0.5) / scale + 0.5` and returns
+        // transparent outside [0, 1], so a half-height layer covers v in
+        // [0.25, 0.75]: rows 1 and 2 of four, leaving rows 0 and 3 untouched.
+        let mut compositor = crate::Compositor::new(Arc::clone(&ctx), w, h);
+        let mut layers = vec![crate::FrameLayer {
+            frame: VideoFrame::from_rgba(w, h, rgba).expect("layer frame"),
+            transform: crate::LayerTransform {
+                scale_y: 0.5,
+                ..Default::default()
+            },
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
+            z_order: 0,
+        }];
+        let tex = compositor.composite(&mut layers).expect("compositor path");
+        let out = readback(&ctx, &tex, w, h);
+
+        let alpha_at = |row: u32| out[(row * w * 4 + 3) as usize];
+        assert_eq!(
+            alpha_at(0),
+            0,
+            "the band above the layer must stay transparent"
+        );
+        assert_eq!(
+            alpha_at(3),
+            0,
+            "the band below the layer must stay transparent"
+        );
+        assert!(
+            alpha_at(1) >= 253 && alpha_at(2) >= 253,
+            "the covered rows must be opaque; got {} and {}",
+            alpha_at(1),
+            alpha_at(2)
+        );
+    }
+
     #[test]
     fn composite_to_rgba_should_read_back_the_canvas_size_and_pixels() {
         let Some(ctx) = gpu_ctx() else {
