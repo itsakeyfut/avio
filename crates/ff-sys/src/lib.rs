@@ -64,6 +64,7 @@ mod format_context;
 mod frame;
 #[cfg(not(docsrs))]
 mod hwdevice;
+mod log_bridge;
 #[cfg(not(docsrs))]
 mod packet;
 #[cfg(not(docsrs))]
@@ -89,6 +90,7 @@ pub use format_context::{
 pub use frame::Frame;
 #[cfg(not(docsrs))]
 pub use hwdevice::HwDeviceContext;
+pub use log_bridge::{install_log_bridge, log_level, set_log_level};
 #[cfg(not(docsrs))]
 pub use packet::Packet;
 #[cfg(not(docsrs))]

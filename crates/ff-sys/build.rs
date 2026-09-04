@@ -48,6 +48,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(docsrs)");
     println!("cargo::rustc-check-cfg=cfg(ffmpeg8)");
     println!("cargo::rustc-check-cfg=cfg(ffmpeg_buffersrc_flag_u32)");
+    println!("cargo::rustc-check-cfg=cfg(va_list_tag)");
 
     // docs.rs does not have FFmpeg installed.  Emit empty bindings so that the
     // crate compiles; docsrs_stubs.rs (included by lib.rs) provides stub types.
@@ -481,6 +482,18 @@ fn generate_bindings(include_paths: &[String]) {
         .generate_comments(false)
         .generate()
         .expect("Unable to generate bindings");
+
+    // Where `va_list` is an array typedef (x86_64 SysV: `struct __va_list_tag[1]`),
+    // C's array-to-pointer adjustment strips the typedef off *parameters*, so bindgen
+    // writes `*mut __va_list_tag` there while the alias itself stays an array. The two
+    // are not interchangeable in Rust, so `log_bridge` needs to know which shape this
+    // target produced. Detect it from the generated text rather than from the target
+    // triple: the bindings are the ground truth, and this does not need re-auditing
+    // when bindgen or the target list changes.
+    let generated = bindings.to_string();
+    if generated.contains("__va_list_tag") {
+        println!("cargo:rustc-cfg=va_list_tag");
+    }
 
     let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     bindings

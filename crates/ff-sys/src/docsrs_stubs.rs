@@ -404,6 +404,43 @@ pub unsafe fn av_strerror(_errnum: c_int, _errbuf: *mut c_char, _errbuf_size: us
     0
 }
 
+// av_log bridge (see log_bridge.rs)
+
+pub type va_list = *mut c_char;
+
+pub const AV_LOG_QUIET: i32 = -8;
+pub const AV_LOG_PANIC: u32 = 0;
+pub const AV_LOG_FATAL: u32 = 8;
+pub const AV_LOG_ERROR: u32 = 16;
+pub const AV_LOG_WARNING: u32 = 24;
+pub const AV_LOG_INFO: u32 = 32;
+pub const AV_LOG_VERBOSE: u32 = 40;
+pub const AV_LOG_DEBUG: u32 = 48;
+pub const AV_LOG_TRACE: u32 = 56;
+
+pub unsafe fn av_log_set_callback(
+    _callback: Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_char, va_list)>,
+) {
+}
+
+pub unsafe fn av_log_set_level(_level: c_int) {}
+
+pub unsafe fn av_log_get_level() -> c_int {
+    AV_LOG_INFO as c_int
+}
+
+pub unsafe fn av_log_format_line2(
+    _ptr: *mut c_void,
+    _level: c_int,
+    _fmt: *const c_char,
+    _vl: va_list,
+    _line: *mut c_char,
+    _line_size: c_int,
+    _print_prefix: *mut c_int,
+) -> c_int {
+    0
+}
+
 pub unsafe fn av_dict_get(
     _m: *const AVDictionary,
     _key: *const c_char,
