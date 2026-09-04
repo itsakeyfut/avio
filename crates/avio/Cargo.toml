@@ -78,6 +78,14 @@ required-features = ["preview"]
 name = "gpu_parity_tests"
 required-features = ["gpu", "preview"]
 
+# Reference-image regression suite for the 40 blend modes and 6 Porter-Duff operators
+# (#1671). Only `gpu` is required: the CPU reference comes from `ff-filter`, which is a
+# non-optional dependency, so `preview` would narrow where the suite runs for nothing.
+# Kept in sync with the file's `#![cfg(feature = "gpu")]`.
+[[test]]
+name = "gpu_reference_tests"
+required-features = ["gpu"]
+
 # Engine demo — builds by default now that the model is unconditional.
 [[example]]
 name = "timeline_render"
@@ -91,6 +99,8 @@ ff-probe  = { path = "../ff-probe" }
 ff-decode = { path = "../ff-decode" }
 ff-encode = { path = "../ff-encode" }
 ff-filter = { path = "../ff-filter" }
+# Reads and writes the committed reference PNGs in tests/fixtures/gpu_reference (#1671).
+image = { workspace = true, features = ["png"] }
 serde_json = "1.0.149"
 
 [lints]
