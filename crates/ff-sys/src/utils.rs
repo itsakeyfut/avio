@@ -11,12 +11,17 @@ static INIT: Once = Once::new();
 ///
 /// This function is idempotent and can be called multiple times safely.
 /// It will only perform initialization once.
+///
+/// Installs the [`log` bridge](crate::install_log_bridge), so FFmpeg's own
+/// diagnostics reach the `log` facade under the `ffmpeg` target instead of
+/// going to stderr. That is **process-global** FFmpeg state; see
+/// [`install_log_bridge`](crate::install_log_bridge).
 pub fn ensure_initialized() {
     INIT.call_once(|| {
         // FFmpeg 4.0+ deprecated av_register_all() and it was removed in later versions.
-        // Modern FFmpeg automatically registers codecs/formats at startup.
-        // This function is kept for potential future initialization needs
-        // (e.g., logging configuration, thread settings).
+        // Modern FFmpeg automatically registers codecs/formats at startup, so routing
+        // its logging is what is left to do here.
+        crate::install_log_bridge();
     });
 }
 
