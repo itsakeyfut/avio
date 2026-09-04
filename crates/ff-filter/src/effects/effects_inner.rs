@@ -2,9 +2,9 @@
 //!
 //! All `unsafe` code lives here; [`super`] exposes safe wrappers.
 //!
-//! Current `unsafe` entry points:
-//! - [`analyze_vidstab_unsafe`] — motion analysis via `vidstabdetect` filter
-//! - [`transform_vidstab_unsafe`] — correction via `vidstabtransform` filter + encode
+//! Entry points (each a safe wrapper over a private `*_unsafe` body):
+//! - [`analyze_vidstab`] — motion analysis via `vidstabdetect` filter
+//! - [`transform_vidstab`] — correction via `vidstabtransform` filter + encode
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -14,6 +14,24 @@ use std::path::Path;
 
 use crate::FilterError;
 use crate::effects::stabilizer::{AnalyzeOptions, Interpolation, StabilizeOptions};
+
+/// Safe entry point for [`analyze_vidstab_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn analyze_vidstab(
+    input: &Path,
+    output_trf: &Path,
+    opts: &AnalyzeOptions,
+) -> Result<(), FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { analyze_vidstab_unsafe(input, output_trf, opts) }
+}
 
 /// Runs `vidstabdetect` motion analysis on `input`, writing the transform data
 /// to `output_trf`.
@@ -34,7 +52,7 @@ use crate::effects::stabilizer::{AnalyzeOptions, Interpolation, StabilizeOptions
 /// - `avfilter_link()` connects pads owned by the graph.
 /// - `avfilter_graph_config()` finalises the graph.
 /// - All `CString` values are kept alive for the duration of the graph build.
-pub(super) unsafe fn analyze_vidstab_unsafe(
+unsafe fn analyze_vidstab_unsafe(
     input: &Path,
     output_trf: &Path,
     opts: &AnalyzeOptions,
@@ -254,6 +272,25 @@ fn drain_encoded_packets(
     }
 }
 
+/// Safe entry point for [`transform_vidstab_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn transform_vidstab(
+    input: &Path,
+    trf_path: &Path,
+    output: &Path,
+    opts: &StabilizeOptions,
+) -> Result<(), FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { transform_vidstab_unsafe(input, trf_path, output, opts) }
+}
+
 /// Runs `vidstabtransform` motion correction on `input` using the `.trf` file
 /// produced by [`analyze_vidstab_unsafe`], writing the result to `output`.
 ///
@@ -273,7 +310,7 @@ fn drain_encoded_packets(
 ///   once on drop).
 /// - Owned `ff_sys::Frame` / `ff_sys::Packet` manage the frame and packet
 ///   lifetimes (each freed once on drop).
-pub(super) unsafe fn transform_vidstab_unsafe(
+unsafe fn transform_vidstab_unsafe(
     input: &Path,
     trf_path: &Path,
     output: &Path,

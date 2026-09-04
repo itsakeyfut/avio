@@ -1,7 +1,5 @@
 //! EBU R128 loudness measurement.
 
-#![allow(unsafe_code)]
-
 use std::path::{Path, PathBuf};
 
 use crate::FilterError;
@@ -64,11 +62,7 @@ impl LoudnessMeter {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
-        // SAFETY: measure_loudness_unsafe manages all raw pointer lifetimes
-        // according to the avfilter ownership rules: the graph is allocated with
-        // avfilter_graph_alloc(), built and configured, drained, then freed before
-        // returning.  The path CString is valid for the duration of the graph build.
-        unsafe { super::analysis_inner::measure_loudness_unsafe(&self.input) }
+        super::analysis_inner::measure_loudness(&self.input)
     }
 }
 

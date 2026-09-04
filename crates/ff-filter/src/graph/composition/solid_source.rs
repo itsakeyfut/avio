@@ -4,8 +4,6 @@
 //! plus a canvas size and frame rate, with no timeline/track/clip knowledge. It
 //! backs the engine's solid color clips.
 
-#![allow(unsafe_code)]
-
 use ff_format::{Color, VideoFrame};
 
 use crate::error::FilterError;
@@ -44,9 +42,7 @@ impl SolidSource {
     /// (e.g. the `color` filter is unavailable).
     pub fn new(color: Color, width: u32, height: u32, fps: f64) -> Result<Self, FilterError> {
         let args = solid_color_args(color, width, height, fps);
-        // SAFETY: `build_solid_source` follows the avfilter ownership rules; the
-        // returned graph owns every context it created.
-        let graph = unsafe { super::composition_inner::build_solid_source(&args)? };
+        let graph = super::composition_inner::build_solid_source(&args)?;
         Ok(Self { graph })
     }
 

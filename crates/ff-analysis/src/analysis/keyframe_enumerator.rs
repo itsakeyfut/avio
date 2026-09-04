@@ -1,7 +1,5 @@
 //! Keyframe timestamp enumeration.
 
-#![allow(unsafe_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -65,11 +63,7 @@ impl KeyframeEnumerator {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
-        // SAFETY: enumerate_keyframes_unsafe manages all raw pointer lifetimes:
-        // the owned InputFormatContext owns and frees the format context (closing
-        // its input on drop); av_packet_alloc / av_packet_free own the packet;
-        // av_packet_unref is called after every av_read_frame success.
-        unsafe { super::analysis_inner::enumerate_keyframes_unsafe(&self.input, self.stream_index) }
+        super::analysis_inner::enumerate_keyframes(&self.input, self.stream_index)
     }
 }
 

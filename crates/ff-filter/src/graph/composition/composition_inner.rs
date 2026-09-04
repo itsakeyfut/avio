@@ -36,7 +36,58 @@ fn blend_mode_to_ffmpeg(mode: BlendMode) -> &'static str {
 
 // Video composition graph builder
 
-pub(super) unsafe fn build_video_composition(
+/// Whether the linked `FFmpeg` provides the `subtitles` filter (needs libass).
+///
+/// Test-only: the sole caller is `realtime_composer`'s subtitle regression test,
+/// which skips when libass is absent. It lives here rather than in the test so
+/// the FFI stays inside this module and the test file needs no `unsafe`.
+///
+/// # Safety argument (RK-017)
+///
+/// `avfilter_get_by_name` takes a `&CStr`-derived pointer and only looks the name
+/// up in a static registry; it imposes nothing on the caller and cannot be made
+/// to misbehave by any argument value, so the lookup is wrapped here rather than
+/// exposing it as `unsafe` to every caller that wants to gate on availability.
+#[cfg(test)]
+pub(super) fn subtitles_filter_available() -> bool {
+    // SAFETY: see above; the pointer comes from a `'static` C string literal.
+    !unsafe { ff_sys::avfilter_get_by_name(c"subtitles".as_ptr()) }.is_null()
+}
+
+/// Safe entry point for [`build_video_composition_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_video_composition(
+    canvas_width: u32,
+    canvas_height: u32,
+    background: Rgb,
+    frame_rate: f64,
+    layers: &[VideoLayer],
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe {
+        build_video_composition_unsafe(canvas_width, canvas_height, background, frame_rate, layers)
+    }
+}
+
+/// Builds the multi-track video composition graph.
+///
+/// # Safety
+///
+/// The graph from `avfilter_graph_alloc` is owned here until it is either freed
+/// by the local `bail!` macro on an early return, or handed to
+/// [`FilterGraphInner`], which frees it on drop. Every `AVFilterContext` is
+/// created through `avfilter_graph_create_filter` and so is owned by the graph,
+/// never freed separately. No raw pointer crosses the function boundary in
+/// either direction, so these rules constrain this body alone and impose
+/// nothing on a caller.
+unsafe fn build_video_composition_unsafe(
     canvas_width: u32,
     canvas_height: u32,
     background: Rgb,
@@ -1021,6 +1072,23 @@ pub(super) unsafe fn build_video_composition(
 
 // Real-time composition graph builder
 
+/// Safe entry point for [`build_realtime_composition_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_realtime_composition(
+    layers: &[super::realtime_composer::RealtimeLayer],
+    canvas: Option<(u32, u32)>,
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_realtime_composition_unsafe(layers, canvas) }
+}
+
 /// Builds a `buffersrc`-fed composition graph for real-time preview.
 ///
 /// Unlike [`build_video_composition`] (which decodes internally via `movie`
@@ -1034,8 +1102,8 @@ pub(super) unsafe fn build_video_composition(
 ///
 /// # Safety
 ///
-/// Follows the same avfilter ownership rules as [`build_video_composition`].
-pub(super) unsafe fn build_realtime_composition(
+/// Follows the same avfilter ownership rules as [`build_video_composition_unsafe`].
+unsafe fn build_realtime_composition_unsafe(
     layers: &[super::realtime_composer::RealtimeLayer],
     canvas: Option<(u32, u32)>,
 ) -> Result<FilterGraph, FilterError> {
@@ -1386,7 +1454,30 @@ pub(super) unsafe fn build_realtime_composition(
 
 // Audio mix graph builder
 
-pub(super) unsafe fn build_audio_mix(
+/// Safe entry point for [`build_audio_mix_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_audio_mix(
+    sample_rate: u32,
+    channel_layout: ChannelLayout,
+    tracks: &[AudioTrack],
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_audio_mix_unsafe(sample_rate, channel_layout, tracks) }
+}
+
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as
+/// [`build_video_composition_unsafe`]: every pointer it creates it also owns
+/// and frees, and none crosses the function boundary.
+unsafe fn build_audio_mix_unsafe(
     sample_rate: u32,
     channel_layout: ChannelLayout,
     tracks: &[AudioTrack],
@@ -1829,7 +1920,30 @@ pub(super) unsafe fn build_audio_mix(
 
 // Video concat graph builder
 
-pub(super) unsafe fn build_video_concat(
+/// Safe entry point for [`build_video_concat_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_video_concat(
+    clips: &[PathBuf],
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_video_concat_unsafe(clips, output_width, output_height) }
+}
+
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as
+/// [`build_video_composition_unsafe`]: every pointer it creates it also owns
+/// and frees, and none crosses the function boundary.
+unsafe fn build_video_concat_unsafe(
     clips: &[PathBuf],
     output_width: Option<u32>,
     output_height: Option<u32>,
@@ -2022,7 +2136,30 @@ pub(super) unsafe fn build_video_concat(
 
 // Audio concat graph builder
 
-pub(super) unsafe fn build_audio_concat(
+/// Safe entry point for [`build_audio_concat_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_audio_concat(
+    clips: &[PathBuf],
+    output_sample_rate: Option<u32>,
+    output_channel_layout: Option<ChannelLayout>,
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_audio_concat_unsafe(clips, output_sample_rate, output_channel_layout) }
+}
+
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as
+/// [`build_video_composition_unsafe`]: every pointer it creates it also owns
+/// and frees, and none crosses the function boundary.
+unsafe fn build_audio_concat_unsafe(
     clips: &[PathBuf],
     output_sample_rate: Option<u32>,
     output_channel_layout: Option<ChannelLayout>,
@@ -2238,7 +2375,7 @@ pub(super) unsafe fn build_audio_concat(
 /// Probe a clip's duration in seconds via an owned `ff_sys::InputFormatContext`
 /// (open + find stream info).  Returns `CompositionFailed` if the file cannot be
 /// opened or has an unknown duration.
-pub(super) unsafe fn probe_clip_duration_sec(path: &PathBuf) -> Result<f64, FilterError> {
+pub(super) fn probe_clip_duration_sec(path: &PathBuf) -> Result<f64, FilterError> {
     // The owned demux context frees itself (closing the input) on every early
     // return below and at scope end, so no manual teardown is needed.
     let mut ctx = ff_sys::InputFormatContext::open(path.as_ref()).map_err(|e| {
@@ -2268,7 +2405,30 @@ pub(super) unsafe fn probe_clip_duration_sec(path: &PathBuf) -> Result<f64, Filt
     Ok(duration_val as f64 / 1_000_000.0)
 }
 
-pub(super) unsafe fn build_dissolve_join(
+/// Safe entry point for [`build_dissolve_join_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_dissolve_join(
+    clip_a: &PathBuf,
+    clip_b: &PathBuf,
+    dissolve_sec: f64,
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_dissolve_join_unsafe(clip_a, clip_b, dissolve_sec) }
+}
+
+/// # Safety
+///
+/// Follows the same avfilter ownership rules as
+/// [`build_video_composition_unsafe`]: every pointer it creates it also owns
+/// and frees, and none crosses the function boundary.
+unsafe fn build_dissolve_join_unsafe(
     clip_a: &PathBuf,
     clip_b: &PathBuf,
     dissolve_sec: f64,
@@ -2477,6 +2637,20 @@ fn lavfi_movie_args(lavfi: &str) -> String {
 
 // Lavfi source graph (generated overlay for the preview runner)
 
+/// Safe entry point for [`build_lavfi_source_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_lavfi_source_unsafe(lavfi) }
+}
+
 /// Builds a source-only graph that generates frames from a `lavfi` filtergraph
 /// string: `movie=filename=<lavfi>:format_name=lavfi → format=rgba → buffersink`.
 ///
@@ -2487,9 +2661,9 @@ fn lavfi_movie_args(lavfi: &str) -> String {
 ///
 /// # Safety
 ///
-/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// Follows the same avfilter ownership rules as [`build_video_composition_unsafe`]: the
 /// returned graph owns every context it created.
-pub(super) unsafe fn build_lavfi_source(lavfi: &str) -> Result<FilterGraph, FilterError> {
+unsafe fn build_lavfi_source_unsafe(lavfi: &str) -> Result<FilterGraph, FilterError> {
     use std::ffi::CString;
 
     macro_rules! bail {
@@ -2735,6 +2909,25 @@ unsafe fn add_drawtext(
 
 // Text layer source graph (generated title/caption layer)
 
+/// Safe entry point for [`build_text_source_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_text_source(
+    opts: &DrawTextOptions,
+    width: u32,
+    height: u32,
+    fps: f64,
+) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_text_source_unsafe(opts, width, height, fps) }
+}
+
 /// Builds a source-only graph that renders a text layer onto a transparent canvas:
 /// `color(c=black@0.0:s=WxH:r=fps) → format=rgba → drawtext → buffersink`.
 ///
@@ -2745,9 +2938,9 @@ unsafe fn add_drawtext(
 ///
 /// # Safety
 ///
-/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// Follows the same avfilter ownership rules as [`build_video_composition_unsafe`]: the
 /// returned graph owns every context it created.
-pub(super) unsafe fn build_text_source(
+unsafe fn build_text_source_unsafe(
     opts: &DrawTextOptions,
     width: u32,
     height: u32,
@@ -2824,6 +3017,20 @@ pub(super) unsafe fn build_text_source(
 
 // Solid color source graph (generated fill layer)
 
+/// Safe entry point for [`build_solid_source_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn build_solid_source(color_args: &str) -> Result<FilterGraph, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { build_solid_source_unsafe(color_args) }
+}
+
 /// Builds a source-only graph that generates a solid color layer:
 /// `color(<color_args>) → format=rgba → buffersink`. `color_args` is the full
 /// `color` filter argument string (`c=…:s=…:r=…`), built by the caller.
@@ -2834,9 +3041,9 @@ pub(super) unsafe fn build_text_source(
 ///
 /// # Safety
 ///
-/// Follows the same avfilter ownership rules as [`build_video_composition`]: the
+/// Follows the same avfilter ownership rules as [`build_video_composition_unsafe`]: the
 /// returned graph owns every context it created.
-pub(super) unsafe fn build_solid_source(color_args: &str) -> Result<FilterGraph, FilterError> {
+unsafe fn build_solid_source_unsafe(color_args: &str) -> Result<FilterGraph, FilterError> {
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;

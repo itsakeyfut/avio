@@ -1,7 +1,5 @@
 //! Multi-track video composition onto a solid-colour canvas.
 
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 
 use ff_format::{Color, TextSpec};
@@ -242,22 +240,13 @@ impl MultiTrackComposer {
         // Layers are composited in insertion order (caller emits them in the
         // intended bottom-to-top order); the compositor no longer reorders.
         let layers = self.layers;
-        // SAFETY: all raw pointer operations follow the avfilter ownership rules:
-        // - avfilter_graph_alloc() returns an owned pointer freed via
-        //   avfilter_graph_free() on error or stored in FilterGraphInner on success.
-        // - avfilter_graph_create_filter() adds contexts owned by the graph.
-        // - avfilter_link() connects pads; connections are owned by the graph.
-        // - avfilter_graph_config() finalises the graph.
-        // - NonNull::new_unchecked() is called only after ret >= 0 checks.
-        unsafe {
-            super::composition_inner::build_video_composition(
-                self.canvas_width,
-                self.canvas_height,
-                self.background,
-                self.frame_rate,
-                &layers,
-            )
-        }
+        super::composition_inner::build_video_composition(
+            self.canvas_width,
+            self.canvas_height,
+            self.background,
+            self.frame_rate,
+            &layers,
+        )
     }
 }
 

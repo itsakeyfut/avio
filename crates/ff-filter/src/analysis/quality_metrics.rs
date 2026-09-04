@@ -1,7 +1,5 @@
 //! Video quality metrics (SSIM, PSNR).
 
-#![allow(unsafe_code)]
-
 use std::path::Path;
 
 use crate::FilterError;
@@ -54,10 +52,7 @@ impl QualityMetrics {
                 reason: format!("distorted file not found: {}", distorted.display()),
             });
         }
-        // SAFETY: compute_ssim_unsafe manages all raw pointer lifetimes according
-        // to the avfilter ownership rules: every allocated object is freed before
-        // returning, either in the bail! macro or in the normal cleanup path.
-        unsafe { super::analysis_inner::compute_ssim_unsafe(reference, distorted) }
+        super::analysis_inner::compute_ssim(reference, distorted)
     }
 
     /// Computes the mean PSNR (Peak Signal-to-Noise Ratio, in dB) over all
@@ -103,10 +98,7 @@ impl QualityMetrics {
                 reason: format!("distorted file not found: {}", distorted.display()),
             });
         }
-        // SAFETY: compute_psnr_unsafe manages all raw pointer lifetimes according
-        // to the avfilter ownership rules: every allocated object is freed before
-        // returning, either in the bail! macro or in the normal cleanup path.
-        unsafe { super::analysis_inner::compute_psnr_unsafe(reference, distorted) }
+        super::analysis_inner::compute_psnr(reference, distorted)
     }
 }
 

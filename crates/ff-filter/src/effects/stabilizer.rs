@@ -1,7 +1,5 @@
 //! Video stabilization — two-pass motion analysis and correction.
 
-#![allow(unsafe_code)]
-
 use std::path::Path;
 
 use crate::FilterError;
@@ -114,12 +112,7 @@ impl Stabilizer {
         output_trf: &Path,
         opts: &AnalyzeOptions,
     ) -> Result<(), FilterError> {
-        // SAFETY: analyze_vidstab_unsafe manages all raw pointer lifetimes
-        // under the avfilter ownership rules: graph allocated with
-        // avfilter_graph_alloc(), built and configured, drained via
-        // av_buffersink_get_frame(), then freed before returning.
-        // All CString values are kept alive for the duration of the graph build.
-        unsafe { super::effects_inner::analyze_vidstab_unsafe(input, output_trf, opts) }
+        super::effects_inner::analyze_vidstab(input, output_trf, opts)
     }
 
     /// Apply motion transforms from the `.trf` file produced by [`Stabilizer::analyze`].
@@ -140,12 +133,7 @@ impl Stabilizer {
         output: &Path,
         opts: &StabilizeOptions,
     ) -> Result<(), FilterError> {
-        // SAFETY: transform_vidstab_unsafe manages all raw pointer lifetimes:
-        // - avfilter graph is allocated, built, drained, then freed.
-        // - AVCodecContext is allocated, opened, flushed, then freed.
-        // - AVFormatContext is allocated, written to, trailer flushed, then freed.
-        // All CString values are kept alive for the duration of each operation.
-        unsafe { super::effects_inner::transform_vidstab_unsafe(input, trf_path, output, opts) }
+        super::effects_inner::transform_vidstab(input, trf_path, output, opts)
     }
 }
 

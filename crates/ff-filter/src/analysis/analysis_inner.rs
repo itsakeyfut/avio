@@ -2,10 +2,10 @@
 //!
 //! All `unsafe` code lives here; [`super`] exposes safe wrappers.
 //!
-//! Current `unsafe` entry points:
-//! - [`measure_loudness_unsafe`] — EBU R128 loudness via `ebur128` filter
-//! - [`compute_ssim_unsafe`] — mean SSIM via `ssim` filter
-//! - [`compute_psnr_unsafe`] — mean PSNR via `psnr` filter
+//! Entry points (each a safe wrapper over a private `*_unsafe` body):
+//! - [`measure_loudness`] — EBU R128 loudness via `ebur128` filter
+//! - [`compute_ssim`] — mean SSIM via `ssim` filter
+//! - [`compute_psnr`] — mean PSNR via `psnr` filter
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -16,6 +16,20 @@ use std::path::Path;
 
 use crate::FilterError;
 use crate::analysis::LoudnessResult;
+
+/// Safe entry point for [`measure_loudness_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn measure_loudness(path: &Path) -> Result<LoudnessResult, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { measure_loudness_unsafe(path) }
+}
 
 /// Measures EBU R128 integrated loudness, loudness range, and true peak for
 /// `path` using the filter graph:
@@ -34,7 +48,7 @@ use crate::analysis::LoudnessResult;
 /// - `avfilter_link()` connects pads owned by the graph.
 /// - `avfilter_graph_config()` finalises the graph.
 /// - `av_frame_alloc()` / `av_frame_free()` manage frame lifetimes.
-pub(super) unsafe fn measure_loudness_unsafe(path: &Path) -> Result<LoudnessResult, FilterError> {
+unsafe fn measure_loudness_unsafe(path: &Path) -> Result<LoudnessResult, FilterError> {
     macro_rules! bail {
         ($graph:ident, $reason:expr) => {{
             let mut g = $graph;
@@ -209,6 +223,20 @@ unsafe fn read_f32_meta(
 
 // QualityMetrics inner
 
+/// Safe entry point for [`compute_ssim_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn compute_ssim(reference: &Path, distorted: &Path) -> Result<f32, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { compute_ssim_unsafe(reference, distorted) }
+}
+
 /// Computes the mean SSIM between `reference` and `distorted` using the filter
 /// graph:
 ///
@@ -232,10 +260,7 @@ unsafe fn read_f32_meta(
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
 /// - Frame metadata is read via `av_dict_get`; the returned pointer is valid
 ///   for the lifetime of the frame.
-pub(super) unsafe fn compute_ssim_unsafe(
-    reference: &Path,
-    distorted: &Path,
-) -> Result<f32, FilterError> {
+unsafe fn compute_ssim_unsafe(reference: &Path, distorted: &Path) -> Result<f32, FilterError> {
     // Pre-flight: reject inputs with different frame counts
     let ref_count = probe_video_frame_count(reference);
     let dist_count = probe_video_frame_count(distorted);
@@ -430,6 +455,20 @@ pub(super) unsafe fn compute_ssim_unsafe(
     Ok(mean_ssim)
 }
 
+/// Safe entry point for [`compute_psnr_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn compute_psnr(reference: &Path, distorted: &Path) -> Result<f32, FilterError> {
+    // SAFETY: see the safety argument above.
+    unsafe { compute_psnr_unsafe(reference, distorted) }
+}
+
 /// Computes the mean PSNR (Peak Signal-to-Noise Ratio, in dB) between
 /// `reference` and `distorted` using the filter graph:
 ///
@@ -454,10 +493,7 @@ pub(super) unsafe fn compute_ssim_unsafe(
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
 /// - Frame metadata is read via `av_dict_get`; the returned pointer is valid
 ///   for the lifetime of the frame.
-pub(super) unsafe fn compute_psnr_unsafe(
-    reference: &Path,
-    distorted: &Path,
-) -> Result<f32, FilterError> {
+unsafe fn compute_psnr_unsafe(reference: &Path, distorted: &Path) -> Result<f32, FilterError> {
     // Pre-flight: reject inputs with different frame counts
     let ref_count = probe_video_frame_count(reference);
     let dist_count = probe_video_frame_count(distorted);

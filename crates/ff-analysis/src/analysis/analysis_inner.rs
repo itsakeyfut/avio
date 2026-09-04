@@ -2,13 +2,14 @@
 //!
 //! All `unsafe` `FFmpeg` filter-graph and packet-level calls live here.
 //! Per-type safe APIs live in sibling files (`scene_detector.rs`, etc.)
-//! and call these entry points from within their own `unsafe` blocks.
+//! and call the entry points below directly, so no sibling needs an `unsafe`
+//! block. Each entry point is a safe wrapper over a private `*_unsafe` body.
 //!
-//! Current `unsafe` entry points:
-//! - [`detect_scenes_unsafe`] — `SceneDetector`
-//! - [`detect_silence_unsafe`] — `SilenceDetector`
-//! - [`enumerate_keyframes_unsafe`] — `KeyframeEnumerator`
-//! - [`detect_black_frames_unsafe`] — `BlackFrameDetector`
+//! Entry points:
+//! - [`detect_scenes`] — `SceneDetector`
+//! - [`detect_silence`] — `SilenceDetector`
+//! - [`enumerate_keyframes`] — `KeyframeEnumerator`
+//! - [`detect_black_frames`] — `BlackFrameDetector`
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -25,6 +26,20 @@ use super::silence_detector::SilenceRange;
 use crate::AnalysisError;
 
 // SceneDetector inner
+
+/// Safe entry point for [`detect_scenes_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn detect_scenes(path: &Path, threshold: f64) -> Result<Vec<Duration>, AnalysisError> {
+    // SAFETY: see the safety argument above.
+    unsafe { detect_scenes_unsafe(path, threshold) }
+}
 
 /// Detects scene changes in `path` using the filter graph:
 ///
@@ -45,7 +60,7 @@ use crate::AnalysisError;
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
 /// - `(*frame).time_base` is set by the filter framework inside
 ///   `av_buffersink_get_frame` and is valid for the frame's lifetime.
-pub(super) unsafe fn detect_scenes_unsafe(
+unsafe fn detect_scenes_unsafe(
     path: &Path,
     threshold: f64,
 ) -> Result<Vec<Duration>, AnalysisError> {
@@ -212,6 +227,24 @@ pub(super) unsafe fn detect_scenes_unsafe(
 
 // SilenceDetector inner
 
+/// Safe entry point for [`detect_silence_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn detect_silence(
+    path: &Path,
+    threshold_db: f32,
+    min_duration: Duration,
+) -> Result<Vec<SilenceRange>, AnalysisError> {
+    // SAFETY: see the safety argument above.
+    unsafe { detect_silence_unsafe(path, threshold_db, min_duration) }
+}
+
 /// Detects silent intervals in `path` using the filter graph:
 ///
 /// `amovie=filename=path → silencedetect=n=threshold_db dB:d=min_sec → abuffersink`
@@ -232,7 +265,7 @@ pub(super) unsafe fn detect_scenes_unsafe(
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
 /// - `(*frame).metadata` is a valid `AVDictionary*` (may be null); `av_dict_get`
 ///   handles null dictionaries by returning null.
-pub(super) unsafe fn detect_silence_unsafe(
+unsafe fn detect_silence_unsafe(
     path: &Path,
     threshold_db: f32,
     min_duration: Duration,
@@ -429,6 +462,23 @@ unsafe fn read_f64_meta(
 
 // BlackFrameDetector inner
 
+/// Safe entry point for [`detect_black_frames_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn detect_black_frames(
+    path: &Path,
+    threshold: f64,
+) -> Result<Vec<Duration>, AnalysisError> {
+    // SAFETY: see the safety argument above.
+    unsafe { detect_black_frames_unsafe(path, threshold) }
+}
+
 /// Detects black intervals in `path` using the filter graph:
 ///
 /// `movie=filename=path → blackdetect=d=0.1:pic_th={threshold} → buffersink`
@@ -447,7 +497,7 @@ unsafe fn read_f64_meta(
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
 /// - `(*frame).metadata` is a valid `AVDictionary*` (may be null); `av_dict_get`
 ///   handles null dictionaries safely by returning null.
-pub(super) unsafe fn detect_black_frames_unsafe(
+unsafe fn detect_black_frames_unsafe(
     path: &Path,
     threshold: f64,
 ) -> Result<Vec<Duration>, AnalysisError> {
@@ -605,6 +655,23 @@ pub(super) unsafe fn detect_black_frames_unsafe(
 
 // KeyframeEnumerator inner
 
+/// Safe entry point for [`enumerate_keyframes_unsafe`].
+///
+/// # Safety argument (RK-017)
+///
+/// Takes no raw pointer and imposes no precondition on the caller: the
+/// callee's `# Safety` section documents only its own internal ownership
+/// rules, and every pointer it creates it also owns and frees. No value of
+/// these argument types can cause UB, so an `unsafe` marker here would
+/// communicate nothing actionable to a caller.
+pub(super) fn enumerate_keyframes(
+    path: &Path,
+    stream_index: Option<usize>,
+) -> Result<Vec<Duration>, AnalysisError> {
+    // SAFETY: see the safety argument above.
+    unsafe { enumerate_keyframes_unsafe(path, stream_index) }
+}
+
 /// Enumerates all keyframe PTS values for the given stream in `path`.
 ///
 /// Processing flow:
@@ -625,7 +692,7 @@ pub(super) unsafe fn detect_black_frames_unsafe(
 /// - `av_packet_unref` is called after every successful `av_read_frame`.
 /// - Stream pointer access (via `as_ptr` / `as_mut_ptr`) is guarded by bounds
 ///   checks on `nb_streams`.
-pub(super) unsafe fn enumerate_keyframes_unsafe(
+unsafe fn enumerate_keyframes_unsafe(
     path: &Path,
     stream_index: Option<usize>,
 ) -> Result<Vec<Duration>, AnalysisError> {

@@ -73,7 +73,7 @@
 mod builder_macros;
 
 pub mod abr;
-pub(crate) mod codec_utils;
+pub(crate) mod codec_utils_inner;
 pub mod dash;
 pub(crate) mod dash_inner;
 /// Unified error type for the `ff-stream` crate.
@@ -86,7 +86,7 @@ pub mod live_dash;
 pub(crate) mod live_dash_inner;
 pub mod live_hls;
 pub(crate) mod live_hls_inner;
-pub(crate) mod muxer_core;
+pub(crate) mod muxer_inner;
 pub mod output;
 pub mod rtmp;
 pub(crate) mod rtmp_inner;

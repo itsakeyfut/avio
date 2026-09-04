@@ -23,9 +23,9 @@ use std::path::Path;
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
 
-use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
+use crate::codec_utils_inner::{ffmpeg_err, ffmpeg_err_msg};
 use crate::error::StreamError;
-use crate::muxer_core::MuxerCore;
+use crate::muxer_inner::MuxerCore;
 
 // ============================================================================
 // LiveHlsInner
@@ -181,7 +181,7 @@ impl LiveHlsInner {
 
         // 3. Open H.264 video encoder
         let vid_enc_codec =
-            crate::codec_utils::select_h264_encoder("live_hls").ok_or_else(|| {
+            crate::codec_utils_inner::select_h264_encoder("live_hls").ok_or_else(|| {
                 ffmpeg_err_msg(
                     "no H.264 encoder available \
                      (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)",
@@ -228,7 +228,7 @@ impl LiveHlsInner {
         if let Some((sr, nc, abr)) = audio {
             aud_sample_rate = sr;
 
-            match crate::codec_utils::open_aac_encoder(sr, nc, abr, "live_hls") {
+            match crate::codec_utils_inner::open_aac_encoder(sr, nc, abr, "live_hls") {
                 Ok(ctx) => {
                     aud_frame_size = if ctx.frame_size() > 0 {
                         ctx.frame_size()

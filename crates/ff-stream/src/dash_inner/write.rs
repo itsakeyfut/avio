@@ -398,7 +398,7 @@ pub(super) unsafe fn write_dash_unsafe(
                 };
 
                 if scaled && vid_enc_ctx.send_frame(Some(&vid_enc_frame)).is_ok() {
-                    crate::codec_utils::drain_encoder(
+                    crate::codec_utils_inner::drain_encoder(
                         &mut vid_enc_ctx,
                         &mut out_ctx,
                         vid_out_stream_idx as usize,
@@ -456,7 +456,7 @@ pub(super) unsafe fn write_dash_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -477,7 +477,7 @@ pub(super) unsafe fn write_dash_unsafe(
 
     // 14. Flush encoders
     let _ = vid_enc_ctx.send_frame(None);
-    crate::codec_utils::drain_encoder(
+    crate::codec_utils_inner::drain_encoder(
         &mut vid_enc_ctx,
         &mut out_ctx,
         vid_out_stream_idx as usize,
@@ -514,7 +514,7 @@ pub(super) unsafe fn write_dash_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -527,7 +527,7 @@ pub(super) unsafe fn write_dash_unsafe(
             }
         }
         let _ = aud_enc.send_frame(None);
-        crate::codec_utils::drain_encoder(
+        crate::codec_utils_inner::drain_encoder(
             aud_enc,
             &mut out_ctx,
             aud_out_stream_idx as usize,
@@ -953,7 +953,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     };
 
                     if scaled && state.vid_enc_ctx.send_frame(Some(&vid_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             &mut state.vid_enc_ctx,
                             &mut out_ctx,
                             state.vid_out_stream_idx as usize,
@@ -1013,7 +1013,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -1035,7 +1035,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
     // 14. Flush encoders
     for state in &mut rendition_states {
         let _ = state.vid_enc_ctx.send_frame(None);
-        crate::codec_utils::drain_encoder(
+        crate::codec_utils_inner::drain_encoder(
             &mut state.vid_enc_ctx,
             &mut out_ctx,
             state.vid_out_stream_idx as usize,
@@ -1072,7 +1072,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -1085,7 +1085,7 @@ pub(super) unsafe fn write_dash_abr_unsafe(
             }
         }
         let _ = aud_enc.send_frame(None);
-        crate::codec_utils::drain_encoder(
+        crate::codec_utils_inner::drain_encoder(
             aud_enc,
             &mut out_ctx,
             aud_out_stream_idx as usize,
