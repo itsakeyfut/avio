@@ -35,6 +35,8 @@ pub struct AudioEncoderBuilder {
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) codec_options: Option<AudioCodecOptions>,
+    /// Codec-private options set by name, applied after `codec_options`.
+    pub(crate) codec_opts: Vec<(String, String)>,
     pub(crate) audio_codec_explicit: bool,
 }
 
@@ -48,6 +50,7 @@ impl AudioEncoderBuilder {
             audio_codec: AudioCodec::default(),
             audio_bitrate: None,
             codec_options: None,
+            codec_opts: Vec::new(),
             audio_codec_explicit: false,
         }
     }
@@ -79,6 +82,30 @@ impl AudioEncoderBuilder {
     #[must_use]
     pub fn container(mut self, container: OutputContainer) -> Self {
         self.container = Some(container);
+        self
+    }
+
+    /// Set a codec-*private* option by name, for the long tail that has no typed
+    /// builder (libopus and AAC tuning knobs, and so on).
+    ///
+    /// Repeatable, and applied in call order via `av_opt_set` on the codec's
+    /// `priv_data` before `avcodec_open2`, **after**
+    /// [`codec_options()`](Self::codec_options) — so a key named here overrides
+    /// the same key set through the typed API.
+    ///
+    /// # Escape-hatch semantics
+    ///
+    /// Prefer [`codec_options()`](Self::codec_options): it is validated at
+    /// compile time and portable across encoders. Nothing here is checked until
+    /// `FFmpeg` sees it, and keys are codec-specific.
+    ///
+    /// Unlike the typed options, which log and continue when an encoder does not
+    /// support them, an option rejected here fails [`build()`](Self::build) with
+    /// [`crate::EncodeError::InvalidConfig`] — the key was named explicitly, so
+    /// dropping it silently would defeat the purpose.
+    #[must_use]
+    pub fn codec_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.codec_opts.push((key.into(), value.into()));
         self
     }
 
@@ -266,6 +293,7 @@ impl AudioEncoder {
             codec: builder.audio_codec,
             bitrate: builder.audio_bitrate,
             codec_options: builder.codec_options,
+            codec_opts: builder.codec_opts,
             _progress_callback: false,
         };
 
@@ -323,6 +351,21 @@ impl Drop for AudioEncoder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_codec_opt_should_collect_pairs_in_order() {
+        let builder = crate::AudioEncoder::create("out.m4a")
+            .codec_opt("frame_duration", "20")
+            .codec_opt("vbr", "on");
+        assert_eq!(
+            builder.codec_opts,
+            vec![
+                ("frame_duration".to_string(), "20".to_string()),
+                ("vbr".to_string(), "on".to_string()),
+            ],
+            "pairs must be kept in call order"
+        );
+    }
+
     use super::*;
 
     #[test]

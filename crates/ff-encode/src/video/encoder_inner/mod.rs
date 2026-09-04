@@ -139,6 +139,8 @@ pub(super) struct VideoEncoderConfig {
     pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(super) subtitle_passthrough: Option<(String, usize)>,
     pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
+    /// Codec-private options set by name; applied after `codec_options`.
+    pub(super) codec_opts: Vec<(String, String)>,
     pub(super) pixel_format: Option<ff_format::PixelFormat>,
     pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
     pub(super) color_space: Option<ff_format::ColorSpace>,
@@ -213,6 +215,7 @@ impl VideoEncoderInner {
                     config.hardware_encoder,
                     config.two_pass,
                     config.codec_options.as_ref(),
+                    &config.codec_opts,
                     config.pixel_format.as_ref(),
                     config.color_space,
                     config.color_transfer,

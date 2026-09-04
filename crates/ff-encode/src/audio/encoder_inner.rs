@@ -68,6 +68,8 @@ pub(super) struct AudioEncoderConfig {
     pub(super) codec: AudioCodec,
     pub(super) bitrate: Option<u64>,
     pub(super) codec_options: Option<AudioCodecOptions>,
+    /// Codec-private options set by name; applied after `codec_options`.
+    pub(super) codec_opts: Vec<(String, String)>,
     pub(super) _progress_callback: bool,
 }
 
@@ -199,6 +201,15 @@ impl AudioEncoderInner {
             // codec initialisation.
             Self::apply_codec_options(&mut codec_ctx, opts, &encoder_name);
         }
+
+        // After the typed options, so a key the caller named by hand wins. This
+        // one propagates rather than warning: the caller asked for the key
+        // specifically, so a rejection is a configuration error.
+        crate::shared::codec_opts::apply_codec_opts(
+            &mut codec_ctx,
+            &config.codec_opts,
+            &encoder_name,
+        )?;
 
         // Open codec
         codec_ctx

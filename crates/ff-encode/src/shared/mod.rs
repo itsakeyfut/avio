@@ -2,6 +2,7 @@
 
 mod bitrate;
 mod codec;
+pub(crate) mod codec_opts;
 mod container;
 mod hardware;
 mod preset;
