@@ -80,10 +80,10 @@ pub use ff_format::{ErrorSeverity, MediaError};
 pub use graph::RenderGraph;
 pub use nodes::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, ColorWheelsNode,
-    CrossfadeNode, CurvesNode, DipToColorNode, DissolveTransitionNode, FadeTransitionNode,
-    FilmGrainNode, GaussianBlurNode, GlowNode, HslNode, LumaMaskNode, LutNode, MotionBlurNode,
-    OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode, SharpenNode,
-    TransformNode, VignetteNode, WipeTransitionNode, YuvFormat, YuvUploadNode,
+    CompositeOp, CrossfadeNode, CurvesNode, DipToColorNode, DissolveTransitionNode,
+    FadeTransitionNode, FilmGrainNode, GaussianBlurNode, GlowNode, HslNode, LumaMaskNode, LutNode,
+    MotionBlurNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode,
+    SharpenNode, TransformNode, VignetteNode, WipeTransitionNode, YuvFormat, YuvUploadNode,
 };
 pub use sink::GpuFrameSink;
 

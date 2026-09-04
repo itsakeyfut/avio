@@ -3,6 +3,7 @@
 use std::f32::consts::PI;
 
 use super::blend_mode::BlendMode;
+use super::composite_op::CompositeOp;
 
 #[allow(clippy::many_single_char_names, clippy::float_cmp)]
 fn rgb_to_hsl(r: f32, g: f32, b: f32) -> [f32; 3] {
@@ -223,6 +224,38 @@ fn vivid_light_ch(a: f32, b: f32) -> f32 {
 /// Apply a per-channel blend function across R, G and B.
 fn map3(f: impl Fn(f32, f32) -> f32, base: [f32; 3], ov: [f32; 3]) -> [f32; 3] {
     [f(base[0], ov[0]), f(base[1], ov[1]), f(base[2], ov[2])]
+}
+
+/// Apply a Porter-Duff operator to a premultiplied source and backdrop.
+///
+/// `s` and `d` are premultiplied colours, `sa` and `da` their alphas; the return
+/// is the premultiplied output colour and its alpha. This is the W3C form
+/// `Co = as * Fa * Cs + ab * Fb * Cb` with `s` and `d` substituted, so it reads
+/// as `co = s * Fa + d * Fb`. `shaders/blend.wgsl` evaluates the same six
+/// expressions; see [`CompositeOp`] for the per-operator formulas.
+pub(super) fn composite_rgba(
+    op: CompositeOp,
+    s: [f32; 3],
+    sa: f32,
+    d: [f32; 3],
+    da: f32,
+) -> ([f32; 3], f32) {
+    let (fa, fb) = match op {
+        CompositeOp::Over => (1.0, 1.0 - sa),
+        CompositeOp::Under => (1.0 - da, 1.0),
+        CompositeOp::In => (da, 0.0),
+        CompositeOp::Out => (1.0 - da, 0.0),
+        CompositeOp::Atop => (da, 1.0 - sa),
+        CompositeOp::Xor => (1.0 - da, 1.0 - sa),
+    };
+    (
+        [
+            s[0] * fa + d[0] * fb,
+            s[1] * fa + d[1] * fb,
+            s[2] * fa + d[2] * fb,
+        ],
+        sa * fa + da * fb,
+    )
 }
 
 // `manual_midpoint`: `Average` stays written as the C's `(A + B) / 2` so it reads
@@ -478,6 +511,84 @@ mod tests {
         // (#1219) and are covered by the GPU/CPU agreement test instead.
         assert_eq!(modes.len(), 40, "a new mode needs rows in CASES");
         assert_eq!(CASES.len(), modes.len() * 3);
+    }
+
+    /// `(op, s, sa, d, da, expected co, expected ao)` for the Porter-Duff
+    /// operators.
+    ///
+    /// The expected values were produced by transcribing the W3C `Fa`/`Fb` table
+    /// a **second time**, in its straight form `Co = as * Fa * Cs + ab * Fb * Cb`,
+    /// while [`composite_rgba`] works in the premultiplied form. Agreement
+    /// between the two routes is evidence neither dropped a factor.
+    ///
+    /// Both alphas sit strictly inside `(0, 1)` and differ, or `In`, `Out` and
+    /// `Atop` degenerate; the colours differ per channel so a dropped channel
+    /// shows (RK-022). All six operators give distinct results on every row.
+    #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
+    #[rustfmt::skip]
+    const COMPOSITE_CASES: &[(CompositeOp, [f32; 3], f32, [f32; 3], f32, [f32; 3], f32)] = &[
+        (CompositeOp::Over, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.5120000, 0.2920000, 0.2040000], 0.7600000),
+        (CompositeOp::Over, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.5437500, 0.3906250, 0.3250000], 0.8125000),
+        (CompositeOp::Over, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.4552500, 0.8115000, 0.3240000], 0.9150000),
+        (CompositeOp::Under, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.3680000, 0.3880000, 0.3960000], 0.7600000),
+        (CompositeOp::Under, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.6843750, 0.3718750, 0.2031250], 0.8125000),
+        (CompositeOp::Under, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.4350000, 0.7035000, 0.3577500], 0.9150000),
+        (CompositeOp::In, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.1920000, 0.0720000, 0.0240000], 0.2400000),
+        (CompositeOp::In, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.0281250, 0.1031250, 0.1593750], 0.1875000),
+        (CompositeOp::In, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.0675000, 0.1215000, 0.0472500], 0.1350000),
+        (CompositeOp::Out, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.2880000, 0.1080000, 0.0360000], 0.3600000),
+        (CompositeOp::Out, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.0093750, 0.0343750, 0.0531250], 0.0625000),
+        (CompositeOp::Out, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.3825000, 0.6885000, 0.2677500], 0.7650000),
+        (CompositeOp::Atop, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.2240000, 0.1840000, 0.1680000], 0.4000000),
+        (CompositeOp::Atop, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.5343750, 0.3562500, 0.2718750], 0.7500000),
+        (CompositeOp::Atop, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.0727500, 0.1230000, 0.0562500], 0.1500000),
+        (CompositeOp::Xor, [0.4800000, 0.1800000, 0.0600000], 0.6000, [0.0800000, 0.2800000, 0.3600000], 0.4000, [0.3200000, 0.2200000, 0.1800000], 0.5200000),
+        (CompositeOp::Xor, [0.0375000, 0.1375000, 0.2125000], 0.2500, [0.6750000, 0.3375000, 0.1500000], 0.7500, [0.5156250, 0.2875000, 0.1656250], 0.6250000),
+        (CompositeOp::Xor, [0.4500000, 0.8100000, 0.3150000], 0.9000, [0.0525000, 0.0150000, 0.0900000], 0.1500, [0.3877500, 0.6900000, 0.2767500], 0.7800000),
+    ];
+
+    #[test]
+    fn composite_rgba_should_match_the_porter_duff_reference() {
+        for &(op, s, sa, d, da, want_co, want_ao) in COMPOSITE_CASES {
+            let (co, ao) = composite_rgba(op, s, sa, d, da);
+            assert!(
+                close3(co, want_co),
+                "{op:?}: expected colour {want_co:?}, got {co:?} (s {s:?} sa {sa}, d {d:?} da {da})"
+            );
+            assert!(
+                (ao - want_ao).abs() < 1e-4,
+                "{op:?}: expected alpha {want_ao}, got {ao}"
+            );
+        }
+    }
+
+    #[test]
+    fn composite_reference_table_should_cover_every_operator() {
+        let mut ops: Vec<u32> = COMPOSITE_CASES.iter().map(|&(op, ..)| op as u32).collect();
+        ops.sort_unstable();
+        ops.dedup();
+        assert_eq!(ops.len(), 6, "a new operator needs rows in COMPOSITE_CASES");
+        assert_eq!(COMPOSITE_CASES.len(), ops.len() * 3);
+    }
+
+    /// `Over` has to stay exactly what the shader wrote before #1670,
+    /// `mix(d, blend, sa)` and `sa + da * (1 - sa)`, because the 44-mode
+    /// agreement test and the parity suite are the regression net for it.
+    #[test]
+    fn composite_rgba_over_should_equal_the_pre_1670_expression() {
+        for &(_, s, sa, d, da, ..) in COMPOSITE_CASES {
+            let (co, ao) = composite_rgba(CompositeOp::Over, s, sa, d, da);
+            for c in 0..3 {
+                // `s` is the premultiplied blend result, so `blend = s / sa`.
+                let blend = s[c] / sa;
+                let mixed = d[c] + (blend - d[c]) * sa;
+                assert!(
+                    (co[c] - mixed).abs() < 1e-5,
+                    "Over channel {c}: {co:?} vs mix() {mixed}"
+                );
+            }
+            assert!((ao - (sa + da * (1.0 - sa))).abs() < 1e-6, "Over alpha");
+        }
     }
 
     /// Each guarded formula has an exact-equality escape in the C that a

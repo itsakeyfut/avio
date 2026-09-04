@@ -10,7 +10,7 @@ use crate::nodes::composite::{
     upload_rgba_texture,
 };
 use crate::nodes::upload::chroma_dims;
-use crate::nodes::{BlendMode, RenderNode, TransformNode, YuvFormat, YuvUploadNode};
+use crate::nodes::{BlendMode, CompositeOp, RenderNode, TransformNode, YuvFormat, YuvUploadNode};
 
 use super::FrameLayer;
 
@@ -101,6 +101,7 @@ impl CompositorGraph {
                 &layer_tex,
                 &new_canvas,
                 layer.blend_mode,
+                layer.composite_op,
                 layer.opacity,
             );
             canvas = new_canvas;
@@ -328,28 +329,10 @@ fn blend_textures(
     overlay_tex: &wgpu::Texture,
     output_tex: &wgpu::Texture,
     mode: BlendMode,
+    composite: CompositeOp,
     opacity: f32,
 ) {
-    let mode_bytes = (mode as u32).to_le_bytes();
-    let opac_bytes = opacity.to_le_bytes();
-    let uniforms: [u8; 16] = [
-        mode_bytes[0],
-        mode_bytes[1],
-        mode_bytes[2],
-        mode_bytes[3],
-        opac_bytes[0],
-        opac_bytes[1],
-        opac_bytes[2],
-        opac_bytes[3],
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ];
+    let uniforms = crate::nodes::composite::blend_uniform_bytes(mode, composite, opacity);
     ctx.queue.write_buffer(uniform_buf, 0, &uniforms);
 
     let base_view = base_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -682,6 +665,7 @@ mod tests {
             frame: yuv420_solid(w, h, yv, uv, vv),
             transform: crate::LayerTransform::default(),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             opacity: 1.0,
             z_order: 0,
         }];
@@ -732,6 +716,7 @@ mod tests {
                 frame: VideoFrame::from_rgba(w, h, base_rgba.clone()).expect("base frame"),
                 transform: crate::LayerTransform::default(),
                 blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
                 opacity: 1.0,
                 z_order: 0,
             },
@@ -739,6 +724,7 @@ mod tests {
                 frame: VideoFrame::from_rgba(w, h, ov_rgba.clone()).expect("overlay frame"),
                 transform: crate::LayerTransform::default(),
                 blend_mode: BlendMode::SoftDifference,
+                composite_op: CompositeOp::Over,
                 opacity: 1.0,
                 z_order: 1,
             },
@@ -787,6 +773,7 @@ mod tests {
             frame: VideoFrame::from_rgba(w, h, rgba).expect("layer frame"),
             transform: crate::LayerTransform::default(),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             opacity: 0.5,
             z_order: 0,
         }];
@@ -835,6 +822,7 @@ mod tests {
                 ..Default::default()
             },
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             opacity: 1.0,
             z_order: 0,
         }];
@@ -860,6 +848,70 @@ mod tests {
         );
     }
 
+    /// The property #1750 unblocked and the reason #1670 exists: alpha is
+    /// coverage, so `In` masks a layer to what the layers below actually covered.
+    ///
+    /// Layer 0 is half-height, leaving `da = 0` in the bands. Layer 1 fills the
+    /// canvas with `In`, so `co = s * da` and `ao = sa * da` keep it only where
+    /// layer 0 drew. Asserting the bands stay empty is what separates `In` from
+    /// `Over`, which would have covered the whole canvas.
+    #[test]
+    fn compositor_should_mask_a_layer_to_the_coverage_below_with_composite_in() {
+        let Some(ctx) = gpu_ctx() else {
+            return;
+        };
+        let (w, h) = (4u32, 4u32);
+        let below = [200u8, 120, 60, 255].repeat((w * h) as usize);
+        let above = [60u8, 180, 240, 255].repeat((w * h) as usize);
+
+        let mut compositor = crate::Compositor::new(Arc::clone(&ctx), w, h);
+        let mut layers = vec![
+            crate::FrameLayer {
+                frame: VideoFrame::from_rgba(w, h, below).expect("below frame"),
+                transform: crate::LayerTransform {
+                    scale_y: 0.5,
+                    ..Default::default()
+                },
+                blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::Over,
+                opacity: 1.0,
+                z_order: 0,
+            },
+            crate::FrameLayer {
+                frame: VideoFrame::from_rgba(w, h, above).expect("above frame"),
+                transform: crate::LayerTransform::default(),
+                blend_mode: BlendMode::Normal,
+                composite_op: CompositeOp::In,
+                opacity: 1.0,
+                z_order: 1,
+            },
+        ];
+        let tex = compositor.composite(&mut layers).expect("compositor path");
+        let out = readback(&ctx, &tex, w, h);
+        let px = |row: u32| {
+            let i = (row * w * 4) as usize;
+            [out[i], out[i + 1], out[i + 2], out[i + 3]]
+        };
+
+        for row in [0, 3] {
+            assert_eq!(
+                px(row),
+                [0, 0, 0, 0],
+                "row {row} is outside layer 0's coverage, so `In` must leave it empty"
+            );
+        }
+        for row in [1, 2] {
+            let got = px(row);
+            assert!(
+                (i32::from(got[0]) - 60).abs() <= 2
+                    && (i32::from(got[1]) - 180).abs() <= 2
+                    && (i32::from(got[2]) - 240).abs() <= 2
+                    && got[3] >= 253,
+                "row {row} is covered, so `In` must show layer 1 opaquely; got {got:?}"
+            );
+        }
+    }
+
     #[test]
     fn composite_to_rgba_should_read_back_the_canvas_size_and_pixels() {
         let Some(ctx) = gpu_ctx() else {
@@ -879,6 +931,7 @@ mod tests {
             frame: red,
             transform: crate::LayerTransform::default(),
             blend_mode: BlendMode::Normal,
+            composite_op: CompositeOp::Over,
             opacity: 1.0,
             z_order: 0,
         }];

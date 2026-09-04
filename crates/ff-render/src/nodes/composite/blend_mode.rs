@@ -32,7 +32,8 @@
 //! layers cover (#1750). [`BlendModeNode::process_cpu`] and `shaders/blend.wgsl`
 //! carry the same two formulas.
 
-use super::blend_math::blend_rgb;
+use super::blend_math::{blend_rgb, composite_rgba};
+use super::composite_op::CompositeOp;
 #[cfg(feature = "wgpu")]
 use super::helpers::{
     fullscreen_pipeline, linear_sampler, submit_render_pass, two_tex_sampler_uniform_bgl,
@@ -172,6 +173,9 @@ struct BlendPipeline {
 pub struct BlendModeNode {
     /// Blend algorithm.
     pub mode: BlendMode,
+    /// Porter-Duff operator applied after the blend. Defaults to
+    /// [`CompositeOp::Over`], which is what the node did before #1670.
+    pub composite_op: CompositeOp,
     /// Overlay opacity (0.0 = invisible, 1.0 = fully applied).
     pub opacity: f32,
     /// Overlay frame as RGBA bytes (required for CPU path).
@@ -195,6 +199,7 @@ impl BlendModeNode {
     ) -> Self {
         Self {
             mode,
+            composite_op: CompositeOp::Over,
             opacity,
             overlay_rgba,
             overlay_width,
@@ -231,18 +236,16 @@ impl RenderNodeCpu for BlendModeNode {
             let oa = f32::from(ov[3]) / 255.0;
             let ba = f32::from(base[3]) / 255.0;
 
-            let [rr, rg, rb] = blend_rgb(self.mode, [br, bg, bb], [or, og, ob]);
-            let eff_alpha = oa * self.opacity;
-            let out_r = (br + (rr - br) * eff_alpha).clamp(0.0, 1.0);
-            let out_g = (bg + (rg - bg) * eff_alpha).clamp(0.0, 1.0);
-            let out_b = (bb + (rb - bb) * eff_alpha).clamp(0.0, 1.0);
-            // src-over coverage, mirroring `blend.wgsl`'s `out_a` (#1750). An
-            // out-of-range `opacity` extrapolates as the colour channels do; the
-            // `as u8` cast below saturates, matching the shader's texture write.
-            let out_a = eff_alpha + ba * (1.0 - eff_alpha);
-            base[0] = (out_r * 255.0 + 0.5) as u8;
-            base[1] = (out_g * 255.0 + 0.5) as u8;
-            base[2] = (out_b * 255.0 + 0.5) as u8;
+            let blended = blend_rgb(self.mode, [br, bg, bb], [or, og, ob]);
+            // Premultiply the straight blend result, then composite (#1670).
+            // Mirrors `blend.wgsl`'s tail; an out-of-range `opacity` extrapolates
+            // and the `as u8` casts saturate, matching the shader's texture write.
+            let sa = oa * self.opacity;
+            let s = [blended[0] * sa, blended[1] * sa, blended[2] * sa];
+            let (co, out_a) = composite_rgba(self.composite_op, s, sa, [br, bg, bb], ba);
+            base[0] = (co[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            base[1] = (co[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            base[2] = (co[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             base[3] = (out_a * 255.0 + 0.5) as u8;
         }
     }
@@ -311,26 +314,7 @@ impl crate::nodes::RenderNode for BlendModeNode {
         );
 
         // Write uniforms: [mode_u32, opacity_f32, pad, pad] = 16 bytes.
-        let mode_bytes = (self.mode as u32).to_le_bytes();
-        let opac_bytes = self.opacity.to_le_bytes();
-        let uniforms: [u8; 16] = [
-            mode_bytes[0],
-            mode_bytes[1],
-            mode_bytes[2],
-            mode_bytes[3],
-            opac_bytes[0],
-            opac_bytes[1],
-            opac_bytes[2],
-            opac_bytes[3],
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
+        let uniforms = super::blend_uniform_bytes(self.mode, self.composite_op, self.opacity);
         ctx.queue.write_buffer(&pd.uniform_buf, 0, &uniforms);
 
         let base_view = tex_base.create_view(&wgpu::TextureViewDescriptor::default());

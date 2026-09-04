@@ -24,7 +24,10 @@ use ff_filter::{
     AnimatedValue, BlendMode, CompositeOp, FilterStep, RealtimeLayer, RealtimeLayerDescriptor,
     ScaleAlgorithm, VideoLayer,
 };
-use ff_render::{BlendMode as RenderBlendMode, ScaleAlgorithm as RenderScaleAlgorithm};
+use ff_render::{
+    BlendMode as RenderBlendMode, CompositeOp as RenderCompositeOp,
+    ScaleAlgorithm as RenderScaleAlgorithm,
+};
 
 /// A derived layer the GPU mapping can read. Implemented for the export
 /// [`VideoLayer`], the preview [`RealtimeLayerDescriptor`], the runner's realized
@@ -365,6 +368,10 @@ pub struct GpuLayerPlan {
     pub opacity: f32,
     /// Blend mode against the layers below.
     pub blend_mode: RenderBlendMode,
+    /// Porter-Duff operator for this layer. The blend mode above is only
+    /// meaningful with `Over`; for any other operator the model does not apply
+    /// it, so `map_scene` sets `Normal` (#1670).
+    pub composite_op: RenderCompositeOp,
     /// Per-layer effects applied to the source frame before compositing.
     pub effects: Vec<GpuEffect>,
 }
@@ -409,16 +416,19 @@ pub enum GpuMapping {
 pub fn map_scene<L: GpuLayerSource>(layers: &[L], canvas: (u32, u32), t: Duration) -> GpuMapping {
     let mut plan_layers = Vec::with_capacity(layers.len());
     for (i, layer) in layers.iter().enumerate() {
-        // Check composite first: the blend mode is only applied when the composite
-        // op is `Over` (see `VideoLayer`), so for any other op the composite is the
-        // semantically active reason to fall back. `Over` is the only plain
-        // top-over-bottom composite; the others need node wiring the compositor
-        // does not provide yet.
-        if !matches!(layer.composite_op(), CompositeOp::Over) {
+        let Some(composite_op) = map_composite_op(layer.composite_op()) else {
             return GpuMapping::Fallback(GpuFallback::UnsupportedCompositeOp(layer.composite_op()));
-        }
-        let Some(blend_mode) = map_blend_mode(layer.blend_mode()) else {
-            return GpuMapping::Fallback(GpuFallback::UnsupportedBlendMode(layer.blend_mode()));
+        };
+        // The blend mode is only applied when the composite op is `Over` (see
+        // `VideoLayer` and `composition_inner.rs`), so any other operator drops
+        // it rather than falling back, matching the CPU path (#1670).
+        let blend_mode = if matches!(composite_op, RenderCompositeOp::Over) {
+            let Some(mode) = map_blend_mode(layer.blend_mode()) else {
+                return GpuMapping::Fallback(GpuFallback::UnsupportedBlendMode(layer.blend_mode()));
+            };
+            mode
+        } else {
+            RenderBlendMode::Normal
         };
 
         let mut effects = Vec::new();
@@ -442,6 +452,7 @@ pub fn map_scene<L: GpuLayerSource>(layers: &[L], canvas: (u32, u32), t: Duratio
             rotation: eval_at(layer.rotation(), t),
             opacity: eval_at(layer.opacity(), t).clamp(0.0, 1.0),
             blend_mode,
+            composite_op,
             effects,
         });
     }
@@ -780,6 +791,25 @@ fn map_blend_mode(mode: BlendMode) -> Option<RenderBlendMode> {
         BlendMode::Xor => RenderBlendMode::Xor,
         // A mode added to `ff-filter` after #1669. `_` is required: `BlendMode`
         // is `#[non_exhaustive]` from ff-filter (RK-003).
+        _ => return None,
+    })
+}
+
+/// Maps `ff_filter::CompositeOp` to `ff_render::CompositeOp`, or `None` when
+/// `ff-render` has no equivalent (forcing fallback).
+///
+/// Every operator `ff-filter` defines today composites on the GPU (#1670); the
+/// `None` arm covers one a future release adds to the `#[non_exhaustive]` enum.
+fn map_composite_op(op: CompositeOp) -> Option<RenderCompositeOp> {
+    Some(match op {
+        CompositeOp::Over => RenderCompositeOp::Over,
+        CompositeOp::Under => RenderCompositeOp::Under,
+        CompositeOp::In => RenderCompositeOp::In,
+        CompositeOp::Out => RenderCompositeOp::Out,
+        CompositeOp::Atop => RenderCompositeOp::Atop,
+        CompositeOp::Xor => RenderCompositeOp::Xor,
+        // An operator added to `ff-filter` after #1670. `_` is required:
+        // `CompositeOp` is `#[non_exhaustive]` from ff-filter (RK-003).
         _ => return None,
     })
 }
@@ -1650,13 +1680,50 @@ mod tests {
         }
     }
 
+    /// #1670's acceptance criterion as an executable check: every composite
+    /// operator the model can express maps to the GPU, so none forces a
+    /// fallback. An operator `ff-filter` adds later has no row here and would
+    /// still fall back, which is what the `_` arm in `map_composite_op` is for.
     #[test]
-    fn map_scene_should_fall_back_on_non_over_composite() {
+    fn map_scene_should_map_every_composite_op() {
+        let ops = [
+            CompositeOp::Over,
+            CompositeOp::Under,
+            CompositeOp::In,
+            CompositeOp::Out,
+            CompositeOp::Atop,
+            CompositeOp::Xor,
+        ];
+        assert_eq!(ops.len(), 6, "ff-filter's CompositeOp set changed");
+        for op in ops {
+            let mut layer = TestLayer::identity();
+            layer.composite_op = op;
+            let mapping = map_scene(&[layer], (16, 16), Duration::ZERO);
+            assert!(
+                !matches!(
+                    mapping,
+                    GpuMapping::Fallback(GpuFallback::UnsupportedCompositeOp(_))
+                ),
+                "{op:?} must map to the GPU; got {mapping:?}"
+            );
+        }
+    }
+
+    /// The model does not combine a blend mode with a non-`Over` composite, so
+    /// the plan carries `Normal` rather than falling back on the blend mode.
+    #[test]
+    fn map_scene_should_drop_the_blend_mode_for_a_non_over_composite() {
         let mut layer = TestLayer::identity();
-        layer.composite_op = CompositeOp::Under;
+        layer.composite_op = CompositeOp::In;
+        layer.blend_mode = BlendMode::Multiply;
+        let GpuMapping::Gpu(plan) = map_scene(&[layer], (16, 16), Duration::ZERO) else {
+            panic!("a non-Over composite must map to the GPU since #1670");
+        };
+        assert_eq!(plan.layers[0].composite_op, RenderCompositeOp::In);
         assert_eq!(
-            map_scene(&[layer], (16, 16), Duration::ZERO),
-            GpuMapping::Fallback(GpuFallback::UnsupportedCompositeOp(CompositeOp::Under))
+            plan.layers[0].blend_mode,
+            RenderBlendMode::Normal,
+            "the blend mode must be dropped, matching the CPU path"
         );
     }
 

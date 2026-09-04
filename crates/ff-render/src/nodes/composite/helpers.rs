@@ -4,6 +4,32 @@
 //! render-pass submission shared by every GPU node implementation.
 
 #[cfg(feature = "wgpu")]
+use super::blend_mode::BlendMode;
+#[cfg(feature = "wgpu")]
+use super::composite_op::CompositeOp;
+
+/// The 16-byte `BlendUniforms` payload for `shaders/blend.wgsl`.
+///
+/// Assembled in one place because both the standalone `BlendModeNode` and the
+/// multi-layer compositor write it. They used to build the bytes separately, and
+/// a drift between the two would have rendered a different mode on the path
+/// `avio::gpu::map_scene` actually feeds, which no node test would catch.
+///
+/// Layout: `mode: u32`, `opacity: f32`, `composite: u32`, four bytes of padding.
+#[cfg(feature = "wgpu")]
+pub(crate) fn blend_uniform_bytes(
+    mode: BlendMode,
+    composite: CompositeOp,
+    opacity: f32,
+) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&(mode as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&opacity.to_le_bytes());
+    out[8..12].copy_from_slice(&(composite as u32).to_le_bytes());
+    out
+}
+
+#[cfg(feature = "wgpu")]
 pub(crate) fn linear_sampler(device: &wgpu::Device, label: &str) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some(&format!("{label} sampler")),
