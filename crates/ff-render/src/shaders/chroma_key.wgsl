@@ -20,7 +20,7 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     return out;
 }
 
-// ── Bindings ──────────────────────────────────────────────────────────────────
+// Bindings
 
 @group(0) @binding(0) var tex_input:  texture_2d<f32>;
 @group(0) @binding(1) var tex_sampler: sampler;
@@ -47,7 +47,7 @@ fn chroma_dist(pixel: vec3<f32>, key: vec3<f32>) -> f32 {
     return length(p_chroma - k_chroma);
 }
 
-// ── Fragment ──────────────────────────────────────────────────────────────────
+// Fragment
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {

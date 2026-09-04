@@ -731,8 +731,11 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
     }
 }
 
-/// Maps `ff_filter::BlendMode` to the `ff_render::BlendMode` intersection, or `None`
-/// when `ff-render` has no equivalent (forcing fallback).
+/// Maps `ff_filter::BlendMode` to `ff_render::BlendMode`, or `None` when
+/// `ff-render` has no equivalent (forcing fallback).
+///
+/// Every mode `ff-filter` defines today has a GPU node (#1669); the `None` arm
+/// covers a mode a future `FFmpeg` release adds to the `#[non_exhaustive]` enum.
 fn map_blend_mode(mode: BlendMode) -> Option<RenderBlendMode> {
     Some(match mode {
         BlendMode::Normal => RenderBlendMode::Normal,
@@ -749,8 +752,34 @@ fn map_blend_mode(mode: BlendMode) -> Option<RenderBlendMode> {
         BlendMode::Subtract => RenderBlendMode::Subtract,
         BlendMode::Darken => RenderBlendMode::Darken,
         BlendMode::Lighten => RenderBlendMode::Lighten,
-        // No ff-render equivalent. `_` is required: `BlendMode` is
-        // `#[non_exhaustive]` from ff-filter (RK-003).
+        BlendMode::And => RenderBlendMode::And,
+        BlendMode::Average => RenderBlendMode::Average,
+        BlendMode::Bleach => RenderBlendMode::Bleach,
+        BlendMode::Divide => RenderBlendMode::Divide,
+        BlendMode::Extremity => RenderBlendMode::Extremity,
+        BlendMode::Freeze => RenderBlendMode::Freeze,
+        BlendMode::Geometric => RenderBlendMode::Geometric,
+        BlendMode::Glow => RenderBlendMode::Glow,
+        BlendMode::GrainExtract => RenderBlendMode::GrainExtract,
+        BlendMode::GrainMerge => RenderBlendMode::GrainMerge,
+        BlendMode::HardMix => RenderBlendMode::HardMix,
+        BlendMode::HardOverlay => RenderBlendMode::HardOverlay,
+        BlendMode::Harmonic => RenderBlendMode::Harmonic,
+        BlendMode::Heat => RenderBlendMode::Heat,
+        BlendMode::Interpolate => RenderBlendMode::Interpolate,
+        BlendMode::LinearLight => RenderBlendMode::LinearLight,
+        BlendMode::Multiply128 => RenderBlendMode::Multiply128,
+        BlendMode::Negation => RenderBlendMode::Negation,
+        BlendMode::Or => RenderBlendMode::Or,
+        BlendMode::Phoenix => RenderBlendMode::Phoenix,
+        BlendMode::PinLight => RenderBlendMode::PinLight,
+        BlendMode::Reflect => RenderBlendMode::Reflect,
+        BlendMode::SoftDifference => RenderBlendMode::SoftDifference,
+        BlendMode::Stain => RenderBlendMode::Stain,
+        BlendMode::VividLight => RenderBlendMode::VividLight,
+        BlendMode::Xor => RenderBlendMode::Xor,
+        // A mode added to `ff-filter` after #1669. `_` is required: `BlendMode`
+        // is `#[non_exhaustive]` from ff-filter (RK-003).
         _ => return None,
     })
 }
@@ -1558,14 +1587,67 @@ mod tests {
         );
     }
 
+    /// #1669's acceptance criterion as an executable check: every blend mode the
+    /// model can express maps to a GPU node, so none of them forces a fallback.
+    /// A mode `ff-filter` adds later has no row here and would still fall back,
+    /// which is what the `_` arm in `map_blend_mode` is for.
     #[test]
-    fn map_scene_should_fall_back_on_unsupported_blend_mode() {
-        let mut layer = TestLayer::identity();
-        layer.blend_mode = BlendMode::Glow;
-        assert_eq!(
-            map_scene(&[layer], (16, 16), Duration::ZERO),
-            GpuMapping::Fallback(GpuFallback::UnsupportedBlendMode(BlendMode::Glow))
-        );
+    fn map_scene_should_map_every_blend_mode() {
+        let modes = [
+            BlendMode::Normal,
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::SoftLight,
+            BlendMode::HardLight,
+            BlendMode::ColorDodge,
+            BlendMode::ColorBurn,
+            BlendMode::Darken,
+            BlendMode::Lighten,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+            BlendMode::Add,
+            BlendMode::Subtract,
+            BlendMode::And,
+            BlendMode::Average,
+            BlendMode::Bleach,
+            BlendMode::Divide,
+            BlendMode::Extremity,
+            BlendMode::Freeze,
+            BlendMode::Geometric,
+            BlendMode::Glow,
+            BlendMode::GrainExtract,
+            BlendMode::GrainMerge,
+            BlendMode::HardMix,
+            BlendMode::HardOverlay,
+            BlendMode::Harmonic,
+            BlendMode::Heat,
+            BlendMode::Interpolate,
+            BlendMode::LinearLight,
+            BlendMode::Multiply128,
+            BlendMode::Negation,
+            BlendMode::Or,
+            BlendMode::Phoenix,
+            BlendMode::PinLight,
+            BlendMode::Reflect,
+            BlendMode::SoftDifference,
+            BlendMode::Stain,
+            BlendMode::VividLight,
+            BlendMode::Xor,
+        ];
+        assert_eq!(modes.len(), 40, "ff-filter's BlendMode set changed");
+        for mode in modes {
+            let mut layer = TestLayer::identity();
+            layer.blend_mode = mode;
+            let mapping = map_scene(&[layer], (16, 16), Duration::ZERO);
+            assert!(
+                !matches!(
+                    mapping,
+                    GpuMapping::Fallback(GpuFallback::UnsupportedBlendMode(_))
+                ),
+                "{mode:?} must map to a GPU node; got {mapping:?}"
+            );
+        }
     }
 
     #[test]

@@ -108,7 +108,7 @@ tracked in **#1630**.
 |---|---|---|
 | `x`/`y`/`scale`/`rotation` transform | evaluated at frame `t` -> the layer's `LayerTransform` scalars | **covered** (all layers) |
 | `opacity` | evaluated at `t` -> `FrameLayer.opacity` | **covered** (all layers) |
-| `blend_mode: ff_filter::BlendMode` (39) | `ff_render::BlendMode`, the **intersection** of the two enums: `Normal, Multiply, Screen, Overlay, SoftLight, HardLight, ColorDodge, ColorBurn, Difference, Exclusion, Add, Subtract, Darken, Lighten` | **covered** for those 14; any other -> **fallback**. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
+| `blend_mode: ff_filter::BlendMode` (40) | `ff_render::BlendMode`, **all 40** (#1669; 14 before that) | **covered** (every mode; no blend mode forces a fallback). The GPU formulas reproduce `FFmpeg`'s `vf_blend`, so the GPU and the CPU compositor render a mode alike -- see [ADR-0010](../adr/0010-gpu-blend-modes-follow-ffmpeg.md) for the reference, the `A`=base/`B`=overlay pad wiring, and the bitwise-mode exception. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
 | `composite_op: Over` | plain top-over-bottom composite | **covered** |
 | `FilterStep::Eq` (from a const `EffectKind::ColorCorrect`) | `GpuEffect::ColorGrade` -> `ColorGradeNode { brightness, contrast, saturation, temperature=0, tint=0 }` | **covered** |
 | `FilterStep::EqAnimated` | `ColorGrade` (params at `t`) **only when gamma is neutral at `t`** (ff-render ColorGrade has no gamma) | **covered** (gamma-neutral); non-neutral gamma -> **fallback** |
@@ -133,7 +133,7 @@ Fallback is decided **per composited frame**, at whole-frame granularity:
 - If `RenderContext::init()` fails (no adapter) or a force-CPU override is set, **every** frame composites on
   the existing CPU path.
 - Otherwise, before compositing a frame, a **capability check** walks the frame's layer set. If any layer
-  carries a step with no node in the table above (or a blend/composite mode outside the covered set), that
+  carries a step with no node in the table above (or a composite operator other than `Over`), that
   **whole frame** composites on the existing CPU compositor (`MultiTrackComposer` for export,
   `RealtimeComposer` for preview) instead of the GPU path. Otherwise the frame goes GPU.
 - A `GpuFrameSink`-style degrade also applies at runtime: a GPU error on a frame falls through to the CPU path
@@ -158,7 +158,7 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
     end-to-end export-vs-force-CPU smoke lives in `gpu_export_tests.rs`. The tolerance asserts are the
     divergence regression guard.
   - **Fallback** asserts the compositor returns `None` (never panics) for every unsupported input
-    (non-identity transform, aspect mismatch, unsupported blend, unsupported effect), and the preview runner
+    (non-identity transform, aspect mismatch, unsupported effect), and the preview runner
     keeps advancing and terminates (never hangs, RK-019) when it falls back; `render_forcing_cpu` and the
     ineligible-timeline gate route export to CPU.
   - Both parity legs are double-gated (RK-002): the GPU leg needs an adapter, the CPU leg needs an
@@ -169,7 +169,7 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
 ## Deferred beyond v0.18.0
 
 - Full node coverage (blur/LUT/glow/curves colour science, xfade kinds on GPU, Porter-Duff In/Out/Atop/Xor,
-  the blend modes beyond the 18, BT.709 YUV upload).
+  BT.709 YUV upload). The blend modes landed in #1669.
 - Zero-copy GPU->encoder for export (v1 reads back to CPU and reuses the existing encoder).
 - Exact preview==export pixel convergence (the CPU compositors themselves are not bit-identical across the
   rgba/yuv420p seam, per the C4 Q2 deferral in `engine-and-primitives.md`).

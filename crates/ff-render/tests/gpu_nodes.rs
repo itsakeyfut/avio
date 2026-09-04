@@ -17,8 +17,8 @@ use std::sync::Arc;
 use ff_render::{
     AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
     DissolveTransitionNode, FadeTransitionNode, LumaMaskNode, OverlayNode, RenderContext,
-    RenderGraph, RenderNode, ScaleAlgorithm, ScaleNode, ShapeMaskNode, TransformNode, YuvFormat,
-    YuvUploadNode,
+    RenderGraph, RenderNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode,
+    TransformNode, YuvFormat, YuvUploadNode,
 };
 
 // Helpers
@@ -375,6 +375,108 @@ fn blend_gpu_normal_at_zero_opacity_should_leave_base_unchanged() {
         out[2]
     );
 }
+
+/// Every blend mode, shader against the Rust implementation.
+///
+/// `blend_math.rs`'s table pins the Rust to `FFmpeg`'s formulas; this pins the
+/// shader to the Rust, so the two together tie the GPU output to `FFmpeg` (#1669).
+///
+/// The colour pairs are the same ones that table uses. They are **coloured, not
+/// grey** (RK-022), and every channel sits at least 16 LSB away from 0, 128 and
+/// 255: `HardMix`, `PinLight`, `VividLight`, `HardOverlay` and `SoftDifference`
+/// are discontinuous at those points, and a one-LSB sampling difference there
+/// would flip the branch and produce a large, flaky delta. Across the nine
+/// (base, overlay) channel combinations both sides of every `< 0.5` branch are
+/// exercised, so no mode's case is vacuous (RK-015).
+///
+/// A 3x1 texture puts every fragment centre exactly on a texel centre, so the
+/// linear sampler returns exact texels and no interpolation error enters the
+/// comparison.
+#[test]
+fn blend_gpu_should_match_the_cpu_path_for_every_mode() {
+    let Some(ctx) = gpu_ctx() else { return };
+
+    let base: Vec<u8> = [
+        [32u8, 96, 200, 255],
+        [208, 24, 144, 255],
+        [144, 176, 64, 255],
+    ]
+    .concat();
+    let overlay: Vec<u8> = [
+        [176u8, 64, 24, 255],
+        [48, 232, 112, 255],
+        [96, 32, 208, 255],
+    ]
+    .concat();
+
+    for mode in ALL_BLEND_MODES {
+        let node = BlendModeNode::new(mode, 1.0, overlay.clone(), 3, 1);
+        let mut cpu = base.clone();
+        node.process_cpu(&mut cpu, 3, 1);
+        let gpu = run_gpu(&ctx, node, &base, 3, 1);
+
+        for px in 0..3 {
+            for ch in 0..3 {
+                let i = px * 4 + ch;
+                assert!(
+                    close(gpu[i], cpu[i], 2),
+                    "{mode:?} pixel {px} channel {ch}: GPU {} vs CPU {}",
+                    gpu[i],
+                    cpu[i]
+                );
+            }
+        }
+    }
+}
+
+/// Kept in the same order as the `BlendMode` discriminants; the enum's own
+/// `blend_mode_discriminants_should_match_the_shader_mode_codes` pins those.
+const ALL_BLEND_MODES: [BlendMode; 44] = [
+    BlendMode::Normal,
+    BlendMode::Multiply,
+    BlendMode::Screen,
+    BlendMode::Overlay,
+    BlendMode::SoftLight,
+    BlendMode::HardLight,
+    BlendMode::ColorDodge,
+    BlendMode::ColorBurn,
+    BlendMode::Difference,
+    BlendMode::Exclusion,
+    BlendMode::Add,
+    BlendMode::Subtract,
+    BlendMode::Darken,
+    BlendMode::Lighten,
+    BlendMode::Hue,
+    BlendMode::Saturation,
+    BlendMode::Color,
+    BlendMode::Luminosity,
+    BlendMode::And,
+    BlendMode::Average,
+    BlendMode::Bleach,
+    BlendMode::Divide,
+    BlendMode::Extremity,
+    BlendMode::Freeze,
+    BlendMode::Geometric,
+    BlendMode::Glow,
+    BlendMode::GrainExtract,
+    BlendMode::GrainMerge,
+    BlendMode::HardMix,
+    BlendMode::HardOverlay,
+    BlendMode::Harmonic,
+    BlendMode::Heat,
+    BlendMode::Interpolate,
+    BlendMode::LinearLight,
+    BlendMode::Multiply128,
+    BlendMode::Negation,
+    BlendMode::Or,
+    BlendMode::Phoenix,
+    BlendMode::PinLight,
+    BlendMode::Reflect,
+    BlendMode::SoftDifference,
+    BlendMode::Stain,
+    BlendMode::VividLight,
+    BlendMode::Xor,
+];
 
 // LumaMaskNode
 

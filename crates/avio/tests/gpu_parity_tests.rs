@@ -2015,13 +2015,10 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
         "an aspect whose fit rounds away to nothing must fall back"
     );
 
-    // Unsupported blend mode (no ff-render equivalent).
-    let mut glow = base_layer(w, h, vec![]);
-    glow.blend_mode = BlendMode::Glow;
-    assert!(
-        gpu_composite(&mut gpu, &glow, &frame, (w, h)).is_none(),
-        "an unsupported blend mode must fall back"
-    );
+    // No blend-mode case here: since #1669 every `ff_filter::BlendMode` maps to a
+    // GPU node, so none can trigger a fallback. `map_blend_mode`'s remaining
+    // `None` arm covers a mode a future FFmpeg adds, and
+    // `map_scene_should_map_every_blend_mode` pins that all 40 map today.
 
     // Unsupported effect (no GPU node).
     let hue = base_layer(w, h, vec![FilterStep::Hue { degrees: 30.0 }]);

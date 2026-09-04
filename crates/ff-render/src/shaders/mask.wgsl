@@ -20,7 +20,7 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     return out;
 }
 
-// ── Bindings ──────────────────────────────────────────────────────────────────
+// Bindings
 
 @group(0) @binding(0) var tex_base:    texture_2d<f32>;  // base / foreground
 @group(0) @binding(1) var tex_mask:    texture_2d<f32>;  // mask / background
@@ -35,7 +35,7 @@ struct MaskUniforms {
     _pad2: u32,
 }
 
-// ── Fragment ──────────────────────────────────────────────────────────────────
+// Fragment
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
