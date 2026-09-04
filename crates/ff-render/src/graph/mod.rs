@@ -660,4 +660,135 @@ mod gpu_tests {
             "10-bit precision must distinguish Y=512 from Y=515; got a={a} b={b}"
         );
     }
+
+    /// Bits P010 leaves zeroed at the bottom of each 16-bit sample.
+    const P010_SHIFT: u32 = 6;
+
+    #[test]
+    fn p010_upload_should_preserve_10bit_precision_into_rgba16float() {
+        use ff_format::PixelFormat;
+
+        use crate::nodes::YuvUploadNode;
+
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        let (w, h) = (2u32, 2u32);
+
+        // Render one MSB-aligned 10-bit luma value (neutral chroma) at
+        // Rgba16Float and return the read-back R channel as f32.
+        let render = |y10: u16| -> f32 {
+            let mut node = YuvUploadNode::new_p010(w, h);
+            // 2×2 at 4:2:0: 4 luma samples and one chroma pixel, whose Cb and Cr
+            // are the two interleaved samples of the UV plane.
+            node.set_planes_semi_planar(
+                plane10(y10 << P010_SHIFT, 4),
+                plane10(512 << P010_SHIFT, 2),
+            );
+            let graph = RenderGraph::new(Arc::clone(&ctx))
+                .with_pixel_format(PixelFormat::P010le)
+                .push(node);
+            // The 8-bit `rgba` arg is ignored for an Rgba16Float graph.
+            let out = graph.process_gpu(&[], w, h).expect("hdr frame");
+            assert_eq!(
+                out.len(),
+                (w * h * 8) as usize,
+                "Rgba16Float readback must be 8 bytes/pixel"
+            );
+            f16_to_f32(u16::from_le_bytes([out[0], out[1]]))
+        };
+
+        // Same argument as the planar 10-bit test: Y = 512 and Y = 515 collapse
+        // onto the same 8-bit value but stay 3/1023 ≈ 0.0029 apart in 10-bit.
+        let a = render(512);
+        let b = render(515);
+        assert!(
+            (a - 512.0 / 1023.0).abs() < 0.01,
+            "P010 Y=512 must decode to ~0.5005; got {a}"
+        );
+        assert!(
+            (b - 515.0 / 1023.0).abs() < 0.01,
+            "P010 Y=515 must decode to ~0.5034; got {b}"
+        );
+        assert!(
+            (b - a).abs() > 0.0015,
+            "10-bit precision must distinguish Y=512 from Y=515; got a={a} b={b}"
+        );
+    }
+
+    #[test]
+    fn p010_upload_gpu_should_match_planar_10bit_upload() {
+        use ff_format::PixelFormat;
+
+        use crate::nodes::{YuvFormat, YuvUploadNode};
+
+        const Y: [u16; 8] = [200, 500, 800, 300, 900, 100, 600, 400];
+        const CB: [u16; 2] = [300, 700];
+        const CR: [u16; 2] = [800, 200];
+
+        let Some(ctx) = ctx() else {
+            return;
+        };
+        // 4×2 at 4:2:0 gives a 2×1 chroma plane, so the shader must read the two
+        // chroma columns at the right stride; the columns carry opposite Cb/Cr so
+        // a swapped de-interleave changes the result. The CPU tests cannot cover
+        // any of this — the shader is a separate implementation.
+        let (w, h) = (4u32, 2u32);
+
+        let samples = |values: &[u16], shift: u32| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|v| (*v << shift).to_le_bytes())
+                .collect()
+        };
+        let decode = |out: &[u8]| -> Vec<f32> {
+            out.chunks_exact(2)
+                .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
+                .collect()
+        };
+
+        let mut planar = YuvUploadNode::new_high_bit_depth(YuvFormat::Yuv420p, w, h);
+        planar.set_planes(samples(&Y, 0), samples(&CB, 0), samples(&CR, 0));
+        let expected = decode(
+            &RenderGraph::new(Arc::clone(&ctx))
+                .with_pixel_format(PixelFormat::Yuv420p10le)
+                .push(planar)
+                .process_gpu(&[], w, h)
+                .expect("planar hdr frame"),
+        );
+
+        let mut p010 = YuvUploadNode::new_p010(w, h);
+        p010.set_planes_semi_planar(
+            samples(&Y, P010_SHIFT),
+            samples(&[CB[0], CR[0], CB[1], CR[1]], P010_SHIFT),
+        );
+        let got = decode(
+            &RenderGraph::new(Arc::clone(&ctx))
+                .with_pixel_format(PixelFormat::P010le)
+                .push(p010)
+                .process_gpu(&[], w, h)
+                .expect("p010 hdr frame"),
+        );
+
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "both graphs must read back the same number of channels"
+        );
+        for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
+            assert!(
+                (g - e).abs() < 0.002,
+                "channel {i} must match the planar path: p010={g} planar={e}"
+            );
+        }
+        // Non-vacuous: a de-interleave that returned a constant would satisfy the
+        // comparison if both paths were equally broken, so require the fixture to
+        // have actually driven the two chroma columns apart.
+        let red_col0 = got[0];
+        let red_col2 = got[2 * 4];
+        assert!(
+            (red_col0 - red_col2).abs() > 0.1,
+            "the chroma columns must differ in the output; got {red_col0} and {red_col2}"
+        );
+    }
 }
