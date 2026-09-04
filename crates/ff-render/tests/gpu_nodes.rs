@@ -416,7 +416,10 @@ fn blend_gpu_should_match_the_cpu_path_for_every_mode() {
         let gpu = run_gpu(&ctx, node, &base, 3, 1);
 
         for px in 0..3 {
-            for ch in 0..3 {
+            // Channel 3 included since #1750: both paths now write the src-over
+            // coverage alpha. Both inputs are opaque here, so that channel alone
+            // is not discriminating; the semi-transparent test below is.
+            for ch in 0..4 {
                 let i = px * 4 + ch;
                 assert!(
                     close(gpu[i], cpu[i], 2),
@@ -426,6 +429,41 @@ fn blend_gpu_should_match_the_cpu_path_for_every_mode() {
                 );
             }
         }
+    }
+}
+
+/// The same shader-vs-Rust check where the alpha formula actually does something.
+///
+/// A transparent base and a half-transparent overlay give
+/// `ao = ea + ba * (1 - ea) = 0.502`, so channel 3 is ~128 rather than the 255
+/// both opaque inputs produce above. Before #1750 the GPU wrote the base alpha
+/// (0) and the CPU left it untouched (also 0), so the two agreed by accident.
+#[test]
+fn blend_gpu_should_match_the_cpu_path_for_a_semi_transparent_overlay() {
+    let Some(ctx) = gpu_ctx() else { return };
+
+    let base = solid_rgba(40, 90, 200, 0, 2, 2);
+    let overlay = solid_rgba(170, 60, 30, 128, 2, 2);
+
+    for mode in ALL_BLEND_MODES {
+        let node = BlendModeNode::new(mode, 1.0, overlay.clone(), 2, 2);
+        let mut cpu = base.clone();
+        node.process_cpu(&mut cpu, 2, 2);
+        let gpu = run_gpu(&ctx, node, &base, 2, 2);
+
+        for ch in 0..4 {
+            assert!(
+                close(gpu[ch], cpu[ch], 2),
+                "{mode:?} channel {ch}: GPU {} vs CPU {}",
+                gpu[ch],
+                cpu[ch]
+            );
+        }
+        assert!(
+            close(cpu[3], 128, 2),
+            "{mode:?}: the composited alpha must be ~128, not the base's 0; got {}",
+            cpu[3]
+        );
     }
 }
 

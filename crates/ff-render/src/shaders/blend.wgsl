@@ -10,6 +10,10 @@
 // ff-filter links the canvas to `top` and the layer to `bottom`, so throughout
 // this file `a` = base (canvas) and `b` = overlay (layer). The helper functions
 // mirror `nodes/composite/blend_math.rs` one for one.
+//
+// Alpha convention: the canvas carries premultiplied RGB composited against an
+// opaque black backdrop, and its alpha is src-over coverage. See the note at the
+// end of `fs_main`.
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -375,7 +379,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // FFmpeg computes `dst = A + (expr - A) * opacity`, and A is the base here.
     // The clamp reproduces the float-to-8-bit conversion for the modes the
     // `DEPTH == 32` branch leaves outside [0, 1].
+    //
+    // Alpha accumulates as src-over coverage (#1750). The RGB above is
+    // deliberately *not* reweighted by the backdrop alpha the way W3C's
+    // `Cs' = (1 - ab) * Cs + ab * B(Cb, Cs)` would: it composites against an
+    // opaque black backdrop, which is what the CPU compositor's
+    // `color=c=#000000` canvas does, and ADR-0007 keeps that the reference.
+    // `FrameLayer.opacity` is not clamped, so an out-of-range value extrapolates
+    // here exactly as it does in the `mix` above; the `Rgba8Unorm` write
+    // saturates either way, which is why neither needs its own clamp.
     let effective_alpha = overlay.a * u.opacity;
     let out_rgb = mix(base.rgb, blend_rgb, effective_alpha);
-    return vec4<f32>(clamp(out_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
+    let out_a = effective_alpha + base.a * (1.0 - effective_alpha);
+    return vec4<f32>(clamp(out_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), out_a);
 }

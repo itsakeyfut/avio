@@ -1,3 +1,31 @@
+//! Multi-layer GPU compositing: [`FrameLayer`] stack in, one texture out.
+//!
+//! # Alpha convention
+//!
+//! The canvas starts transparent (its texture is zero-initialised) and each
+//! layer is composited onto it in `z_order`. Two rules, which
+//! `shaders/blend.wgsl` and [`nodes::BlendModeNode`](crate::BlendModeNode)
+//! implement identically:
+//!
+//! - **Colour** is composited against an **opaque black backdrop**, so the blend
+//!   result is not reweighted by the backdrop alpha the way W3C's
+//!   `Cs' = (1 - ab) * Cs + ab * B(Cb, Cs)` would. That matches the CPU
+//!   compositor's `color=c=#000000` canvas, which ADR-0007 keeps as the
+//!   correctness reference.
+//! - **Alpha** accumulates as src-over **coverage**, `ao = as + ab * (1 - as)`:
+//!   zero where no layer has drawn (letterbox bands, the transparent regions a
+//!   transform leaves behind), rising toward one as opaque layers cover it
+//!   (#1750).
+//! - **RGB is premultiplied** by that alpha. A white layer composited at opacity
+//!   `0.5` over the empty canvas reads back `(128, 128, 128, 128)`, not
+//!   `(255, 255, 255, 128)`. A consumer that wants straight alpha divides by
+//!   `ao`, guarding `ao == 0`.
+//!
+//! Consumers that flatten to an opaque format (the export path converts rgba to
+//! yuv420p) ignore the alpha and read the premultiplied RGB directly, which is
+//! the same thing as compositing over black; consumers that composite further,
+//! or that need to know what a layer covered, read the alpha.
+
 #[cfg(feature = "wgpu")]
 mod compositor_inner;
 

@@ -21,6 +21,16 @@
 //! the final `clamp` in the shader and the `Rgba8Unorm` write reproduce
 //! `FFmpeg`'s float-to-8-bit conversion. The 8-bit C path wraps instead, which is
 //! deliberately not replicated. See ADR-0010.
+//!
+//! # Alpha
+//!
+//! Colour is composited against an **opaque black backdrop**, matching the CPU
+//! compositor's `color=c=#000000` canvas, so the blend result is not reweighted
+//! by the backdrop alpha the way W3C's `Cs' = (1 - ab) * Cs + ab * B(Cb, Cs)`
+//! would. Alpha itself accumulates as src-over **coverage**,
+//! `ao = as + ab * (1 - as)`: zero where nothing has drawn, rising toward one as
+//! layers cover (#1750). [`BlendModeNode::process_cpu`] and `shaders/blend.wgsl`
+//! carry the same two formulas.
 
 use super::blend_math::blend_rgb;
 #[cfg(feature = "wgpu")]
@@ -219,15 +229,21 @@ impl RenderNodeCpu for BlendModeNode {
             let og = f32::from(ov[1]) / 255.0;
             let ob = f32::from(ov[2]) / 255.0;
             let oa = f32::from(ov[3]) / 255.0;
+            let ba = f32::from(base[3]) / 255.0;
 
             let [rr, rg, rb] = blend_rgb(self.mode, [br, bg, bb], [or, og, ob]);
             let eff_alpha = oa * self.opacity;
             let out_r = (br + (rr - br) * eff_alpha).clamp(0.0, 1.0);
             let out_g = (bg + (rg - bg) * eff_alpha).clamp(0.0, 1.0);
             let out_b = (bb + (rb - bb) * eff_alpha).clamp(0.0, 1.0);
+            // src-over coverage, mirroring `blend.wgsl`'s `out_a` (#1750). An
+            // out-of-range `opacity` extrapolates as the colour channels do; the
+            // `as u8` cast below saturates, matching the shader's texture write.
+            let out_a = eff_alpha + ba * (1.0 - eff_alpha);
             base[0] = (out_r * 255.0 + 0.5) as u8;
             base[1] = (out_g * 255.0 + 0.5) as u8;
             base[2] = (out_b * 255.0 + 0.5) as u8;
+            base[3] = (out_a * 255.0 + 0.5) as u8;
         }
     }
 }
