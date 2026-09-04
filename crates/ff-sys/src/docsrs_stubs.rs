@@ -112,6 +112,13 @@ pub struct AVCodecParameters {
     pub color_primaries: AVColorPrimaries,
 }
 
+pub struct AVBSFContext {
+    pub par_in: *mut AVCodecParameters,
+    pub par_out: *mut AVCodecParameters,
+    pub time_base_in: AVRational,
+    pub time_base_out: AVRational,
+}
+
 pub struct AVStream {
     pub index: c_int,
     pub codecpar: *mut AVCodecParameters,
@@ -1731,7 +1738,7 @@ impl<'a> StreamRef<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct CodecParameters<'a> {
     _ptr: std::ptr::NonNull<AVCodecParameters>,
-    _marker: std::marker::PhantomData<&'a InputFormatContext>,
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CodecParameters<'_> {
@@ -2286,3 +2293,77 @@ pub unsafe fn buffersink_get_frame(
 ) -> Result<BufferSinkOutcome, crate::AvError> {
     Err(crate::AvError::new(-1))
 }
+
+// Under DOCS_RS the real `bsf` module is cfg'd out; this shape-compatible stub keeps
+// `ff_sys::BsfContext` available for docs.rs (ff-remux names it).
+
+/// Stub mirror of `crate::bsf::BsfContext`.
+#[derive(Debug)]
+pub struct BsfContext {
+    _ptr: std::ptr::NonNull<AVBSFContext>,
+}
+
+impl BsfContext {
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open(
+        _spec: &str,
+        _par_in: Option<CodecParameters<'_>>,
+        _time_base_in: AVRational,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn passthrough(
+        _par_in: Option<CodecParameters<'_>>,
+        _time_base_in: AVRational,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    #[must_use]
+    pub fn output_params(&self) -> CodecParameters<'_> {
+        // SAFETY: stub; never executed on docs.rs.
+        unsafe {
+            CodecParameters {
+                _ptr: std::ptr::NonNull::dangling(),
+                _marker: std::marker::PhantomData,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn output_time_base(&self) -> AVRational {
+        AVRational { num: 0, den: 1 }
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn send_packet(&mut self, _pkt: &mut Packet) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn send_eof(&mut self) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn receive_packet(
+        &mut self,
+        _pkt: &mut Packet,
+    ) -> Result<ReceiveOutcome, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+}
+
+impl Drop for BsfContext {
+    fn drop(&mut self) {}
+}
+
+// SAFETY: stub; never executed on docs.rs.
+unsafe impl Send for BsfContext {}

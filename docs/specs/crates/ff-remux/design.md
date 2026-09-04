@@ -21,6 +21,7 @@ Operations such as cutting out part of a source or replacing its audio can be ac
 - Extracting an audio track
 - Adding an audio track
 - Performing all of the above without any rebuild of video or audio
+- Applying a chosen bitstream filter to the copied stream, for the rewrites `FFmpeg` does not perform on its own
 
 ## Out of scope
 

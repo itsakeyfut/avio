@@ -35,11 +35,12 @@ pub enum ReceiveOutcome {
     Drained,
 }
 
-/// Maps a raw `avcodec::receive_frame` result to a [`ReceiveOutcome`].
+/// Maps a raw receive result to a [`ReceiveOutcome`].
 ///
 /// `EAGAIN` and `EOF` are expected drain states, not errors; any other negative
-/// code is a real error.
-fn classify_receive(result: Result<(), c_int>) -> Result<ReceiveOutcome, AvError> {
+/// code is a real error. Shared with [`BsfContext`](crate::BsfContext), whose
+/// `av_bsf_receive_packet` uses the same two drain codes.
+pub(crate) fn classify_receive(result: Result<(), c_int>) -> Result<ReceiveOutcome, AvError> {
     match result {
         Ok(()) => Ok(ReceiveOutcome::Frame),
         Err(code) if code == crate::error_codes::EAGAIN => Ok(ReceiveOutcome::NeedInput),

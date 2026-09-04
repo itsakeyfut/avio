@@ -964,15 +964,30 @@ impl<'a> StreamRef<'a> {
     }
 }
 
-/// A borrowed handle to an `AVCodecParameters` owned by a stream.
+/// A borrowed handle to an `AVCodecParameters` owned by something else.
 ///
-/// Exposes the scalar fields ff-decode reads and hands its raw pointer to the
-/// safe [`CodecContext::apply_parameters`](crate::CodecContext::apply_parameters)
+/// The owner is a demuxed stream ([`StreamRef::codecpar`]) or a bitstream-filter
+/// context ([`BsfContext::output_params`](crate::BsfContext::output_params)); the
+/// lifetime parameter is a borrow token and deliberately names neither, so one type
+/// serves both. Exposes the scalar fields ff-decode reads and hands its raw pointer
+/// to the safe [`CodecContext::apply_parameters`](crate::CodecContext::apply_parameters)
 /// via a crate-private accessor; the raw pointer is not part of the public API.
 #[derive(Clone, Copy, Debug)]
 pub struct CodecParameters<'a> {
     ptr: NonNull<AVCodecParameters>,
-    _marker: PhantomData<&'a InputFormatContext>,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl<'a> CodecParameters<'a> {
+    /// Borrows an `AVCodecParameters` block owned elsewhere in the crate.
+    ///
+    /// The caller ties `'a` to the owner, so the block outlives this handle.
+    pub(crate) const fn from_raw(ptr: NonNull<AVCodecParameters>) -> Self {
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl CodecParameters<'_> {

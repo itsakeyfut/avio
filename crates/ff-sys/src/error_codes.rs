@@ -19,6 +19,13 @@ pub const ENOMEM: i32 = -12;
 /// Invalid data
 pub const EINVAL: i32 = -22;
 
+/// Bitstream filter not found (`AVERROR_BSF_NOT_FOUND`).
+///
+/// `FFERRTAG(0xF8, 'B', 'S', 'F')` = `-(0xF8 | 'B' << 8 | 'S' << 16 | 'F' << 24)`.
+/// Unlike the `errno`-derived codes above this is a fixed FFmpeg tag, so it is the
+/// same on every platform.
+pub const BSF_NOT_FOUND: i32 = -1_179_861_752;
+
 // Network errno values (AVERROR = -errno on POSIX)
 //
 // These are used in ff-decode to map FFmpeg network errors to typed variants.
