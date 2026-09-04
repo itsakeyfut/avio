@@ -28,7 +28,7 @@ use ff_sys::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, ReceiveOutcome, av_rescale_q,
 };
 
-use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
+use crate::codec_utils_inner::{ffmpeg_err, ffmpeg_err_msg};
 use crate::error::StreamError;
 
 // ============================================================================
@@ -238,7 +238,7 @@ unsafe fn write_hls_unsafe(
     }
 
     // 8. Open H.264 video encoder
-    let vid_enc_codec = crate::codec_utils::select_h264_encoder("hls").ok_or_else(|| {
+    let vid_enc_codec = crate::codec_utils_inner::select_h264_encoder("hls").ok_or_else(|| {
         ffmpeg_err_msg("no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)")
     })?;
 
@@ -283,8 +283,12 @@ unsafe fn write_hls_unsafe(
     let mut swr_ctx: Option<ff_sys::ResampleContext> = None;
 
     if audio_stream_idx >= 0 {
-        match crate::codec_utils::open_aac_encoder(aud_sample_rate, aud_nb_channels, 192_000, "hls")
-        {
+        match crate::codec_utils_inner::open_aac_encoder(
+            aud_sample_rate,
+            aud_nb_channels,
+            192_000,
+            "hls",
+        ) {
             Ok(ctx) => {
                 if let Ok(aud_idx) = out_ctx.new_stream(None) {
                     let aud_idx = aud_idx as i32;
@@ -493,7 +497,7 @@ unsafe fn write_hls_unsafe(
                 };
 
                 if scaled && vid_enc_ctx.send_frame(Some(&vid_enc_frame)).is_ok() {
-                    crate::codec_utils::drain_encoder(
+                    crate::codec_utils_inner::drain_encoder(
                         &mut vid_enc_ctx,
                         &mut out_ctx,
                         vid_out_stream_idx as usize,
@@ -551,7 +555,7 @@ unsafe fn write_hls_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -572,7 +576,7 @@ unsafe fn write_hls_unsafe(
 
     // 14. Flush encoders
     let _ = vid_enc_ctx.send_frame(None);
-    crate::codec_utils::drain_encoder(
+    crate::codec_utils_inner::drain_encoder(
         &mut vid_enc_ctx,
         &mut out_ctx,
         vid_out_stream_idx as usize,
@@ -609,7 +613,7 @@ unsafe fn write_hls_unsafe(
                     aud_enc_frame.set_nb_samples(n);
                     aud_enc_frame.set_pts(audio_sample_count);
                     if aud_enc.send_frame(Some(&aud_enc_frame)).is_ok() {
-                        crate::codec_utils::drain_encoder(
+                        crate::codec_utils_inner::drain_encoder(
                             aud_enc,
                             &mut out_ctx,
                             aud_out_stream_idx as usize,
@@ -622,7 +626,7 @@ unsafe fn write_hls_unsafe(
             }
         }
         let _ = aud_enc.send_frame(None);
-        crate::codec_utils::drain_encoder(
+        crate::codec_utils_inner::drain_encoder(
             aud_enc,
             &mut out_ctx,
             aud_out_stream_idx as usize,

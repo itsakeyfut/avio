@@ -1,7 +1,5 @@
 //! Sequential video input concatenation.
 
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 
 use crate::error::FilterError;
@@ -75,20 +73,11 @@ impl VideoConcatenator {
                 reason: "no inputs".to_string(),
             });
         }
-        // SAFETY: all raw pointer operations follow the avfilter ownership rules:
-        // - avfilter_graph_alloc() returns an owned pointer freed via
-        //   avfilter_graph_free() on error or stored in FilterGraphInner on success.
-        // - avfilter_graph_create_filter() adds contexts owned by the graph.
-        // - avfilter_link() connects pads; connections are owned by the graph.
-        // - avfilter_graph_config() finalises the graph.
-        // - NonNull::new_unchecked() is called only after ret >= 0 checks.
-        unsafe {
-            super::composition_inner::build_video_concat(
-                &self.inputs,
-                self.output_width,
-                self.output_height,
-            )
-        }
+        super::composition_inner::build_video_concat(
+            &self.inputs,
+            self.output_width,
+            self.output_height,
+        )
     }
 }
 

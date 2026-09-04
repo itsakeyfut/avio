@@ -1,7 +1,5 @@
 //! Sequential audio input concatenation.
 
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 
 use ff_format::ChannelLayout;
@@ -78,20 +76,11 @@ impl AudioConcatenator {
                 reason: "no inputs".to_string(),
             });
         }
-        // SAFETY: avfilter_graph_alloc / avfilter_graph_create_filter /
-        // avfilter_link / avfilter_graph_config follow the same ownership rules
-        // as build_video_concat:
-        // - avfilter_graph_free is called in the bail! macro on every error path.
-        // - avfilter_link() connects pads; connections are owned by the graph.
-        // - avfilter_graph_config() finalises the graph.
-        // - NonNull::new_unchecked() is called only after ret >= 0 checks.
-        unsafe {
-            super::composition_inner::build_audio_concat(
-                &self.inputs,
-                self.output_sample_rate,
-                self.output_channel_layout,
-            )
-        }
+        super::composition_inner::build_audio_concat(
+            &self.inputs,
+            self.output_sample_rate,
+            self.output_channel_layout,
+        )
     }
 }
 

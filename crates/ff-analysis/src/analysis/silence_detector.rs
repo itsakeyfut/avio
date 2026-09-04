@@ -1,7 +1,5 @@
 //! Silence detection for audio files.
 
-#![allow(unsafe_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -98,16 +96,7 @@ impl SilenceDetector {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
-        // SAFETY: detect_silence_unsafe manages all raw pointer lifetimes according
-        // to the avfilter ownership rules documented in analysis_inner. The path is
-        // valid for the duration of the call.
-        unsafe {
-            super::analysis_inner::detect_silence_unsafe(
-                &self.input,
-                self.threshold_db,
-                self.min_duration,
-            )
-        }
+        super::analysis_inner::detect_silence(&self.input, self.threshold_db, self.min_duration)
     }
 }
 

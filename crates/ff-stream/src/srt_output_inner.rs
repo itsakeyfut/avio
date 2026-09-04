@@ -24,9 +24,9 @@ use std::path::Path;
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
 
-use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg, open_aac_encoder};
+use crate::codec_utils_inner::{ffmpeg_err, ffmpeg_err_msg, open_aac_encoder};
 use crate::error::StreamError;
-use crate::muxer_core::MuxerCore;
+use crate::muxer_inner::MuxerCore;
 
 // ============================================================================
 // SrtInner
@@ -127,12 +127,13 @@ impl SrtInner {
             .map_err(|e| ffmpeg_err(e.code()))?;
 
         // 2. Open H.264 video encoder
-        let vid_enc_codec = crate::codec_utils::select_h264_encoder("srt").ok_or_else(|| {
-            ffmpeg_err_msg(
-                "no H.264 encoder available \
+        let vid_enc_codec =
+            crate::codec_utils_inner::select_h264_encoder("srt").ok_or_else(|| {
+                ffmpeg_err_msg(
+                    "no H.264 encoder available \
                  (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)",
-            )
-        })?;
+                )
+            })?;
 
         let mut vid_enc_ctx =
             ff_sys::CodecContext::new(Some(vid_enc_codec)).map_err(|e| ffmpeg_err(e.code()))?;

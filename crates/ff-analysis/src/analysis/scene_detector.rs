@@ -1,7 +1,5 @@
 //! Scene-change detection.
 
-#![allow(unsafe_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -80,10 +78,7 @@ impl SceneDetector {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
-        // SAFETY: detect_scenes_unsafe manages all raw pointer lifetimes according
-        // to the avfilter ownership rules documented in analysis_inner. The path is
-        // valid for the duration of the call.
-        unsafe { super::analysis_inner::detect_scenes_unsafe(&self.input, self.threshold) }
+        super::analysis_inner::detect_scenes(&self.input, self.threshold)
     }
 }
 

@@ -22,7 +22,7 @@ use ff_sys::{
     AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat, av_rescale_q,
 };
 
-use crate::codec_utils::{
+use crate::codec_utils_inner::{
     drain_encoder, ffmpeg_err, ffmpeg_err_msg, pixel_format_to_av, sample_format_to_av,
 };
 use crate::error::StreamError;

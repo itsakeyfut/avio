@@ -1,7 +1,5 @@
 //! Cross-dissolve join of two video inputs.
 
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -72,16 +70,7 @@ impl CrossfadeJoiner {
     ///   graph-construction call failed.
     pub fn build(self) -> Result<FilterGraph, FilterError> {
         let dissolve_sec = self.dissolve_duration.as_secs_f64();
-        // SAFETY: avformat and avfilter invariants are maintained internally;
-        //         all pointers are null-checked; resources are freed on every
-        //         error path.
-        unsafe {
-            super::composition_inner::build_dissolve_join(
-                &self.input_a,
-                &self.input_b,
-                dissolve_sec,
-            )
-        }
+        super::composition_inner::build_dissolve_join(&self.input_a, &self.input_b, dissolve_sec)
     }
 }
 

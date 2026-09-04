@@ -4,8 +4,6 @@
 //! stream over `drawtext`, with no timeline/track/clip knowledge. It backs the
 //! engine's first-class text clips.
 
-#![allow(unsafe_code)]
-
 use ff_format::{Anchor, Color, TextSpec, VideoFrame};
 
 use crate::error::FilterError;
@@ -93,10 +91,7 @@ impl TextSource {
             });
         }
         let opts = spec_to_drawtext(spec);
-        // SAFETY: `build_text_source` follows the avfilter ownership rules; the
-        // returned graph owns every context it created.
-        let graph =
-            unsafe { super::composition_inner::build_text_source(&opts, width, height, fps)? };
+        let graph = super::composition_inner::build_text_source(&opts, width, height, fps)?;
         Ok(Self { graph })
     }
 

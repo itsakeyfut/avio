@@ -1,7 +1,5 @@
 //! Multi-track audio mixing into a single output stream.
 
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 
 use ff_format::ChannelLayout;
@@ -120,14 +118,11 @@ impl MultiTrackAudioMixer {
                 reason: "no tracks".to_string(),
             });
         }
-        // SAFETY: same ownership invariants as build_video_composition.
-        unsafe {
-            super::composition_inner::build_audio_mix(
-                self.sample_rate,
-                self.channel_layout,
-                &self.tracks,
-            )
-        }
+        super::composition_inner::build_audio_mix(
+            self.sample_rate,
+            self.channel_layout,
+            &self.tracks,
+        )
     }
 }
 

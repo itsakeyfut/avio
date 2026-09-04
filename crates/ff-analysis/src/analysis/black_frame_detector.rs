@@ -1,7 +1,5 @@
 //! Black-frame detection.
 
-#![allow(unsafe_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,10 +75,7 @@ impl BlackFrameDetector {
                 reason: format!("file not found: {}", self.input.display()),
             });
         }
-        // SAFETY: detect_black_frames_unsafe manages all raw pointer lifetimes
-        // according to the avfilter ownership rules documented in analysis_inner.
-        // The path is valid for the duration of the call.
-        unsafe { super::analysis_inner::detect_black_frames_unsafe(&self.input, self.threshold) }
+        super::analysis_inner::detect_black_frames(&self.input, self.threshold)
     }
 }
 

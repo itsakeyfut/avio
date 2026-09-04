@@ -8,8 +8,6 @@
 //! by the **same** `FFmpeg` filter primitives the export path uses, so the
 //! preview matches the rendered output.
 
-#![allow(unsafe_code)]
-
 use ff_format::{PixelFormat, VideoFrame};
 
 use crate::animation::AnimatedValue;
@@ -165,11 +163,7 @@ impl RealtimeComposer {
         canvas: Option<(u32, u32)>,
     ) -> Result<Self, FilterError> {
         let layer_count = layers.len();
-        // SAFETY: all raw-pointer operations in `build_realtime_composition`
-        // follow the avfilter ownership rules; the returned graph owns every
-        // context it created.
-        let graph =
-            unsafe { super::composition_inner::build_realtime_composition(layers, canvas)? };
+        let graph = super::composition_inner::build_realtime_composition(layers, canvas)?;
         Ok(Self { graph, layer_count })
     }
 
@@ -225,9 +219,7 @@ impl LavfiSource {
     /// Returns [`FilterError`] when the underlying `FFmpeg` graph cannot be built
     /// (e.g. the `movie` / `lavfi` demuxer is unavailable, or the string is invalid).
     pub fn new(lavfi: &str) -> Result<Self, FilterError> {
-        // SAFETY: `build_lavfi_source` follows the avfilter ownership rules; the
-        // returned graph owns every context it created.
-        let graph = unsafe { super::composition_inner::build_lavfi_source(lavfi)? };
+        let graph = super::composition_inner::build_lavfi_source(lavfi)?;
         Ok(Self { graph })
     }
 
@@ -964,11 +956,9 @@ mod tests {
         // PTS-dependent filter) must build in the realtime composer and pull a
         // frame — this is the path the demo preview uses (#138). Requires an
         // FFmpeg built with libass; skip if the `subtitles` filter is absent.
-        unsafe {
-            if ff_sys::avfilter_get_by_name(c"subtitles".as_ptr()).is_null() {
-                println!("Skipping: subtitles filter unavailable (no libass)");
-                return;
-            }
+        if !super::super::composition_inner::subtitles_filter_available() {
+            println!("Skipping: subtitles filter unavailable (no libass)");
+            return;
         }
         // Write a tiny .srt whose first cue covers t=0 (pushed frame pts=0).
         let srt = std::env::temp_dir().join("avio_rt_subs_test.srt");
