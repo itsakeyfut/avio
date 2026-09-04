@@ -705,6 +705,72 @@ mod tests {
         }
     }
 
+    /// A blend mode's uniform bytes are assembled twice: in [`blend_textures`]
+    /// here and again in `BlendModeNode::process`. `gpu_nodes.rs` covers all 44
+    /// modes on the node path, but every other compositor test uses
+    /// `BlendMode::Normal` (code 0), so nothing exercised a code above 17 on the
+    /// path `avio::gpu::map_scene` actually feeds (#1669).
+    ///
+    /// `SoftDifference` (40) is continuous, so an off-by-one upstream shifts the
+    /// result slightly instead of jumping, unlike the bitwise modes. The second
+    /// assert is the load-bearing one: `blend.wgsl`'s `default` arm returns the
+    /// overlay unchanged, which *is* `Normal`, so a mangled mode code renders
+    /// silently rather than failing.
+    #[test]
+    fn compositor_blend_should_carry_a_high_mode_code_to_the_shader() {
+        let Some(ctx) = gpu_ctx() else {
+            return;
+        };
+        let (w, h) = (4u32, 4u32);
+        let px = (w * h) as usize;
+        let base_rgba = [40u8, 90, 200, 255].repeat(px);
+        let ov_rgba = [170u8, 60, 30, 255].repeat(px);
+
+        let mut compositor = crate::Compositor::new(Arc::clone(&ctx), w, h);
+        let mut layers = vec![
+            crate::FrameLayer {
+                frame: VideoFrame::from_rgba(w, h, base_rgba.clone()).expect("base frame"),
+                transform: crate::LayerTransform::default(),
+                blend_mode: BlendMode::Normal,
+                opacity: 1.0,
+                z_order: 0,
+            },
+            crate::FrameLayer {
+                frame: VideoFrame::from_rgba(w, h, ov_rgba.clone()).expect("overlay frame"),
+                transform: crate::LayerTransform::default(),
+                blend_mode: BlendMode::SoftDifference,
+                opacity: 1.0,
+                z_order: 1,
+            },
+        ];
+        let tex = compositor.composite(&mut layers).expect("compositor path");
+        let composited = readback(&ctx, &tex, w, h);
+
+        let node =
+            crate::nodes::BlendModeNode::new(BlendMode::SoftDifference, 1.0, ov_rgba.clone(), w, h);
+        let node_rgba = crate::graph::RenderGraph::new(Arc::clone(&ctx))
+            .push(node)
+            .process_gpu(&base_rgba, w, h)
+            .expect("node path");
+
+        for (c, n) in composited.chunks_exact(4).zip(node_rgba.chunks_exact(4)) {
+            for ch in 0..3 {
+                assert!(
+                    (i32::from(c[ch]) - i32::from(n[ch])).abs() <= 2,
+                    "compositor and node must agree on a high mode code; ch={ch} comp={} node={}",
+                    c[ch],
+                    n[ch]
+                );
+            }
+        }
+
+        assert!(
+            (0..3).any(|ch| composited[ch] != ov_rgba[ch]),
+            "SoftDifference must not render as the shader's `default` (= Normal); got {:?}",
+            &composited[..3]
+        );
+    }
+
     #[test]
     fn composite_to_rgba_should_read_back_the_canvas_size_and_pixels() {
         let Some(ctx) = gpu_ctx() else {

@@ -20,7 +20,7 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     return out;
 }
 
-// ── Fragment ──────────────────────────────────────────────────────────────────
+// Fragment
 
 @group(0) @binding(0) var y_tex:  texture_2d<f32>;
 @group(0) @binding(1) var cb_tex: texture_2d<f32>;

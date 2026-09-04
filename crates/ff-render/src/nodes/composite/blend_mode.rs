@@ -1,4 +1,26 @@
-//! `BlendMode` enum and `BlendModeNode` (CPU + GPU Photoshop-style blending).
+//! `BlendMode` enum and `BlendModeNode` (CPU + GPU pixel-value blending).
+//!
+//! # Reference
+//!
+//! Every mode except the four HSL ones reproduces `FFmpeg`'s `blend` filter, so
+//! a frame composited here matches the CPU compositor that ADR-0007 keeps as the
+//! correctness reference. The formulas are transcribed from the `DEPTH == 32`
+//! branch of `libavfilter/blend_modes.c` (identical in `release/7.1` and
+//! `release/8.0`), which is already normalised to `[0, 1]`.
+//!
+//! `FFmpeg` names its two inputs `A` (the `top` pad) and `B` (the `bottom` pad).
+//! `crates/ff-filter/src/filter_inner/build.rs` links the canvas to the `top` pad
+//! and the layer to the `bottom` pad, so throughout this module and
+//! `shaders/blend.wgsl`:
+//!
+//! ```text
+//! FFmpeg A = base (canvas)      FFmpeg B = overlay (layer)
+//! ```
+//!
+//! The `DEPTH == 32` branch applies no clamp, so several modes leave `[0, 1]`;
+//! the final `clamp` in the shader and the `Rgba8Unorm` write reproduce
+//! `FFmpeg`'s float-to-8-bit conversion. The 8-bit C path wraps instead, which is
+//! deliberately not replicated. See ADR-0010.
 
 use super::blend_math::blend_rgb;
 #[cfg(feature = "wgpu")]
@@ -10,7 +32,12 @@ use crate::nodes::RenderNodeCpu;
 
 // BlendMode
 
-/// Photoshop-compatible blend modes.
+/// Pixel-value blend modes.
+///
+/// The discriminant is the value written into the shader's `mode` uniform, so
+/// variants are only ever **appended**, never renumbered. Each doc comment gives
+/// the normalised formula in terms of `base` and `overlay` (see the module docs
+/// for how those map onto `FFmpeg`'s `A` and `B`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u32)]
 pub enum BlendMode {
@@ -23,13 +50,13 @@ pub enum BlendMode {
     Screen = 2,
     /// Multiply below 50% grey, Screen above.
     Overlay = 3,
-    /// Soft light — W3C formula.
+    /// `base² + 2·overlay·base·(1−base)`.
     SoftLight = 4,
     /// Hard light — Overlay with base/overlay swapped.
     HardLight = 5,
-    /// base / (1 − overlay).
+    /// `base ≥ 1 ? base : min(1, overlay/(1−base))`.
     ColorDodge = 6,
-    /// 1 − (1−base) / overlay.
+    /// `base ≤ 0 ? base : max(0, 1−(1−overlay)/base)`.
     ColorBurn = 7,
     /// |base − overlay|.
     Difference = 8,
@@ -51,6 +78,69 @@ pub enum BlendMode {
     Color = 16,
     /// Base hue + base saturation + overlay lightness.
     Luminosity = 17,
+
+    // The remaining `FFmpeg` `all_mode` set (#1669). Bitwise `And`/`Or`/`Xor` are
+    // the one exception to the `DEPTH == 32` reference: there the C operates on
+    // the IEEE-754 bit pattern, which is not an image operation, so these follow
+    // the 8-bit definition that the compositor's `Rgba8Unorm` working format
+    // means.
+    /// Bitwise `and` of the two 8-bit samples.
+    And = 18,
+    /// `(base + overlay)/2`.
+    Average = 19,
+    /// `1 − base − overlay`.
+    Bleach = 20,
+    /// `overlay == 0 ? 1 : base/overlay`.
+    Divide = 21,
+    /// `|1 − base − overlay|`.
+    Extremity = 22,
+    /// `overlay == 0 ? 0 : 1 − min((1−base)²/overlay, 1)`.
+    Freeze = 23,
+    /// `sqrt(max(base,0)·max(overlay,0))`.
+    Geometric = 24,
+    /// `base ≥ 1 ? base : min(1, overlay²/(1−base))`.
+    Glow = 25,
+    /// `0.5 + base − overlay` (`FFmpeg`'s `difference128`).
+    GrainExtract = 26,
+    /// `base + overlay − 0.5` (`FFmpeg`'s `addition128`).
+    GrainMerge = 27,
+    /// `base < 1 − overlay ? 0 : 1`.
+    HardMix = 28,
+    /// `base ≥ 1 ? 1 : min(1, base > 0.5 ? overlay/(2−2·base) : 2·base·overlay)`.
+    HardOverlay = 29,
+    /// `base + overlay == 0 ? 0 : 2·base·overlay/(base + overlay)`.
+    Harmonic = 30,
+    /// `base == 0 ? 0 : 1 − min((1−overlay)²/base, 1)`.
+    Heat = 31,
+    /// `(2 − cos(base·π) − cos(overlay·π))/4`.
+    Interpolate = 32,
+    /// `overlay + 2·base − 1`.
+    ///
+    /// The C branches on `overlay < 0.5`, but both arms collapse to the same
+    /// expression once `MAX == 2·HALF`, which holds in the `DEPTH == 32` branch.
+    /// The 8-bit path differs by one LSB.
+    LinearLight = 33,
+    /// `8·(base−0.5)·overlay + 0.5`.
+    Multiply128 = 34,
+    /// `1 − |1 − base − overlay|`.
+    Negation = 35,
+    /// Bitwise `or` of the two 8-bit samples.
+    Or = 36,
+    /// `min(base, overlay) − max(base, overlay) + 1`.
+    Phoenix = 37,
+    /// `overlay < 0.5 ? min(base, 2·overlay) : max(base, 2·overlay − 1)`.
+    PinLight = 38,
+    /// `overlay ≥ 1 ? overlay : min(1, base²/(1−overlay))`.
+    Reflect = 39,
+    /// `base > overlay ? (overlay ≥ 1 ? 0 : (base−overlay)/(1−overlay))`
+    /// `: (overlay ≤ 0 ? 0 : (overlay−base)/overlay)`.
+    SoftDifference = 40,
+    /// `2 − base − overlay`.
+    Stain = 41,
+    /// `base < 0.5 ? burn(2·base, overlay) : dodge(2·base − 1, overlay)`.
+    VividLight = 42,
+    /// Bitwise `xor` of the two 8-bit samples.
+    Xor = 43,
 }
 
 // BlendModeNode
@@ -383,28 +473,61 @@ mod tests {
         assert_eq!(rgba, original, "size mismatch must leave base unchanged");
     }
 
+    /// The discriminant is the value written into the shader's `mode` uniform, so
+    /// renumbering a variant silently changes what `blend.wgsl` renders for it.
+    /// This pins every code; a new variant needs a row here and a matching `case`
+    /// in the shader.
     #[test]
-    fn all_blend_mode_variants_should_compile() {
-        let modes = [
-            BlendMode::Normal,
-            BlendMode::Multiply,
-            BlendMode::Screen,
-            BlendMode::Overlay,
-            BlendMode::SoftLight,
-            BlendMode::HardLight,
-            BlendMode::ColorDodge,
-            BlendMode::ColorBurn,
-            BlendMode::Difference,
-            BlendMode::Exclusion,
-            BlendMode::Add,
-            BlendMode::Subtract,
-            BlendMode::Darken,
-            BlendMode::Lighten,
-            BlendMode::Hue,
-            BlendMode::Saturation,
-            BlendMode::Color,
-            BlendMode::Luminosity,
+    fn blend_mode_discriminants_should_match_the_shader_mode_codes() {
+        let expected = [
+            (BlendMode::Normal, 0),
+            (BlendMode::Multiply, 1),
+            (BlendMode::Screen, 2),
+            (BlendMode::Overlay, 3),
+            (BlendMode::SoftLight, 4),
+            (BlendMode::HardLight, 5),
+            (BlendMode::ColorDodge, 6),
+            (BlendMode::ColorBurn, 7),
+            (BlendMode::Difference, 8),
+            (BlendMode::Exclusion, 9),
+            (BlendMode::Add, 10),
+            (BlendMode::Subtract, 11),
+            (BlendMode::Darken, 12),
+            (BlendMode::Lighten, 13),
+            (BlendMode::Hue, 14),
+            (BlendMode::Saturation, 15),
+            (BlendMode::Color, 16),
+            (BlendMode::Luminosity, 17),
+            (BlendMode::And, 18),
+            (BlendMode::Average, 19),
+            (BlendMode::Bleach, 20),
+            (BlendMode::Divide, 21),
+            (BlendMode::Extremity, 22),
+            (BlendMode::Freeze, 23),
+            (BlendMode::Geometric, 24),
+            (BlendMode::Glow, 25),
+            (BlendMode::GrainExtract, 26),
+            (BlendMode::GrainMerge, 27),
+            (BlendMode::HardMix, 28),
+            (BlendMode::HardOverlay, 29),
+            (BlendMode::Harmonic, 30),
+            (BlendMode::Heat, 31),
+            (BlendMode::Interpolate, 32),
+            (BlendMode::LinearLight, 33),
+            (BlendMode::Multiply128, 34),
+            (BlendMode::Negation, 35),
+            (BlendMode::Or, 36),
+            (BlendMode::Phoenix, 37),
+            (BlendMode::PinLight, 38),
+            (BlendMode::Reflect, 39),
+            (BlendMode::SoftDifference, 40),
+            (BlendMode::Stain, 41),
+            (BlendMode::VividLight, 42),
+            (BlendMode::Xor, 43),
         ];
-        assert_eq!(modes.len(), 18);
+        for (mode, code) in expected {
+            assert_eq!(mode as u32, code, "{mode:?} moved to a different mode code");
+        }
+        assert_eq!(expected.len(), 44);
     }
 }

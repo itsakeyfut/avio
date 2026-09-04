@@ -22,7 +22,7 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     return out;
 }
 
-// ── Fragment ──────────────────────────────────────────────────────────────────
+// Fragment
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var tex_sampler: sampler;
