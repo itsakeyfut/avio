@@ -12,10 +12,12 @@
 mod fixtures;
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_decode::VideoDecoder;
 use ff_encode::{BitrateMode, VideoCodec};
+use ff_filter::XfadeTransition;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 const SRC_FRAMES: usize = 15;
@@ -91,6 +93,561 @@ fn render_or_skip(result: Result<(), TimelineError>) -> bool {
         Err(e) if is_environment_unavailable(&e) => false,
         Err(e) => panic!("unexpected export error: {e}"),
     }
+}
+
+/// Bounding box of the "bright" pixels (the overlay) against a dark base, inclusive.
+///
+/// The placement tests assert this rather than a mean difference: two equally-wrong
+/// renders have the same mean, and an overlay in the wrong place is exactly that failure
+/// (RK-015).
+fn bright_bbox(rgba: &[u8], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    let mut any = false;
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            if rgba[i] > 160 && rgba[i + 1] > 160 && rgba[i + 2] > 160 {
+                any = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    any.then_some((x0, y0, x1, y1))
+}
+
+/// `(frame count, bright bbox)` of the frame at index `at` in an exported file.
+fn count_and_bbox(path: &std::path::Path, at: usize) -> (usize, Option<(u32, u32, u32, u32)>) {
+    let Ok(mut d) = VideoDecoder::open(path)
+        .output_format(ff_format::PixelFormat::Rgba)
+        .build()
+    else {
+        return (0, None);
+    };
+    let (mut n, mut bbox) = (0usize, None);
+    while let Ok(Some(f)) = d.decode_one() {
+        if n == at {
+            bbox = f
+                .to_rgba()
+                .and_then(|r| bright_bbox(&r, f.width(), f.height()));
+        }
+        n += 1;
+    }
+    (n, bbox)
+}
+
+/// Mean luma of the bottom-right 8x8 corner of frame `at`, which the overlay fixtures
+/// never cover, so it reads the base track's own contribution.
+fn corner_luma(path: &std::path::Path, at: usize) -> Option<f64> {
+    let mut d = VideoDecoder::open(path)
+        .output_format(ff_format::PixelFormat::Rgba)
+        .build()
+        .ok()?;
+    let mut n = 0usize;
+    while let Ok(Some(f)) = d.decode_one() {
+        if n == at {
+            let rgba = f.to_rgba()?;
+            let (w, h) = (f.width(), f.height());
+            let mut sum = 0f64;
+            for y in h.saturating_sub(8)..h {
+                for x in w.saturating_sub(8)..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    sum += f64::from(rgba[i]);
+                }
+            }
+            return Some(sum / 64.0);
+        }
+        n += 1;
+    }
+    None
+}
+
+/// A dark base track under a bright overlay placed at `(10, 4)` and scaled `0.5`.
+fn two_track_timeline(base: &std::path::Path, over: &std::path::Path) -> Option<Timeline> {
+    Timeline::builder()
+        .canvas(CANVAS, CANVAS)
+        .frame_rate(30.0)
+        .video_track(vec![Clip::new(base)])
+        .video_track(vec![
+            Clip::new(over).with_position(10.0, 4.0).with_scale(0.5),
+        ])
+        .build()
+        .ok()
+}
+
+/// Mean R/G/B of the first frame, or `None` when the file cannot be decoded.
+///
+/// A whole-frame mean is the right instrument for the opacity tests below: the overlay
+/// covers the canvas there, so the number *is* how many times the opacity was applied
+/// (0.5 -> ~140 on the fixture, 0.25 -> ~89), which a bounding box cannot see.
+fn mean_rgb(path: &std::path::Path) -> Option<(f64, f64, f64)> {
+    let mut d = VideoDecoder::open(path)
+        .output_format(ff_format::PixelFormat::Rgba)
+        .build()
+        .ok()?;
+    let f = d.decode_one().ok()??;
+    let rgba = f.to_rgba()?;
+    let (mut r, mut g, mut b) = (0f64, 0f64, 0f64);
+    let n = (rgba.len() / 4) as f64;
+    for px in rgba.chunks_exact(4) {
+        r += f64::from(px[0]);
+        g += f64::from(px[1]);
+        b += f64::from(px[2]);
+    }
+    Some((r / n, g / n, b / n))
+}
+
+/// A dark base under a full-canvas overlay carrying `opacity`.
+fn opacity_timeline(base: &std::path::Path, over: &std::path::Path) -> Option<Timeline> {
+    Timeline::builder()
+        .canvas(CANVAS, CANVAS)
+        .frame_rate(30.0)
+        .video_track(vec![Clip::new(base)])
+        .video_track(vec![Clip::new(over).with_opacity(0.5)])
+        .build()
+        .ok()
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn an_overlay_should_apply_its_opacity_exactly_once() {
+    // The scheduler pre-composites the base to the canvas but hands the stack every
+    // other track's *raw* frame, because the stack pass is where an overlay's opacity,
+    // blend and effects are applied. Compositing an overlay on its own first applied
+    // them a second time: measured 51 against the CPU's 140 on exactly this fixture.
+    // A bbox assertion cannot see this (the overlay covers the canvas), so the mean is.
+    let dark = test_output_path("op_dark.mp4");
+    let bright = test_output_path("op_bright.mp4");
+    let _gd = FileGuard::new(dark.clone());
+    let _gb = FileGuard::new(bright.clone());
+    if make_source_file(&dark, CANVAS, CANVAS, 30.0, SRC_FRAMES, 40, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let out_cpu = test_output_path("op_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = opacity_timeline(&dark, &bright) else {
+        return;
+    };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("op_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = opacity_timeline(&dark, &bright) else {
+        return;
+    };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    let (Some(cpu), Some(gpu)) = (mean_rgb(&out_cpu), mean_rgb(&out_gpu)) else {
+        return;
+    };
+    println!("opacity once: cpu={cpu:?} gpu={gpu:?}");
+    assert!(
+        cpu.0 > 120.0 && cpu.0 < 160.0,
+        "the control must really be a half-strength overlay, got {cpu:?}"
+    );
+    assert!(
+        (cpu.0 - gpu.0).abs() < 4.0,
+        "the GPU must apply the overlay's opacity once, like the CPU: cpu={cpu:?} gpu={gpu:?}"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_base_track_should_apply_its_own_effect_exactly_once_under_an_overlay() {
+    // The mirror of the overlay test: the base *is* pre-composited to the canvas, which
+    // is where its effects, opacity and blend are applied, so the layer it hands the
+    // stack has to be stripped of them. A hue rotation is the readout -- applied twice it
+    // is a 120 degree rotation, which no tolerance hides. The overlay is small and
+    // placed, so most of the frame is the base.
+    let base = test_output_path("be_base.mp4");
+    let over = test_output_path("be_over.mp4");
+    let _gb = FileGuard::new(base.clone());
+    let _go = FileGuard::new(over.clone());
+    if make_source_file(&base, CANVAS, CANVAS, 30.0, SRC_FRAMES, 120, 200, 90).is_none() {
+        return;
+    }
+    if make_source_file(&over, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new(&base).with_video_effect(ff_filter::FilterStep::Hue { degrees: 60.0 }),
+            ])
+            .video_track(vec![
+                Clip::new(&over).with_position(10.0, 4.0).with_scale(0.5),
+            ])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("be_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("be_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    let (Some(cpu), Some(gpu)) = (mean_rgb(&out_cpu), mean_rgb(&out_gpu)) else {
+        return;
+    };
+    println!("base effect once: cpu={cpu:?} gpu={gpu:?}");
+    let spread = (cpu.0 - cpu.1).abs() + (cpu.1 - cpu.2).abs();
+    assert!(
+        spread > 20.0,
+        "the control must be visibly hue-rotated, or a second rotation would not show: {cpu:?}"
+    );
+    assert!(
+        (cpu.0 - gpu.0).abs() < 12.0
+            && (cpu.1 - gpu.1).abs() < 12.0
+            && (cpu.2 - gpu.2).abs() < 12.0,
+        "the base's effect must be applied once, like the CPU: cpu={cpu:?} gpu={gpu:?}"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn an_overlay_should_be_stretched_to_the_canvas_the_way_the_cpu_stretches_it() {
+    // The CPU scales an overlay with `scale = canvas * (sx, sy)`, which discards its
+    // aspect. Pre-compositing an overlay on its own instead letterboxed it into the
+    // canvas and baked the bars in: a 64x32 source at scale 0.5 landed 32x16 (bbox
+    // (0,8)-(31,23)) where the CPU had a stretched 32x32 (bbox (0,0)-(31,31)).
+    let dark = test_output_path("wide_dark.mp4");
+    let wide = test_output_path("wide_over.mp4");
+    let _gd = FileGuard::new(dark.clone());
+    let _gw = FileGuard::new(wide.clone());
+    if make_source_file(&dark, CANVAS, CANVAS, 30.0, SRC_FRAMES, 40, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&wide, CANVAS, CANVAS / 2, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new(&dark)])
+            .video_track(vec![
+                Clip::new(&wide).with_position(0.0, 0.0).with_scale(0.5),
+            ])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("wide_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("wide_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    let (_, cpu_box) = count_and_bbox(&out_cpu, 5);
+    let (_, gpu_box) = count_and_bbox(&out_gpu, 5);
+    println!("stretched overlay: cpu={cpu_box:?} gpu={gpu_box:?}");
+    assert_eq!(
+        cpu_box,
+        Some((0, 0, 31, 31)),
+        "the CPU control must stretch the 64x32 overlay into a 32x32 square"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the GPU must stretch the overlay as the CPU does, not letterbox it"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn two_track_export_should_match_the_cpu_route() {
+    // #1633: a second active video track used to keep the whole export on the CPU. Both
+    // routes must now agree, and the overlay must land where the CPU was *measured* to
+    // put it: stretched to the base size, scaled by `base * scale`, top-left at (x, y)
+    // -- i.e. (10, 4)..(41, 35) inclusive for this fixture.
+    let dark = test_output_path("mt_dark.mp4");
+    let bright = test_output_path("mt_bright.mp4");
+    let _gd = FileGuard::new(dark.clone());
+    let _gb = FileGuard::new(bright.clone());
+    if make_source_file(&dark, CANVAS, CANVAS, 30.0, SRC_FRAMES, 40, 128, 128).is_none() {
+        return; // encoder unavailable -> skip
+    }
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+
+    let out_cpu = test_output_path("mt_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = two_track_timeline(&dark, &bright) else {
+        return;
+    };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+
+    if avio::GpuCompositor::new().is_none() {
+        return; // no adapter -> the GPU leg is unreachable here
+    }
+    let out_gpu = test_output_path("mt_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = two_track_timeline(&dark, &bright) else {
+        return;
+    };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    let (cpu_n, cpu_box) = count_and_bbox(&out_cpu, 5);
+    let (gpu_n, gpu_box) = count_and_bbox(&out_gpu, 5);
+    println!("two-track: cpu=({cpu_n}, {cpu_box:?}) gpu=({gpu_n}, {gpu_box:?})");
+    assert_eq!(cpu_n, gpu_n, "both routes must export the same frame count");
+    assert_eq!(
+        cpu_box,
+        Some((10, 4, 41, 35)),
+        "the CPU fixture must still land where it was measured"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the GPU must place the overlay where the CPU does"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_base_track_that_ends_first_should_not_promote_the_overlay() {
+    // The scheduler reads a track's **stack position** as "which layer is the base"
+    // (`gpu_compositor::layer_transform`), so a track that ends must keep its slot and
+    // contribute transparent rather than be dropped -- dropping it would promote the
+    // overlay to base, whose transform is ignored, and the overlay would fill the canvas.
+    // Measured on the CPU route: with a 6-frame base under a 15-frame overlay, the base's
+    // area goes black from frame 6 while the overlay stays exactly where it was.
+    let short = test_output_path("mtbase_short.mp4");
+    let bright = test_output_path("mtbase_bright.mp4");
+    let _gs = FileGuard::new(short.clone());
+    let _gb = FileGuard::new(bright.clone());
+    if make_source_file(&short, CANVAS, CANVAS, 30.0, 6, 40, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+
+    let out_cpu = test_output_path("mtbase_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = two_track_timeline(&short, &bright) else {
+        return;
+    };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("mtbase_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = two_track_timeline(&short, &bright) else {
+        return;
+    };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    // Frame 10 is past the base's 6 frames, so this is the placeholder's frame.
+    let (cpu_n, cpu_box) = count_and_bbox(&out_cpu, 10);
+    let (gpu_n, gpu_box) = count_and_bbox(&out_gpu, 10);
+    println!("base-ends-first: cpu=({cpu_n}, {cpu_box:?}) gpu=({gpu_n}, {gpu_box:?})");
+    assert!(
+        cpu_n > 6,
+        "the control must outlive the base track, got {cpu_n}"
+    );
+    assert_eq!(cpu_n, gpu_n, "both routes must export the same frame count");
+    assert_eq!(
+        cpu_box,
+        Some((10, 4, 41, 35)),
+        "the CPU must keep the overlay placed after the base ends"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the overlay must not be promoted to base when the base ends"
+    );
+    // The bbox above cannot tell a transparent stand-in from the base's last frame held
+    // over: both are below the brightness threshold. Sample a corner outside the overlay
+    // instead, where the CPU was measured to go black once the base ended.
+    let cpu_corner = corner_luma(&out_cpu, 10);
+    let gpu_corner = corner_luma(&out_gpu, 10);
+    println!("base-ends-first corner: cpu={cpu_corner:?} gpu={gpu_corner:?}");
+    if let (Some(c), Some(g)) = (cpu_corner, gpu_corner) {
+        assert!(
+            c < 24.0,
+            "the CPU control must render the ended base's area black, got {c}"
+        );
+        assert!(
+            (c - g).abs() < 12.0,
+            "the ended base's area must match the CPU: cpu={c} gpu={g}"
+        );
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_transition_on_the_base_track_should_render_under_a_live_overlay() {
+    // The scheduler's busiest crossing: the base is mid-blend (two clips open on one
+    // TrackSource, composited and blended to the canvas) while a second track pulls and
+    // places its own frames in the same output. Eligibility for this shape is asserted by
+    // `eligible_tracks_should_still_accept_a_transition_on_the_base_track`, but that is a
+    // data compare -- this drives the real pipeline and checks the pixels.
+    let dark = test_output_path("bt_dark.mp4");
+    let mid = test_output_path("bt_mid.mp4");
+    let bright = test_output_path("bt_bright.mp4");
+    let _gd = FileGuard::new(dark.clone());
+    let _gm = FileGuard::new(mid.clone());
+    let _gb = FileGuard::new(bright.clone());
+    if make_source_file(&dark, CANVAS, CANVAS, 30.0, SRC_FRAMES, 40, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&mid, CANVAS, CANVAS, 30.0, SRC_FRAMES, 90, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new(&dark)
+                    .offset(Duration::ZERO)
+                    .trim(Duration::ZERO, Duration::from_millis(400)),
+                Clip::new(&mid)
+                    .offset(Duration::from_millis(400))
+                    .trim(Duration::ZERO, Duration::from_millis(100))
+                    .with_transition(XfadeTransition::Fade, Duration::from_millis(100)),
+            ])
+            .video_track(vec![
+                Clip::new(&bright).with_position(10.0, 4.0).with_scale(0.5),
+            ])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("bt_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("bt_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    // Frame 13 sits inside the 0.1 s window that opens at 0.4 s (frame 12) at 30 fps.
+    let (cpu_n, cpu_box) = count_and_bbox(&out_cpu, 13);
+    let (gpu_n, gpu_box) = count_and_bbox(&out_gpu, 13);
+    let cpu_corner = corner_luma(&out_cpu, 13);
+    let gpu_corner = corner_luma(&out_gpu, 13);
+    println!(
+        "base transition under overlay: cpu=({cpu_n}, {cpu_box:?}, {cpu_corner:?}) \
+         gpu=({gpu_n}, {gpu_box:?}, {gpu_corner:?})"
+    );
+    assert_eq!(cpu_n, gpu_n, "both routes must export the same frame count");
+    assert_eq!(
+        cpu_box,
+        Some((10, 4, 41, 35)),
+        "the CPU control must keep the overlay placed while the base blends"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the overlay must stay placed while the base runs its transition"
+    );
+    if let (Some(c), Some(g)) = (cpu_corner, gpu_corner) {
+        assert!(
+            (c - g).abs() < 12.0,
+            "the blending base must match the CPU outside the overlay: cpu={c} gpu={g}"
+        );
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn tracks_of_unequal_length_should_end_where_the_cpu_ends() {
+    // Measured on the CPU route: the export ends with the **topmost** track, not the
+    // longest -- the last overlay is built with `eof_action=endall`. A 15-frame base
+    // under a 6-frame overlay exports ~5 frames. The scheduler has to reproduce that,
+    // and it is exactly the kind of rule an implementation invents differently.
+    let dark = test_output_path("mtlen_dark.mp4");
+    let short = test_output_path("mtlen_short.mp4");
+    let _gd = FileGuard::new(dark.clone());
+    let _gs = FileGuard::new(short.clone());
+    if make_source_file(&dark, CANVAS, CANVAS, 30.0, SRC_FRAMES, 40, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&short, CANVAS, CANVAS, 30.0, 6, 235, 128, 128).is_none() {
+        return;
+    }
+
+    let out_cpu = test_output_path("mtlen_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = two_track_timeline(&dark, &short) else {
+        return;
+    };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("mtlen_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = two_track_timeline(&dark, &short) else {
+        return;
+    };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+
+    let (cpu_n, _) = count_and_bbox(&out_cpu, 0);
+    let (gpu_n, _) = count_and_bbox(&out_gpu, 0);
+    println!("unequal length: cpu={cpu_n} gpu={gpu_n}");
+    assert!(
+        cpu_n < SRC_FRAMES,
+        "the control must actually be truncated by the short overlay, got {cpu_n}"
+    );
+    assert_eq!(
+        gpu_n, cpu_n,
+        "the GPU export must end where the CPU export ends"
+    );
 }
 
 #[test]

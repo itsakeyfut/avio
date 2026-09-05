@@ -345,10 +345,10 @@ impl Timeline {
         // composition graph is not built when the GPU export path will run. No
         // adapter, force-CPU, or an ineligible timeline all fall back to CPU.
         #[cfg(feature = "gpu")]
-        let gpu_export: Option<(usize, crate::gpu_compositor::GpuCompositor)> = if force_cpu {
+        let gpu_export: Option<(Vec<usize>, crate::gpu_compositor::GpuCompositor)> = if force_cpu {
             None
         } else {
-            crate::gpu_export::eligible_track(
+            crate::gpu_export::eligible_tracks(
                 &video_tracks,
                 lavfi_overlay.as_deref(),
                 any_video_solo,
@@ -562,10 +562,11 @@ impl Timeline {
         // 6. Drain video → encoder: the GPU export path when eligible, else the CPU
         //    composition graph. Both push to the same unchanged encoder.
         #[cfg(feature = "gpu")]
-        if let Some((idx, mut core)) = gpu_export {
-            log::info!("export compositor path=gpu");
+        if let Some((indices, mut core)) = gpu_export {
+            log::info!("export compositor path=gpu tracks={}", indices.len());
+            let tracks: Vec<&Track> = indices.iter().map(|&i| &video_tracks[i]).collect();
             crate::gpu_export::drain_video_gpu(
-                &video_tracks[idx],
+                &tracks,
                 (canvas_width, canvas_height),
                 frame_rate,
                 &mut encoder,
