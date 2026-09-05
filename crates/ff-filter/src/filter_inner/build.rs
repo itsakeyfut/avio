@@ -119,6 +119,13 @@ pub(crate) unsafe fn add_and_link_step(
     // reaching here; callers that drive steps directly (e.g. the realtime
     // compositor) rely on this dispatch.
     match step {
+        // A whole description, parsed and spliced in as one step. Dispatched
+        // here rather than in each graph builder so the video graph and the
+        // realtime compositor — which both drive steps through this function —
+        // get it from one implementation.
+        FilterStep::ParseDesc { desc } => {
+            return add_parse_desc_chain(graph, prev_ctx, desc, index);
+        }
         FilterStep::Glow {
             threshold,
             radius,
@@ -367,6 +374,151 @@ pub(super) unsafe fn add_raw_filter_step(
         return Err(FilterError::BuildFailed);
     }
     Ok(step_ctx)
+}
+
+/// Number of entries in an `AVFilterInOut` linked list.
+///
+/// # Safety
+///
+/// `head` must be null or point to a well-formed `AVFilterInOut` list.
+unsafe fn inout_len(head: *const ff_sys::AVFilterInOut) -> usize {
+    let mut node = head;
+    let mut n = 0usize;
+    while !node.is_null() {
+        n += 1;
+        node = (*node).next;
+    }
+    n
+}
+
+/// The pads a parsed filter description leaves open, copied out of the
+/// `AVFilterInOut` lists so those can be freed immediately.
+#[derive(Clone, Copy)]
+pub(super) struct ParsedDescPads {
+    /// The context owning the description's single open input.
+    pub(super) input_ctx: *mut ff_sys::AVFilterContext,
+    /// The pad index of that input. Not necessarily 0: a description may leave
+    /// open the second input of an `overlay` whose first comes from a source
+    /// inside the description.
+    pub(super) input_pad: u32,
+    /// The context owning the description's single open output (always pad 0).
+    pub(super) output_ctx: *mut ff_sys::AVFilterContext,
+}
+
+/// Parse a libavfilter description into `graph` and return the pads it leaves
+/// open.
+///
+/// `avfilter_graph_parse2` adds the described filters to `graph` and hands back
+/// the pads it could not connect: `inputs` are the ones still needing to be fed,
+/// `outputs` the ones still needing to be drained. Exactly one of each is
+/// required, so the parsed sub-graph links into the step chain like any single
+/// filter; sources (no open input) and sinks (no open output) are rejected
+/// rather than silently mis-linked.
+///
+/// On any error the filters already added stay in `graph`. Both callers free the
+/// whole graph on failure, so there is nothing to unwind here.
+///
+/// # Safety
+///
+/// `graph` must be a valid `AVFilterGraph`.
+pub(super) unsafe fn parse_desc_pads(
+    graph: *mut ff_sys::AVFilterGraph,
+    desc: &str,
+) -> Result<ParsedDescPads, FilterError> {
+    let Ok(cdesc) = std::ffi::CString::new(desc) else {
+        return Err(FilterError::InvalidConfig {
+            reason: format!("filter description contains a NUL byte: \"{desc}\""),
+        });
+    };
+
+    let mut inputs: *mut ff_sys::AVFilterInOut = std::ptr::null_mut();
+    let mut outputs: *mut ff_sys::AVFilterInOut = std::ptr::null_mut();
+
+    // SAFETY: `graph` is a valid graph and `cdesc` is a null-terminated string
+    // alive for the call. The two out-parameters are initialised to null, which
+    // is what `avfilter_inout_free` expects for "nothing to free".
+    let ret =
+        ff_sys::avfilter_graph_parse2(graph, cdesc.as_ptr(), &raw mut inputs, &raw mut outputs);
+
+    let outcome = 'parse: {
+        if ret < 0 {
+            break 'parse Err(FilterError::InvalidConfig {
+                reason: format!(
+                    "failed to parse the filter description \"{desc}\": {} (code={ret})",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
+        }
+
+        let (n_in, n_out) = (inout_len(inputs), inout_len(outputs));
+        if n_in != 1 || n_out != 1 {
+            break 'parse Err(FilterError::InvalidConfig {
+                reason: format!(
+                    "the filter description \"{desc}\" must have exactly one open input and \
+                     one open output, but has {n_in} and {n_out}"
+                ),
+            });
+        }
+
+        // SAFETY: both lists have exactly one entry, checked above, so neither
+        // pointer is null.
+        let (input, output) = (&*inputs, &*outputs);
+
+        // The chain is linked from pad 0 everywhere else, so an output landing
+        // on another pad would be linked to the wrong stream. Reject it instead.
+        if output.pad_idx != 0 {
+            break 'parse Err(FilterError::InvalidConfig {
+                reason: format!(
+                    "the filter description \"{desc}\" leaves its output on pad {} rather \
+                     than pad 0",
+                    output.pad_idx
+                ),
+            });
+        }
+
+        Ok(ParsedDescPads {
+            input_ctx: input.filter_ctx,
+            input_pad: input.pad_idx as u32,
+            output_ctx: output.filter_ctx,
+        })
+    };
+
+    // Both lists belong to us from here on, and `avfilter_inout_free` is a no-op
+    // on a pointer to null. Freeing unconditionally covers the success path, the
+    // rejection paths, and whatever `parse2` leaves behind on failure. The
+    // `AVFilterContext`s the entries point at are owned by `graph` and outlive
+    // this call.
+    // SAFETY: both pointers are either null or lists returned by `parse2`.
+    ff_sys::avfilter_inout_free(&raw mut inputs);
+    ff_sys::avfilter_inout_free(&raw mut outputs);
+
+    outcome
+}
+
+/// Parse a libavfilter description and splice it into the chain after
+/// `prev_ctx`, returning the context its output hangs off.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_parse_desc_chain(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    desc: &str,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let pads = parse_desc_pads(graph, desc)?;
+
+    // SAFETY: `prev_ctx` and the parsed contexts belong to `graph`; the pad
+    // indices come from the lists `parse2` produced for those contexts.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, pads.input_ctx, pads.input_pad);
+    if ret < 0 {
+        return Err(ffmpeg_err(ret));
+    }
+
+    log::debug!("filter description spliced index={index} desc={desc}");
+    Ok(pads.output_ctx)
 }
 
 /// Insert a `setpts=PTS-STARTPTS` filter immediately after a `trim` step so

@@ -69,6 +69,12 @@ Real filter-graph verification effectively runs only on a full FFmpeg build (mac
 validated on the first `push`. A test that checks "FFmpeg accepts these args" must **push a frame**
 — `build().expect(...)` proves nothing about the arguments.
 
+**One exception: `parse_desc`.** A `FilterStep::ParseDesc` description is parsed at `build()`
+(`avfilter_graph_parse2`), which resolves filter names *and applies their options*, so a bad option
+name or value returns `InvalidConfig` there rather than on the first push (ADR-0012). Asserting on
+`build()` is therefore correct for that one step kind — but gate it, because the check is skipped
+when the filter registry is empty, which is exactly CI's Linux FFmpeg.
+
 ### 3. Property tests (proptest)
 
 Verify invariants hold on arbitrary input (e.g. a parameter parser never panics; an interpolated

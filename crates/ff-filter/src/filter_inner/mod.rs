@@ -84,6 +84,11 @@ pub(super) fn ffmpeg_err(code: i32) -> FilterError {
 /// `add_and_link_step` at graph-construction time.
 pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterError> {
     for step in steps {
+        // A description is not one filter and has no name to look up;
+        // `validate_parse_descs` checks it by parsing instead.
+        if matches!(step, FilterStep::ParseDesc { .. }) {
+            continue;
+        }
         let name =
             std::ffi::CString::new(step.filter_name()).map_err(|_| FilterError::BuildFailed)?;
         // SAFETY: `avfilter_get_by_name` reads a valid, null-terminated C
@@ -102,6 +107,61 @@ pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterEr
             );
             return Ok(());
         }
+    }
+    Ok(())
+}
+
+/// Check every [`FilterStep::ParseDesc`] by parsing its description into a
+/// scratch `AVFilterGraph` that is thrown away.
+///
+/// This is deliberately stricter than the rest of the crate, where `build()`
+/// constructs nothing and `FFmpeg` first sees a filter's arguments on the first
+/// push. A description is an unchecked string from the caller with no
+/// compile-time checking at all, and parsing needs no frame format, so a typo is
+/// caught at `build()` instead of surviving until the first frame.
+///
+/// Skipped when the filter registry is not populated. Some Linux `FFmpeg` builds
+/// report every filter as missing until an `AVFilterGraph` exists; one is
+/// allocated here first, but probing for `buffer` — the filter the graph API
+/// cannot work without — keeps a registry-shaped failure from being reported as
+/// a bad description. Deferring can only lose an early error, never invent one.
+pub(crate) fn validate_parse_descs(steps: &[FilterStep]) -> Result<(), FilterError> {
+    for step in steps {
+        let FilterStep::ParseDesc { desc } = step else {
+            continue;
+        };
+
+        // SAFETY: allocates an `AVFilterGraph`; returns null on allocation
+        // failure, which `NonNull::new` turns into the error below.
+        let raw_graph = unsafe { ff_sys::avfilter_graph_alloc() };
+        let Some(graph) = NonNull::new(raw_graph) else {
+            return Err(FilterError::Ffmpeg {
+                code: -1,
+                message: "avfilter_graph_alloc failed".to_string(),
+            });
+        };
+
+        // SAFETY: reads a static null-terminated string and returns a borrowed
+        // pointer valid for the process lifetime; never dereferenced here.
+        let registry_ready = unsafe { !ff_sys::avfilter_get_by_name(c"buffer".as_ptr()).is_null() };
+
+        let result = if registry_ready {
+            // SAFETY: `graph` was allocated immediately above and is otherwise
+            // untouched. The pads it returns are not used; only the diagnosis is.
+            unsafe { build::parse_desc_pads(graph.as_ptr(), desc) }.map(|_| ())
+        } else {
+            log::debug!("filter registry unavailable, deferring description check desc={desc}");
+            Ok(())
+        };
+
+        // SAFETY: `graph` is the graph allocated above, freed exactly once and
+        // never used again — including on the error path below.
+        unsafe {
+            let mut raw = graph.as_ptr();
+            ff_sys::avfilter_graph_free(&raw mut raw);
+        }
+
+        result?;
     }
     Ok(())
 }

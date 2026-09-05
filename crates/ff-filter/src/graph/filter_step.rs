@@ -1160,6 +1160,30 @@ pub enum FilterStep {
         /// The avfilter option string (e.g. `"reds=…"`); empty for none.
         args: String,
     },
+
+    /// Splice a whole libavfilter *description* into the chain — the escape
+    /// hatch for graph shapes the step list cannot express.
+    ///
+    /// `desc` takes the same syntax as `ffmpeg -vf`, so it may chain several
+    /// filters (`"scale=64:48,hue=s=0"`) and may use labels to branch and
+    /// rejoin (`"split[a][b];[a]hue=s=0[c];[b][c]overlay"`). It is parsed with
+    /// `avfilter_graph_parse2` and spliced in as one step.
+    ///
+    /// Use [`Raw`](Self::Raw) for a *single* untyped filter; that is what it is
+    /// for, and it needs no parser. This variant exists for the two things
+    /// `Raw` cannot do: take a whole chain as one string, and describe a
+    /// non-linear graph.
+    ///
+    /// The description must have exactly one open input and one open output, so
+    /// it links into the chain like any other step. Sources (`"color=c=red"`,
+    /// zero open inputs) and sinks are rejected.
+    ///
+    /// Video only, like [`Raw`](Self::Raw): the audio graph builds from an
+    /// allow-list of audio steps, which neither variant is in.
+    ParseDesc {
+        /// The filter description (e.g. `"scale=64:48,hue=s=0"`).
+        desc: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -1251,6 +1275,12 @@ impl FilterStep {
             // Escape hatch: the runtime filter name is borrowed from `self`.
             // (The `&'static str` literals below coerce to the borrowed `&str`.)
             Self::Raw { filter, .. } => filter,
+            // ParseDesc is a whole description, not one filter, so it has no
+            // name to give. `add_and_link_step` dispatches it before the
+            // single-filter path and `validate_filter_steps` skips it, so this
+            // is never read; `null` (the identity filter) keeps a hypothetical
+            // future fallback inert rather than wrong.
+            Self::ParseDesc { .. } => "null",
             Self::Format { .. } => "format",
             Self::SetParams { .. } => "setparams",
             Self::Trim { .. } => "trim",
@@ -1400,6 +1430,8 @@ impl FilterStep {
         match self {
             // Escape hatch: the option string is passed through verbatim.
             Self::Raw { args, .. } => args.clone(),
+            // See `filter_name`: ParseDesc never reaches the single-filter path.
+            Self::ParseDesc { .. } => String::new(),
             Self::Format {
                 pix_fmts,
                 color_spaces,

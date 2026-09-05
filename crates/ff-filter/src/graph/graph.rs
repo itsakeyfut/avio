@@ -59,6 +59,36 @@ impl FilterGraph {
         FilterGraphBuilder::new()
     }
 
+    /// Build a graph from a single `FFmpeg` filter description — the escape
+    /// hatch for reaching filters and graph shapes the typed API does not cover.
+    ///
+    /// ```ignore
+    /// use ff_filter::FilterGraph;
+    ///
+    /// let mut graph = FilterGraph::parse_desc("scale=1280:720,hue=s=0")?;
+    /// ```
+    ///
+    /// **The typed API remains the preferred path.** A description carries **no
+    /// compile-time checking**: filter names, options and their meaning are all
+    /// opaque strings until `FFmpeg` looks at them. Use
+    /// [`FilterGraph::builder`] and its typed methods wherever they cover what
+    /// you need.
+    ///
+    /// Shorthand for `FilterGraph::builder().parse_desc(desc).build()`. Use
+    /// [`FilterGraphBuilder::parse_desc`] instead to mix a description with
+    /// typed steps in one chain; its documentation describes exactly what is
+    /// checked, when, and the one-open-input / one-open-output requirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::InvalidConfig`] naming the description when it
+    /// cannot be parsed, names a filter this `FFmpeg` build does not have, sets
+    /// an option that filter rejects, or does not leave exactly one open input
+    /// and one open output.
+    pub fn parse_desc(desc: impl Into<String>) -> Result<Self, FilterError> {
+        Self::builder().parse_desc(desc).build()
+    }
+
     /// Creates a `FilterGraph` from a pre-built [`FilterGraphInner`].
     ///
     /// Used by [`MultiTrackComposer`](crate::MultiTrackComposer) and

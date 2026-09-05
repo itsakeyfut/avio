@@ -88,6 +88,66 @@ impl FilterGraphBuilder {
         })
     }
 
+    /// Append a whole `FFmpeg` filter *description* to the chain — the escape
+    /// hatch for graph shapes the typed steps cannot express.
+    ///
+    /// `desc` uses the same syntax as `ffmpeg -vf`, so it may chain several
+    /// filters and may use labels to branch and rejoin:
+    ///
+    /// ```ignore
+    /// use ff_filter::FilterGraph;
+    ///
+    /// let graph = FilterGraph::builder()
+    ///     .scale(1280, 720)                                   // typed
+    ///     .parse_desc("split[a][b];[a]hue=s=0[c];[b][c]overlay") // escape hatch
+    ///     .build()?;
+    /// ```
+    ///
+    /// **This is an escape hatch, not the primary model.** The typed builder
+    /// methods stay the recommended path: they are checked at compile time,
+    /// while a description is an opaque string with **no compile-time checking
+    /// whatsoever** — a typo in a filter name or option is a runtime error, and
+    /// nothing here tells you an option changed meaning between `FFmpeg`
+    /// versions. Prefer a typed method wherever one exists, and
+    /// [`raw_filter`](Self::raw_filter) for a *single* untyped filter; reach for
+    /// this only for a whole chain or a non-linear description.
+    ///
+    /// # What is checked, and when
+    ///
+    /// [`build`](Self::build) checks the description's syntax, the existence of
+    /// every filter it names, its pad arity, **and its options** — both their
+    /// names and any value `av_opt_set` or expression evaluation rejects.
+    /// `avfilter_graph_parse2` applies options while parsing, so
+    /// `"hue=nosuchopt=1"` and `"hue=s=notanumber"` both fail at `build()`. This
+    /// is *more* than the typed steps and than
+    /// [`raw_filter`](Self::raw_filter) check there, not the same:
+    /// `raw_filter("hue", "nosuchopt=1")` builds and fails on the first push.
+    ///
+    /// What still waits for the first push is what cannot be known until the
+    /// links are configured — format negotiation and anything a filter decides
+    /// in `config_props`.
+    ///
+    /// The description must leave exactly one open input and one open output, so
+    /// it links into the chain like any other step; a source such as
+    /// `"color=c=red"` has none and is rejected. Video only, like
+    /// [`raw_filter`](Self::raw_filter): the audio graph is built from an
+    /// allow-list of audio steps that neither is part of.
+    ///
+    /// A `scale` *inside* a description is invisible to
+    /// [`FilterGraph::output_resolution`](crate::FilterGraph::output_resolution),
+    /// which only tracks the typed [`scale`](Self::scale) step. A consumer that
+    /// sizes an encoder from it — `ff-pipeline` does — will fall back to the
+    /// source resolution. Set the output resolution explicitly, or use the typed
+    /// step, when the description resizes.
+    ///
+    /// The `build()`-time check applies to this builder. A description that
+    /// reaches the realtime compositor instead is checked when *its* graph is
+    /// constructed, and the same diagnosis arrives wrapped in that path's error.
+    #[must_use]
+    pub fn parse_desc(self, desc: impl Into<String>) -> Self {
+        self.add_step(FilterStep::ParseDesc { desc: desc.into() })
+    }
+
     /// Declare the frame rate of the frames that will be pushed, in frames per second.
     ///
     /// Only the filters that require a constant frame rate need it — [`xfade`](Self::xfade)
@@ -123,6 +183,11 @@ impl FilterGraphBuilder {
     /// nothing to filter). The actual `FFmpeg` graph is constructed lazily on the
     /// first [`push_video`](FilterGraph::push_video) or
     /// [`push_audio`](FilterGraph::push_audio) call.
+    ///
+    /// [`parse_desc`](Self::parse_desc) is the exception: its description is
+    /// parsed here — filter names, pad arity **and options included** — and a bad
+    /// one returns [`FilterError::InvalidConfig`] naming it, rather than failing
+    /// on the first push.
     pub fn build(self) -> Result<FilterGraph, FilterError> {
         if self.steps.is_empty() {
             return Err(FilterError::BuildFailed);
@@ -832,6 +897,7 @@ impl FilterGraphBuilder {
         }
 
         crate::filter_inner::validate_filter_steps(&self.steps)?;
+        crate::filter_inner::validate_parse_descs(&self.steps)?;
         let output_resolution = self.steps.iter().rev().find_map(|s| {
             if let FilterStep::Scale { width, height, .. } = s {
                 Some((*width, *height))
@@ -1173,5 +1239,32 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "chromakey blend < 0.0 must return InvalidConfig, got {result:?}"
         );
+    }
+
+    #[test]
+    fn parse_desc_should_append_a_step_carrying_the_description_verbatim() {
+        // Deterministic, so it runs on the FFmpeg-less CI legs too: the escape
+        // hatch is a passthrough, and any normalisation of the string here would
+        // change what FFmpeg is asked to parse. Appending (not replacing) is what
+        // lets a description sit between typed steps.
+        let desc = "split[a][b];[a]hue=s=0[c];[b][c]overlay";
+        let builder = FilterGraph::builder()
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .parse_desc(desc);
+
+        let steps = builder.steps();
+        assert_eq!(steps.len(), 2, "parse_desc must append, not replace");
+        assert!(
+            matches!(&steps[0], FilterStep::Scale { .. }),
+            "the typed step must keep its position, got {:?}",
+            steps[0]
+        );
+        match &steps[1] {
+            FilterStep::ParseDesc { desc: recorded } => assert_eq!(
+                recorded, desc,
+                "the description must be carried through unchanged"
+            ),
+            other => panic!("expected a ParseDesc step, got {other:?}"),
+        }
     }
 }
