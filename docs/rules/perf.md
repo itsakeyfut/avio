@@ -48,7 +48,9 @@ Construct the `FilterGraph`, encoder, and decoder contexts **once** during initi
 push frames through them. Never rebuild a filter graph or reopen a codec inside the frame loop.
 
 > `FilterGraph::build()` is lazy: it validates filter *names* and builds the FFmpeg graph on the
-> first `push`. Still build it once, outside the loop.
+> first `push`. Still build it once, outside the loop. (`parse_desc` is the one step kind that also
+> parses its description at `build()` — see ADR-0012 — which is another reason to keep `build()` out
+> of the frame loop.)
 
 ---
 

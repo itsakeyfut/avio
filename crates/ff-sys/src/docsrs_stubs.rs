@@ -674,6 +674,14 @@ pub struct AVFilterContext {
     pub hw_device_ctx: *mut AVBufferRef,
 }
 
+/// An unconnected pad of a parsed filter graph, as returned by
+/// `avfilter_graph_parse2`.
+pub struct AVFilterInOut {
+    pub filter_ctx: *mut AVFilterContext,
+    pub pad_idx: c_int,
+    pub next: *mut AVFilterInOut,
+}
+
 // libavfilter constants
 
 /// Flag for `av_buffersrc_add_frame_flags`: keep a reference to the frame.
@@ -719,6 +727,17 @@ pub unsafe fn avfilter_graph_config(
 ) -> c_int {
     0
 }
+
+pub unsafe fn avfilter_graph_parse2(
+    _graph: *mut AVFilterGraph,
+    _filters: *const c_char,
+    _inputs: *mut *mut AVFilterInOut,
+    _outputs: *mut *mut AVFilterInOut,
+) -> c_int {
+    0
+}
+
+pub unsafe fn avfilter_inout_free(_inout: *mut *mut AVFilterInOut) {}
 
 pub unsafe fn avfilter_graph_set_auto_convert(_graph: *mut AVFilterGraph, _flags: c_uint) {}
 
