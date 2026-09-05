@@ -14,9 +14,11 @@
 //!
 //! Fallback is **whole-frame**: if any layer carries an unsupported blend mode,
 //! composite op, or effect step, the entire frame falls back to the existing CPU
-//! compositor. The mapping never silently drops a step. v1 covers colour grade
-//! (`Eq`) and plain scale as per-layer effects; broader node coverage is tracked as
-//! a follow-up.
+//! compositor. The mapping never silently drops a step.
+//!
+//! `classify_step` is the authority on what is covered — the node-coverage table in
+//! `docs/specs/gpu-compositing-bridge.md` describes it, but read the code when the
+//! two disagree.
 
 use std::time::Duration;
 
@@ -432,10 +434,17 @@ pub fn map_scene<L: GpuLayerSource>(layers: &[L], canvas: (u32, u32), t: Duratio
         };
 
         let mut effects = Vec::new();
+        // Rotation contributed by the effect chain (`RotateAnimated`), which is
+        // **added** to the layer scalar rather than replacing it: on the CPU both
+        // apply — the compositor rotates the layer from `layer.rotation` and the
+        // effect chain rotates again — and where `derive` neutralized the scalar
+        // (ADR-0005) the sum degrades to the step's own angle.
+        let mut step_rotation = 0.0_f32;
         for step in layer.effects() {
             match classify_step(step, t) {
                 StepClass::Skip => {}
                 StepClass::Effect(effect) => effects.push(effect),
+                StepClass::Rotation(degrees) => step_rotation += degrees,
                 StepClass::Unsupported => {
                     return GpuMapping::Fallback(GpuFallback::UnsupportedEffect);
                 }
@@ -449,7 +458,7 @@ pub fn map_scene<L: GpuLayerSource>(layers: &[L], canvas: (u32, u32), t: Duratio
             y: eval_at(layer.y(), t),
             scale_x: eval_at(layer.scale_x(), t),
             scale_y: eval_at(layer.scale_y(), t),
-            rotation: eval_at(layer.rotation(), t),
+            rotation: eval_at(layer.rotation(), t) + step_rotation,
             opacity: eval_at(layer.opacity(), t).clamp(0.0, 1.0),
             blend_mode,
             composite_op,
@@ -475,6 +484,9 @@ fn eval_at(value: &AnimatedValue<f64>, t: Duration) -> f32 {
 enum StepClass {
     Skip,
     Effect(GpuEffect),
+    /// A step that belongs on the layer's transform rather than in its effect
+    /// list: clockwise degrees to add to [`GpuLayerPlan::rotation`].
+    Rotation(f32),
     Unsupported,
 }
 
@@ -534,6 +546,31 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             height: *height,
             algorithm: map_scale_algo(*algorithm),
         }),
+        // `ScaleAnimated` is the same resize step as `Scale` with a track for each
+        // dimension (`derive` emits it under ADR-0005 with the layer scalar
+        // neutralized, sized as `canvas * factor`), so it maps to the same node
+        // evaluated at the frame time. `map_scene` runs per frame, which is what
+        // makes that sound — the same reason the animated blur/sharpen/vignette
+        // arms below evaluate at `t`.
+        //
+        // No zero-size guard: plain `Scale` has none either, and `FFmpeg`'s `scale`
+        // reads `0` as "keep the source size". Falling back at zero would invent a
+        // divergence the static path does not have.
+        FilterStep::ScaleAnimated {
+            width,
+            height,
+            algorithm,
+        } => StepClass::Effect(GpuEffect::Scale {
+            width: round_u32(width.value_at(t)),
+            height: round_u32(height.value_at(t)),
+            algorithm: map_scale_algo(*algorithm),
+        }),
+        // `RotateAnimated` is the rotation `derive` lifted off the layer scalar
+        // (ADR-0005), so it goes back onto the transform rather than into the
+        // effect list — there is no GPU rotate *node*, rotation is a layer property.
+        FilterStep::RotateAnimated { angle, fill_color } => {
+            rotate_animated_step(angle.value_at(t), fill_color)
+        }
         FilterStep::GBlur { sigma } => StepClass::Effect(GpuEffect::Blur { sigma: *sigma }),
         FilterStep::GBlurAnimated { sigma } => StepClass::Effect(GpuEffect::Blur {
             // The blur node is rebuilt each composite (map_scene runs per frame), so
@@ -654,6 +691,10 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
                 })
             }
         }
+        // `hue` is `hsl` with a neutral saturation and lightness: both compile to
+        // the same `hue` filter's `h=` (see `FilterStep::args`), so this is a
+        // rename, not an approximation.
+        FilterStep::Hue { degrees } => hsl_step(*degrees, 1.0, 0.0),
         FilterStep::Hsl {
             hue,
             saturation,
@@ -684,7 +725,7 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             color,
             similarity,
             blend,
-        } => match parse_ffmpeg_hex(color) {
+        } => match parse_key_color(color) {
             Some(key_color) => chroma_key_step(key_color, *similarity, *blend),
             None => StepClass::Unsupported,
         },
@@ -692,7 +733,7 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             color,
             similarity,
             blend,
-        } => match parse_ffmpeg_hex(color) {
+        } => match parse_key_color(color) {
             Some(key_color) => chroma_key_step(
                 key_color,
                 similarity.value_at(t) as f32,
@@ -924,30 +965,53 @@ fn motion_blur_step(shutter_angle: f32, sub_frames: u8) -> StepClass {
     })
 }
 
+/// Classifies a `RotateAnimated` step: the angle folds onto the layer transform
+/// rather than becoming an effect node, but only when the fill the CPU `rotate`
+/// would use is one the GPU transform can reproduce.
+///
+/// The GPU transform leaves the corners a rotation exposes **transparent**, while
+/// `rotate` fills them with `fillcolor`. Two fills are safe:
+///
+/// * `none` — transparent, exactly what the transform does.
+/// * `black` — what `derive` emits, and what the CPU compositor's own *static*
+///   layer rotation uses (`composition_inner` builds `rotate` with no `fillcolor`,
+///   whose default is black). Folding therefore makes an animated rotation behave
+///   like a static one on both paths: the black-versus-transparent difference is
+///   the pre-existing one the static mapping already carries, not a new one.
+///
+/// Any other fill has nothing to map to, so it falls back rather than render
+/// different corners (RK-020). The comparison is case-insensitive because
+/// `FFmpeg` colour names are.
+// The model's `f64` degrees narrow to the `f32` the plan carries; that is the
+// intended, lossy conversion, as in `eval_at`.
+#[allow(clippy::cast_possible_truncation)]
+fn rotate_animated_step(degrees: f64, fill_color: &str) -> StepClass {
+    if !(fill_color.eq_ignore_ascii_case("black") || fill_color.eq_ignore_ascii_case("none")) {
+        return StepClass::Unsupported;
+    }
+    StepClass::Rotation(degrees as f32)
+}
+
 /// Rounds an animated pixel bound (`f64`) to a non-negative `u32` for the mask.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn round_u32(v: f64) -> u32 {
     v.max(0.0).round() as u32
 }
 
-/// Parses an `FFmpeg` `0xRRGGBB` / `#RRGGBB` colour string into an RGB triple
-/// (each channel `0.0..=1.0`), or `None` for any other form. Used to recover the
-/// GPU node's key colour from the [`FilterStep::ChromaKey`] colour string that
-/// [`EffectKind::ChromaKey`](crate::EffectKind::ChromaKey) emits canonically.
-fn parse_ffmpeg_hex(color: &str) -> Option<[f32; 3]> {
-    let hex = color
-        .strip_prefix("0x")
-        .or_else(|| color.strip_prefix('#'))?;
-    if hex.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+/// Parses an `FFmpeg` colour string into an RGB triple (each channel
+/// `0.0..=1.0`), or `None` when it is not a colour this build can name.
+///
+/// Delegates to [`ff_format::Color::parse_ffmpeg`], so a name (`"green"`) works as
+/// well as the canonical hex the typed effects emit — which is what lets a
+/// hand-written or imported `chromakey=green` reach the GPU node instead of
+/// falling back (#1630). Any alpha the string carries is dropped: the GPU node's
+/// key colour is RGB, and the alpha it produces comes from the keying.
+fn parse_key_color(color: &str) -> Option<[f32; 3]> {
+    let c = ff_format::Color::parse_ffmpeg(color)?;
     Some([
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
+        f32::from(c.r) / 255.0,
+        f32::from(c.g) / 255.0,
+        f32::from(c.b) / 255.0,
     ])
 }
 
@@ -966,7 +1030,7 @@ fn map_scale_algo(algo: ScaleAlgorithm) -> RenderScaleAlgorithm {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use ff_filter::{AnimationTrack, Easing, Keyframe};
+    use ff_filter::{AnimationTrack, Easing, Keyframe, XfadeTransition};
 
     use super::*;
     use crate::Clip;
@@ -1204,6 +1268,191 @@ mod tests {
                 height: 240,
                 algorithm: RenderScaleAlgorithm::Bicubic,
             }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_scale_animated_to_the_scale_node_at_the_frame_time() {
+        // #1630. Width ramps 320 -> 640 and height 240 -> 480 over 0..2s, so t=1s
+        // must read the midpoint. Asserting at a single `t` would pass for a
+        // mapping that ignored the tracks and used their t=0 values (RK-015).
+        let track = |a: f64, b: f64| {
+            AnimatedValue::Track(
+                AnimationTrack::new()
+                    .push(Keyframe::new(Duration::ZERO, a, Easing::Linear))
+                    .push(Keyframe::new(Duration::from_secs(2), b, Easing::Linear)),
+            )
+        };
+        let step = FilterStep::ScaleAnimated {
+            width: track(320.0, 640.0),
+            height: track(240.0, 480.0),
+            algorithm: ScaleAlgorithm::Bicubic,
+        };
+        let at = |t: Duration| {
+            let mut layer = TestLayer::identity();
+            layer.effects = vec![step.clone()];
+            gpu(map_scene(&[layer], (16, 16), t)).layers[0]
+                .effects
+                .clone()
+        };
+        assert_eq!(
+            at(Duration::ZERO).as_slice(),
+            [GpuEffect::Scale {
+                width: 320,
+                height: 240,
+                // The algorithm must survive: it is the field a fold into the
+                // layer transform would have had to drop.
+                algorithm: RenderScaleAlgorithm::Bicubic,
+            }]
+        );
+        assert_eq!(
+            at(Duration::from_secs(1)).as_slice(),
+            [GpuEffect::Scale {
+                width: 480,
+                height: 360,
+                algorithm: RenderScaleAlgorithm::Bicubic,
+            }]
+        );
+    }
+
+    #[test]
+    fn map_scene_should_fold_rotate_animated_into_the_layer_rotation() {
+        // #1630. `derive` lifts an animated rotation off the layer scalar
+        // (ADR-0005); the mapping puts it back, per frame. Two times again, so a
+        // mapping that ignored the track cannot pass.
+        let step = FilterStep::RotateAnimated {
+            angle: AnimatedValue::Track(
+                AnimationTrack::new()
+                    .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+                    .push(Keyframe::new(Duration::from_secs(2), 90.0, Easing::Linear)),
+            ),
+            fill_color: "black".to_string(),
+        };
+        let at = |t: Duration| {
+            let mut layer = TestLayer::identity();
+            layer.effects = vec![step.clone()];
+            let plan = gpu(map_scene(&[layer], (16, 16), t));
+            // It belongs on the transform, not in the effect list.
+            assert!(
+                plan.layers[0].effects.is_empty(),
+                "a rotation must not become an effect node"
+            );
+            plan.layers[0].rotation
+        };
+        assert!((at(Duration::ZERO) - 0.0).abs() < 1e-3);
+        assert!((at(Duration::from_secs(1)) - 45.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn map_scene_should_add_a_rotate_animated_step_to_the_layer_rotation() {
+        // The CPU applies both the layer scalar (the compositor's own `rotate`)
+        // and the effect chain's, so the mapping sums them. A test with only one
+        // source of rotation passes just as well if the mapping *replaces*, which
+        // is why this one supplies both.
+        let mut layer = TestLayer::identity();
+        layer.rotation = AnimatedValue::Static(30.0);
+        layer.effects = vec![FilterStep::RotateAnimated {
+            angle: AnimatedValue::Static(15.0),
+            fill_color: "black".to_string(),
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert!(
+            (plan.layers[0].rotation - 45.0).abs() < 1e-3,
+            "layer 30deg + step 15deg must be 45deg, got {}",
+            plan.layers[0].rotation
+        );
+    }
+
+    #[test]
+    fn map_scene_should_fall_back_for_a_rotate_animated_with_an_unmappable_fill() {
+        // The GPU transform leaves the exposed corners transparent, so only a fill
+        // that matches (`none`) or the one the static path already uses (`black`)
+        // can fold. Anything else has no mapping and must not be rendered as if it
+        // did (RK-020).
+        for fill in ["black", "none", "BLACK", "None"] {
+            let mut layer = TestLayer::identity();
+            layer.effects = vec![FilterStep::RotateAnimated {
+                angle: AnimatedValue::Static(10.0),
+                fill_color: fill.to_string(),
+            }];
+            assert!(
+                matches!(
+                    map_scene(&[layer], (16, 16), Duration::ZERO),
+                    GpuMapping::Gpu(_)
+                ),
+                "{fill} must fold onto the transform"
+            );
+        }
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::RotateAnimated {
+            angle: AnimatedValue::Static(10.0),
+            fill_color: "red".to_string(),
+        }];
+        assert_eq!(
+            map_scene(&[layer], (16, 16), Duration::ZERO),
+            GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
+        );
+    }
+
+    #[test]
+    fn map_scene_should_map_hue_to_the_hsl_node() {
+        // #1630. `hue` and `hsl` compile to the same FFmpeg `hue` filter's `h=`,
+        // so `Hue` is `Hsl` with a neutral saturation and lightness.
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::Hue { degrees: 42.0 }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        assert_eq!(
+            plan.layers[0].effects.as_slice(),
+            [GpuEffect::Hsl {
+                hue_shift: 42.0,
+                saturation: 1.0,
+                lightness: 0.0,
+            }]
+        );
+
+        // A zero rotation is the identity, so it is skipped rather than mapped.
+        let mut neutral = TestLayer::identity();
+        neutral.effects = vec![FilterStep::Hue { degrees: 0.0 }];
+        let plan = gpu(map_scene(&[neutral], (16, 16), Duration::ZERO));
+        assert!(plan.layers[0].effects.is_empty());
+    }
+
+    #[test]
+    fn map_scene_should_map_a_chroma_key_with_a_named_colour() {
+        // #1630: the colour string used to have to be hex. A name now resolves
+        // through `ff_format::Color::parse_ffmpeg`, and FFmpeg's `green` is
+        // 0x008000 — so this also pins that the value came from that table.
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::ChromaKey {
+            color: "green".to_string(),
+            similarity: 0.3,
+            blend: 0.1,
+        }];
+        let plan = gpu(map_scene(&[layer], (16, 16), Duration::ZERO));
+        let [GpuEffect::ChromaKey { key_color, .. }] = plan.layers[0].effects.as_slice() else {
+            panic!("a named chroma-key colour must map to the GPU node");
+        };
+        assert!((key_color[0] - 0.0).abs() < 1e-6);
+        assert!((key_color[1] - 128.0 / 255.0).abs() < 1e-6);
+        assert!((key_color[2] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn map_scene_should_still_fall_back_for_a_color_key() {
+        // Deliberately NOT mapped. `ChromaKeyNode` measures *chroma* distance (it
+        // subtracts BT.709 luma from pixel and key first), which is `chromakey`'s
+        // semantic; `colorkey` is a full-RGB distance. Routing it to that node
+        // would be a silent approximation (RK-020), so it stays a fallback and
+        // this pins that the named-colour parser did not quietly enable it.
+        let mut layer = TestLayer::identity();
+        layer.effects = vec![FilterStep::ColorKey {
+            color: "green".to_string(),
+            similarity: 0.3,
+            blend: 0.1,
+        }];
+        assert_eq!(
+            map_scene(&[layer], (16, 16), Duration::ZERO),
+            GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
         );
     }
 
@@ -1609,8 +1858,15 @@ mod tests {
 
     #[test]
     fn map_scene_should_fall_back_on_unsupported_effect() {
+        // `Hue` stood here until #1630 mapped it; `XFade` needs the 2-input
+        // `CrossfadeNode` the plan has no place for, so it is the current example
+        // of a step with no GPU mapping at all.
         let mut layer = TestLayer::identity();
-        layer.effects = vec![FilterStep::Hue { degrees: 30.0 }];
+        layer.effects = vec![FilterStep::XFade {
+            transition: XfadeTransition::Fade,
+            duration: 1.0,
+            offset: 0.0,
+        }];
         assert_eq!(
             map_scene(&[layer], (16, 16), Duration::ZERO),
             GpuMapping::Fallback(GpuFallback::UnsupportedEffect)
@@ -1808,12 +2064,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_ffmpeg_hex_should_read_0x_and_hash_forms_and_reject_others() {
-        assert_eq!(parse_ffmpeg_hex("0x00FF00"), Some([0.0, 1.0, 0.0]));
-        assert_eq!(parse_ffmpeg_hex("#0000FF"), Some([0.0, 0.0, 1.0]));
-        // A named / non-hex colour has no GPU node → None (CPU fallback).
-        assert_eq!(parse_ffmpeg_hex("green"), None);
-        assert_eq!(parse_ffmpeg_hex("0x00FF"), None);
+    fn parse_key_color_should_read_hex_and_named_forms_and_reject_others() {
+        assert_eq!(parse_key_color("0x00FF00"), Some([0.0, 1.0, 0.0]));
+        assert_eq!(parse_key_color("#0000FF"), Some([0.0, 0.0, 1.0]));
+        // #1630: a name used to be `None` (CPU fallback); it now resolves through
+        // `ff_format::Color::parse_ffmpeg`. FFmpeg's `green` is 0x008000, so this
+        // also pins that the value comes from that table and not from a guess.
+        assert_eq!(parse_key_color("green"), Some([0.0, 128.0 / 255.0, 0.0]));
+        assert_eq!(parse_key_color("lime"), Some([0.0, 1.0, 0.0]));
+        // Alpha is dropped: the node's key colour is RGB.
+        assert_eq!(parse_key_color("0x00FF0080"), Some([0.0, 1.0, 0.0]));
+        assert_eq!(parse_key_color("no_such_colour"), None);
+        assert_eq!(parse_key_color("0x00FF"), None);
     }
 
     #[test]
@@ -1852,8 +2114,10 @@ mod tests {
 
     #[test]
     fn classify_chroma_key_unparseable_colour_should_fall_back_to_cpu() {
+        // `"green"` stood here until #1630 taught the parser colour names. The
+        // fallback is still reachable, just for a string no colour table has.
         let step = FilterStep::ChromaKey {
-            color: "green".to_string(),
+            color: "not_a_colour".to_string(),
             similarity: 0.3,
             blend: 0.1,
         };

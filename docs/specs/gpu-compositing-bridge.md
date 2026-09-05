@@ -101,8 +101,9 @@ textures) is a later optimization, out of scope for the bridge.
 
 `ff-render`'s node set covers a subset of `avio`'s derived vocabulary. A derived construct either maps to a
 node or forces CPU fallback for the whole frame (see below). The mapping **never silently drops** an
-unsupported step. The table is the **v1** state (Br2, `avio::gpu::map_scene`); broadening the covered set is
-tracked in **#1630**.
+unsupported step. This table tracks `avio::gpu::map_scene` as it stands; broadening the covered set further is
+tracked in **#1630** and its follow-ups. Grade it by reading `classify_step`, not by reading this table --
+it drifted badly between Br2 and #1630 and listed covered steps as fallbacks.
 
 | Derived construct (source) | v1 mapping | Status |
 |---|---|---|
@@ -114,16 +115,30 @@ tracked in **#1630**.
 | `FilterStep::EqAnimated` | `ColorGrade` (params at `t`) **only when gamma is neutral at `t`** (ff-render ColorGrade has no gamma) | **covered** (gamma-neutral); non-neutral gamma -> **fallback** |
 | plain `FilterStep::Scale { width, height, algorithm }` | `GpuEffect::Scale` -> `ScaleNode` (ff-render uses a linear filter for all algorithms; `Fast` maps to `Bilinear`) | **covered** |
 | temporal steps: `Trim` / `ResetPts` / `OffsetPts` / `Speed` | skipped (decode-scheduling, applied upstream) | **skipped** (not a fallback) |
-| other colour: `Hue`, `Curves`, `Gamma`, `Vignette`, `WhiteBalance`, `ColorBalanceAnimated`, `ThreeWayCC`, `ParametricEq` | -- | **fallback** (#1630) |
-| `FitToAspect` / `FillToAspect` (fit with pad/crop) | -- | **fallback** (#1630; `ScaleNode` is a plain resize) |
-| animated geometry `ScaleAnimated` / `RotateAnimated` | -- | **fallback** (#1630; ADR-0005 neutralizes the scalar, so v1 falls back rather than lose the animation) |
-| xfade (`XFade`, any kind) | -- | **fallback** (#1630; needs the 2-input `CrossfadeNode`) |
-| keying / masks: `ChromaKey`, `ColorKey`, `AlphaMatte`, `LumaKey`, `RectMask`, `FeatherMask`, ... | -- | **fallback** (#1630; `ChromaKey` needs a colour-string parser, masks need 2-input wiring) |
-| everything else (`GBlur`, `Lut3d`, `NoiseReduce`, `Raw`, ...) | -- | **fallback** (#1630) |
+| `FilterStep::ScaleAnimated` | `GpuEffect::Scale` -> `ScaleNode`, both dimensions evaluated at `t` (`map_scene` runs per frame). The `algorithm` carries through | **covered** (#1630) |
+| `FilterStep::RotateAnimated` | folded onto the layer's `rotation` (added to the layer scalar, not replacing it) rather than becoming a node -- rotation is a layer property, there is no GPU rotate node | **covered** when `fillcolor` is `black` or `none` (#1630); any other fill -> **fallback**. The GPU leaves the corners a rotation exposes transparent while `rotate` fills them, which is the same difference the *static* layer rotation already has, so folding makes the animated case behave like the static one rather than adding a divergence |
+| colour: `Hue`, `Hsl` / `HslAnimated` | `GpuEffect::Hsl` -> `HslNode` (`Hue` is `Hsl` with a neutral saturation/lightness; both compile to the same `hue` filter's `h=`) | **covered** (`Hue` in #1630) |
+| colour: `Curves`, `Vignette` / `VignetteAnimated`, `ThreeWayCC` / `ThreeWayCCAnimated`, `Lut3d`, `Glow` / `GlowAnimated`, `FilmGrain` / `FilmGrainAnimated`, `Unsharp` / `UnsharpAnimated` | `CurvesNode` / `VignetteNode` / `ColorWheelsNode` / `LutNode` / `GlowNode` / `FilmGrainNode` / `SharpenNode` | **covered**. An off-centre `vignette`, a non-zero `unsharp` chroma amount, and a `lut3d` file that will not load each fall back rather than render something else (RK-020) |
+| blur: `GBlur` / `GBlurAnimated` | `GpuEffect::Blur` -> `GaussianBlurNode` (animated sigma at `t`) | **covered** |
+| `MotionBlur` | `MotionBlurNode` (stateful; the shutter is constant per clip) | **covered** |
+| keying: `ChromaKey` / `ChromaKeyAnimated` | `ChromaKeyNode`, key colour via `ff_format::Color::parse_ffmpeg` | **covered**, including **colour names** (#1630; hex-only before that). A string no colour table has -> **fallback** |
+| masks: `RectMask` / `RectMaskAnimated`, `LumaMask` | `ShapeMaskNode` / `LumaMaskNode` (the compositor bakes the mask) | **covered** |
+| colour: `Gamma`, `WhiteBalance`, `ColorBalanceAnimated` | -- | **fallback** (#1759). Each is a *different parameterization* from the node it would land on -- `Gamma` is `eq`'s `pow(x, 1/g)`, `ColorWheelsNode`'s gamma is neutral at 1.0 while `ColorBalanceAnimated` is neutral at 0.0, and `WhiteBalance` is Kelvin through `colorchannelmixer` while `ColorGradeNode`'s temperature is in model units. Mapping any of them needs the shader read first, or it is a silent approximation |
+| `FilterStep::EqAnimated` with a non-neutral gamma | -- | **fallback** (#1763; needs gamma on `ColorGradeNode`, an ff-render change) |
+| keying: `ColorKey`, `SpillSuppress` | -- | **fallback** (#1761). `ChromaKeyNode` measures *chroma* distance (BT.709 luma subtracted from pixel and key), which is `chromakey`'s semantic; `colorkey` is a full-RGB distance, so routing it there would approximate silently |
+| masks: `AlphaMatte`, `LumaKey`, `FeatherMask`, `PolygonMatte` | -- | **fallback** (#1761). `AlphaMatte` carries a whole `FilterGraphBuilder`; `LumaKey`/`FeatherMask` need parameters the executor currently bakes itself |
+| `FitToAspect` / `FillToAspect` (fit with pad/crop) | -- | **fallback** (#1762; `ScaleNode` is a plain resize, needs pad/crop) |
+| xfade (`XFade`, any kind) | -- | **fallback** (#1760; needs the 2-input `CrossfadeNode`, which the per-layer plan has no second input for) |
+| everything else (`Crop`, `Rotate`, `HFlip`/`VFlip`, `NoiseReduce`, `DrawText`, `Raw`, `ParseDesc`, audio steps, ...) | -- | **fallback** |
 
 **Known ff-render gaps to design around:** `YuvUploadNode` uses a **BT.601** conversion only (no BT.709
 selection), and `ScaleNode`'s Bicubic/Lanczos fall back to a linear filter on the GPU. These are `ff-render`
 limitations, not bridge bugs; the bridge documents them and the CPU path remains exact.
+
+BT.709 selection was considered for #1630 and **explicitly re-deferred**: it is not a mapping question at
+all. `map_scene` never sees the upload -- the executor does -- and switching the matrix moves the colour of
+*every* GPU frame, so it needs its own change with GPU-vs-CPU parity fixtures rather than a row added to a
+mapping PR. Tracked as **#1764**.
 
 ## GPU-vs-CPU selection (whole-frame fallback)
 
