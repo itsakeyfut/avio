@@ -412,6 +412,247 @@ fn gpu_composite(
     Some(rgba)
 }
 
+/// Composites two layers (bottom first) + their frames on the GPU, or `None` on
+/// fallback / no adapter.
+fn gpu_composite2(
+    gpu: &mut GpuCompositor,
+    layers: &[&RealtimeLayer],
+    frames: &[&VideoFrame],
+    canvas: (u32, u32),
+) -> Option<Vec<u8>> {
+    let pairs: Vec<(&RealtimeLayer, &VideoFrame)> =
+        layers.iter().copied().zip(frames.iter().copied()).collect();
+    let (rgba, _w, _h) = gpu.composite(&pairs, canvas, Duration::ZERO)?;
+    Some(rgba)
+}
+
+/// Bounding box of the pixels that carry picture, as `(x0, y0, x1, y1)` inclusive.
+///
+/// The placement tests assert this as well as a mean diff: a mean-only assertion passes
+/// for two *equally wrong* renders, and a layer in the wrong place is exactly that
+/// failure (RK-015).
+fn lit_bbox(buf: &[u8], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    let mut any = false;
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            if buf[i] > 32 || buf[i + 1] > 32 || buf[i + 2] > 32 {
+                any = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    any.then_some((x0, y0, x1, y1))
+}
+
+/// A `w` x `h` frame filled with one grey level; `0` reads as "no picture" to
+/// [`lit_bbox`], which is what makes a placement bounding box readable.
+fn flat_frame(w: u32, h: u32, v: u8) -> VideoFrame {
+    VideoFrame::from_rgba(w, h, solid_rgba(w, h, [v; 3])).unwrap()
+}
+
+#[test]
+fn overlay_placement_gpu_should_match_cpu_within_tolerance() {
+    // #1633: a positioned, scaled overlay used to force the whole frame to the CPU. The
+    // CPU places it by stretching to the base size, scaling by `base * scale`, and
+    // overlaying its top-left at (x, y) -- measured as (10, 4)..(41, 35) inclusive for
+    // this fixture, which is what both routes must now produce.
+    let canvas = (64, 64);
+    let base = flat_frame(64, 64, 0);
+    let over = flat_frame(64, 64, 255);
+    let bottom = base_layer(64, 64, vec![]);
+    let mut top = base_layer(64, 64, vec![]);
+    top.x = AnimatedValue::Static(10.0);
+    top.y = AnimatedValue::Static(4.0);
+    top.scale_x = AnimatedValue::Static(0.5);
+    top.scale_y = AnimatedValue::Static(0.5);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    let Some(cpu) = cpu_composite2(&[&bottom, &top], &[&base, &over], canvas) else {
+        return; // filters unavailable
+    };
+    let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
+        panic!("a positioned overlay must now composite on the GPU");
+    };
+
+    let want = (10u32, 4u32, 41u32, 35u32);
+    assert_eq!(
+        lit_bbox(&gpu_out, canvas.0, canvas.1),
+        Some(want),
+        "the GPU must put the overlay where the CPU was measured to"
+    );
+    assert_eq!(
+        lit_bbox(&cpu, canvas.0, canvas.1),
+        Some(want),
+        "the CPU fixture must still land where it was measured"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!("overlay placement GPU vs CPU: mean={mean:.3}");
+    assert!(
+        mean <= TOL_LETTERBOX_MEAN,
+        "placement diverged: mean={mean}"
+    );
+}
+
+#[test]
+fn overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
+    // The fixture that pins the multiplier against the **base** size rather than the
+    // canvas: a 0.5-scaled overlay over a 64x32 base in a 64x64 canvas was measured at
+    // (0, 16)..(31, 31) inclusive. Scaled against the canvas it would be twice as tall
+    // and would not sit inside the base's letterbox band at all.
+    let canvas = (64, 64);
+    let base = flat_frame(64, 32, 0);
+    let over = flat_frame(64, 64, 255);
+    let bottom = base_layer(64, 32, vec![]);
+    let mut top = base_layer(64, 64, vec![]);
+    top.scale_x = AnimatedValue::Static(0.5);
+    top.scale_y = AnimatedValue::Static(0.5);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return;
+    };
+    let Some(cpu) = cpu_composite2(&[&bottom, &top], &[&base, &over], canvas) else {
+        return;
+    };
+    let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
+        panic!("an overlay over a letterboxed base must composite on the GPU");
+    };
+
+    let want = (0u32, 16u32, 31u32, 31u32);
+    assert_eq!(lit_bbox(&gpu_out, canvas.0, canvas.1), Some(want));
+    assert_eq!(lit_bbox(&cpu, canvas.0, canvas.1), Some(want));
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!("overlay over letterboxed base GPU vs CPU: mean={mean:.3}");
+    assert!(
+        mean <= TOL_LETTERBOX_MEAN,
+        "placement diverged: mean={mean}"
+    );
+}
+
+#[test]
+fn offset_overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
+    // The fixture a mutation check said was missing: the offset must be measured against
+    // the **base** size, and only a fixture with a non-canvas base *and* a non-zero
+    // offset can tell that apart from measuring against the canvas. Base 64x32 in a
+    // 64x64 canvas, overlay scaled 0.5 at (10, 4) in base pixels -> the band is rows
+    // 16..47, and the overlay sits at (10, 20)..(41, 35) inside it.
+    let canvas = (64, 64);
+    let base = flat_frame(64, 32, 0);
+    let over = flat_frame(64, 64, 255);
+    let bottom = base_layer(64, 32, vec![]);
+    let mut top = base_layer(64, 64, vec![]);
+    top.x = AnimatedValue::Static(10.0);
+    top.y = AnimatedValue::Static(4.0);
+    top.scale_x = AnimatedValue::Static(0.5);
+    top.scale_y = AnimatedValue::Static(0.5);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return;
+    };
+    let Some(cpu) = cpu_composite2(&[&bottom, &top], &[&base, &over], canvas) else {
+        return;
+    };
+    let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
+        panic!("an offset overlay over a letterboxed base must composite on the GPU");
+    };
+
+    let gpu_box = lit_bbox(&gpu_out, canvas.0, canvas.1);
+    let cpu_box = lit_bbox(&cpu, canvas.0, canvas.1);
+    println!("offset overlay over letterboxed base: gpu={gpu_box:?} cpu={cpu_box:?}");
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the offset must be measured against the base size, not the canvas"
+    );
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!("offset overlay GPU vs CPU: mean={mean:.3}");
+    assert!(
+        mean <= TOL_LETTERBOX_MEAN,
+        "placement diverged: mean={mean}"
+    );
+}
+
+#[test]
+fn an_overlay_spilling_outside_the_base_should_fall_back() {
+    // `overlay` clips the layer to the base-sized accumulator on the CPU, while the GPU
+    // draws straight into the canvas and would show the overhang. Nothing to map that
+    // to, so it falls back (RK-020). Found by a mutation check: no fixture crossed the
+    // base edge, so nothing pinned it.
+    let canvas = (64, 64);
+    let base = flat_frame(64, 64, 0);
+    let over = flat_frame(64, 64, 255);
+    let bottom = base_layer(64, 64, vec![]);
+    let mut top = base_layer(64, 64, vec![]);
+    top.x = AnimatedValue::Static(40.0); // 40 + 0.5 * 64 = 72 > 64
+    top.scale_x = AnimatedValue::Static(0.5);
+    top.scale_y = AnimatedValue::Static(0.5);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return;
+    };
+    assert!(
+        gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas).is_none(),
+        "an overlay hanging off the base edge must fall back"
+    );
+}
+
+#[test]
+fn a_positioned_single_layer_should_composite_on_the_gpu_unmoved() {
+    // A lone layer is the compositor's *base*, whose transform the CPU ignores entirely
+    // (measured). So the GPU must ignore it too -- and, since both agree, must stop
+    // falling back. Asserting it renders identically to the same layer left alone is
+    // what pins "ignored" rather than "applied a little".
+    let canvas = (64, 64);
+    let frame = VideoFrame::from_rgba(64, 64, gradient_rgba(64, 64)).unwrap();
+    let plain = base_layer(64, 64, vec![]);
+    let mut moved = base_layer(64, 64, vec![]);
+    moved.x = AnimatedValue::Static(10.0);
+    moved.y = AnimatedValue::Static(4.0);
+    moved.scale_x = AnimatedValue::Static(0.5);
+    moved.scale_y = AnimatedValue::Static(0.5);
+    moved.rotation = AnimatedValue::Static(30.0);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return;
+    };
+    let Some(reference) = gpu_composite(&mut gpu, &plain, &frame, canvas) else {
+        panic!("an identity layer must composite");
+    };
+    let Some(got) = gpu_composite(&mut gpu, &moved, &frame, canvas) else {
+        panic!("a positioned base layer must no longer fall back (#1633)");
+    };
+    assert_eq!(
+        got, reference,
+        "a base layer transform is ignored on the CPU, so the GPU must not apply it"
+    );
+}
+
+#[test]
+fn a_rotated_overlay_should_still_fall_back() {
+    // Deliberately unmapped: the CPU `rotate` fills the corners it exposes with
+    // `fillcolor` while the GPU transform leaves them transparent (RK-020). This pins
+    // that lifting the placement gate did not quietly enable rotation too.
+    let canvas = (64, 64);
+    let base = flat_frame(64, 64, 0);
+    let over = flat_frame(64, 64, 255);
+    let bottom = base_layer(64, 64, vec![]);
+    let mut top = base_layer(64, 64, vec![]);
+    top.rotation = AnimatedValue::Static(30.0);
+
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return;
+    };
+    assert!(
+        gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas).is_none(),
+        "a rotated overlay has no GPU equivalent and must fall back"
+    );
+}
+
 #[test]
 fn passthrough_gpu_should_match_input_within_tolerance() {
     // The broadest guard (adapter only, no filters): an identity, canvas-sized layer
@@ -1981,29 +2222,24 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
         return; // no adapter
     };
 
-    // Non-identity transform (RK-020: model pixels are not ff_render UV units).
-    let mut positioned = base_layer(w, h, vec![]);
-    positioned.x = AnimatedValue::Static(10.0);
+    // A positioned layer and a mixed-aspect stack both used to be listed here. #1633
+    // removed those fallbacks rather than fixing them, because neither was rendering
+    // anything wrong: a lone layer is the *base*, whose transform the CPU ignores, and
+    // an overlay is stretched to the base size, so its own aspect never survives to
+    // disagree with the base band. They are covered now by
+    // `a_positioned_single_layer_should_composite_on_the_gpu_unmoved` and
+    // `overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance`, which
+    // assert the placement against the CPU instead of asserting a refusal.
+    //
+    // A **rotated overlay** is still genuinely unmappable, so it takes their place here.
+    let over = flat_frame(w, h, 255);
+    let bottom = base_layer(w, h, vec![]);
+    let mut spun = base_layer(w, h, vec![]);
+    spun.rotation = AnimatedValue::Static(30.0);
     assert!(
-        gpu_composite(&mut gpu, &positioned, &frame, (w, h)).is_none(),
-        "a positioned layer must fall back"
-    );
-
-    // Mixed aspects across layers (#1661): each layer is letterboxed into the canvas
-    // before compositing, while the CPU fits the *composited* result, so the two only
-    // agree when every layer lands in the same band. A 4:3 layer under a 1:1 one would
-    // give a band per layer -> fall back.
-    let tall = VideoFrame::from_rgba(h, h, gradient_rgba(h, h)).unwrap();
-    let wide_layer = base_layer(w, h, vec![]);
-    let square_layer = base_layer(h, h, vec![]);
-    assert!(
-        gpu.composite(
-            &[(&wide_layer, &frame), (&square_layer, &tall)],
-            (48, 48),
-            Duration::ZERO,
-        )
-        .is_none(),
-        "layers of mixed aspect must fall back"
+        gpu.composite(&[(&bottom, &frame), (&spun, &over)], (w, h), Duration::ZERO)
+            .is_none(),
+        "a rotated overlay must fall back"
     );
 
     // An aspect so extreme that the fitted height rounds away to nothing (#1661): a

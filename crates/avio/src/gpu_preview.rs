@@ -255,20 +255,29 @@ mod tests {
     }
 
     #[test]
-    fn gpu_preview_compositor_should_fall_back_on_a_non_identity_transform() {
-        // A positioned layer cannot be rendered correctly in v1 (pixel-vs-UV units),
-        // so the compositor returns None and the runner uses the CPU path.
+    fn gpu_preview_compositor_should_render_a_positioned_base_layer_unmoved() {
+        // This used to assert a fallback. A lone layer is the compositor's **base**,
+        // and the CPU ignores a base layer transform entirely (measured; see
+        // `gpu_compositor::layer_transform`), so falling back bought nothing -- both
+        // routes render the same pixels either way. #1633.
         // Probe-gated (RK-002).
         let Some(mut gpu) = GpuPreviewCompositor::new() else {
             return;
         };
+        let frame = VideoFrame::from_rgba(4, 4, vec![50u8; 4 * 4 * 4]).unwrap();
+        let plain = identity_layer(4, 4);
+        let reference = gpu
+            .composite(&[(&plain, &frame)], (4, 4), Duration::ZERO)
+            .expect("an identity layer composites");
+
         let mut layer = identity_layer(4, 4);
         layer.x = AnimatedValue::Static(100.0);
-        let frame = VideoFrame::from_rgba(4, 4, vec![50u8; 4 * 4 * 4]).unwrap();
-        assert!(
-            gpu.composite(&[(&layer, &frame)], (4, 4), Duration::ZERO)
-                .is_none(),
-            "a non-identity transform must fall back to CPU"
+        let moved = gpu
+            .composite(&[(&layer, &frame)], (4, 4), Duration::ZERO)
+            .expect("a positioned base layer must no longer fall back");
+        assert_eq!(
+            moved.0, reference.0,
+            "a base layer transform is ignored on the CPU, so it must not move here"
         );
     }
 }
