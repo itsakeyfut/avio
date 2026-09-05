@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use ff_decode::{SeekMode, VideoDecoder};
 use ff_encode::VideoEncoder;
-use ff_filter::{VideoLayer, XfadeTransition};
+use ff_filter::{AnimatedValue, BlendMode, CompositeOp, VideoLayer, XfadeTransition};
 use ff_format::{PixelFormat, VideoFrame};
 use ff_pipeline::Progress;
 use ff_render::BlendMode as RenderBlendMode;
@@ -38,7 +38,7 @@ use crate::derive;
 use crate::error::TimelineError;
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuMapping, map_scene};
 use crate::gpu_compositor::GpuCompositor;
-use crate::gpu_transition::map_transition;
+use crate::gpu_transition::{GpuTransition, map_transition};
 use crate::track::Track;
 
 /// Whether the GPU export renders `kind` itself, or leaves the whole export to the CPU.
@@ -136,23 +136,23 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
 }
 
 /// Decides whether a timeline can be exported on the GPU export path, returning the
-/// index of the single eligible video track, or `None` to keep the whole export on
-/// the CPU `MultiTrackComposer` path.
+/// indices of the eligible video tracks **bottom to top**, or `None` to keep the whole
+/// export on the CPU `MultiTrackComposer` path.
 ///
-/// v1 is deliberately narrow (structural, transition and contiguity checks are I/O-free;
-/// only the probe pass reads each source):
-/// - no lavfi overlay (a second compositing layer v1 does not handle),
-/// - exactly one **active** video track with at least one clip,
+/// The checks are per track (structural, transition and contiguity are I/O-free; only
+/// the probe pass reads each source), and **every** active track has to pass -- the
+/// fallback is whole-frame, so a partial stack is never composited:
+/// - no lavfi overlay (a generated source the drain has no decoder for),
+/// - at least one **active** video track, each with at least one clip,
 /// - every clip is a **file** source (a generated Solid/Text source has no decoder
 ///   here; it renders via lavfi on the CPU path),
 /// - unity speed (the drain conforms frame *rate* but does not resample time),
 /// - each clip's derived [`VideoLayer`] maps to [`GpuMapping::Gpu`] (a supported
-///   blend / composite / effect set) with a **static, neutral transform** (RK-020:
-///   the model's pixels/degrees are not `ff_render`'s UV/radians, so any placement
-///   falls back),
-/// - at most one transition, on the track's **last** clip, of a kind the GPU renders
-///   the same way the CPU export does (see [`export_maps_to_gpu`]) -- the rest of the
-///   restrictions are spelled out in [`eligible_transition`],
+///   blend / composite / effect set). A position or scale is fine since #1767; a
+///   rotated overlay is not, and falls back through the compositor,
+/// - transitions of a kind the GPU renders the same way the CPU export does (see
+///   [`export_maps_to_gpu`]), at any boundary, **on the base track only** -- the rest of
+///   the restrictions are spelled out in [`eligible_transition`],
 /// - the clips **tile the timeline with no gap or overlap** (each `clip.offset`
 ///   equals the sum of the preceding clips' durations): the decode loop concatenates
 ///   clips in order without honouring `clip.offset`, so a leading gap, an inter-clip
@@ -163,27 +163,58 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
 ///   (#1660), repeating or skipping source frames so the clip keeps its on-screen
 ///   duration, and the shared compositing core letterboxes a differently-shaped frame
 ///   into the canvas (#1661).
-pub(crate) fn eligible_track(
+pub(crate) fn eligible_tracks(
     video_tracks: &[Track],
     lavfi_overlay: Option<&str>,
     any_video_solo: bool,
     canvas: (u32, u32),
     frame_rate: f64,
-) -> Option<usize> {
+) -> Option<Vec<usize>> {
+    // A generated (lavfi) overlay is not a file source, so the drain has nothing to
+    // decode for it. Still the whole export's answer, not just that layer's.
     if lavfi_overlay.is_some() {
         return None;
     }
 
-    // Exactly one active video track.
-    let mut active = video_tracks
+    let active: Vec<(usize, &Track)> = video_tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.is_active(any_video_solo));
-    let (idx, track) = active.next()?;
-    if active.next().is_some() {
+        .filter(|(_, t)| t.is_active(any_video_solo))
+        .collect();
+    if active.is_empty() {
         return None;
     }
+    // Every track has to pass: the fallback is whole-frame, so one ineligible track
+    // keeps the entire export on the CPU rather than compositing a partial stack.
+    let stacked = active.len() > 1;
+    for (stack_pos, (_, track)) in active.iter().enumerate() {
+        eligible_one_track(track, stack_pos == 0, stacked, canvas, frame_rate)?;
+    }
+    Some(active.into_iter().map(|(idx, _)| idx).collect())
+}
+
+/// Whether one track can be driven by the GPU drain. `is_base` marks the bottom of the
+/// stack, whose transform the compositor ignores (see `gpu_compositor::layer_transform`).
+fn eligible_one_track(
+    track: &Track,
+    is_base: bool,
+    stacked: bool,
+    canvas: (u32, u32),
+    frame_rate: f64,
+) -> Option<()> {
     if track.clips.is_empty() {
+        return None;
+    }
+
+    // A transition is only rendered on the **base** track for now. The CPU scales each
+    // clip to `canvas * scale` and only then runs `xfade`, so the blend happens on
+    // placed-size content; the GPU places via `layer_transform` *after* the blend, which
+    // for a non-base track would either apply the transform twice or reorder the
+    // resampling against the blend. Neither is measured, so it falls back rather than
+    // approximate (RK-020). The base track is unaffected: its transform is ignored, so
+    // blending canvas-composited frames is exactly what the CPU does -- which is the
+    // path #1659 shipped and this must not regress.
+    if !is_base && track.clips.iter().skip(1).any(|c| c.transition.is_some()) {
         return None;
     }
 
@@ -210,6 +241,20 @@ pub(crate) fn eligible_track(
         // ignored on both paths (measured; see `gpu_compositor::layer_transform`). A
         // positioned or scaled clip therefore renders identically either way, so keeping
         // it on the CPU bought nothing.
+        // A stateful node keeps its state in the cached effect graph, and the stack
+        // scheduler alternates the compositor between a one-layer solo composite (the
+        // base) and an N-layer stack composite every output frame, which evicts that
+        // cache each time (RK-025). A MotionBlur trail would restart every frame instead
+        // of accumulating, so a stacked export declines it rather than rendering a
+        // different blur than the CPU does.
+        if stacked
+            && plan
+                .layers
+                .iter()
+                .any(|l| l.effects.iter().any(is_stateful_effect))
+        {
+            return None;
+        }
         blendable[i] = plan
             .layers
             .iter()
@@ -273,7 +318,7 @@ pub(crate) fn eligible_track(
         }
     }
 
-    Some(idx)
+    Some(())
 }
 
 /// Whether an effect's node carries state across the frames it processes.
@@ -602,8 +647,297 @@ fn fell_back(what: &str) -> TimelineError {
 /// mid-export fallback from the compositor is a should-not-happen and surfaces as
 /// [`TimelineError::TimelineRenderFailed`] rather than silent wrong output.
 #[allow(clippy::too_many_arguments)]
+/// One track, delivered one output frame at a time.
+///
+/// This is the per-clip loop the drain used to inline, lifted out so several tracks can
+/// be advanced in step: the scheduler asks every track what it shows at output `k`, then
+/// composites the stack. A track owns its own cuts and transition windows, which is also
+/// the order the CPU uses -- `xfade` sits inside the track's chain and the overlay onto
+/// the other tracks comes after it (`composition_inner.rs:541-610`).
+struct TrackSource<'a> {
+    track: &'a Track,
+    canvas: (u32, u32),
+    frame_rate: f64,
+    /// The bottom of the stack. Only the base is pre-composited to the canvas; every
+    /// other track hands the stack its raw decoded frame, so its effects, opacity, blend
+    /// and placement are applied exactly once -- and it is *stretched* to the base's size
+    /// by `layer_transform`, which is what the CPU's `scale = canvas * (sx, sy)` does. A
+    /// solo composite would instead letterbox it and bake that in (measured: a 64x32
+    /// overlay on a 64x64 canvas landed 32x16 letterboxed where the CPU had 32x32).
+    is_base: bool,
+    /// `transition::effective_durations`, resolved once for the track: each boundary is
+    /// both a clip's own transition and its predecessor's handle, and resolving it per
+    /// clip would probe the same source twice.
+    boundaries: Vec<Duration>,
+    clip_idx: usize,
+    cur: ClipSource,
+    cur_layer: VideoLayer,
+    /// The layer handed to the stack composite: [`composited_base_layer`] for the base,
+    /// and `cur_layer` itself for every other track. Kept in step with `cur_layer`.
+    stack_layer: VideoLayer,
+    /// The incoming clip, open only while a transition window is running.
+    inc: Option<(ClipSource, VideoLayer)>,
+    node: Option<GpuTransition>,
+    window: u64,
+    window_pos: u64,
+    done: bool,
+    /// The size of the last frame this track produced, so an ended track can stand
+    /// in with a transparent frame of the same shape (see [`drain_video_gpu`]).
+    last_dims: Option<(u32, u32)>,
+}
+
+impl<'a> TrackSource<'a> {
+    /// Opens the track's first clip, or `None` when it has none.
+    fn open(
+        track: &'a Track,
+        is_base: bool,
+        canvas: (u32, u32),
+        frame_rate: f64,
+    ) -> Result<Option<Self>, TimelineError> {
+        let Some(first) = track.clips.first() else {
+            return Ok(None);
+        };
+        let cur_layer = transitionless_layer(first, track, canvas);
+        Ok(Some(Self {
+            track,
+            canvas,
+            frame_rate,
+            is_base,
+            boundaries: crate::transition::effective_durations(&track.clips),
+            clip_idx: 0,
+            cur: ClipSource::open(first, frame_rate)?,
+            stack_layer: stack_layer_for(is_base, &cur_layer),
+            cur_layer,
+            inc: None,
+            node: None,
+            window: 0,
+            window_pos: 0,
+            done: false,
+            last_dims: None,
+        }))
+    }
+
+    /// The layer this track's current content is placed with in the stack composite.
+    fn layer(&self) -> &VideoLayer {
+        &self.stack_layer
+    }
+
+    /// Recomputes [`Self::stack_layer`] after a cut changed `cur_layer`.
+    fn refresh_stack_layer(&mut self) {
+        self.stack_layer = stack_layer_for(self.is_base, &self.cur_layer);
+    }
+
+    /// Opens the window into the next clip, or reports that the track is finished.
+    ///
+    /// Called once the current clip has spent its budget. A zero-length window is a hard
+    /// cut, which advances immediately.
+    fn advance(&mut self, core: &mut GpuCompositor) -> Result<bool, TimelineError> {
+        let Some(next) = self.track.clips.get(self.clip_idx + 1) else {
+            self.done = true;
+            return Ok(false);
+        };
+        let window = transition_window(next, self.boundaries[self.clip_idx + 1], self.frame_rate)?;
+        // Past the out-point for the length of the window: those frames are the handle
+        // the blend reads, not part of the clip's on-screen duration.
+        self.cur.allow_handle(window);
+        let inc = ClipSource::open(next, self.frame_rate)?;
+        let inc_layer = transitionless_layer(next, self.track, self.canvas);
+        // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
+        // exposure trail) must not accumulate across a cut into the next clip (RK-025).
+        core.reset_effect_cache();
+        self.node = next.transition.and_then(map_transition);
+        self.window = window;
+        self.window_pos = 0;
+        if window == 0 {
+            self.cur = inc;
+            self.cur_layer = inc_layer;
+            self.refresh_stack_layer();
+            self.clip_idx += 1;
+        } else {
+            self.inc = Some((inc, inc_layer));
+        }
+        Ok(true)
+    }
+
+    /// Ends the window early or on completion, promoting the incoming clip.
+    fn close_window(&mut self) {
+        if let Some((inc, inc_layer)) = self.inc.take() {
+            self.cur = inc;
+            self.cur_layer = inc_layer;
+            self.refresh_stack_layer();
+            self.clip_idx += 1;
+        }
+        self.window = 0;
+        self.window_pos = 0;
+        self.node = None;
+    }
+
+    /// This track's content for the output at `t`, or `None` when the track has ended.
+    ///
+    /// Inside a transition window both clips are composited to the canvas and blended,
+    /// which is what the CPU does for the **base** track. Eligibility keeps transitions
+    /// off the other tracks precisely because that equivalence does not hold there.
+    fn next(
+        &mut self,
+        core: &mut GpuCompositor,
+        t: Duration,
+    ) -> Result<Option<VideoFrame>, TimelineError> {
+        loop {
+            if self.done {
+                return Ok(None);
+            }
+            if self.window_pos < self.window && self.inc.is_some() {
+                if let Some(frame) = self.blend_one(core, t)? {
+                    return Ok(Some(frame));
+                }
+                // A source ran out inside the window; finish with the incoming clip, as
+                // the sequential drain did.
+                self.close_window();
+                continue;
+            }
+            if self.window_pos >= self.window && self.inc.is_some() {
+                self.close_window();
+                continue;
+            }
+            match self.cur.next()? {
+                Some(pulled) => {
+                    if !self.is_base {
+                        // Straight through: the stack composite is this track's only
+                        // pass, so it applies the layer once. Compositing here first
+                        // would apply the effects, opacity and blend twice over
+                        // (measured: an overlay at opacity 0.5 read 51 where the CPU
+                        // read 140) and bake a letterbox in on top.
+                        let frame = match pulled {
+                            Pulled::Owned(frame) => frame,
+                            Pulled::Held(frame) => frame.clone(),
+                        };
+                        self.last_dims = Some((frame.width(), frame.height()));
+                        return Ok(Some(frame));
+                    }
+                    let composited =
+                        composite_pulled(core, &self.cur_layer, pulled, self.canvas, t)
+                            .ok_or_else(|| fell_back("a track's clip"))?;
+                    self.last_dims = Some((composited.1, composited.2));
+                    return Ok(Some(wrap_rgba(composited)?));
+                }
+                None => {
+                    if !self.advance(core)? {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// One frame of a transition window: composite both clips and blend them.
+    ///
+    /// Reached on the **base** track only -- eligibility declines a transition on any
+    /// other track, because the CPU scales each clip to its placed size before `xfade`
+    /// while the stack places after the blend (#1768).
+    ///
+    /// `None` means a source ran out early, which ends the window.
+    fn blend_one(
+        &mut self,
+        core: &mut GpuCompositor,
+        t: Duration,
+    ) -> Result<Option<VideoFrame>, TimelineError> {
+        let Some(node) = self.node else {
+            return Err(TimelineError::TimelineRenderFailed {
+                reason: "gpu export: transitioned clip lost its GPU node".to_string(),
+            });
+        };
+        let Some(outgoing) = self.cur.next()? else {
+            return Ok(None);
+        };
+        let (a_rgba, w, h) = composite_pulled(core, &self.cur_layer, outgoing, self.canvas, t)
+            .ok_or_else(|| fell_back("the outgoing clip"))?;
+        let Some((inc, inc_layer)) = self.inc.as_mut() else {
+            return Ok(None);
+        };
+        let Some(incoming) = inc.next()? else {
+            // The incoming clip ran out early. The outgoing frame just composited goes
+            // unused: it belonged to this output, which now has nothing to blend it
+            // with. Only reachable when a source is shorter than declared, since
+            // eligibility bounds the window by the incoming clip's budget.
+            return Ok(None);
+        };
+        let (b_rgba, _, _) = composite_pulled(core, inc_layer, incoming, self.canvas, t)
+            .ok_or_else(|| fell_back("the incoming clip"))?;
+        #[allow(clippy::cast_precision_loss)] // window frame counts fit the mantissa
+        let progress = self.window_pos as f32 / self.window as f32;
+        let blended = core
+            .transition(node, progress, &a_rgba, b_rgba, w, h)
+            .ok_or_else(|| TimelineError::TimelineRenderFailed {
+                reason: format!("gpu export: the transition blend failed at progress {progress}"),
+            })?;
+        self.window_pos += 1;
+        self.last_dims = Some((w, h));
+        Ok(Some(wrap_rgba((blended, w, h))?))
+    }
+}
+
+/// The base track's layer for the stack pass, with everything its own pass already
+/// applied stripped out.
+///
+/// Only the base is composited to the canvas before the stack (it has to be: a
+/// transition blends two canvas frames, and the stack's placement reference is the base's
+/// size, which must stay the canvas whether or not a window is open). That pass applies
+/// its effects, opacity and blend mode, so the stack pass must not apply them a second
+/// time. Its placement is ignored at index 0 either way, so the neutral shell is all the
+/// stack needs.
+fn stack_layer_for(is_base: bool, cur_layer: &VideoLayer) -> VideoLayer {
+    if is_base {
+        composited_base_layer(cur_layer)
+    } else {
+        cur_layer.clone()
+    }
+}
+
+/// See [`stack_layer_for`]: the base's half of that choice.
+fn composited_base_layer(layer: &VideoLayer) -> VideoLayer {
+    let mut neutral = layer.clone();
+    neutral.effects.clear();
+    neutral.opacity = AnimatedValue::Static(1.0);
+    neutral.blend_mode = BlendMode::Normal;
+    neutral.composite_op = CompositeOp::Over;
+    neutral
+}
+
+/// A fully transparent `w` x `h` rgba frame: the stand-in for a track that has ended.
+///
+/// Allocated per call rather than pooled: the replacement would be a clone of a cached
+/// buffer, which is not cheaper than the zeroed allocation here, and it runs once per
+/// ended track against a readback and an encode on the same output frame. Real pooling
+/// belongs with the frame pool, not with a special case for placeholders.
+fn transparent_frame(w: u32, h: u32) -> Result<VideoFrame, TimelineError> {
+    VideoFrame::from_rgba(w, h, vec![0u8; (w as usize) * (h as usize) * 4]).map_err(|e| {
+        TimelineError::TimelineRenderFailed {
+            reason: format!("gpu export: could not build a placeholder frame: {e}"),
+        }
+    })
+}
+
+/// Wraps a composited rgba read-back as a [`VideoFrame`] so it can join the stack.
+fn wrap_rgba((rgba, w, h): (Vec<u8>, u32, u32)) -> Result<VideoFrame, TimelineError> {
+    VideoFrame::from_rgba(w, h, rgba).map_err(|e| TimelineError::TimelineRenderFailed {
+        reason: format!("gpu export: could not wrap a composited frame: {e}"),
+    })
+}
+
+/// Drives the eligible tracks through decode -> GPU composite -> readback -> encode.
+///
+/// `tracks` is bottom to top. Each output frame asks every track for its content, then
+/// composites the z-ordered stack in one pass; a track that has ended contributes
+/// nothing further.
+///
+/// **The export ends when the topmost track ends**, not when the longest does. That is
+/// the CPU's rule, not a choice made here: the last overlay is built with
+/// `eof_action=endall` (`composition_inner.rs:930-936`), so the graph terminates with it.
+/// Measured on the CPU route -- a 15-frame base under a 6-frame overlay exports 5 frames,
+/// and the mirror exports 14.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_video_gpu(
-    track: &Track,
+    tracks: &[&Track],
     canvas: (u32, u32),
     frame_rate: f64,
     encoder: &mut VideoEncoder,
@@ -612,112 +946,71 @@ pub(crate) fn drain_video_gpu(
     start: Instant,
     total_frames: Option<u64>,
 ) -> Result<(), TimelineError> {
-    let clips = &track.clips;
-    let Some(first) = clips.first() else {
+    let mut sources: Vec<TrackSource<'_>> = Vec::with_capacity(tracks.len());
+    for track in tracks {
+        let is_base = sources.is_empty();
+        if let Some(ts) = TrackSource::open(track, is_base, canvas, frame_rate)? {
+            sources.push(ts);
+        }
+    }
+    let Some(top) = sources.len().checked_sub(1) else {
         return Ok(());
     };
-
-    // One pass for the whole track: each boundary is both a clip's own transition and
-    // its predecessor's handle, and resolving it is what opens the source file.
-    let boundaries = crate::transition::effective_durations(clips);
-
-    let mut video_idx: u32 = 0;
-    let mut cur = ClipSource::open(first, frame_rate)?;
-    let mut cur_layer = transitionless_layer(first, track, canvas);
-    // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
-    // exposure trail) must not accumulate across a cut into the next clip (RK-025).
     core.reset_effect_cache();
 
-    for i in 0..clips.len() {
-        // What the *next* clip's transition blends across. It comes out of this clip's
-        // handle, not its body, so the solo run below is unaffected by it.
-        let window = match clips.get(i + 1) {
-            Some(next) => transition_window(next, boundaries[i + 1], frame_rate)?,
-            None => 0,
-        };
-
-        // This clip alone, for its whole budget.
-        loop {
-            let t = output_time(video_idx, frame_rate);
-            let Some(pulled) = cur.next()? else {
-                break; // Budget spent, or EOF first (a clip shorter than declared).
-            };
-            let composited = composite_pulled(core, &cur_layer, pulled, canvas, t);
-            emit_frame(
-                composited,
-                encoder,
-                &mut video_idx,
-                on_progress,
-                start,
-                total_frames,
-            )?;
+    let mut video_idx: u32 = 0;
+    loop {
+        let t = output_time(video_idx, frame_rate);
+        // Pull every track first, then decide: a track's **stack position** is what the
+        // compositor reads as "which layer is the base" (`gpu_compositor::layer_transform`),
+        // so an ended track may not be dropped from the vector -- that would promote an
+        // overlay to base and silently discard its placement.
+        let mut pulled: Vec<Option<VideoFrame>> = Vec::with_capacity(sources.len());
+        for ts in &mut sources {
+            pulled.push(ts.next(core, t)?);
         }
-
-        let Some(next) = clips.get(i + 1) else {
+        // The export ends with the **topmost** track, whatever the others are doing.
+        if pulled[top].is_none() {
             break;
-        };
-        // Past the out-point for the length of the window: those frames are the handle
-        // the blend reads, and are not part of the clip's on-screen duration.
-        cur.allow_handle(window);
-        let mut inc = ClipSource::open(next, frame_rate)?;
-        let inc_layer = transitionless_layer(next, track, canvas);
-        core.reset_effect_cache();
-
-        // The node the incoming clip's kind renders as. Resolved once per boundary: it
-        // is a pure function of the kind. `None` here is fine when `window` is 0 -- that
-        // is just a hard cut -- so it is only an error inside the loop below.
-        let node = next.transition.and_then(map_transition);
-
-        // The transition window: both clips are composited to the canvas separately and
-        // then blended, matching the CPU route where `xfade` is the trailing step of the
-        // incoming layer's chain. Progress runs `0 .. (window-1)/window`, so the first
-        // output is the outgoing clip untouched and the incoming clip's own frame
-        // `window` is the first one shown alone -- the CPU route's mapping, measured.
-        //
-        // The incoming clip keeps the frames it spends here out of its own solo run on
-        // the next iteration, which is what makes the window cost the track nothing.
-        for j in 0..window {
-            let Some(node) = node else {
-                return Err(TimelineError::TimelineRenderFailed {
-                    reason: "gpu export: transitioned clip lost its GPU node".to_string(),
-                });
-            };
-            let t = output_time(video_idx, frame_rate);
-            let Some(outgoing) = cur.next()? else {
-                break; // The outgoing clip ran out early; end the transition with it.
-            };
-            let (a_rgba, w, h) = composite_pulled(core, &cur_layer, outgoing, canvas, t)
-                .ok_or_else(|| fell_back("the outgoing clip"))?;
-            let Some(incoming) = inc.next()? else {
-                // The incoming clip ran out early. The outgoing frame just composited
-                // goes unused: it belonged to this output, which now has nothing to
-                // blend it with. Only reachable when a source is shorter than declared,
-                // since eligibility bounds the window by the incoming clip budget.
-                break;
-            };
-            let (b_rgba, _, _) = composite_pulled(core, &inc_layer, incoming, canvas, t)
-                .ok_or_else(|| fell_back("the incoming clip"))?;
-            #[allow(clippy::cast_precision_loss)] // window frame counts fit the mantissa
-            let progress = j as f32 / window as f32;
-            let blended = core
-                .transition(node, progress, &a_rgba, b_rgba, w, h)
-                .ok_or_else(|| TimelineError::TimelineRenderFailed {
-                    reason: format!(
-                        "gpu export: the transition blend failed at progress {progress}"
-                    ),
-                })?;
-            emit_frame(
-                Some((blended, w, h)),
-                encoder,
-                &mut video_idx,
-                on_progress,
-                start,
-                total_frames,
-            )?;
         }
-
-        cur = inc;
-        cur_layer = inc_layer;
+        // A track that has ended still occupies its slot, contributing nothing visible.
+        // Measured on the CPU route: with a 6-frame base under a 15-frame overlay, the
+        // base's area goes **black** from frame 6 while the overlay keeps rendering, so
+        // letting the canvas show through is exactly right.
+        let mut layers: Vec<(&VideoLayer, VideoFrame)> = Vec::with_capacity(sources.len());
+        for (ts, frame) in sources.iter().zip(pulled) {
+            // A track that has produced nothing yet has no shape of its own to stand in
+            // with, so it stands in at canvas size. Dropping it instead would shrink the
+            // vector and shift every track above it down a slot, which is exactly the
+            // promotion the comment above forbids.
+            let frame = if let Some(f) = frame {
+                f
+            } else {
+                let (w, h) = ts.last_dims.unwrap_or(canvas);
+                transparent_frame(w, h)?
+            };
+            layers.push((ts.layer(), frame));
+        }
+        // Each track already composited its own content to the canvas, so a lone track
+        // is finished and needs no second pass -- that keeps the single-track export at
+        // exactly the cost it had before the scheduler. A stack goes through the
+        // compositor once more to place and blend the layers.
+        let composited = if layers.len() == 1 {
+            let (_, frame) = layers.pop().unwrap_or_else(|| unreachable!());
+            let (w, h) = (frame.width(), frame.height());
+            (frame.data(), w, h)
+        } else {
+            core.composite_owned(layers, canvas, t)
+                .ok_or_else(|| fell_back("the track stack"))?
+        };
+        emit_frame(
+            Some(composited),
+            encoder,
+            &mut video_idx,
+            on_progress,
+            start,
+            total_frames,
+        )?;
     }
     Ok(())
 }
@@ -787,8 +1080,162 @@ mod tests {
             .unwrap()
     }
 
-    fn eligible(timeline: &Timeline) -> Option<usize> {
-        eligible_track(
+    /// A two-track timeline on the same square canvas, base first.
+    fn two_track_timeline(base: Vec<Clip>, over: Vec<Clip>) -> Timeline {
+        Timeline::builder()
+            .canvas(64, 64)
+            .frame_rate(30.0)
+            .video_track(base)
+            .video_track(over)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn eligible_tracks_should_accept_two_active_video_tracks() {
+        // #1633: a second active track used to keep the whole export on the CPU. The
+        // returned indices are the stack, bottom to top -- the order the scheduler
+        // composites in, and what decides which track is the base.
+        let src = std::env::temp_dir().join("avio_eligible_mt_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let t = two_track_timeline(
+            vec![Clip::new(&src)],
+            vec![Clip::new(&src).with_position(10.0, 4.0).with_scale(0.5)],
+        );
+        assert_eq!(
+            eligible(&t),
+            Some(vec![0, 1]),
+            "two file-source tracks must both route to the GPU"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_reject_a_transition_on_a_non_base_track() {
+        // The CPU scales each clip to its placed size *before* `xfade`, while the GPU
+        // places after the blend. For the base that is the same thing (its transform is
+        // ignored); for an overlay it is not, and no measurement backs a reordering, so
+        // it falls back rather than approximate (RK-020).
+        let src = std::env::temp_dir().join("avio_eligible_mt_xfade_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let over = vec![
+            placed(src.to_str().unwrap(), 0.0, 1.0),
+            placed(src.to_str().unwrap(), 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(200)),
+        ];
+        let t = two_track_timeline(vec![placed(src.to_str().unwrap(), 0.0, 2.0)], over);
+        assert_eq!(
+            eligible(&t),
+            None,
+            "a transition on an overlay track must keep the export on the CPU"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_still_accept_a_transition_on_the_base_track() {
+        // The mirror of the test above, and the regression guard for #1659: the shipped
+        // single-track transition support must survive the restriction added for
+        // overlays.
+        let src = std::env::temp_dir().join("avio_eligible_mt_base_xfade_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let base = vec![
+            placed(src.to_str().unwrap(), 0.0, 1.0),
+            placed(src.to_str().unwrap(), 1.0, 1.0)
+                .with_transition(XfadeTransition::Fade, Duration::from_millis(200)),
+        ];
+        let t = two_track_timeline(base, vec![placed(src.to_str().unwrap(), 0.0, 2.0)]);
+        assert_eq!(
+            eligible(&t),
+            Some(vec![0, 1]),
+            "a transition on the base track is still rendered by the drain"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_reject_a_stateful_effect_once_a_second_track_is_stacked() {
+        // A MotionBlur trail lives in the cached effect graph, and a stacked export makes
+        // the compositor alternate between a one-layer solo composite and an N-layer
+        // stack composite every output frame, which evicts that cache each time
+        // (RK-025). The trail would restart every frame instead of accumulating, so the
+        // export declines rather than rendering a blur the CPU never produces.
+        let src = std::env::temp_dir().join("avio_eligible_mt_stateful_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let blurred = || {
+            Clip::new(&src).with_video_effect(FilterStep::MotionBlur {
+                shutter_angle_degrees: 180.0,
+                sub_frames: 4,
+            })
+        };
+        assert_eq!(
+            eligible(&square_timeline(vec![blurred()])),
+            Some(vec![0]),
+            "the control must be eligible on its own, or this test proves nothing"
+        );
+        let t = two_track_timeline(vec![blurred()], vec![Clip::new(&src)]);
+        let stacked = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            stacked, None,
+            "a stateful effect must keep a stacked export on the CPU"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_still_accept_a_stateless_effect_when_stacked() {
+        // The other half of the gate above: only a *stateful* node is rejected, so the
+        // rejection stays attributable to the cache interaction rather than reading as a
+        // blanket ban on effects in a stacked export.
+        let src = std::env::temp_dir().join("avio_eligible_mt_stateless_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let t = two_track_timeline(
+            vec![Clip::new(&src).with_video_effect(FilterStep::Hue { degrees: 60.0 })],
+            vec![Clip::new(&src).with_opacity(0.5)],
+        );
+        let stacked = eligible(&t);
+        let _ = std::fs::remove_file(&src);
+        assert_eq!(
+            stacked,
+            Some(vec![0, 1]),
+            "a stateless effect and an overlay opacity are both rendered by the stack"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_reject_when_any_track_is_ineligible() {
+        // The fallback is whole-frame, so one bad track disqualifies the export rather
+        // than compositing a partial stack. A non-unity speed on the *overlay* is the
+        // cheapest way to make exactly one track fail.
+        let src = std::env::temp_dir().join("avio_eligible_mt_bad_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let good = two_track_timeline(vec![Clip::new(&src)], vec![Clip::new(&src)]);
+        assert!(
+            eligible(&good).is_some(),
+            "the control case must be eligible, or this test proves nothing"
+        );
+        let t = two_track_timeline(
+            vec![Clip::new(&src)],
+            vec![{
+                let mut c = Clip::new(&src);
+                c.speed = 2.0;
+                c
+            }],
+        );
+        assert_eq!(eligible(&t), None, "one ineligible track fails the export");
+    }
+
+    fn eligible(timeline: &Timeline) -> Option<Vec<usize>> {
+        eligible_tracks(
             &timeline.video_tracks,
             timeline.lavfi_overlay.as_deref(),
             timeline.video_tracks.iter().any(|t| t.solo),
@@ -920,7 +1367,7 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         assert_eq!(
             eligible_now,
-            Some(0),
+            Some(vec![0]),
             "a 24 fps source in a 30 fps timeline must be GPU-eligible after #1660"
         );
     }
@@ -941,7 +1388,7 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         assert_eq!(
             eligible_now,
-            Some(0),
+            Some(vec![0]),
             "a 16:9 source on a square canvas must be GPU-eligible after #1661"
         );
     }
@@ -1048,7 +1495,7 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         assert_eq!(
             eligible_now,
-            Some(0),
+            Some(vec![0]),
             "a Fade into the last clip must be GPU-eligible after #1659"
         );
     }
@@ -1080,7 +1527,7 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         assert_eq!(
             eligible_now,
-            Some(0),
+            Some(vec![0]),
             "a transition on a middle clip must be GPU-eligible once placement preserves \
              the timeline length"
         );
@@ -1132,7 +1579,7 @@ mod tests {
         ]);
         let eligible_now = eligible(&t);
         let _ = std::fs::remove_file(&src);
-        assert_eq!(eligible_now, Some(0));
+        assert_eq!(eligible_now, Some(vec![0]));
     }
 
     #[test]
@@ -1168,7 +1615,7 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         assert_eq!(
             eligible_now,
-            Some(0),
+            Some(vec![0]),
             "the outgoing clip's body no longer bounds the window; its handle does"
         );
     }
@@ -1260,7 +1707,7 @@ mod tests {
         ]);
         let eligible_now = eligible(&t);
         let _ = std::fs::remove_file(&src);
-        assert_eq!(eligible_now, Some(0));
+        assert_eq!(eligible_now, Some(vec![0]));
     }
 
     #[test]
@@ -1282,7 +1729,7 @@ mod tests {
         ]);
         let eligible_now = eligible(&t);
         let _ = std::fs::remove_file(&src);
-        assert_eq!(eligible_now, Some(0));
+        assert_eq!(eligible_now, Some(vec![0]));
     }
 
     #[test]
@@ -1344,8 +1791,12 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_two_active_video_tracks() {
-        // v1 handles a single track; a second active track -> CPU.
+    fn eligible_tracks_should_reject_a_source_that_cannot_be_opened() {
+        // This assertion used to read "a second active track -> CPU", which #1633 lifted.
+        // It kept passing afterwards for the wrong reason: the fixture names files that
+        // do not exist, so the probe pass rejected them whatever the track count was.
+        // Pinning what it actually exercises is more useful than deleting it -- an
+        // unopenable source must fall back rather than fail mid-export.
         let t = Timeline::builder()
             .canvas(64, 64)
             .frame_rate(30.0)
