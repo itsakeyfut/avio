@@ -317,9 +317,17 @@ impl GpuCompositor {
                     height,
                     algorithm,
                 } => {
-                    out_w = *width;
-                    out_h = *height;
-                    graph.push(ScaleNode::new(*width, *height, *algorithm))
+                    let node = ScaleNode::new(*width, *height, *algorithm);
+                    // Ask the node what it will actually produce rather than
+                    // assuming `width` x `height`: `target_size` passes the input
+                    // size through when either dimension is `0`, matching FFmpeg's
+                    // `scale=0:0`. Recording the literal `0` instead would wrap the
+                    // read-back at the wrong size, `VideoFrame::from_rgba` would
+                    // reject the length, and the whole frame would fall back to the
+                    // CPU for no reason. `ScaleAnimated` reaches zero on a zoom that
+                    // starts from nothing, so this is not hypothetical (#1630).
+                    (out_w, out_h) = node.target_size(out_w, out_h);
+                    graph.push(node)
                 }
                 // Blur preserves the frame dimensions, so out_w/out_h are unchanged.
                 GpuEffect::Blur { sigma } => graph.push(GaussianBlurNode::new(*sigma)),

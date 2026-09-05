@@ -2023,10 +2023,21 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
     // `None` arm covers a mode a future FFmpeg adds, and
     // `map_scene_should_map_every_blend_mode` pins that all 40 map today.
 
-    // Unsupported effect (no GPU node).
-    let hue = base_layer(w, h, vec![FilterStep::Hue { degrees: 30.0 }]);
+    // Unsupported effect (no GPU node). `Hue` stood here until #1630 mapped it onto
+    // `HslNode`; `XFade` needs the two-input `CrossfadeNode`, which the per-layer
+    // plan has no second input for, so it is the current example of a step with no
+    // mapping at all.
+    let xfade = base_layer(
+        w,
+        h,
+        vec![FilterStep::XFade {
+            transition: XfadeTransition::Fade,
+            duration: 1.0,
+            offset: 0.0,
+        }],
+    );
     assert!(
-        gpu_composite(&mut gpu, &hue, &frame, (w, h)).is_none(),
+        gpu_composite(&mut gpu, &xfade, &frame, (w, h)).is_none(),
         "an unsupported effect must fall back"
     );
 }
