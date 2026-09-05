@@ -9,21 +9,26 @@
 //! it back to rgba, and pushes it to the unchanged encoder (whose own sws converts
 //! rgba -> yuv420p).
 //!
-//! v1 handles only a **single active video track** at unity speed whose every clip is a
-//! file source that maps to the GPU with an identity transform. A source whose frame
-//! rate differs from the timeline's is conformed by the drain (#1660), repeating or
-//! skipping source frames so the clip keeps its on-screen duration, and one whose aspect
-//! differs from the canvas is letterboxed by the shared compositing core (#1661). The
-//! clips are otherwise hard cuts, except for a single **cross-fade into the track's last
-//! clip** (#1659). Anything else keeps the whole export on the CPU
-//! `MultiTrackComposer` path (see [`eligible_track`]); multi-track / overlay GPU export
-//! is a follow-up.
+//! The route takes a **single active video track** at unity speed whose every clip is a
+//! file source. Several restrictions the first version had are gone: a source whose frame
+//! rate differs from the timeline's is conformed by the drain (#1660), one whose aspect
+//! differs from the canvas is letterboxed by the shared compositing core (#1661), a
+//! **cross-fade at any boundary** is rendered by the drain rather than rejected (#1659),
+//! and a clip carrying a position or scale is no longer turned away — the drain
+//! composites one layer per output, and a base layer's transform is ignored on both paths
+//! (#1633; see `gpu_compositor::layer_transform`).
+//!
+//! What still keeps the whole export on the CPU `MultiTrackComposer` path (see
+//! [`eligible_track`]): more than one active video track, a lavfi overlay, a generated
+//! (non-file) source, a speed other than 1, clips that do not tile the timeline, and a
+//! transition whose kind or window the GPU cannot render. Multi-track / overlay GPU
+//! export is #1633's remaining half.
 
 use std::time::{Duration, Instant};
 
 use ff_decode::{SeekMode, VideoDecoder};
 use ff_encode::VideoEncoder;
-use ff_filter::{AnimatedValue, VideoLayer, XfadeTransition};
+use ff_filter::{VideoLayer, XfadeTransition};
 use ff_format::{PixelFormat, VideoFrame};
 use ff_pipeline::Progress;
 use ff_render::BlendMode as RenderBlendMode;
@@ -200,9 +205,11 @@ pub(crate) fn eligible_track(
         else {
             return None;
         };
-        if !is_static_neutral_transform(&layer) {
-            return None;
-        }
+        // No transform gate: the drain composites one layer per output, which is the
+        // compositor's **base** layer, and a base layer's x / y / scale / rotation are
+        // ignored on both paths (measured; see `gpu_compositor::layer_transform`). A
+        // positioned or scaled clip therefore renders identically either way, so keeping
+        // it on the CPU bought nothing.
         blendable[i] = plan
             .layers
             .iter()
@@ -402,18 +409,6 @@ fn transition_window(
 #[allow(clippy::cast_precision_loss)] // frame index fits the f64 mantissa
 fn clip_output_time(k: u64, out_fps: f64) -> Duration {
     Duration::from_secs_f64(k as f64 / out_fps)
-}
-
-/// Whether a layer's geometric transform is static and neutral for all `t` (no
-/// translate / scale / rotate). Combined with the aspect check this is the v1
-/// identity gate: an animated or non-neutral transform makes the timeline
-/// ineligible (RK-020) so it never renders wrong output on the GPU.
-fn is_static_neutral_transform(layer: &VideoLayer) -> bool {
-    matches!(layer.x, AnimatedValue::Static(v) if v.abs() < 1e-9)
-        && matches!(layer.y, AnimatedValue::Static(v) if v.abs() < 1e-9)
-        && matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9)
-        && matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9)
-        && matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9)
 }
 
 /// The frame one clip shows for one output, and whether the drain may take it.
