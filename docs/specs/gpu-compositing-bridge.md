@@ -185,6 +185,12 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
 - Full node coverage (blur/LUT/glow/curves colour science, xfade kinds on GPU, BT.709 YUV upload). The
   blend modes landed in #1669 and the Porter-Duff operators in #1670.
 - Zero-copy GPU->encoder for export (v1 reads back to CPU and reuses the existing encoder).
+  Investigated in #1662 and deferred by [ADR-0013](../adr/0013-zero-copy-gpu-to-encoder.md): the
+  route exists, but no environment the project builds in can test it, and it needs four new seams
+  across ff-sys, ff-render and ff-encode. The readback measured ~2.1 ms at 1080p in release, 70% of
+  the composite stage, and preview pays it too since both paths use `GpuCompositor::composite`.
+  Most of that is a CPU copy rather than the GPU transfer, so it is reachable without the zero-copy
+  path; that optimisation is tracked as #1777.
 - Exact preview==export pixel convergence (the CPU compositors themselves are not bit-identical across the
   rgba/yuv420p seam, per the C4 Q2 deferral in `engine-and-primitives.md`).
 - Per-layer hybrid GPU/CPU compositing and the per-effected-layer readback optimization.
@@ -192,6 +198,7 @@ avoids mixing GPU and CPU colour spaces within one frame. Per-layer hybrid compo
 ## References
 
 - [ADR-0007](../adr/0007-gpu-compositing-bridge.md) (the decision and rationale).
+- [ADR-0013](../adr/0013-zero-copy-gpu-to-encoder.md) (why the export readback stays).
 - Bridge tracking issue #1365; sub-steps Br1-Br5 (#1624-#1628); milestone tracker #1593.
 - `ff-render` node/compositor API (`crates/ff-render/src/{compositor,graph,nodes,sink,context}`),
   `avio::derive` (`crates/avio/src/derive.rs`), the CPU compositors
