@@ -63,6 +63,21 @@ pub trait RenderNodeCpu: Send {
 pub enum NodeParam {
     /// [`MotionBlurNode`]'s shutter angle in degrees.
     MotionBlurShutter(f32),
+    /// [`ShapeMaskNode`]'s rectangle, in source-frame pixels, and whether it is
+    /// inverted. The shader evaluates the rectangle, so moving it is a parameter
+    /// change rather than a rebuild.
+    ShapeMaskRect {
+        /// Left edge.
+        x: u32,
+        /// Top edge.
+        y: u32,
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+        /// Keep outside the rectangle instead of inside.
+        invert: bool,
+    },
 }
 
 // RenderNode

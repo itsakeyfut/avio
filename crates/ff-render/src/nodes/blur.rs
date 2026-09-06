@@ -737,6 +737,7 @@ impl super::RenderNode for MotionBlurNode {
                 self.shutter_angle.set(deg);
                 true
             }
+            super::NodeParam::ShapeMaskRect { .. } => false,
         }
     }
 
