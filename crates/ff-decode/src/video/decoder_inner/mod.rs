@@ -43,7 +43,9 @@ use ff_sys::{
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::shared::guards_inner::{open_image_sequence_ctx, open_input_ctx, open_url_ctx};
+use crate::shared::guards_inner::{
+    open_custom_ctx, open_image_sequence_ctx, open_input_ctx, open_url_ctx,
+};
 use crate::video::builder::OutputScale;
 use ff_common::FramePool;
 
@@ -140,6 +142,7 @@ impl VideoDecoderInner {
         frame_rate: Option<u32>,
         frame_pool: Option<Arc<dyn FramePool>>,
         network_opts: Option<NetworkOptions>,
+        source: Option<Box<dyn ff_sys::IoSource>>,
     ) -> Result<(Self, VideoStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
@@ -160,8 +163,11 @@ impl VideoDecoderInner {
             crate::network::check_srt_url(path_str)?;
         }
 
-        // Open the input (owned demux context).
-        let mut ctx = if is_network_url {
+        // Open the input (owned demux context). A caller-supplied source wins over
+        // the path, which is then only a label for diagnostics.
+        let mut ctx = if let Some(source) = source {
+            open_custom_ctx(source)?
+        } else if is_network_url {
             let network = network_opts.unwrap_or_default();
             log::info!(
                 "opening network source url={} connect_timeout_ms={} read_timeout_ms={}",

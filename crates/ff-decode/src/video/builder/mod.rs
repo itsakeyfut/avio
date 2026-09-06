@@ -122,6 +122,24 @@ pub struct VideoDecoderBuilder {
     frame_rate: Option<u32>,
     /// Network options for URL-based sources (RTMP, RTSP, HTTP, etc.).
     network_opts: Option<NetworkOptions>,
+    /// A caller-supplied byte source to demux from instead of `path`.
+    ///
+    /// Set by [`VideoDecoder::from_reader`]; when present it wins over `path`,
+    /// which is then only a label for diagnostics.
+    source: Option<SourceHandle>,
+}
+
+/// A boxed byte source that can sit in a `#[derive(Debug)]` struct.
+///
+/// A caller's reader carries no `Debug` bound -- requiring one would rule out
+/// most of what this feature exists to accept -- so the handle prints a label
+/// instead of its contents.
+struct SourceHandle(Box<dyn ff_sys::IoSource>);
+
+impl std::fmt::Debug for SourceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<reader>")
+    }
 }
 
 impl VideoDecoderBuilder {
@@ -138,7 +156,17 @@ impl VideoDecoderBuilder {
             frame_pool: None,
             frame_rate: None,
             network_opts: None,
+            source: None,
         }
+    }
+
+    /// Creates a builder that demuxes `source` instead of a file.
+    ///
+    /// This is an internal constructor; use [`VideoDecoder::from_reader()`].
+    pub(crate) fn from_source(source: Box<dyn ff_sys::IoSource>) -> Self {
+        let mut builder = Self::new(PathBuf::from("<reader>"));
+        builder.source = Some(SourceHandle(source));
+        builder
     }
 
     /// Returns the configured file path.
@@ -212,11 +240,12 @@ impl VideoDecoderBuilder {
         }
 
         // Image-sequence patterns contain '%' — the literal path does not exist.
-        // Network URLs must also skip the file-existence check.
+        // Network URLs must also skip the file-existence check, and so must a
+        // caller-supplied source, whose `path` is a label rather than a location.
         let path_str = self.path.to_str().unwrap_or("");
         let is_image_sequence = path_str.contains('%');
         let is_network_url = crate::network::is_url(path_str);
-        if !is_image_sequence && !is_network_url && !self.path.exists() {
+        if self.source.is_none() && !is_image_sequence && !is_network_url && !self.path.exists() {
             return Err(DecodeError::FileNotFound {
                 path: self.path.clone(),
             });
@@ -232,6 +261,7 @@ impl VideoDecoderBuilder {
             self.frame_rate,
             self.frame_pool.clone(),
             self.network_opts,
+            self.source.map(|s| s.0),
         )?;
 
         Ok(VideoDecoder {
@@ -341,6 +371,36 @@ impl VideoDecoder {
     /// media file. Validation occurs when [`VideoDecoderBuilder::build()`] is called.
     pub fn open(path: impl AsRef<Path>) -> VideoDecoderBuilder {
         VideoDecoderBuilder::new(path.as_ref().to_path_buf())
+    }
+
+    /// Creates a builder that decodes from `source` instead of a file.
+    ///
+    /// `source` is anything that reads and seeks and can move to the decoder's
+    /// thread -- an in-memory `Cursor<Vec<u8>>`, a `File`, a custom byte store.
+    /// The container format is probed from the bytes, so nothing has to be named.
+    ///
+    /// `Seek` is required: `FFmpeg` can demux without it, but the containers that
+    /// survive a non-seekable input are a narrower set with different failure
+    /// modes, and supporting it is separate work.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::io::Cursor;
+    /// use ff_decode::VideoDecoder;
+    ///
+    /// let bytes: Vec<u8> = std::fs::read("input.mp4")?;
+    /// let mut decoder = VideoDecoder::from_reader(Cursor::new(bytes)).build()?;
+    /// let frame = decoder.decode_one()?;
+    /// # Ok::<(), ff_decode::DecodeError>(())
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// As with [`open`](Self::open), nothing is read until
+    /// [`VideoDecoderBuilder::build()`] is called.
+    pub fn from_reader(source: impl ff_sys::IoSource + 'static) -> VideoDecoderBuilder {
+        VideoDecoderBuilder::from_source(Box::new(source))
     }
 
     // =========================================================================

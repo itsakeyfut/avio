@@ -44,6 +44,8 @@ pub mod avcodec;
 #[cfg(not(docsrs))]
 pub mod avformat;
 #[cfg(not(docsrs))]
+mod io_context;
+#[cfg(not(docsrs))]
 pub mod swresample;
 #[cfg(not(docsrs))]
 pub mod swscale;
@@ -60,12 +62,15 @@ mod codec_context;
 mod constants;
 mod error;
 pub mod error_codes;
+// Ungated: pure `Read`/`Write` + `Seek` bounds with no FFmpeg dependency, so the
+// docs.rs stubs can name them too.
 #[cfg(not(docsrs))]
 mod format_context;
 #[cfg(not(docsrs))]
 mod frame;
 #[cfg(not(docsrs))]
 mod hwdevice;
+mod io_traits;
 mod log_bridge;
 #[cfg(not(docsrs))]
 mod packet;
@@ -84,7 +89,9 @@ pub use buffersink::{BufferSinkOutcome, buffersink_get_frame};
 pub use codec::Codec;
 #[cfg(not(docsrs))]
 pub use codec_context::{CodecContext, ReceiveOutcome};
-pub use constants::{AV_NOPTS_VALUE, AVFMT_NOFILE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF};
+pub use constants::{
+    AV_NOPTS_VALUE, AVFMT_FLAG_CUSTOM_IO, AVFMT_NOFILE, AVFMT_TS_DISCONT, BUFFERSRC_FLAG_KEEP_REF,
+};
 pub use error::AvError;
 #[cfg(not(docsrs))]
 pub use format_context::{
@@ -94,6 +101,7 @@ pub use format_context::{
 pub use frame::Frame;
 #[cfg(not(docsrs))]
 pub use hwdevice::HwDeviceContext;
+pub use io_traits::{IoSink, IoSource};
 pub use log_bridge::{install_log_bridge, log_level, set_log_level};
 #[cfg(not(docsrs))]
 pub use packet::Packet;

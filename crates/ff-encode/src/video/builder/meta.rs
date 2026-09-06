@@ -11,6 +11,38 @@ impl VideoEncoderBuilder {
         self
     }
 
+    /// Mux into `sink` instead of writing a file.
+    ///
+    /// The path given to [`VideoEncoder::create`](crate::VideoEncoder::create) is
+    /// then only what the muxer is guessed from -- nothing is created on disk --
+    /// so it still needs a usable extension, or an explicit
+    /// [`container`](Self::container).
+    ///
+    /// `sink` is anything that writes and seeks and can move to the encoder's
+    /// thread. Seeking is not optional: MP4 rewrites its header once the sizes
+    /// are known, and a sink that cannot seek would produce an unplayable file.
+    ///
+    /// Incompatible with [`two_pass`](Self::two_pass), which opens the output
+    /// again for the second pass; that combination is rejected by `build`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::io::Cursor;
+    /// use ff_encode::VideoEncoder;
+    ///
+    /// let mut encoder = VideoEncoder::create("out.mp4")
+    ///     .video_size(640, 360)
+    ///     .output_sink(Cursor::new(Vec::new()))
+    ///     .build()?;
+    /// # Ok::<(), ff_encode::EncodeError>(())
+    /// ```
+    #[must_use]
+    pub fn output_sink(mut self, sink: impl ff_sys::IoSink + 'static) -> Self {
+        self.sink = Some(Box::new(sink));
+        self
+    }
+
     /// Set a closure as the progress callback.
     #[must_use]
     pub fn on_progress<F>(mut self, callback: F) -> Self

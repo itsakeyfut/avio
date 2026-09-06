@@ -72,6 +72,12 @@ pub use ff_probe::{ProbeError, open};
 // Errors the engine's `TimelineError` wraps by `#[from]`.
 pub use ff_decode::DecodeError;
 
+// Custom byte source / sink bounds (#1600): `VideoDecoder::from_reader` and
+// `VideoEncoderBuilder::output_sink` accept anything meeting these, so a caller
+// only names them to store one.
+pub use ff_decode::IoSource;
+pub use ff_encode::IoSink;
+
 // analysis (scene / silence / loudness / scopes)
 // Media analysis feeds editing decisions; kept as an engine convenience.
 pub use ff_analysis::{

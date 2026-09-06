@@ -189,7 +189,10 @@ pub use audio::{
     Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 pub use error::EncodeError;
+// The bound `VideoEncoderBuilder::output_sink` takes. Callers passing a `Cursor`
+// or a `File` never name it; one storing a boxed sink does.
 pub use ff_format::{ErrorSeverity, MediaError};
+pub use ff_sys::IoSink;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::{AudioEncoderConfig, ExportPreset, VideoEncoderConfig};
 #[cfg(feature = "preview-image")]

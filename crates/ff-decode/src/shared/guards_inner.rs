@@ -39,6 +39,22 @@ pub(crate) fn open_image_sequence_ctx(
     })
 }
 
+/// Opens a caller-supplied byte source, returning the owned demux context.
+///
+/// The format is probed from the bytes themselves, so there is no path or URL to
+/// report in the error; the source is moved into the context and released with it.
+pub(crate) fn open_custom_ctx(
+    source: Box<dyn ff_sys::IoSource>,
+) -> Result<ff_sys::InputFormatContext, DecodeError> {
+    ff_sys::InputFormatContext::open_custom(source).map_err(|e| DecodeError::Ffmpeg {
+        code: e.code(),
+        message: format!(
+            "Failed to open the supplied source: {}",
+            ff_sys::av_error_string(e.code())
+        ),
+    })
+}
+
 /// Opens a network URL with the supplied network options, returning the owned demux context.
 pub(crate) fn open_url_ctx(
     url: &str,
