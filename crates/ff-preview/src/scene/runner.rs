@@ -688,6 +688,15 @@ impl SceneRunner {
                             if let Some(h) = self.clips[old_active].audio_track.clone() {
                                 h.clear();
                             }
+                            // And the visual equivalent: a stateful effect (motion
+                            // blur's exposure trail) accumulates across one clip's
+                            // frames and must not bleed into the next. This rides the
+                            // cut detection that is already here rather than adding a
+                            // second notion of a boundary, which matters because clip
+                            // progression is driven by each frame's own PTS (RK-019).
+                            if let Some(c) = self.gpu_compositor.as_mut() {
+                                c.reset_effects();
+                            }
                             let in_pt = self.clips[self.active].in_point;
                             self.restart_audio_at(self.active, in_pt);
                         }
@@ -1139,6 +1148,13 @@ impl SceneRunner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .invalidate_all();
+        }
+        // The visual equivalent of that invalidation. A stateful effect (motion
+        // blur's exposure trail) accumulated from the frames that preceded the *old*
+        // position, which after a seek are not the frames preceding the new one — so
+        // it is stale whether or not the seek crossed a clip boundary (#1705).
+        if let Some(c) = self.gpu_compositor.as_mut() {
+            c.reset_effects();
         }
         if is_gap_seek {
             // Cancel any running V1 audio thread; the gap loop will restart it

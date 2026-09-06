@@ -50,6 +50,21 @@ pub trait RenderNodeCpu: Send {
     fn process_cpu(&self, rgba: &mut [u8], w: u32, h: u32);
 }
 
+/// A parameter a node accepts per frame without being rebuilt.
+///
+/// This exists for **stateful** nodes. A node whose output depends only on its
+/// parameters can simply be rebuilt when one changes; [`MotionBlurNode`] cannot,
+/// because rebuilding discards the exposure trail that is the whole point of it.
+/// So the parameter travels to the live node instead.
+///
+/// Non-exhaustive: more animatable parameters join it as they are needed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum NodeParam {
+    /// [`MotionBlurNode`]'s shutter angle in degrees.
+    MotionBlurShutter(f32),
+}
+
 // RenderNode
 
 /// GPU render node. Extends [`RenderNodeCpu`] so both paths are available.
@@ -97,4 +112,16 @@ pub trait RenderNode: RenderNodeCpu {
         outputs: &[&wgpu::Texture],
         ctx: &crate::context::RenderContext,
     );
+
+    /// Applies `param` to this node in place, returning whether it was taken.
+    ///
+    /// Takes `&self` because the caller only ever holds the graph, and because a
+    /// node that accepts a parameter is by nature one that already carries interior
+    /// mutability for its state.
+    ///
+    /// Defaults to `false`: a node that does not name a parameter is unaffected by
+    /// one, and a caller can tell nothing was applied.
+    fn set_param(&self, _param: NodeParam) -> bool {
+        false
+    }
 }

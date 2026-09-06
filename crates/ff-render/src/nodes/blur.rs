@@ -6,7 +6,7 @@
 //! CPU fallback ([`RenderNodeCpu`]) that uses the same discrete kernel with
 //! clamp-to-edge, so the GPU and CPU paths agree within tolerance.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use super::RenderNodeCpu;
 
@@ -590,7 +590,14 @@ fn pack_blur_uniforms(direction: [f32; 2], tap_count: u32, weights: &[f32; 16]) 
 /// node instance (a fresh node per frame never accumulates).
 pub struct MotionBlurNode {
     /// Shutter angle in degrees `[0, 360]`. 0 = no blur, 180 = standard film blur.
-    pub shutter_angle: f32,
+    ///
+    /// A `Cell` so an animated shutter can be applied to the live node
+    /// ([`NodeParam::MotionBlurShutter`](crate::NodeParam::MotionBlurShutter))
+    /// instead of rebuilding it, which would
+    /// discard the trail. `Cell` keeps the node `Send`, which `RenderNodeCpu`
+    /// requires; a `Sync` container would be a stronger bound than anything here
+    /// needs.
+    shutter_angle: Cell<f32>,
     /// Accumulated sub-frame count (clamped to `2..=8`); higher = smoother trail.
     pub sub_frames: u8,
     /// Previous output with its `(width, height)`, retained across frames for the
@@ -606,7 +613,7 @@ impl MotionBlurNode {
     #[must_use]
     pub fn new(shutter_angle: f32, sub_frames: u8) -> Self {
         Self {
-            shutter_angle,
+            shutter_angle: Cell::new(shutter_angle),
             sub_frames,
             cpu_prev: RefCell::new(None),
             #[cfg(feature = "wgpu")]
@@ -614,11 +621,17 @@ impl MotionBlurNode {
         }
     }
 
+    /// The shutter angle currently in effect, in degrees.
+    #[must_use]
+    pub fn shutter_angle(&self) -> f32 {
+        self.shutter_angle.get()
+    }
+
     /// The weight applied to the accumulated `prev` frame. `shutter = 0` yields
     /// `0` (no blur) for any `sub_frames`; `sub_frames` (clamped `2..=8`) scales the
-    /// retention from `0.5×` (2) to `1.0×` (8) of the shutter fraction.
+    /// retention from `0.5x` (2) to `1.0x` (8) of the shutter fraction.
     fn prev_weight(&self) -> f32 {
-        let alpha = (self.shutter_angle / 360.0).clamp(0.0, 1.0);
+        let alpha = (self.shutter_angle.get() / 360.0).clamp(0.0, 1.0);
         let sub = self.sub_frames.clamp(2, 8);
         let g = 0.5 + 0.5 * (f32::from(sub - 2) / 6.0);
         (alpha * g).clamp(0.0, 1.0)
@@ -715,6 +728,18 @@ fn build_motion_blur_gpu(device: &wgpu::Device, w: u32, h: u32) -> MotionBlurGpu
 
 #[cfg(feature = "wgpu")]
 impl super::RenderNode for MotionBlurNode {
+    /// Takes [`NodeParam::MotionBlurShutter`](super::NodeParam::MotionBlurShutter),
+    /// so an animated shutter reaches the live node and the accumulated trail
+    /// survives the change.
+    fn set_param(&self, param: super::NodeParam) -> bool {
+        match param {
+            super::NodeParam::MotionBlurShutter(deg) => {
+                self.shutter_angle.set(deg);
+                true
+            }
+        }
+    }
+
     fn process(
         &self,
         inputs: &[&wgpu::Texture],
@@ -969,6 +994,66 @@ mod tests {
             "the white frame must leave a fading trail on the black frame; got {}",
             black[0]
         );
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn set_param_should_change_the_shutter_without_resetting_the_trail() {
+        // The whole reason the parameter travels to the live node: rebuilding it to
+        // change the shutter would drop `cpu_prev`, and the trail with it.
+        use crate::nodes::{NodeParam, RenderNode};
+        let node = MotionBlurNode::new(180.0, 4);
+        let mut white = vec![255u8, 255, 255, 255];
+        node.process_cpu(&mut white, 1, 1); // seed prev = white
+
+        assert!(node.set_param(NodeParam::MotionBlurShutter(360.0)));
+        assert!((node.shutter_angle() - 360.0).abs() < 1e-6);
+
+        let mut black = vec![0u8, 0, 0, 255];
+        node.process_cpu(&mut black, 1, 1);
+        assert!(
+            black[0] > 0,
+            "the seeded trail must survive the parameter change; got {}",
+            black[0]
+        );
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn set_param_should_be_declined_by_a_node_that_does_not_take_it() {
+        // The default is `false`, which is how a caller tells that nothing was
+        // applied and the graph has to be rebuilt instead.
+        use crate::nodes::{NodeParam, RenderNode};
+        let node = GaussianBlurNode::new(2.0);
+        assert!(!node.set_param(NodeParam::MotionBlurShutter(90.0)));
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn a_changed_shutter_should_change_the_blend_weight() {
+        // Non-vacuity for the test above: the parameter has to reach the maths, not
+        // just the field.
+        use crate::nodes::{NodeParam, RenderNode};
+        let node = MotionBlurNode::new(360.0, 8);
+        let mut white = vec![255u8, 255, 255, 255];
+        node.process_cpu(&mut white, 1, 1);
+        let mut black_full = vec![0u8, 0, 0, 255];
+        node.process_cpu(&mut black_full, 1, 1);
+
+        let node = MotionBlurNode::new(360.0, 8);
+        let mut white = vec![255u8, 255, 255, 255];
+        node.process_cpu(&mut white, 1, 1);
+        assert!(node.set_param(NodeParam::MotionBlurShutter(0.0)));
+        let mut black_none = vec![0u8, 0, 0, 255];
+        node.process_cpu(&mut black_none, 1, 1);
+
+        assert!(
+            black_full[0] > black_none[0],
+            "a shutter of 0 must retain less than one of 360: {} vs {}",
+            black_full[0],
+            black_none[0]
+        );
+        assert_eq!(black_none[0], 0, "a zero shutter is no blur at all");
     }
 
     #[test]

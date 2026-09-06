@@ -228,6 +228,21 @@ impl RenderGraph {
 
         out
     }
+
+    /// Applies `param` to every GPU node that takes it, returning how many did.
+    ///
+    /// The point is a *stateful* node: rebuilding the graph to change one parameter
+    /// would discard the state the node exists to carry (see
+    /// [`NodeParam`](crate::NodeParam)). A return of `0` means nothing in this graph
+    /// names that parameter, which is how a caller tells a reuse from a no-op.
+    #[cfg(feature = "wgpu")]
+    #[must_use]
+    pub fn set_param(&self, param: crate::NodeParam) -> usize {
+        self.gpu_nodes
+            .iter()
+            .filter(|node| node.set_param(param))
+            .count()
+    }
 }
 
 #[cfg(test)]
