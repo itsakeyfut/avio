@@ -56,4 +56,16 @@ pub trait PreviewCompositor: Send {
         let _ = (kind, a, b, progress, w, h);
         None
     }
+
+    /// Drops whatever the implementor carries from one clip into the next.
+    ///
+    /// The runner calls this when playback crosses a clip boundary. It exists for a
+    /// **stateful** effect: motion blur accumulates an exposure trail across the
+    /// frames of one clip, and without a reset at the cut the outgoing clip's trail
+    /// bleeds into the incoming clip's first frame. The export path has always done
+    /// this; playback did not, which is what #1705 fixes.
+    ///
+    /// Defaults to a no-op, so an implementor that carries nothing across frames is
+    /// unaffected.
+    fn reset_effects(&mut self) {}
 }

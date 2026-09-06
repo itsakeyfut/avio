@@ -90,6 +90,6 @@ pub use sink::GpuFrameSink;
 #[cfg(feature = "wgpu")]
 pub use context::RenderContext;
 #[cfg(feature = "wgpu")]
-pub use nodes::RenderNode;
+pub use nodes::{NodeParam, RenderNode};
 #[cfg(feature = "wgpu")]
 pub use sink::TextureHandle;

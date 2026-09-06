@@ -1195,23 +1195,38 @@ impl EffectKind {
                     })
                 }
             }
-            // MotionBlur maps to `tblend`. Motion blur is stateful (the trail
-            // accumulates across frames on one node), so the shutter cannot animate
-            // per frame: both paths use the value at `t = 0`. A non-positive shutter
-            // is no blur, so it compiles to nothing — matching the GPU classifier's
-            // `<= 0.0` Skip so both paths treat an out-of-range value the same way.
+            // MotionBlur maps to `tblend`. The node is stateful (the trail
+            // accumulates across frames on one node), which used to mean the shutter
+            // could not animate: both paths took the value at `t = 0`. It can now.
+            // `tblend`'s mix is an expression re-evaluated per frame with `T` bound
+            // to the frame time, and the GPU node takes the shutter as a per-frame
+            // parameter instead of being rebuilt, so the trail survives on both
+            // paths (#1705).
+            //
+            // A non-positive shutter is no blur, so it compiles to nothing — matching
+            // the GPU classifier's `<= 0.0` Skip so both paths treat an out-of-range
+            // value the same way. For a track that test is the value at `t = 0`,
+            // which is the only point both paths can agree on before any frame is
+            // rendered; a track that starts at zero and rises is authored as one that
+            // starts just above it.
             EffectKind::MotionBlur {
                 shutter_angle,
                 sub_frames,
             } => {
-                let angle = shutter_angle.to_animated().value_at(Duration::ZERO) as f32;
-                if angle <= 0.0 {
+                let animated = shutter_angle.to_animated();
+                if animated.value_at(Duration::ZERO) <= 0.0 {
                     return None;
                 }
-                Some(FilterStep::MotionBlur {
-                    shutter_angle_degrees: angle,
-                    sub_frames: *sub_frames,
-                })
+                match animated {
+                    AnimatedValue::Track(_) => Some(FilterStep::MotionBlurAnimated {
+                        shutter_angle: animated,
+                        sub_frames: *sub_frames,
+                    }),
+                    AnimatedValue::Static(deg) => Some(FilterStep::MotionBlur {
+                        shutter_angle_degrees: deg as f32,
+                        sub_frames: *sub_frames,
+                    }),
+                }
             }
             // The escape hatches render their step verbatim.
             EffectKind::Raw { step } | EffectKind::AudioRaw { step } => Some(step.clone()),
@@ -2276,9 +2291,12 @@ mod tests {
     }
 
     #[test]
-    fn motion_blur_animated_shutter_should_render_t0_value() {
-        // The trail needs a stable node, so an animated shutter renders its t=0 value
-        // (here 180) rather than a later keyframe (90).
+    fn motion_blur_animated_shutter_should_render_the_animated_step() {
+        // Until #1705 the trail needed a node that was never rebuilt, so an animated
+        // shutter was collapsed to its t=0 value. It no longer is: `tblend` takes the
+        // mix as an expression re-evaluated per frame, and the GPU node takes the
+        // shutter as a parameter rather than being rebuilt, so the track survives to
+        // the step and both paths animate.
         let track = AnimationTrack::new()
             .push(Keyframe::new(Duration::ZERO, 180.0, Easing::Linear))
             .push(Keyframe::new(Duration::from_secs(1), 90.0, Easing::Linear));
@@ -2287,14 +2305,38 @@ mod tests {
             sub_frames: 6,
         };
         match kind.to_filter_step().unwrap() {
+            FilterStep::MotionBlurAnimated {
+                shutter_angle,
+                sub_frames,
+            } => {
+                assert_eq!(sub_frames, 6);
+                assert!(
+                    (shutter_angle.value_at(Duration::ZERO) - 180.0).abs() < 1e-4,
+                    "the track must reach the step intact"
+                );
+                assert!(
+                    (shutter_angle.value_at(Duration::from_secs(1)) - 90.0).abs() < 1e-4,
+                    "including its later keyframes, which the old collapse discarded"
+                );
+            }
+            other => panic!("expected MotionBlurAnimated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn motion_blur_static_shutter_should_render_the_constant_step() {
+        // The other half: a constant shutter still compiles to the constant form, so
+        // nothing that was not animated changes shape.
+        let kind = EffectKind::MotionBlur {
+            shutter_angle: Param::Const(180.0),
+            sub_frames: 6,
+        };
+        match kind.to_filter_step().unwrap() {
             FilterStep::MotionBlur {
                 shutter_angle_degrees,
                 sub_frames,
             } => {
-                assert!(
-                    (shutter_angle_degrees - 180.0).abs() < 1e-4,
-                    "must use the t=0 shutter value (180), got {shutter_angle_degrees}"
-                );
+                assert!((shutter_angle_degrees - 180.0).abs() < 1e-4);
                 assert_eq!(sub_frames, 6);
             }
             other => panic!("expected MotionBlur, got {other:?}"),

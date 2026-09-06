@@ -2048,6 +2048,151 @@ fn reset_effect_cache_should_reset_motion_blur_accumulation() {
     );
 }
 
+/// A layer with a constant shutter, for comparing against an animated one.
+fn constant_motion_blur_layer(w: u32, h: u32, degrees: f32) -> RealtimeLayer {
+    base_layer(
+        w,
+        h,
+        vec![FilterStep::MotionBlur {
+            shutter_angle_degrees: degrees,
+            sub_frames: 8,
+        }],
+    )
+}
+
+/// A layer whose shutter ramps `from` -> `to` over one second (#1705).
+fn animated_motion_blur_layer(w: u32, h: u32, from: f64, to: f64) -> RealtimeLayer {
+    let track = ff_filter::AnimationTrack::new()
+        .push(ff_filter::Keyframe::new(
+            Duration::ZERO,
+            from,
+            ff_filter::Easing::Linear,
+        ))
+        .push(ff_filter::Keyframe::new(
+            Duration::from_secs(1),
+            to,
+            ff_filter::Easing::Linear,
+        ));
+    base_layer(
+        w,
+        h,
+        vec![FilterStep::MotionBlurAnimated {
+            shutter_angle: ff_filter::AnimatedValue::Track(track),
+            sub_frames: 8,
+        }],
+    )
+}
+
+#[test]
+fn an_animated_shutter_should_keep_accumulating_the_trail() {
+    // The acceptance criterion, and the reason the shutter is pushed into the live
+    // node rather than the node being rebuilt around it: a rebuild would drop the
+    // trail every frame, so the output would equal the input every frame.
+    //
+    // White seed, then black frames with a shutter ramping down from 360. A retained
+    // trail means the black frames read brighter than black.
+    let (w, h) = (8, 8);
+    let white = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [255, 255, 255])).unwrap();
+    let black = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 0])).unwrap();
+    let layer = animated_motion_blur_layer(w, h, 360.0, 0.0);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+    gpu.composite(&[(&layer, &white)], (w, h), Duration::ZERO)
+        .expect("seed");
+    let (second, _, _) = gpu
+        .composite(&[(&layer, &black)], (w, h), Duration::from_millis(33))
+        .expect("second frame");
+    assert!(
+        second[0] > 8,
+        "the seeded trail must survive the shutter changing; got {}",
+        second[0]
+    );
+}
+
+#[test]
+fn an_animated_shutter_should_be_observable_per_frame() {
+    // The other half: the shutter has to change what is rendered, per frame.
+    //
+    // The discriminator is the **first** frame after a white seed, where the two
+    // shutters are furthest apart: a constant 360 retains the seed in full (bright),
+    // while a ramp starting at 0 retains almost none of it (black). They converge
+    // later, which is why an earlier version of this test — comparing the twentieth
+    // frame, by which point both had decayed to 0 — passed without proving anything.
+    let (w, h) = (8, 8);
+    let white = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [255, 255, 255])).unwrap();
+    let black = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 0])).unwrap();
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+
+    // The first frame after the seed, for a layer's shutter.
+    let mut first_after_seed = |layer: &RealtimeLayer| -> u8 {
+        gpu.reset_effect_cache();
+        gpu.composite(&[(layer, &white)], (w, h), Duration::ZERO)
+            .expect("seed");
+        let (out, _, _) = gpu
+            .composite(&[(layer, &black)], (w, h), Duration::from_millis(33))
+            .expect("first frame after the seed");
+        out[0]
+    };
+
+    let held = first_after_seed(&constant_motion_blur_layer(w, h, 360.0));
+    let ramping_up = first_after_seed(&animated_motion_blur_layer(w, h, 0.0, 360.0));
+    println!("first frame after the seed: constant360={held} ramp0to360={ramping_up}");
+    assert!(
+        held > 200,
+        "a constant 360 shutter retains the white seed in full; got {held}"
+    );
+    assert!(
+        ramping_up < 64,
+        "a shutter still near 0 one frame in retains almost none of it; got {ramping_up}"
+    );
+}
+
+#[test]
+fn a_cached_effect_graph_should_survive_a_different_stack_at_the_same_position() {
+    // What this pins is that a composite of a *different shape* no longer throws the
+    // cache away. It used to: the cache was a `Vec` resized per composite, and any
+    // change in the layer count cleared every entry. On the multi-track export path
+    // that happens twice per output frame, because it alternates a one-layer solo
+    // composite with an N-layer stack (#1770).
+    //
+    // The motion-blur trail is the observable: it lives in the cached graph, so an
+    // eviction shows up as a frame that lost its trail.
+    let (w, h) = (8, 8);
+    let white = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [255, 255, 255])).unwrap();
+    let black = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [0, 0, 0])).unwrap();
+    let blurred = constant_motion_blur_layer(w, h, 360.0);
+    let plain = base_layer(w, h, Vec::new());
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+
+    // One layer: seed the trail with white.
+    gpu.composite(&[(&blurred, &white)], (w, h), Duration::ZERO)
+        .expect("seed the one-layer entry");
+    // Two layers: a different stack, so a different cache entry. Position 0 is the
+    // same, which is exactly the collision the layout key exists to prevent.
+    gpu.composite(
+        &[(&blurred, &black), (&plain, &black)],
+        (w, h),
+        Duration::from_millis(33),
+    )
+    .expect("a two-layer stack at the same position");
+    // One layer again: the seeded trail must still be there.
+    let (out, _, _) = gpu
+        .composite(&[(&blurred, &black)], (w, h), Duration::from_millis(66))
+        .expect("back to one layer");
+
+    println!("one-layer trail after a two-layer composite: {}", out[0]);
+    assert!(
+        out[0] > 8,
+        "the one-layer graph must survive a composite of a different shape; a lost          trail reads as an unblended frame, and this one read {}",
+        out[0]
+    );
+}
+
 // Transition mapping parity (#1657)
 
 /// Mean per-channel difference allowed between a GPU transition node and the CPU

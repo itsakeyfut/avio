@@ -38,9 +38,10 @@
 //! across a clip's frames, so its cross-frame reuse *is* the accumulation. A caller
 //! that composites a sequence of clips at one layer position must call
 //! [`reset_effect_cache`](GpuCompositor::reset_effect_cache) at each clip boundary so
-//! the trail does not bleed across a cut (RK-025); the export drain does this. The
-//! preview runner's clip-boundary reset is a documented follow-up.
+//! the trail does not bleed across a cut (RK-025). The export drain does this per
+//! clip, and the preview runner does it at each cut and on every seek (#1705).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,19 +49,25 @@ use ff_format::VideoFrame;
 use ff_render::{
     ChromaKeyNode, ColorGradeNode, ColorWheelsNode, Compositor, CurvesNode, DipToColorNode,
     DissolveTransitionNode, FadeTransitionNode, FilmGrainNode, FrameLayer, GaussianBlurNode,
-    GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode, MotionBlurNode, RenderContext,
-    RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode, VignetteNode, WipeTransitionNode,
+    GlowNode, HslNode, LayerTransform, LumaMaskNode, LutNode, MotionBlurNode, NodeParam,
+    RenderContext, RenderGraph, ScaleNode, ShapeMaskNode, SharpenNode, VignetteNode,
+    WipeTransitionNode,
 };
 
 use crate::gpu::{GpuEffect, GpuLayerPlan, GpuLayerSource, GpuMapping, map_scene};
 use crate::gpu_transition::GpuTransition;
 
 /// A per-layer effect [`RenderGraph`] cached across frames so an effected layer does
-/// not recompile its node pipelines every frame (#1634). Keyed by the exact effect
-/// list **and the input frame dimensions**; reused only when the next frame's effects
-/// compare equal (const params) and its size matches, so the graph's baked node params
-/// (and any dimension-sized mask, e.g. `ShapeMaskNode`) stay correct and the read-back
-/// is wrapped at the right size.
+/// not recompile its node pipelines every frame (#1634).
+///
+/// Reused when the next frame's effects match the cached ones **or differ only in a
+/// parameter a live node can take** (see [`param_update`]), and the input dimensions
+/// are unchanged — a dimension-sized mask (e.g. `ShapeMaskNode`) or the read-back size
+/// would otherwise be stale.
+///
+/// `effects` is what the graph's nodes currently hold, not what they were built with:
+/// a parameter pushed into a live node updates it here too, so the next comparison is
+/// against reality.
 struct CachedEffectGraph {
     effects: Vec<GpuEffect>,
     graph: RenderGraph,
@@ -70,15 +77,81 @@ struct CachedEffectGraph {
     out_h: u32,
 }
 
+/// How a cached graph may be reused for the next frame's effect list.
+enum Reuse {
+    /// The lists are identical; run the graph as it stands.
+    AsIs,
+    /// They differ only in parameters live nodes take; apply these first.
+    WithParams(Vec<NodeParam>),
+}
+
+/// Whether `next` can run on a graph built for `cached`, and with what updates.
+///
+/// The comparison is *explicit* about which parameters may differ rather than loose:
+/// anything a node bakes in at build time (a mask sized to the frame, a LUT, the
+/// sub-frame count) must force a rebuild, or the graph would be reused with a stale
+/// bake (RK-025). Only parameters with a [`NodeParam`] — which a node applies to
+/// itself, keeping whatever state it carries — are allowed to differ.
+fn param_update(cached: &[GpuEffect], next: &[GpuEffect]) -> Option<Reuse> {
+    if cached.len() != next.len() {
+        return None;
+    }
+    let mut params = Vec::new();
+    for (was, now) in cached.iter().zip(next) {
+        match (was, now) {
+            (
+                GpuEffect::MotionBlur {
+                    shutter_angle: old,
+                    sub_frames: old_sub,
+                },
+                GpuEffect::MotionBlur {
+                    shutter_angle: new,
+                    sub_frames: new_sub,
+                },
+            ) if old_sub == new_sub => {
+                // The trail lives in the node, so the shutter travels to it rather
+                // than the node being rebuilt around the new value (#1705).
+                //
+                // Compared bit-exactly rather than against a tolerance: the cached
+                // list is meant to be what the nodes *hold*, and skipping a
+                // below-tolerance change would record a value that was never applied.
+                if old.to_bits() != new.to_bits() {
+                    params.push(NodeParam::MotionBlurShutter(*new));
+                }
+            }
+            _ if was == now => {}
+            _ => return None,
+        }
+    }
+    if params.is_empty() {
+        Some(Reuse::AsIs)
+    } else {
+        Some(Reuse::WithParams(params))
+    }
+}
+
 /// Composites derived layers on the GPU, returning `None` (CPU fallback) on
 /// unsupported content or any GPU error.
 pub struct GpuCompositor {
     ctx: Arc<RenderContext>,
     /// Compositor cached for its target canvas; rebuilt when the canvas changes.
     compositor: Option<(Compositor, (u32, u32))>,
-    /// Per-layer effect-graph cache, indexed by layer position; reset when the layer
-    /// count changes (positions shift). `None` where a layer has no cached graph yet.
-    effect_cache: Vec<Option<CachedEffectGraph>>,
+    /// Per-layer effect-graph cache, keyed by `(layer count, layer position)`.
+    ///
+    /// Being a map at all is what fixes #1770: this was a `Vec` resized per
+    /// composite, so any change in the layer count cleared every entry — twice per
+    /// output frame on the multi-track export path, which alternates a one-layer solo
+    /// composite with an N-layer stack.
+    ///
+    /// The layer count is in the key because a position means something different
+    /// under a different stack, and a *stateful* node's state would otherwise be
+    /// shared between two layers that merely happen to sit at the same index with the
+    /// same effects. No arrangement in the tree exhibits that today (the export
+    /// path's solo composite and stack pass do not collide, and preview composites a
+    /// stable stack), and mutation injection confirms no test detects its removal.
+    /// It is kept because the cost is a tuple and the failure it prevents is a silent
+    /// one, not because a test demands it.
+    effect_cache: HashMap<(usize, usize), CachedEffectGraph>,
 }
 
 impl GpuCompositor {
@@ -90,7 +163,7 @@ impl GpuCompositor {
             Ok(ctx) => Some(Self {
                 ctx: Arc::new(ctx),
                 compositor: None,
-                effect_cache: Vec::new(),
+                effect_cache: HashMap::new(),
             }),
             Err(e) => {
                 // Info, not debug: the GPU->CPU fallback reason must stay visible at
@@ -121,16 +194,18 @@ impl GpuCompositor {
             GpuMapping::Gpu(plan) => plan,
             GpuMapping::Fallback(_) => return None,
         };
-        self.ensure_cache_size(layers.len());
 
-        let mut processed = Vec::with_capacity(plan.layers.len());
+        // Part of the cache key: a layer position means something different under a
+        // different stack, so a graph is only reused within the same layout.
+        let count = plan.layers.len();
+        let mut processed = Vec::with_capacity(count);
         for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers.iter()).enumerate() {
             // The preview adapter does not own its frames, so a no-effects layer must
             // clone; `composite_owned` avoids this for the export drain.
             let out = if lp.effects.is_empty() {
                 (*frame).clone()
             } else {
-                self.apply_effects(idx, lp, frame)?
+                self.apply_effects(count, idx, lp, frame)?
             };
             processed.push((out, lp));
         }
@@ -152,15 +227,17 @@ impl GpuCompositor {
             GpuMapping::Gpu(plan) => plan,
             GpuMapping::Fallback(_) => return None,
         };
-        self.ensure_cache_size(layers.len());
 
-        let mut processed = Vec::with_capacity(plan.layers.len());
+        // Part of the cache key: a layer position means something different under a
+        // different stack, so a graph is only reused within the same layout.
+        let count = plan.layers.len();
+        let mut processed = Vec::with_capacity(count);
         for (idx, (lp, (_, frame))) in plan.layers.iter().zip(layers).enumerate() {
             // Owned: a no-effects layer moves its frame in, no clone.
             let out = if lp.effects.is_empty() {
                 frame
             } else {
-                self.apply_effects(idx, lp, &frame)?
+                self.apply_effects(count, idx, lp, &frame)?
             };
             processed.push((out, lp));
         }
@@ -237,18 +314,8 @@ impl GpuCompositor {
         compositor.composite_to_rgba(&mut frame_layers).ok()
     }
 
-    /// Resets the per-layer effect cache when the layer count changes (positions
-    /// shift, so cached entries would misalign). Mirrors `Compositor`'s layer-count
-    /// invalidation.
-    fn ensure_cache_size(&mut self, n: usize) {
-        if self.effect_cache.len() != n {
-            self.effect_cache.clear();
-            self.effect_cache.resize_with(n, || None);
-        }
-    }
-
-    /// Drops every cached effect graph (keeping the slot count), so the next composite
-    /// rebuilds each layer's graph from scratch.
+    /// Drops every cached effect graph, so the next composite rebuilds each layer's
+    /// graph from scratch.
     ///
     /// A stateful effect node (e.g. [`MotionBlurNode`], whose exposure trail
     /// accumulates across the frames of one clip) is embedded in the cached graph, so a
@@ -257,9 +324,7 @@ impl GpuCompositor {
     /// bleeds into the next clip's first frame (RK-025). Stateless effects are
     /// unaffected beyond a one-frame pipeline rebuild.
     pub fn reset_effect_cache(&mut self) {
-        for slot in &mut self.effect_cache {
-            *slot = None;
-        }
+        self.effect_cache.clear();
     }
 
     /// Applies a layer's mappable effects to its rgba frame via a `RenderGraph`, reusing
@@ -268,24 +333,42 @@ impl GpuCompositor {
     /// that).
     fn apply_effects(
         &mut self,
+        layer_count: usize,
         layer_idx: usize,
         plan: &GpuLayerPlan,
         frame: &VideoFrame,
     ) -> Option<VideoFrame> {
         let (in_w, in_h) = (frame.width(), frame.height());
         let rgba = frame.to_rgba()?;
+        let key = (layer_count, layer_idx);
 
-        // Reuse the cached graph when this layer's effects are byte-identical, the input
-        // dimensions match (a dimension-sized mask or the read-back size would otherwise
-        // be stale), and every effect is fully determined by its `GpuEffect` value (see
-        // `is_cacheable`).
+        // Reuse the cached graph when the input dimensions match (a dimension-sized
+        // mask or the read-back size would otherwise be stale), every effect is fully
+        // determined by its `GpuEffect` value (see `is_cacheable`), and the new effect
+        // list either equals the cached one or differs only in parameters a live node
+        // takes (see `param_update`).
         if is_cacheable(&plan.effects)
-            && let Some(Some(cached)) = self.effect_cache.get(layer_idx)
-            && cached.effects == plan.effects
+            && let Some(cached) = self.effect_cache.get_mut(&key)
             && (cached.in_w, cached.in_h) == (in_w, in_h)
+            && let Some(reuse) = param_update(&cached.effects, &plan.effects)
         {
-            let out = cached.graph.process_gpu(&rgba, in_w, in_h).ok()?;
-            return VideoFrame::from_rgba(cached.out_w, cached.out_h, out).ok();
+            let applied = match reuse {
+                Reuse::AsIs => true,
+                Reuse::WithParams(params) => params
+                    .into_iter()
+                    .all(|param| cached.graph.set_param(param) > 0),
+            };
+            if applied {
+                // The nodes now hold the new values, so record them: the next frame
+                // has to be compared against what is in the graph, not against what
+                // it was built with.
+                cached.effects.clone_from(&plan.effects);
+                let out = cached.graph.process_gpu(&rgba, in_w, in_h).ok()?;
+                return VideoFrame::from_rgba(cached.out_w, cached.out_h, out).ok();
+            }
+            // A node declined a parameter `param_update` expected it to take. That
+            // means the two are out of step, so rebuild rather than run a graph whose
+            // contents are not what the comparison assumed.
         }
 
         let mut graph = RenderGraph::new(self.ctx.clone());
@@ -427,26 +510,24 @@ impl GpuCompositor {
 
         // Store the built graph, then run it (`process_gpu` borrows, does not consume),
         // so the next frame with identical effects reuses it.
-        if is_cacheable(&plan.effects)
-            && let Some(slot) = self.effect_cache.get_mut(layer_idx)
-        {
-            *slot = Some(CachedEffectGraph {
-                effects: plan.effects.clone(),
-                graph,
-                in_w,
-                in_h,
-                out_w,
-                out_h,
-            });
-            let cached = slot.as_ref()?;
-            let out = cached.graph.process_gpu(&rgba, in_w, in_h).ok()?;
+        if is_cacheable(&plan.effects) {
+            let cached = self
+                .effect_cache
+                .entry(key)
+                .insert_entry(CachedEffectGraph {
+                    effects: plan.effects.clone(),
+                    graph,
+                    in_w,
+                    in_h,
+                    out_w,
+                    out_h,
+                });
+            let out = cached.get().graph.process_gpu(&rgba, in_w, in_h).ok()?;
             return VideoFrame::from_rgba(out_w, out_h, out).ok();
         }
         // Not cacheable (a frame-content-dependent node): drop any stale entry and run
         // the freshly-built graph without storing it.
-        if let Some(slot) = self.effect_cache.get_mut(layer_idx) {
-            *slot = None;
-        }
+        self.effect_cache.remove(&key);
         let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
         VideoFrame::from_rgba(out_w, out_h, out).ok()
     }

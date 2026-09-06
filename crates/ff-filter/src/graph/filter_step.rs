@@ -887,6 +887,30 @@ pub enum FilterStep {
         sub_frames: u8,
     },
 
+    /// Motion blur with an optionally animated shutter angle.
+    ///
+    /// `tblend`'s blend is written as an expression (`all_expr`), and `blend`
+    /// re-evaluates that expression per frame with `T` bound to the frame's
+    /// presentation time in seconds. So this **self-animates**: the shutter track is
+    /// compiled to a `T`-expression
+    /// ([`AnimationTrack::to_ffmpeg_expr`](crate::animation::AnimationTrack::to_ffmpeg_expr))
+    /// and folded into the same `A`/`B` mix the constant form uses. The same
+    /// expression drives preview and export.
+    ///
+    /// **`T`, not `t`.** `blend`'s expression variables are upper-case (`X Y W H SW
+    /// SH T N A B TOP BOTTOM`); a lower-case `t` is not among them and would
+    /// evaluate as an unknown.
+    ///
+    /// A `Static` shutter renders exactly what [`MotionBlur`](Self::MotionBlur)
+    /// renders, so the two agree where they overlap.
+    MotionBlurAnimated {
+        /// Shutter angle in degrees (0° = no blur, 360° = full-period blur); an
+        /// expression when a `Track`.
+        shutter_angle: AnimatedValue<f64>,
+        /// Number of frames blended. Must be in [2, 16].
+        sub_frames: u8,
+    },
+
     /// Correct radial lens distortion using two polynomial coefficients via
     /// `FFmpeg`'s `lenscorrection` filter.
     ///
@@ -1397,7 +1421,7 @@ impl FilterStep {
             Self::ScaleAnimated { .. } => "scale",
             Self::RotateAnimated { .. } => "rotate",
             Self::VignetteAnimated { .. } => "vignette",
-            Self::MotionBlur { .. } => "tblend",
+            Self::MotionBlur { .. } | Self::MotionBlurAnimated { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
             Self::FilmGrainAnimated { .. } => "noise",
@@ -2071,6 +2095,34 @@ impl FilterStep {
                 let blend = alpha;
                 format!("all_expr='A*{keep}+B*{blend}'")
             }
+            Self::MotionBlurAnimated { shutter_angle, .. } => match shutter_angle {
+                // Same mix as the constant form with the two constants replaced by
+                // one clamped sub-expression in `T`. `clip` is FFmpeg's own
+                // three-argument clamp, so the shutter stays in `[0, 360]` however
+                // the track is authored.
+                //
+                // `A` is the **current** frame and `B` the previous one, so `alpha`
+                // weights the previous: a shutter of 0 renders the current frame
+                // untouched and 360 holds the previous one. Measured through the
+                // real filter, because the direction is not obvious from `tblend`'s
+                // documentation and getting it backwards inverts the effect.
+                AnimatedValue::Track(track) => {
+                    let deg = track.to_ffmpeg_expr("T");
+                    let alpha = format!("clip(({deg})/360,0,1)");
+                    format!("all_expr='A*(1-({alpha}))+B*({alpha})'")
+                }
+                AnimatedValue::Static(deg) => {
+                    // Deliberately the *same arithmetic* as `MotionBlur`: an f32
+                    // divide widened to f64. Dividing in f64 here would render a
+                    // different string for any angle that is not exact in f32 (137
+                    // gives 0.3805555555555556 against 0.3805555701255798), so the
+                    // two forms would silently disagree where they should overlap.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let alpha = f64::from((*deg as f32) / 360.0).clamp(0.0, 1.0);
+                    let keep = 1.0 - alpha;
+                    format!("all_expr='A*{keep}+B*{alpha}'")
+                }
+            },
             Self::LensCorrection { k1, k2 } => format!("k1={k1}:k2={k2}"),
             Self::FilmGrain {
                 luma_strength,
@@ -2304,6 +2356,7 @@ fn push_tuple_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animation::{AnimationTrack, Easing, Keyframe};
 
     #[test]
     fn escape_filter_path_should_escape_windows_drive_path() {
@@ -2318,6 +2371,201 @@ mod tests {
     #[test]
     fn escape_filter_path_should_leave_unix_path_unchanged() {
         assert_eq!(escape_filter_path("/home/u/look.cube"), "/home/u/look.cube");
+    }
+
+    /// The animated form checked against the linked `FFmpeg`, not against a string.
+    ///
+    /// The animated shutter leans on one fact about `blend`: its expression is
+    /// re-evaluated per frame with `T` bound to the frame's presentation time
+    /// (`vf_blend.c`, `values[VAR_T] = pts * time_base`). A string-equality test
+    /// cannot tell whether the linked build agrees, so these push frames through the
+    /// real filter (RK-005). They live here rather than in `tests/` because `args()`
+    /// is `pub(crate)` and widening it for a test would be the wrong trade.
+    mod ffmpeg_reference {
+        use super::*;
+        use crate::FilterGraph;
+        use ff_format::{PixelFormat, PooledBuffer, Rational, Timestamp, VideoFrame};
+
+        const W: u32 = 8;
+        const H: u32 = 8;
+        const FPS: u32 = 30;
+
+        /// A solid-luma frame at `frame_index / FPS` seconds.
+        fn frame_at(luma: u8, frame_index: u32) -> VideoFrame {
+            VideoFrame::new(
+                vec![
+                    PooledBuffer::standalone(vec![luma; (W * H) as usize]),
+                    PooledBuffer::standalone(vec![128u8; ((W / 2) * (H / 2)) as usize]),
+                    PooledBuffer::standalone(vec![128u8; ((W / 2) * (H / 2)) as usize]),
+                ],
+                vec![W as usize, (W / 2) as usize, (W / 2) as usize],
+                W,
+                H,
+                PixelFormat::Yuv420p,
+                // PTS in 1/FPS units, so `blend`'s `T` (pts * time_base) is the
+                // frame's time in seconds, which is what the expression reads.
+                Timestamp::new(i64::from(frame_index), Rational::new(1, FPS as i32)),
+                true,
+            )
+            .unwrap()
+        }
+
+        /// Pushes `count` frames alternating white/black through `tblend=<args>` and
+        /// returns the red channel of every frame that came out.
+        ///
+        /// Alternating matters: `tblend` mixes *consecutive inputs*, not an
+        /// accumulating output, so a single seed is washed out after one step and
+        /// every later frame would read the same whatever the shutter is. With
+        /// alternating input there is contrast at every step, so the mix ratio is
+        /// visible at any time.
+        ///
+        /// `None` means this build could not run the graph, which the callers treat
+        /// as a skip (RK-002).
+        fn run_tblend(args: &str, count: u32) -> Option<Vec<u8>> {
+            let desc = format!("format=rgba,tblend={args},format=rgba");
+            let mut graph = FilterGraph::parse_desc(&desc).ok()?;
+            let mut out = Vec::new();
+            for i in 0..count {
+                let luma = if i % 2 == 0 { 235 } else { 16 };
+                graph.push_video(0, &frame_at(luma, i)).ok()?;
+                while let Ok(Some(frame)) = graph.pull_video() {
+                    out.push(frame.plane(0).map(|p| p[0])?);
+                }
+            }
+            Some(out)
+        }
+
+        fn constant_args(degrees: f32) -> String {
+            FilterStep::MotionBlur {
+                shutter_angle_degrees: degrees,
+                sub_frames: 4,
+            }
+            .args()
+        }
+
+        fn ramp_args(from: f64, to: f64) -> String {
+            let track = AnimationTrack::new()
+                .push(Keyframe::new(Duration::ZERO, from, Easing::Linear))
+                .push(Keyframe::new(Duration::from_secs(1), to, Easing::Linear));
+            FilterStep::MotionBlurAnimated {
+                shutter_angle: AnimatedValue::Track(track),
+                sub_frames: 4,
+            }
+            .args()
+        }
+
+        #[test]
+        fn ffmpeg_should_accept_the_animated_shutter_expression() {
+            let Some(_) = run_tblend(&constant_args(180.0), 3) else {
+                println!("skipping: this FFmpeg build cannot run tblend");
+                return;
+            };
+            assert!(
+                run_tblend(&ramp_args(360.0, 0.0), 3).is_some(),
+                "FFmpeg rejected the animated shutter expression: {}",
+                ramp_args(360.0, 0.0)
+            );
+        }
+
+        #[test]
+        fn an_animated_shutter_should_vary_across_frames_where_a_constant_one_does_not() {
+            // The point of the animated form: with the same alternating input, a
+            // constant shutter gives the same mix at every step, while a ramp gives a
+            // different one as `T` advances. A build that ignored `T` would produce
+            // the constant's flat answer for both.
+            let Some(flat) = run_tblend(&constant_args(180.0), FPS) else {
+                println!("skipping: this FFmpeg build cannot run tblend");
+                return;
+            };
+            let Some(ramped) = run_tblend(&ramp_args(0.0, 360.0), FPS) else {
+                return;
+            };
+            // `tblend` emits from the second input on, so output `k` is input frame
+            // `k + 1`. Both indices below are odd, so both outputs come from an even
+            // input frame and share the same pair (current white, previous black);
+            // only the shutter differs. Mixing parities compares a white-over-black
+            // step against a black-over-white one, where the two effects cancel and
+            // the swing reads as small.
+            //
+            // Measured, and matching the algebra exactly: output 3 is input frame 4
+            // (T = 0.133 s, shutter 48, alpha 0.133) -> 255*0.867 = 221, and output
+            // 27 is frame 28 (alpha 0.933) -> 255*0.067 = 17.
+            let (early, late) = (3usize, 27usize);
+            assert_eq!(early % 2, late % 2, "the two samples must share a parity");
+            println!(
+                "tblend same-parity frames {early} / {late}: constant180={:?} ramp0to360={:?}",
+                (flat.get(early), flat.get(late)),
+                (ramped.get(early), ramped.get(late))
+            );
+            let (fe, fl) = (flat[early], flat[late]);
+            let (re, rl) = (ramped[early], ramped[late]);
+            assert!(
+                fe.abs_diff(fl) <= 2,
+                "a constant shutter must give the same mix at both frames: {fe} vs {fl}"
+            );
+            assert!(
+                re.abs_diff(rl) > 32,
+                "a ramped shutter must give a different mix as T advances: {re} vs {rl}"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_blur_animated_static_should_render_what_the_constant_form_renders() {
+        // The two forms overlap at a constant shutter, and 137 is chosen precisely
+        // because it is not exact in f32: an f64 divide here would render
+        // 0.3805555555555556 where the constant form renders 0.3805555701255798,
+        // and the paths would disagree for every ordinary angle.
+        let constant = FilterStep::MotionBlur {
+            shutter_angle_degrees: 137.0,
+            sub_frames: 4,
+        };
+        let animated = FilterStep::MotionBlurAnimated {
+            shutter_angle: AnimatedValue::Static(137.0),
+            sub_frames: 4,
+        };
+        assert_eq!(constant.args(), animated.args());
+        assert_eq!(constant.filter_name(), animated.filter_name());
+    }
+
+    #[test]
+    fn motion_blur_animated_track_should_render_an_uppercase_t_expression() {
+        // `blend`'s expression variables are upper-case (`X Y W H SW SH T N A B TOP
+        // BOTTOM`). A lower-case `t` is not among them and would evaluate as an
+        // unknown, so the case is part of the contract, not a style choice.
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 360.0, Easing::Linear));
+        let step = FilterStep::MotionBlurAnimated {
+            shutter_angle: AnimatedValue::Track(track),
+            sub_frames: 4,
+        };
+        let args = step.args();
+        assert!(
+            args.contains('T'),
+            "the expression must reference T: {args}"
+        );
+        assert!(
+            !args.contains(" t") && !args.contains("(t"),
+            "a lower-case t is not a blend variable: {args}"
+        );
+        assert!(
+            args.contains("clip("),
+            "the shutter must stay clamped to [0, 360]: {args}"
+        );
+        assert!(
+            args.starts_with("all_expr='A*(1-(") && args.ends_with("'"),
+            "the mix must keep the A/B form the constant version uses: {args}"
+        );
+    }
+
+    #[test]
+    fn motion_blur_animated_should_be_a_tblend_step() {
+        let step = FilterStep::MotionBlurAnimated {
+            shutter_angle: AnimatedValue::Static(180.0),
+            sub_frames: 4,
+        };
+        assert_eq!(step.filter_name(), "tblend");
     }
 
     #[test]

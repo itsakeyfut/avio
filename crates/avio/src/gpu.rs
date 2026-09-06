@@ -769,13 +769,24 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             *invert,
         ),
         // MotionBlur (exposure trail): the compositor builds the stateful
-        // `MotionBlurNode`. A zero shutter is no blur (Skip). The shutter is already
-        // constant here (`EffectKind::MotionBlur` collapses an animated shutter to its
-        // t=0 value), so accumulation reuses one node across the clip.
+        // `MotionBlurNode`. A zero shutter is no blur (Skip). Accumulation reuses one
+        // node across the clip, which is what the trail *is*.
         FilterStep::MotionBlur {
             shutter_angle_degrees,
             sub_frames,
         } => motion_blur_step(*shutter_angle_degrees, *sub_frames),
+        // The animated form evaluates at the frame time like the other animated arms
+        // here. The node is not rebuilt for the new value: the compositor pushes it
+        // into the live node (`NodeParam::MotionBlurShutter`), because rebuilding
+        // would discard the trail this effect exists to accumulate (#1705).
+        FilterStep::MotionBlurAnimated {
+            shutter_angle,
+            sub_frames,
+        } => {
+            #[allow(clippy::cast_possible_truncation)]
+            let degrees = shutter_angle.value_at(t) as f32;
+            motion_blur_step(degrees, *sub_frames)
+        }
         // Everything else (other colour, masks, animated geometry, xfade, ...) has
         // no GPU node yet. `_` is required: `FilterStep` is `#[non_exhaustive]`
         // from ff-filter (RK-003).
@@ -2214,6 +2225,56 @@ mod tests {
             }
             _ => panic!("expected a MotionBlur GPU effect"),
         }
+    }
+
+    #[test]
+    fn classify_animated_motion_blur_should_evaluate_the_shutter_at_the_frame_time() {
+        // The point of the animated form: two different `t` give two different
+        // shutters. A classifier that collapsed to `t = 0` would return the same
+        // value twice, which is what shipped before #1705.
+        let track = ff_filter::AnimationTrack::new()
+            .push(ff_filter::Keyframe::new(
+                Duration::ZERO,
+                0.0,
+                ff_filter::Easing::Linear,
+            ))
+            .push(ff_filter::Keyframe::new(
+                Duration::from_secs(1),
+                360.0,
+                ff_filter::Easing::Linear,
+            ));
+        let step = FilterStep::MotionBlurAnimated {
+            shutter_angle: AnimatedValue::Track(track),
+            sub_frames: 6,
+        };
+        let at = |t: Duration| match classify_step(&step, t) {
+            StepClass::Effect(GpuEffect::MotionBlur { shutter_angle, .. }) => shutter_angle,
+            _ => panic!("expected a MotionBlur GPU effect"),
+        };
+        let quarter = at(Duration::from_millis(250));
+        let three_quarters = at(Duration::from_millis(750));
+        assert!(
+            (quarter - 90.0).abs() < 1.0,
+            "a linear 0->360 ramp is 90 at a quarter in, got {quarter}"
+        );
+        assert!(
+            (three_quarters - 270.0).abs() < 1.0,
+            "and 270 at three quarters, got {three_quarters}"
+        );
+    }
+
+    #[test]
+    fn classify_animated_motion_blur_zero_shutter_should_skip() {
+        // The degenerate case follows the constant form: a shutter that is zero at
+        // the frame time is no blur, not a node that renders nothing.
+        let step = FilterStep::MotionBlurAnimated {
+            shutter_angle: AnimatedValue::Static(0.0),
+            sub_frames: 4,
+        };
+        assert!(matches!(
+            classify_step(&step, Duration::ZERO),
+            StepClass::Skip
+        ));
     }
 
     #[test]

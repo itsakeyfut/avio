@@ -93,6 +93,14 @@ impl PreviewCompositor for GpuPreviewCompositor {
         let node = preview_transition_node(kind)?;
         self.core.transition(node, progress, a, b.to_vec(), w, h)
     }
+
+    fn reset_effects(&mut self) {
+        // The effect-graph cache *is* where a stateful node's state lives (the
+        // exposure trail accumulates by the graph being reused), so dropping the
+        // cache is what resets it. The export drain does the same at each clip
+        // boundary; this gives playback the same behaviour (#1705).
+        self.core.reset_effect_cache();
+    }
 }
 
 #[cfg(test)]
