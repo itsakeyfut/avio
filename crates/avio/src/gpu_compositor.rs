@@ -30,9 +30,10 @@
 //! **Per-frame cost (#1634):** an effected layer's `RenderGraph` is cached per layer
 //! position ([`CachedEffectGraph`]) and reused while its effect list compares equal, so
 //! its node pipelines are compiled once instead of every frame; a changed effect list
-//! (or layer count) rebuilds. [`GpuEffect::LumaMask`] is excluded (its node embeds the
-//! source pixels), and [`composite_owned`](GpuCompositor::composite_owned) moves owned
-//! frames so the no-effects export path avoids a `VideoFrame::clone`.
+//! (or layer count) rebuilds. Every effect is cacheable since the mask nodes stopped
+//! baking a mask buffer (#1710), and
+//! [`composite_owned`](GpuCompositor::composite_owned) moves owned frames so the
+//! no-effects export path avoids a `VideoFrame::clone`.
 //!
 //! **Stateful effects (#1653):** a [`GpuEffect::MotionBlur`] node accumulates a trail
 //! across a clip's frames, so its cross-frame reuse *is* the accumulation. A caller
@@ -62,7 +63,7 @@ use crate::gpu_transition::GpuTransition;
 ///
 /// Reused when the next frame's effects match the cached ones **or differ only in a
 /// parameter a live node can take** (see [`param_update`]), and the input dimensions
-/// are unchanged — a dimension-sized mask (e.g. `ShapeMaskNode`) or the read-back size
+/// are unchanged — a node sized to the frame (e.g. `OverlayNode`) or the read-back size
 /// would otherwise be stale.
 ///
 /// `effects` is what the graph's nodes currently hold, not what they were built with:
@@ -117,6 +118,34 @@ fn param_update(cached: &[GpuEffect], next: &[GpuEffect]) -> Option<Reuse> {
                 // below-tolerance change would record a value that was never applied.
                 if old.to_bits() != new.to_bits() {
                     params.push(NodeParam::MotionBlurShutter(*new));
+                }
+            }
+            (
+                GpuEffect::ShapeMask {
+                    x,
+                    y,
+                    width,
+                    height,
+                    invert,
+                },
+                GpuEffect::ShapeMask {
+                    x: nx,
+                    y: ny,
+                    width: nw,
+                    height: nh,
+                    invert: ninv,
+                },
+            ) => {
+                // The shader evaluates the rectangle, so every field of it is a
+                // parameter rather than something baked into the node at build time.
+                if (x, y, width, height, invert) != (nx, ny, nw, nh, ninv) {
+                    params.push(NodeParam::ShapeMaskRect {
+                        x: *nx,
+                        y: *ny,
+                        width: *nw,
+                        height: *nh,
+                        invert: *ninv,
+                    });
                 }
             }
             _ if was == now => {}
@@ -342,13 +371,11 @@ impl GpuCompositor {
         let rgba = frame.to_rgba()?;
         let key = (layer_count, layer_idx);
 
-        // Reuse the cached graph when the input dimensions match (a dimension-sized
-        // mask or the read-back size would otherwise be stale), every effect is fully
-        // determined by its `GpuEffect` value (see `is_cacheable`), and the new effect
+        // Reuse the cached graph when the input dimensions match (a node sized to the
+        // frame or the read-back size would otherwise be stale) and the new effect
         // list either equals the cached one or differs only in parameters a live node
         // takes (see `param_update`).
-        if is_cacheable(&plan.effects)
-            && let Some(cached) = self.effect_cache.get_mut(&key)
+        if let Some(cached) = self.effect_cache.get_mut(&key)
             && (cached.in_w, cached.in_h) == (in_w, in_h)
             && let Some(reuse) = param_update(&cached.effects, &plan.effects)
         {
@@ -473,29 +500,21 @@ impl GpuCompositor {
                     tolerance,
                     softness,
                 } => graph.push(ChromaKeyNode::new(*key_color, *tolerance, *softness)),
-                // LumaMask multiplies alpha by the frame's own BT.709 luma, so the
-                // mask is built from the source frame here (preserves dimensions).
-                // The mask is baked from the pre-graph frame; when LumaMask follows
-                // another effect the GPU mask is the source luma while the CPU `geq`
+                // LumaMask multiplies alpha by the frame's own BT.709 luma. The node
+                // samples the source frame itself (#1710), so nothing is built here
+                // and nothing is uploaded per frame. When LumaMask follows another
+                // effect the GPU mask is still the source luma while the CPU `geq`
                 // sees the chained frame (a v1 limitation; parity uses it alone).
-                GpuEffect::LumaMask { invert } => graph.push(LumaMaskNode::new(
-                    build_luma_mask(&rgba, *invert),
-                    in_w,
-                    in_h,
-                )),
-                // ShapeMask builds a rectangular alpha mask from the pixel bounds
-                // (preserves dimensions; the mask is sized to the source frame).
+                GpuEffect::LumaMask { invert } => graph.push(LumaMaskNode::new(*invert)),
+                // ShapeMask keeps a rectangle of the source frame. The rectangle is a
+                // shader parameter rather than a baked full-frame mask (#1710).
                 GpuEffect::ShapeMask {
                     x,
                     y,
                     width,
                     height,
                     invert,
-                } => graph.push(ShapeMaskNode::new(
-                    build_shape_mask(in_w, in_h, *x, *y, *width, *height, *invert),
-                    in_w,
-                    in_h,
-                )),
+                } => graph.push(ShapeMaskNode::new(*x, *y, *width, *height, *invert)),
                 // MotionBlur is stateful (the trail accumulates across frames on this
                 // node), so it depends on the cached graph being *reused* across a
                 // clip's frames. It stays cacheable; the accumulation is reset at a
@@ -509,38 +528,28 @@ impl GpuCompositor {
         }
 
         // Store the built graph, then run it (`process_gpu` borrows, does not consume),
-        // so the next frame with identical effects reuses it.
-        if is_cacheable(&plan.effects) {
-            let cached = self
-                .effect_cache
-                .entry(key)
-                .insert_entry(CachedEffectGraph {
-                    effects: plan.effects.clone(),
-                    graph,
-                    in_w,
-                    in_h,
-                    out_w,
-                    out_h,
-                });
-            let out = cached.get().graph.process_gpu(&rgba, in_w, in_h).ok()?;
-            return VideoFrame::from_rgba(out_w, out_h, out).ok();
-        }
-        // Not cacheable (a frame-content-dependent node): drop any stale entry and run
-        // the freshly-built graph without storing it.
-        self.effect_cache.remove(&key);
-        let out = graph.process_gpu(&rgba, in_w, in_h).ok()?;
+        // so the next frame reuses it.
+        //
+        // Every effect is cacheable. There used to be an exclusion for `LumaMask`,
+        // because its node baked the source frame's own pixels into a mask and
+        // reusing the graph would have applied a stale one (RK-025). The node now
+        // samples the source frame per frame instead of baking anything (#1710), so
+        // there is nothing left that a reused graph could hold stale. A new node that
+        // *does* bake frame content would need that exclusion back.
+        let cached = self
+            .effect_cache
+            .entry(key)
+            .insert_entry(CachedEffectGraph {
+                effects: plan.effects.clone(),
+                graph,
+                in_w,
+                in_h,
+                out_w,
+                out_h,
+            });
+        let out = cached.get().graph.process_gpu(&rgba, in_w, in_h).ok()?;
         VideoFrame::from_rgba(out_w, out_h, out).ok()
     }
-}
-
-/// Whether an effect list may be cached and reused across frames. Every mapped node is
-/// fully determined by its [`GpuEffect`] value **except** [`GpuEffect::LumaMask`], whose
-/// node embeds the source frame's own pixels (`build_luma_mask`) not represented in the
-/// `GpuEffect` — reusing it would apply a stale mask (RK-020: never wrong output).
-fn is_cacheable(effects: &[GpuEffect]) -> bool {
-    !effects
-        .iter()
-        .any(|e| matches!(e, GpuEffect::LumaMask { .. }))
 }
 
 /// Wraps each processed layer frame in a [`FrameLayer`] with the transform that places
@@ -744,57 +753,6 @@ fn load_lut(path: &str) -> Option<LutNode> {
         Some(ext) if ext.eq_ignore_ascii_case("3dl") => LutNode::from_3dl(p).ok(),
         _ => None,
     }
-}
-
-/// Builds the mask [`ff_render::LumaMaskNode`] consumes for the self-luma mask.
-///
-/// Non-inverted, the mask is the frame itself: the node multiplies the base alpha by
-/// `bt709_luma(mask) = bt709_luma(frame)`. Inverted, each pixel becomes a grey of
-/// `255 - bt709_luma`, so the node's `bt709_luma(grey) = 255 - luma` gives
-/// `alpha *= 1 - luma`. Matches the CPU `geq` self-luma expression.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn build_luma_mask(rgba: &[u8], invert: bool) -> Vec<u8> {
-    if !invert {
-        return rgba.to_vec();
-    }
-    let mut mask = Vec::with_capacity(rgba.len());
-    for px in rgba.as_chunks::<4>().0 {
-        let luma =
-            0.2126 * f32::from(px[0]) + 0.7152 * f32::from(px[1]) + 0.0722 * f32::from(px[2]);
-        let grey = (255.0 - luma).clamp(0.0, 255.0).round() as u8;
-        mask.extend_from_slice(&[grey, grey, grey, 255]);
-    }
-    mask
-}
-
-/// Builds the mask [`ff_render::ShapeMaskNode`] consumes: alpha `255` inside the
-/// rectangle `[x, x+width) x [y, y+height)` and `0` outside (swapped when `invert`).
-/// The node keeps a pixel where the mask alpha is `> 1`, so this exactly matches the
-/// CPU `RectMask` `geq` (`between(X, x, x+width-1)`), which is inclusive of the far
-/// edge. RGB is unused by the node, so it is left `0`.
-fn build_shape_mask(
-    w: u32,
-    h: u32,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    invert: bool,
-) -> Vec<u8> {
-    let (inside, outside) = if invert { (0u8, 255u8) } else { (255u8, 0u8) };
-    let (x_end, y_end) = (x.saturating_add(width), y.saturating_add(height));
-    let mut mask = Vec::with_capacity((w as usize) * (h as usize) * 4);
-    for py in 0..h {
-        for px in 0..w {
-            let alpha = if px >= x && px < x_end && py >= y && py < y_end {
-                inside
-            } else {
-                outside
-            };
-            mask.extend_from_slice(&[0, 0, 0, alpha]);
-        }
-    }
-    mask
 }
 
 #[cfg(test)]
@@ -1021,5 +979,70 @@ mod tests {
         // The mirror case, so the guard is not accidentally height-only.
         assert_eq!(fit_size(64, 4096, (64, 64)), (0, 64));
         assert!(letterbox_transform(64, 4096, (64, 64)).is_none());
+    }
+
+    /// A `ShapeMask` whose rectangle differs must still reuse the cached graph, or an
+    /// animated rectangle would rebuild the whole effect chain every frame (#1710).
+    #[test]
+    fn a_moved_rectangle_should_reuse_the_graph_with_a_parameter() {
+        let was = [GpuEffect::ShapeMask {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+            invert: false,
+        }];
+        let now = [GpuEffect::ShapeMask {
+            x: 5,
+            y: 2,
+            width: 10,
+            height: 10,
+            invert: true,
+        }];
+        let Some(Reuse::WithParams(params)) = param_update(&was, &now) else {
+            panic!("a moved rectangle must reuse the cached graph");
+        };
+        assert!(
+            matches!(
+                params.as_slice(),
+                [NodeParam::ShapeMaskRect {
+                    x: 5,
+                    y: 2,
+                    width: 10,
+                    height: 10,
+                    invert: true,
+                }]
+            ),
+            "the whole rectangle must travel to the live node, got {params:?}"
+        );
+    }
+
+    /// The other side of the same gate: an unchanged rectangle must not push a
+    /// parameter it does not need.
+    #[test]
+    fn an_unchanged_rectangle_should_reuse_the_graph_as_is() {
+        let effects = [GpuEffect::ShapeMask {
+            x: 5,
+            y: 2,
+            width: 10,
+            height: 10,
+            invert: false,
+        }];
+        assert!(
+            matches!(param_update(&effects, &effects), Some(Reuse::AsIs)),
+            "an unchanged rectangle must run the graph as it stands"
+        );
+    }
+
+    /// `LumaMask` used to be excluded from the cache because its node baked the source
+    /// frame's own pixels. The shader samples the frame instead now, so it caches like
+    /// any other effect (#1710).
+    #[test]
+    fn a_luma_mask_should_be_cacheable() {
+        let effects = [GpuEffect::LumaMask { invert: false }];
+        assert!(
+            matches!(param_update(&effects, &effects), Some(Reuse::AsIs)),
+            "a luma mask must reuse its cached graph"
+        );
     }
 }

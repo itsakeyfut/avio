@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use avio::{
-    AnimatedValue, BlendMode, Clip, Color, CompositeOp, FilterStep, GpuCompositor, GpuTransition,
-    PixelFormat, PlayerHandle, RealtimeLayer, ScaleAlgorithm, Timeline, TimelinePlayer, VideoFrame,
-    map_transition,
+    AnimatedValue, AnimationTrack, BlendMode, Clip, Color, CompositeOp, Easing, FilterStep,
+    GpuCompositor, GpuTransition, Keyframe, PixelFormat, PlayerHandle, RealtimeLayer,
+    ScaleAlgorithm, Timeline, TimelinePlayer, VideoFrame, map_transition,
 };
 use ff_filter::RealtimeComposer;
 use ff_filter::XfadeTransition;
@@ -1685,8 +1685,8 @@ fn shape_mask_gpu_should_match_cpu_within_tolerance() {
 #[test]
 fn shape_mask_invert_gpu_should_match_cpu_within_tolerance() {
     // Inverted mirror: the box interior is cleared (reveals the background) and the
-    // exterior keeps the foreground. Drives build_shape_mask's invert branch and the
-    // geq inverted inside/outside, in both axes. Double-gated (adapter + filters).
+    // exterior keeps the foreground. Drives the shader's invert branch and the geq
+    // inverted inside/outside, in both axes. Double-gated (adapter + filters).
     let (w, h) = (64, 48);
     let (rx, ry, rw, rh) = (w / 4, h / 4, w / 2, h / 2);
     let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap();
@@ -2489,5 +2489,152 @@ fn preview_runner_should_fall_back_and_advance_on_unsupported_clip() {
         pts.last() > pts.first(),
         "GPU-fallback playback PTS must advance: {:?}",
         &pts[..pts.len().min(6)]
+    );
+}
+
+/// A cached effect graph must keep following the frame, not a mask baked from the
+/// frame that built it (#1710).
+///
+/// `LumaMask` used to be excluded from the per-layer graph cache because its node
+/// carried a mask buffer built from one frame's pixels. The shader reads the source
+/// frame now, so the exclusion is gone -- and this is what stands behind that: two
+/// different frames go through the *same* `GpuCompositor`, so the second one runs on
+/// the graph the first one built. A node that baked again would mask frame 2 by
+/// frame 1's luma, which is exactly the pattern the two halves below detect.
+///
+/// Composited over an opaque background so the keyed alpha becomes an RGB difference
+/// (RK-024): a mask writes alpha only, and the blend shader outputs the canvas alpha.
+/// Adapter-gated; no CPU filters needed, since the reference is the *other* frame.
+#[test]
+fn a_cached_luma_mask_graph_should_follow_the_frame() {
+    let (w, h) = (64, 48);
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap(); // blue
+    // Two frames with opposite bright halves.
+    let split = |left_bright: bool| {
+        let mut v = Vec::with_capacity((w * h * 4) as usize);
+        for _y in 0..h {
+            for x in 0..w {
+                let bright = (x < w / 2) == left_bright;
+                let c = if bright { 255 } else { 0 };
+                v.extend_from_slice(&[c, c, c, 255]);
+            }
+        }
+        VideoFrame::from_rgba(w, h, v).unwrap()
+    };
+    let (first, second) = (split(true), split(false));
+    let bg_layer = base_layer(w, h, vec![]);
+    let fg_layer = base_layer(w, h, vec![FilterStep::LumaMask { invert: false }]);
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+
+    let mut composite = |fg: &VideoFrame| {
+        gpu.composite(&[(&bg_layer, &bg), (&fg_layer, fg)], (w, h), Duration::ZERO)
+            .map(|(out, _, _)| out)
+    };
+    let Some(out1) = composite(&first) else {
+        panic!("a supported luma-mask composite must render on the GPU");
+    };
+    let Some(out2) = composite(&second) else {
+        panic!("the second frame must render on the same GPU path");
+    };
+
+    let (l1, r1) = (
+        region_mean_rgb(&out1, w, true),
+        region_mean_rgb(&out1, w, false),
+    );
+    let (l2, r2) = (
+        region_mean_rgb(&out2, w, true),
+        region_mean_rgb(&out2, w, false),
+    );
+    println!("cached luma mask: frame1 l={l1:?} r={r1:?} | frame2 l={l2:?} r={r2:?}");
+
+    // Frame 1: bright left stays opaque white, dark right reveals the blue background.
+    assert!(
+        l1[0] > 192.0 && l1[2] > 192.0,
+        "frame 1's bright half must stay white; got {l1:?}"
+    );
+    assert!(
+        r1[2] > 128.0 && r1[0] < 128.0,
+        "frame 1's dark half must reveal the background; got {r1:?}"
+    );
+    // Frame 2 is the mirror. A baked mask would keep masking by frame 1's luma, so the
+    // left half would show frame 2's own black pixels (blue near zero) instead of the
+    // background, and the right half would be hidden rather than white.
+    assert!(
+        l2[2] > 128.0 && l2[0] < 128.0,
+        "frame 2's dark half must reveal the background, not a stale mask; got {l2:?}"
+    );
+    assert!(
+        r2[0] > 192.0 && r2[2] > 192.0,
+        "frame 2's bright half must stay white; got {r2:?}"
+    );
+}
+
+/// An animated rectangle must move through a cached graph (#1710).
+///
+/// The rectangle reaches the shader as a uniform, so a changed rectangle is a
+/// parameter pushed into the live node rather than a rebuilt graph
+/// (`param_update` covers that half deterministically). This is the rendered half:
+/// the same compositor at two times must keep two different regions.
+#[test]
+fn an_animated_rectangle_should_move_through_a_cached_graph() {
+    let (w, h) = (64, 48);
+    let quarter = w / 4;
+    let span = Duration::from_secs(1);
+    let bg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [30, 60, 200])).unwrap(); // blue
+    let fg = VideoFrame::from_rgba(w, h, solid_rgba(w, h, [220, 40, 40])).unwrap(); // red
+    let track = |from: f64, to: f64| {
+        AnimatedValue::Track(
+            AnimationTrack::new()
+                .push(Keyframe::new(Duration::ZERO, from, Easing::Linear))
+                .push(Keyframe::new(span, to, Easing::Linear)),
+        )
+    };
+    let bg_layer = base_layer(w, h, vec![]);
+    // A quarter-width box sliding from the left quarter to the right quarter.
+    let fg_layer = base_layer(
+        w,
+        h,
+        vec![FilterStep::RectMaskAnimated {
+            x: track(0.0, f64::from(3 * quarter)),
+            y: AnimatedValue::Static(0.0),
+            width: AnimatedValue::Static(f64::from(quarter)),
+            height: AnimatedValue::Static(f64::from(h)),
+            invert: false,
+        }],
+    );
+    let Some(mut gpu) = GpuCompositor::new() else {
+        return; // no adapter
+    };
+
+    let mut at = |t: Duration| {
+        gpu.composite(&[(&bg_layer, &bg), (&fg_layer, &fg)], (w, h), t)
+            .map(|(out, _, _)| out)
+    };
+    let Some(start) = at(Duration::ZERO) else {
+        panic!("a supported animated rect-mask composite must render on the GPU");
+    };
+    let Some(end) = at(span) else {
+        panic!("the second time must render on the same GPU path");
+    };
+
+    let left_at_start = band_mean_rgb(&start, w, 0, quarter);
+    let right_at_start = band_mean_rgb(&start, w, 3 * quarter, w);
+    let left_at_end = band_mean_rgb(&end, w, 0, quarter);
+    let right_at_end = band_mean_rgb(&end, w, 3 * quarter, w);
+    println!(
+        "animated rect: t=0 l={left_at_start:?} r={right_at_start:?} | t=1s l={left_at_end:?} r={right_at_end:?}"
+    );
+
+    let red = |c: [f64; 3]| c[0] > 128.0 && c[2] < 128.0;
+    let blue = |c: [f64; 3]| c[2] > 128.0 && c[0] < 128.0;
+    assert!(
+        red(left_at_start) && blue(right_at_start),
+        "at t=0 the box keeps the left quarter; got l={left_at_start:?} r={right_at_start:?}"
+    );
+    assert!(
+        blue(left_at_end) && red(right_at_end),
+        "at t=1s the box must have moved to the right quarter; got l={left_at_end:?} r={right_at_end:?}"
     );
 }

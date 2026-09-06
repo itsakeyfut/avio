@@ -577,27 +577,27 @@ const ALL_BLEND_MODES: [BlendMode; 44] = [
 // LumaMaskNode
 
 #[test]
-fn luma_mask_gpu_white_mask_should_preserve_alpha() {
+fn luma_mask_gpu_bright_frame_should_preserve_alpha() {
+    // The node masks by the luma of the source frame the executor binds as its
+    // second input, so the frame under test is the mask.
     let Some(ctx) = gpu_ctx() else { return };
-    let rgba = solid_rgba(128, 64, 32, 200, 2, 2);
-    let mask = solid_rgba(255, 255, 255, 255, 2, 2);
-    let out = run_gpu(&ctx, LumaMaskNode::new(mask, 2, 2), &rgba, 2, 2);
+    let rgba = solid_rgba(255, 255, 255, 200, 2, 2);
+    let out = run_gpu(&ctx, LumaMaskNode::new(false), &rgba, 2, 2);
     assert!(
         close(out[3], 200, 4),
-        "white luma mask must keep alpha ~200; got {}",
+        "a bright frame must keep alpha ~200; got {}",
         out[3]
     );
 }
 
 #[test]
-fn luma_mask_gpu_black_mask_should_zero_alpha() {
+fn luma_mask_gpu_dark_frame_should_zero_alpha() {
     let Some(ctx) = gpu_ctx() else { return };
-    let rgba = solid_rgba(128, 64, 32, 255, 2, 2);
-    let mask = solid_rgba(0, 0, 0, 255, 2, 2);
-    let out = run_gpu(&ctx, LumaMaskNode::new(mask, 2, 2), &rgba, 2, 2);
+    let rgba = solid_rgba(0, 0, 0, 255, 2, 2);
+    let out = run_gpu(&ctx, LumaMaskNode::new(false), &rgba, 2, 2);
     assert!(
         close(out[3], 0, 4),
-        "black luma mask must zero alpha; got {}",
+        "a dark frame must zero alpha; got {}",
         out[3]
     );
 }
@@ -605,27 +605,25 @@ fn luma_mask_gpu_black_mask_should_zero_alpha() {
 // ShapeMaskNode
 
 #[test]
-fn shape_mask_gpu_opaque_mask_should_preserve_alpha() {
+fn shape_mask_gpu_covering_rectangle_should_preserve_alpha() {
     let Some(ctx) = gpu_ctx() else { return };
     let rgba = solid_rgba(128, 64, 32, 200, 2, 2);
-    let mask = solid_rgba(255, 255, 255, 255, 2, 2);
-    let out = run_gpu(&ctx, ShapeMaskNode::new(mask, 2, 2), &rgba, 2, 2);
+    let out = run_gpu(&ctx, ShapeMaskNode::new(0, 0, 2, 2, false), &rgba, 2, 2);
     assert!(
         close(out[3], 200, 4),
-        "opaque shape mask must keep alpha ~200; got {}",
+        "a covering rectangle must keep alpha ~200; got {}",
         out[3]
     );
 }
 
 #[test]
-fn shape_mask_gpu_transparent_mask_should_zero_alpha() {
+fn shape_mask_gpu_empty_rectangle_should_zero_alpha() {
     let Some(ctx) = gpu_ctx() else { return };
     let rgba = solid_rgba(128, 64, 32, 255, 2, 2);
-    let mask = solid_rgba(0, 0, 0, 0, 2, 2);
-    let out = run_gpu(&ctx, ShapeMaskNode::new(mask, 2, 2), &rgba, 2, 2);
+    let out = run_gpu(&ctx, ShapeMaskNode::new(0, 0, 0, 0, false), &rgba, 2, 2);
     assert!(
         close(out[3], 0, 4),
-        "transparent shape mask must zero alpha; got {}",
+        "an empty rectangle must zero alpha; got {}",
         out[3]
     );
 }

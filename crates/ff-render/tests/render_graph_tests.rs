@@ -193,45 +193,44 @@ fn chroma_key_node_non_key_pixel_should_remain_opaque() {
 // ShapeMaskNode
 
 #[test]
-fn shape_mask_node_opaque_mask_should_preserve_base_alpha() {
+fn shape_mask_node_covering_rectangle_should_preserve_base_alpha() {
     let rgba = solid_rgba(128, 64, 32, 200, 2, 2);
-    let mask = solid_rgba(255, 255, 255, 255, 2, 2); // white = keep
-    let node = ShapeMaskNode::new(mask, 2, 2);
+    let node = ShapeMaskNode::new(0, 0, 2, 2, false);
     let graph = RenderGraph::new_cpu().push_cpu(node);
     let out = graph.process_cpu(&rgba, 2, 2);
-    assert_eq!(out[3], 200, "white mask must preserve original alpha");
+    assert_eq!(out[3], 200, "a covered pixel must keep its original alpha");
 }
 
 #[test]
-fn shape_mask_node_transparent_mask_should_zero_alpha() {
+fn shape_mask_node_should_zero_alpha_outside_the_rectangle() {
     let rgba = solid_rgba(128, 64, 32, 255, 2, 2);
-    let mask = solid_rgba(0, 0, 0, 0, 2, 2); // transparent mask → hide
-    let node = ShapeMaskNode::new(mask, 2, 2);
+    // Covers the top-left pixel only, so the bottom-right one falls outside.
+    let node = ShapeMaskNode::new(0, 0, 1, 1, false);
     let graph = RenderGraph::new_cpu().push_cpu(node);
     let out = graph.process_cpu(&rgba, 2, 2);
-    assert_eq!(out[3], 0, "fully transparent mask must produce alpha=0");
+    assert_eq!(out[3], 255, "the covered pixel must keep its alpha");
+    assert_eq!(out[15], 0, "a pixel outside the rectangle must be hidden");
 }
 
 // LumaMaskNode
 
 #[test]
-fn luma_mask_node_white_mask_should_preserve_alpha() {
-    let rgba = solid_rgba(128, 64, 32, 200, 2, 2);
-    let mask = solid_rgba(255, 255, 255, 255, 2, 2); // bright = luma≈1.0
-    let node = LumaMaskNode::new(mask, 2, 2);
+fn luma_mask_node_bright_frame_should_preserve_alpha() {
+    // The node masks by the luma of the frame it is handed: bright keeps.
+    let rgba = solid_rgba(255, 255, 255, 200, 2, 2);
+    let node = LumaMaskNode::new(false);
     let graph = RenderGraph::new_cpu().push_cpu(node);
     let out = graph.process_cpu(&rgba, 2, 2);
-    assert_eq!(out[3], 200, "white luma mask must preserve original alpha");
+    assert_eq!(out[3], 200, "luma≈1.0 must preserve the original alpha");
 }
 
 #[test]
-fn luma_mask_node_black_mask_should_zero_alpha() {
-    let rgba = solid_rgba(128, 64, 32, 255, 2, 2);
-    let mask = solid_rgba(0, 0, 0, 255, 2, 2); // dark = luma≈0
-    let node = LumaMaskNode::new(mask, 2, 2);
+fn luma_mask_node_dark_frame_should_zero_alpha() {
+    let rgba = solid_rgba(0, 0, 0, 255, 2, 2);
+    let node = LumaMaskNode::new(false);
     let graph = RenderGraph::new_cpu().push_cpu(node);
     let out = graph.process_cpu(&rgba, 2, 2);
-    assert_eq!(out[3], 0, "black luma mask must produce alpha=0");
+    assert_eq!(out[3], 0, "luma≈0 must produce alpha=0");
 }
 
 // AlphaMatteNode

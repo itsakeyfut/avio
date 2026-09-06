@@ -30,9 +30,13 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
 struct MaskUniforms {
     // 0 = ShapeMask, 1 = LumaMask, 2 = AlphaMatte
     mode: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // ShapeMask and LumaMask: 1 swaps the mask.
+    invert: u32,
+    // ShapeMask: the source frame's size, so `rect` can be read in its pixels.
+    src_w: f32,
+    src_h: f32,
+    // ShapeMask: x, y, x_end, y_end in source pixels (x_end / y_end exclusive).
+    rect: vec4<f32>,
 }
 
 // Fragment
@@ -44,15 +48,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var out: vec4<f32>;
     switch u.mode {
-        // ShapeMask: apply mask's alpha as a hard threshold.
+        // ShapeMask: the rectangle is evaluated here rather than sampled from an
+        // uploaded mask. `floor(uv * src)` is the texel the old mask would have been
+        // read at, so the same pixels are kept at any output size.
+        //
+        // Not quite byte-identical at an edge, though: the uploaded mask was sampled
+        // linearly and then thresholded at `a > 0.004`, so an interpolated edge texel
+        // counted as inside and the rectangle could grow by one texel when a node
+        // upscaled in front of this one. The test here is exact.
         case 0u {
-            let alpha = select(0.0, 1.0, mask.a > 0.004);
+            let p = floor(in.uv * vec2<f32>(u.src_w, u.src_h));
+            let inside = p.x >= u.rect.x && p.x < u.rect.z
+                      && p.y >= u.rect.y && p.y < u.rect.w;
+            // `!=` on bools is xor: invert swaps inside for outside.
+            let alpha = select(0.0, 1.0, inside != (u.invert != 0u));
             out = vec4<f32>(base.rgb, base.a * alpha);
         }
-        // LumaMask: use mask's BT.709 luma as opacity.
+        // LumaMask: `tex_mask` is the source frame itself, so its BT.709 luma is the
+        // opacity. Inverting is `1 - luma`, which is what the old CPU-built mask
+        // stored as a grey.
         case 1u {
             let luma = dot(mask.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-            out = vec4<f32>(base.rgb, base.a * luma);
+            let opacity = select(luma, 1.0 - luma, u.invert != 0u);
+            out = vec4<f32>(base.rgb, base.a * opacity);
         }
         // AlphaMatte: Porter-Duff src-over (base = foreground, mask = background).
         case 2u {

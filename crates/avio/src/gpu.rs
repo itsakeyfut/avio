@@ -294,14 +294,16 @@ pub enum GpuEffect {
         /// Edge softness (the `chromakey` `blend`).
         softness: f32,
     },
-    /// `ff_render::LumaMaskNode` (alpha *= the frame's own BT.709 luma). The
-    /// compositor builds the mask from the frame itself when applying this.
+    /// `ff_render::LumaMaskNode` (alpha *= the frame's own BT.709 luma). The shader
+    /// takes the luma from the source frame the executor binds, so nothing is built
+    /// per frame (#1710).
     LumaMask {
         /// When `true`, mask by `1 - luma` (dark pixels stay opaque).
         invert: bool,
     },
-    /// `ff_render::ShapeMaskNode` (a rectangular alpha mask). The compositor builds
-    /// the rectangle mask from these pixel bounds when applying this.
+    /// `ff_render::ShapeMaskNode` (a rectangular alpha mask). The bounds reach the
+    /// shader as a uniform, so an animated rectangle updates the live node instead of
+    /// rebuilding the graph (#1710).
     ShapeMask {
         /// Left edge of the rectangle, in pixels.
         x: u32,
@@ -741,13 +743,13 @@ fn classify_step(step: &FilterStep, t: Duration) -> StepClass {
             ),
             None => StepClass::Unsupported,
         },
-        // LumaMask (self-luma mask): the compositor builds the mask from the frame,
-        // so only the `invert` toggle carries into the GPU effect.
+        // LumaMask (self-luma mask): the shader reads the frame's own luma, so only
+        // the `invert` toggle carries into the GPU effect.
         FilterStep::LumaMask { invert } => {
             StepClass::Effect(GpuEffect::LumaMask { invert: *invert })
         }
-        // ShapeMask (rectangular mask): the compositor builds the rectangle mask from
-        // these bounds. A zero-size rectangle masks nothing (Skip).
+        // ShapeMask (rectangular mask): the bounds travel to the shader as a uniform.
+        // A zero-size rectangle masks nothing (Skip).
         FilterStep::RectMask {
             x,
             y,
