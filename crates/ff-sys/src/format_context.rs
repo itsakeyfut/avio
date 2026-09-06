@@ -22,6 +22,8 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::time::Duration;
 
+use crate::io_context::IoContext;
+use crate::io_traits::{IoSink, IoSource};
 use crate::{
     AV_DICT_IGNORE_SUFFIX, AV_INPUT_BUFFER_PADDING_SIZE, AV_TIME_BASE, AVChannelLayout, AVChapter,
     AVCodecID, AVCodecID_AV_CODEC_ID_BIN_DATA, AVCodecParameters, AVColorPrimaries, AVColorRange,
@@ -30,8 +32,9 @@ use crate::{
     Packet, av_dict_get as ffi_av_dict_get, av_dict_set as ffi_av_dict_set,
     av_interleaved_write_frame as ffi_av_interleaved_write_frame, av_mallocz as ffi_av_mallocz,
     av_opt_set as ffi_av_opt_set, avcodec_parameters_copy as ffi_avcodec_parameters_copy,
+    avformat_alloc_context as ffi_avformat_alloc_context,
     avformat_close_input as ffi_avformat_close_input,
-    avformat_new_stream as ffi_avformat_new_stream,
+    avformat_new_stream as ffi_avformat_new_stream, avformat_open_input as ffi_avformat_open_input,
 };
 
 /// Collects every entry of an `AVDictionary` into a map.
@@ -87,6 +90,19 @@ unsafe fn read_dict(dict: *const AVDictionary) -> HashMap<String, String> {
 #[derive(Debug)]
 pub struct InputFormatContext {
     ptr: NonNull<AVFormatContext>,
+    /// The custom `AVIOContext` this input reads through, when it was opened from
+    /// a Rust source rather than a path or URL.
+    ///
+    /// Declared after `ptr` on purpose: `Drop::drop` runs before any field is
+    /// dropped, so the format context is closed first and this is released after,
+    /// which is the only order in which the demuxer can never call back into a
+    /// freed source.
+    ///
+    /// Never read: holding it *is* its job. Unlike the output side, nothing has to
+    /// consult it, because `AVFMT_FLAG_CUSTOM_IO` already stops
+    /// `avformat_close_input` from touching the `pb`.
+    #[allow(dead_code)]
+    io: Option<IoContext>,
 }
 
 impl InputFormatContext {
@@ -135,12 +151,71 @@ impl InputFormatContext {
         Self::from_raw(ptr)
     }
 
+    /// Opens `source` as the input, demuxing through a custom `AVIOContext`
+    /// instead of a path or URL.
+    ///
+    /// The format is autodetected from the bytes the source yields, so the caller
+    /// does not name it. `source` is moved into the context and dropped with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the context cannot be allocated or the source
+    /// does not yield a recognised media format.
+    pub fn open_custom(source: impl IoSource + 'static) -> Result<Self, AvError> {
+        crate::ensure_initialized();
+        let io = IoContext::reader(source)?;
+
+        // SAFETY: allocates a fresh demux context or returns null.
+        let ctx = unsafe { ffi_avformat_alloc_context() };
+        let ctx = NonNull::new(ctx).ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))?;
+
+        // SAFETY: `ctx` is the context just allocated and not yet shared. `pb` and
+        //         `flags` are plain fields. `avformat.h` prescribes exactly this for
+        //         custom IO: "preallocate the format context and set its pb field".
+        //
+        //         `AVFMT_FLAG_CUSTOM_IO` is what stops `avformat_close_input` from
+        //         closing a `pb` it does not own. Setting it here is belt and
+        //         braces: measured on this FFmpeg, `avformat_open_input` sets the
+        //         flag itself when it finds a `pb` already in place (with the line
+        //         below removed the opened context still reports 0x200080). That is
+        //         not something the header promises, and the flag's documented
+        //         meaning is exactly this situation, so it is stated rather than
+        //         assumed.
+        unsafe {
+            (*ctx.as_ptr()).pb = io.as_ptr();
+            (*ctx.as_ptr()).flags |= crate::constants::AVFMT_FLAG_CUSTOM_IO;
+        }
+
+        let mut raw = ctx.as_ptr();
+        // SAFETY: `raw` points at the context just allocated. A null url and format
+        //         let FFmpeg probe the custom `pb`. Per `avformat.h`, a user-supplied
+        //         context "will be freed on failure and its pointer set to NULL", so
+        //         the error path below must not free it again.
+        let ret = unsafe {
+            ffi_avformat_open_input(
+                &mut raw,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ret < 0 {
+            // FFmpeg freed the format context. `io` drops here, releasing the
+            // AVIOContext, its buffer and the source exactly once.
+            return Err(AvError::new(ret));
+        }
+
+        NonNull::new(raw)
+            .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
+            .map(|ptr| Self { ptr, io: Some(io) })
+    }
+
     /// Wraps a freshly opened, non-null context pointer in the owned type.
     fn from_raw(ptr: *mut AVFormatContext) -> Result<Self, AvError> {
         // The `open_*` wrappers return `Ok` only with a non-null context.
         NonNull::new(ptr)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
-            .map(|ptr| Self { ptr })
+            .map(|ptr| Self { ptr, io: None })
     }
 
     /// Returns the number of streams in the container.
@@ -355,7 +430,9 @@ impl Drop for InputFormatContext {
         //         frees the context, writing null into our local copy of the
         //         pointer, which is then discarded. The raw binding is used
         //         directly so this type does not depend on the
-        //         `avformat::close_input` wrapper.
+        //         `avformat::close_input` wrapper. For a custom-IO input the
+        //         context carries `AVFMT_FLAG_CUSTOM_IO`, so this leaves `pb`
+        //         alone; the `io` field is dropped after this body and frees it.
         unsafe {
             let mut raw = self.ptr.as_ptr();
             ffi_avformat_close_input(&mut raw);
@@ -386,6 +463,12 @@ unsafe impl Send for InputFormatContext {}
 #[derive(Debug)]
 pub struct OutputFormatContext {
     ptr: NonNull<AVFormatContext>,
+    /// The custom `AVIOContext` this output writes through, when one was attached
+    /// with [`set_custom_io`](Self::set_custom_io).
+    ///
+    /// Its presence is what tells [`close_io`](Self::close_io) and `Drop` that the
+    /// `pb` is **not** one `avio_open` produced and must not be `avio_closep`-ed.
+    io: Option<IoContext>,
 }
 
 impl OutputFormatContext {
@@ -428,7 +511,7 @@ impl OutputFormatContext {
         }
         NonNull::new(ctx)
             .ok_or_else(|| AvError::new(crate::error_codes::ENOMEM))
-            .map(|ptr| Self { ptr })
+            .map(|ptr| Self { ptr, io: None })
     }
 
     /// Returns the number of streams registered on the context.
@@ -480,6 +563,40 @@ impl OutputFormatContext {
         Ok(())
     }
 
+    /// Attaches `sink` as the context's `pb`, so the muxer writes into a Rust
+    /// sink instead of a file.
+    ///
+    /// Use instead of [`open_io`](Self::open_io). Calling it after `open_io` is
+    /// not a leak -- the file's `pb` is closed first -- but it is not a useful
+    /// thing to do. Callers must still skip both for
+    /// [`is_nofile`](Self::is_nofile) muxers, which manage their own IO.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AvError`] if the `AVIOContext` cannot be allocated.
+    pub fn set_custom_io(&mut self, sink: impl IoSink + 'static) -> Result<(), AvError> {
+        let io = IoContext::writer(sink)?;
+        // SAFETY: `self.ptr` is a valid owned mux context; `pb` and `flags` are
+        //         plain fields. A `pb` already in place is closed first: if it came
+        //         from `open_io` it is an `avio_open` context nothing else would
+        //         ever release (`Drop` takes the custom-IO branch once `io` is set),
+        //         so overwriting it would leak the context and its file handle.
+        //         `close_output` null-checks and nulls `pb`, and `self.io` is `None`
+        //         on that path, so nothing is freed twice.
+        //         `AVFMT_FLAG_CUSTOM_IO` marks the `pb` as one the caller owns,
+        //         which is also what `close_io` and `Drop` read off the `io` field
+        //         below to decide not to `avio_closep` it.
+        unsafe {
+            if self.io.is_none() && !(*self.ptr.as_ptr()).pb.is_null() {
+                crate::avformat::close_output(&mut (*self.ptr.as_ptr()).pb);
+            }
+            (*self.ptr.as_ptr()).pb = io.as_ptr();
+            (*self.ptr.as_ptr()).flags |= crate::constants::AVFMT_FLAG_CUSTOM_IO;
+        }
+        self.io = Some(io);
+        Ok(())
+    }
+
     /// Writes the container header.
     ///
     /// # Errors
@@ -516,7 +633,19 @@ impl OutputFormatContext {
     /// after the header write so the muxer can manage its own segment files. The
     /// close nulls `pb`, so a later drop does not double-close. This is a no-op
     /// when `pb` is already null.
+    /// A custom `pb` ([`set_custom_io`](Self::set_custom_io)) is released rather
+    /// than closed: `avio_closep` would free a context this type does not own that
+    /// way, so the owned context is dropped instead, which frees the AVIO context,
+    /// its buffer and the sink exactly once.
     pub fn close_io(&mut self) {
+        if let Some(io) = self.io.take() {
+            // SAFETY: `self.ptr` is a valid owned mux context; `pb` is a plain
+            //         field. It is nulled before `io` is dropped so the context
+            //         never holds a dangling `pb`.
+            unsafe { (*self.ptr.as_ptr()).pb = std::ptr::null_mut() };
+            drop(io);
+            return;
+        }
         // SAFETY: `self.ptr` is a valid owned mux context; `close_output`
         //         null-checks `pb` and nulls it after closing.
         unsafe { crate::avformat::close_output(&mut (*self.ptr.as_ptr()).pb) };
@@ -850,17 +979,24 @@ pub struct ChapterSpec<'a> {
 impl Drop for OutputFormatContext {
     fn drop(&mut self) {
         // SAFETY: we uniquely own the context (NonNull, not Copy/Clone), so this
-        //         runs exactly once. Close the caller-opened `pb` if one is still
-        //         open (it is null for `AVFMT_NOFILE` muxers, where the caller
-        //         opened none, and after `close_io`), then free the context. A
-        //         non-null `pb` is always one the caller opened and owns, so it
-        //         must be closed regardless of the muxer flags — mirroring the
-        //         manual `if pb != null { avio_closep }` teardown this replaces.
+        //         runs exactly once. A non-null `pb` is one of two things, and they
+        //         are released differently:
+        //
+        //         - one `open_io` opened with `avio_open`, which must be
+        //           `avio_closep`-ed. It is null for `AVFMT_NOFILE` muxers, where
+        //           the caller opened none, and after `close_io`.
+        //         - one `set_custom_io` attached, owned by the `io` field. Closing
+        //           that with `avio_closep` would free a context `IoContext` also
+        //           frees, so it is nulled here and released when `io` drops right
+        //           after this body.
+        //
         //         `close_output` null-checks and nulls `pb`; `avformat_free_context`
-        //         does not touch `pb`.
+        //         does not touch `pb` either way.
         unsafe {
             let ctx = self.ptr.as_ptr();
-            if !(*ctx).pb.is_null() {
+            if self.io.is_some() {
+                (*ctx).pb = std::ptr::null_mut();
+            } else if !(*ctx).pb.is_null() {
                 crate::avformat::close_output(&mut (*ctx).pb);
             }
             crate::avformat_free_context(ctx);
@@ -1136,6 +1272,67 @@ mod tests {
         // context (the error path returns before any owned value is built).
         let result = InputFormatContext::open(Path::new("/nonexistent/path/to/file.mp4"));
         assert!(result.is_err());
+    }
+
+    /// The asset used by the custom-IO tests, or `None` when it is unavailable.
+    fn custom_io_fixture() -> Option<Vec<u8>> {
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/audio/konekonoosanpo.mp3"
+        ));
+        std::fs::read(path).ok()
+    }
+
+    #[test]
+    fn open_custom_should_mark_the_context_as_custom_io() {
+        // Pins the end state rather than the line that produces it: measured,
+        // `avformat_open_input` also sets this flag when it finds a `pb` already in
+        // place, so removing the explicit set does not change the result here. What
+        // the assertion is worth is catching a future where neither does it, since
+        // the consequence -- `avformat_close_input` closing a `pb` this type also
+        // frees -- is a double free that does not reliably crash.
+        let Some(bytes) = custom_io_fixture() else {
+            return; // fixture missing
+        };
+        let Ok(ctx) = InputFormatContext::open_custom(std::io::Cursor::new(bytes)) else {
+            return; // demuxer absent (CI's minimal FFmpeg) -- nothing to exercise
+        };
+        // SAFETY: `ctx` owns a valid demux context; `flags` is a plain field.
+        let flags = unsafe { (*ctx.ptr.as_ptr()).flags };
+        assert_ne!(
+            flags & crate::constants::AVFMT_FLAG_CUSTOM_IO,
+            0,
+            "a custom-IO input must carry AVFMT_FLAG_CUSTOM_IO"
+        );
+    }
+
+    #[test]
+    fn open_custom_should_reject_bytes_that_are_not_a_container() {
+        // The error path has to release the AVIO context and the source without a
+        // format context to hang them on; this drives it.
+        let result = InputFormatContext::open_custom(std::io::Cursor::new(vec![0u8; 512]));
+        assert!(result.is_err(), "512 zero bytes are not a media container");
+    }
+
+    #[test]
+    fn set_custom_io_should_mark_the_context_as_custom_io() {
+        // Mirror of the input case: the output `Drop` reads the `io` field rather
+        // than the flag, but the flag is what libavformat itself keys on, so both
+        // have to be set.
+        let Ok(mut ctx) = OutputFormatContext::new(None, Path::new("out.mp4")) else {
+            return; // mp4 muxer absent
+        };
+        if ctx.set_custom_io(std::io::Cursor::new(Vec::new())).is_err() {
+            return;
+        }
+        // SAFETY: `ctx` owns a valid mux context; `flags` is a plain field.
+        let flags = unsafe { (*ctx.ptr.as_ptr()).flags };
+        assert_ne!(
+            flags & crate::constants::AVFMT_FLAG_CUSTOM_IO,
+            0,
+            "a custom-IO output must carry AVFMT_FLAG_CUSTOM_IO"
+        );
+        assert!(ctx.io.is_some(), "the sink must be owned by the context");
     }
 
     #[test]

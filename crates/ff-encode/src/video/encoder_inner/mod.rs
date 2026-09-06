@@ -155,7 +155,10 @@ pub(super) struct VideoEncoderConfig {
 
 impl VideoEncoderInner {
     /// Create a new encoder with the given configuration.
-    pub(super) fn new(config: &VideoEncoderConfig) -> Result<Self, EncodeError> {
+    pub(super) fn new(
+        config: &VideoEncoderConfig,
+        sink: Option<Box<dyn ff_sys::IoSink>>,
+    ) -> Result<Self, EncodeError> {
         unsafe {
             ff_sys::ensure_initialized();
 
@@ -257,7 +260,29 @@ impl VideoEncoderInner {
             if !config.two_pass {
                 // Muxers that manage their own IO (image2 sequences, AVFMT_NOFILE)
                 // must not have a `pb` opened for them.
-                if !encoder.format_ctx.is_nofile() {
+                if let Some(sink) = sink {
+                    // A caller-supplied sink replaces the file entirely. A muxer
+                    // that manages its own IO has nowhere to put it, so that
+                    // combination is an error rather than a silently ignored sink.
+                    if encoder.format_ctx.is_nofile() {
+                        return Err(EncodeError::InvalidConfig {
+                            reason: format!(
+                                "the {} muxer manages its own IO and cannot write to a sink",
+                                config.path.display()
+                            ),
+                        });
+                    }
+                    encoder
+                        .format_ctx
+                        .set_custom_io(sink)
+                        .map_err(|e| EncodeError::Ffmpeg {
+                            code: e.code(),
+                            message: format!(
+                                "Cannot attach the output sink: {}",
+                                ff_sys::av_error_string(e.code())
+                            ),
+                        })?;
+                } else if !encoder.format_ctx.is_nofile() {
                     encoder.format_ctx.open_io(&config.path).map_err(|_| {
                         EncodeError::CannotCreateFile {
                             path: config.path.clone(),

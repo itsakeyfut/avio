@@ -1449,6 +1449,14 @@ impl InputFormatContext {
         Err(crate::AvError::new(-1))
     }
 
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn open_custom(
+        _source: impl crate::IoSource + 'static,
+    ) -> Result<Self, crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
     #[must_use]
     pub fn nb_streams(&self) -> u32 {
         0
@@ -1588,6 +1596,15 @@ impl OutputFormatContext {
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn open_io(&mut self, _path: &std::path::Path) -> Result<(), crate::AvError> {
+        Err(crate::AvError::new(-1))
+    }
+
+    /// # Errors
+    /// Stub; never executed on docs.rs.
+    pub fn set_custom_io(
+        &mut self,
+        _sink: impl crate::IoSink + 'static,
+    ) -> Result<(), crate::AvError> {
         Err(crate::AvError::new(-1))
     }
 

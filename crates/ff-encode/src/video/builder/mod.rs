@@ -53,6 +53,11 @@ pub struct VideoEncoderBuilder {
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) progress_callback: Option<Box<dyn EncodeProgressCallback>>,
+    /// A caller-supplied byte sink to mux into instead of `path`.
+    ///
+    /// Set by [`VideoEncoderBuilder::output_sink`]; when present the `path` is
+    /// only what the muxer is guessed from, and nothing is written to disk.
+    pub(crate) sink: Option<Box<dyn ff_sys::IoSink>>,
     pub(crate) two_pass: bool,
     pub(crate) faststart: bool,
     pub(crate) metadata: Vec<(String, String)>,
@@ -92,6 +97,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
                 "progress_callback",
                 &self.progress_callback.as_ref().map(|_| "<callback>"),
             )
+            .field("sink", &self.sink.as_ref().map(|_| "<sink>"))
             .field("two_pass", &self.two_pass)
             .field("faststart", &self.faststart)
             .field("metadata", &self.metadata)
@@ -128,6 +134,7 @@ impl VideoEncoderBuilder {
             audio_codec: AudioCodec::default(),
             audio_bitrate: None,
             progress_callback: None,
+            sink: None,
             two_pass: false,
             faststart: false,
             metadata: Vec::new(),
@@ -250,7 +257,31 @@ impl VideoEncoderBuilder {
             });
         }
 
+        if self.faststart && self.sink.is_some() {
+            // `movflags=+faststart` finalises by *reopening the output for reading*
+            // (`mov_write_trailer` -> `shift_data` -> `ff_format_shift_data`, which
+            // does `io_open(s, &read_pb, s->url, AVIO_FLAG_READ, ...)`). With a sink
+            // the bytes never reached `s->url`, so that read hits whatever is at the
+            // path -- nothing, or an unrelated file. Measured: with no such file
+            // `finish()` fails and leaves a moov-less stream in the sink; with a
+            // stale file of that name `finish()` returns `Ok` and that file's
+            // contents are copied into the caller's sink. Any muxer that relocates
+            // data by reopening `s->url` is incompatible with a custom `pb`.
+            return Err(EncodeError::InvalidConfig {
+                reason: "faststart cannot write to a caller-supplied sink".to_string(),
+            });
+        }
+
         if self.two_pass {
+            if self.sink.is_some() {
+                // Pass 2 opens the output after pass 1 has run, so it needs an
+                // output it can open twice. A sink is moved in once and cannot be
+                // reopened, and half-supporting that would mean silently writing
+                // only the second pass.
+                return Err(EncodeError::InvalidConfig {
+                    reason: "Two-pass encoding cannot write to a caller-supplied sink".to_string(),
+                });
+            }
             if !has_video {
                 return Err(EncodeError::InvalidConfig {
                     reason: "Two-pass encoding requires a video stream".to_string(),
@@ -622,7 +653,7 @@ impl VideoEncoder {
         // dimensions, so we must also check for audio configuration.
         let has_audio = config.audio_sample_rate.is_some() && config.audio_channels.is_some();
         let inner = if config.video_width.is_some() || has_audio {
-            Some(VideoEncoderInner::new(&config)?)
+            Some(VideoEncoderInner::new(&config, builder.sink)?)
         } else {
             None
         };

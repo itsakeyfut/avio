@@ -22,6 +22,14 @@ pub const AVFMT_TS_DISCONT: i32 = 0x0200;
 /// close one on drop.
 pub const AVFMT_NOFILE: i32 = 0x0001;
 
+/// `AVFMT_FLAG_CUSTOM_IO`: the caller supplied the context's `pb`, so libavformat
+/// must not `avio_close()` it.
+///
+/// Hand-defined because bindgen's `AV_.*` variable allowlist does not match
+/// `AVFMT_`, the same reason [`AVFMT_NOFILE`] is defined here. The value is from
+/// `libavformat/avformat.h`.
+pub const AVFMT_FLAG_CUSTOM_IO: i32 = 0x0080;
+
 /// `AV_BUFFERSRC_FLAG_KEEP_REF` normalized to `i32` for cross-platform use.
 ///
 /// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS

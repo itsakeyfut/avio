@@ -117,8 +117,11 @@ pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use extract::{FrameExtractor, ThumbnailSelector};
 pub use ff_common::{FramePool, PooledBuffer};
+// The bound `VideoDecoder::from_reader` takes. Callers passing a `Cursor` or a
+// `File` never name it; one storing a boxed source does.
 pub use ff_format::ContainerInfo;
 pub use ff_format::{ErrorSeverity, MediaError};
+pub use ff_sys::IoSource;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
 pub use shared::{HardwareAccel, SeekMode};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
