@@ -4,7 +4,7 @@ Apply video and audio transformations without writing FFmpeg filter-graph string
 
 `ff-filter` is a safe, ergonomic wrapper over FFmpeg's libavfilter: build and run video and audio filter graphs without hand-writing filter-graph strings. Errors are typed and contextual (`FilterError`), so a bad input slot or an FFmpeg build error surfaces as a readable message rather than a raw return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Installation
 

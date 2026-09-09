@@ -4,6 +4,8 @@
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+**The Rust-native video editing engine, built on safe FFmpeg primitives.**
+
 An editing engine for video and audio: build a `Timeline` of `Clip`s, edit it with full undo/redo, and render it to a file.
 
 `avio` is the **editing engine** at the top of the `ff-*` crate family. It owns the editing model: an immutable `Timeline` of `Clip`s across video and audio tracks, the derivation that turns that model into rendered frames, and an `Editor` with undo/redo. The `ff-*` primitives it builds on (decode, encode, filter, analysis, remux, stream, preview, GPU render) stay model-free; for standalone primitive work, depend on those crates directly. See the [main repository](https://github.com/itsakeyfut/avio) for the full architecture.
@@ -16,6 +18,22 @@ avio is a **video editing engine**: you describe an edit as data and the engine 
 - **Non-destructive and undoable**: every edit is a pure function over the model, and `Editor` provides full undo/redo where one edit is one step.
 - **Renders the model to a file**: the engine derives frames from the timeline (compositing, transitions, effects, keyframes) and encodes the result.
 - **Built on model-free primitives**: the `ff-*` crates do the decode / encode / filter / render work and impose no editing model; avio is one engine on top of them, and you can build a different one on the same primitives.
+
+## Choosing a Rust FFmpeg library
+
+Several good options wrap FFmpeg in Rust. They sit at different levels, so the right one depends on what you are building.
+
+| Library | Layer | Editing model | `unsafe` in your code | Runtime dependency | Best for |
+|---|---|---|:---:|---|---|
+| **avio** + `ff-*` | High-level engine + composable primitives | Yes | None | Linked libav* | Video editing apps and delivery services |
+| `ffmpeg-next` | Thin safe wrapper, near 1:1 with libav* | No | Some | Linked libav* | Full low-level control of the FFmpeg API |
+| `ez-ffmpeg` | High-level, mirrors the FFmpeg CLI | No | None | Linked libav* | Transcoding and filter jobs close to the CLI |
+| `video-rs` | High-level frame toolkit | No | None | Linked libav* | Reading and writing frames (CV / ML pipelines) |
+| `ffmpeg-sidecar` | Wraps the `ffmpeg` binary (subprocess) | No | None | `ffmpeg` executable | Driving the CLI with a clean iterator API |
+
+`ffmpeg-the-third` is an actively maintained fork of `ffmpeg-next`. For raw FFI bindings, see `ffmpeg-sys-next` or `rusty_ffmpeg`. For a non-FFmpeg media framework with its own editing layer, see the `gstreamer` bindings.
+
+avio is the only one of these that ships an editing model: a timeline of tracks and clips, a per-clip effect stack with keyframes, and a preview that matches the exported result. If you do not need that model, the `ff-*` primitives underneath it are usable on their own for safe decode, encode, filter, stream, and GPU compositing, with no editing concepts imposed.
 
 ## Installation
 

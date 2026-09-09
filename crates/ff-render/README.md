@@ -4,7 +4,7 @@ GPU compositing and effects pipeline for video, built on [wgpu]. Applies per-fra
 
 `ff-render` is a GPU compositing and effects pipeline built on [wgpu](https://github.com/gfx-rs/wgpu), not FFmpeg: WGSL shaders run colour grading, blends, chroma-key, masks, transforms, scaling, and a crossfade transition on GPU textures, with a CPU software fallback. It consumes decoded frames and plugs into `ff-preview` through the `FrameSink` trait. Errors are typed and contextual (`RenderError`), so a shader-compile or device failure reads as an actionable message.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Status
 
