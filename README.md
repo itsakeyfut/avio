@@ -1,6 +1,8 @@
 # avio
 
-A safe, high-level Rust API over FFmpeg: an editing engine on top of a family of model-free FFmpeg primitive crates.
+**The Rust-native video editing engine, built on safe FFmpeg primitives.**
+
+A high-level API over FFmpeg with two layers: an editing engine (tracks, clips, keyframes, GPU compositing, undo/redo) on top of a family of composable, model-free primitive crates you can also use on their own. Application code never needs `unsafe`.
 
 [![Crates.io](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio)
 [![Docs.rs](https://docs.rs/avio/badge.svg)](https://docs.rs/avio)
@@ -49,6 +51,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Choosing a Rust FFmpeg library
+
+Several good options wrap FFmpeg in Rust. They sit at different levels, so the right one depends on what you are building.
+
+| Library | Layer | Editing model | `unsafe` in your code | Runtime dependency | Best for |
+|---|---|---|:---:|---|---|
+| **avio** + `ff-*` | High-level engine + composable primitives | Yes | None | Linked libav* | Video editing apps and delivery services |
+| `ffmpeg-next` | Thin safe wrapper, near 1:1 with libav* | No | Some | Linked libav* | Full low-level control of the FFmpeg API |
+| `ez-ffmpeg` | High-level, mirrors the FFmpeg CLI | No | None | Linked libav* | Transcoding and filter jobs close to the CLI |
+| `video-rs` | High-level frame toolkit | No | None | Linked libav* | Reading and writing frames (CV / ML pipelines) |
+| `ffmpeg-sidecar` | Wraps the `ffmpeg` binary (subprocess) | No | None | `ffmpeg` executable | Driving the CLI with a clean iterator API |
+
+`ffmpeg-the-third` is an actively maintained fork of `ffmpeg-next`. For raw FFI bindings, see `ffmpeg-sys-next` or `rusty_ffmpeg`. For a non-FFmpeg media framework with its own editing layer, see the `gstreamer` bindings.
+
+avio is the only one of these that ships an editing model: a timeline of tracks and clips, a per-clip effect stack with keyframes, and a preview that matches the exported result. If you do not need that model, the `ff-*` primitives underneath it are usable on their own for safe decode, encode, filter, stream, and GPU compositing, with no editing concepts imposed.
 
 ## Design Philosophy
 

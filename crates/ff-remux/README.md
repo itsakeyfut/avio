@@ -4,7 +4,7 @@ Stream-copy remuxing for Rust: trim a clip and replace / extract / add an audio 
 
 `ff-remux` is a safe, ergonomic Rust wrapper over FFmpeg's stream-copy remuxing (libavformat demux + mux, no libavcodec encoding). Errors are typed and carry human-readable context (`RemuxError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Installation
 

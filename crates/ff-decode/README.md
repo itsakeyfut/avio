@@ -4,7 +4,7 @@ Decode video and audio frames without managing codec contexts, packet queues, or
 
 `ff-decode` is a safe, ergonomic wrapper over FFmpeg's decode path: libavcodec decoding and libavformat demuxing, with optional libavutil hardware frames. Errors are typed and contextual (`DecodeError`) and classified via `is_recoverable()` / `is_fatal()`, so callers can react to a corrupt frame or a network hiccup without string-matching FFmpeg return codes.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Installation
 
