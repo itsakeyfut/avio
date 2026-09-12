@@ -4,7 +4,7 @@ Real-time video preview and proxy workflow for Rust. Provides frame-accurate see
 
 `ff-preview` adds a real-time, A/V-synchronised playback and seek loop on top of the decode primitives, converting frames to RGBA via libswscale for display. Decoding is delegated to `ff-decode`; this crate owns the playback clock, frame-accurate seek, and a `FrameSink` trait for custom renderers. Errors are typed and chain their source (`PreviewError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Installation
 
