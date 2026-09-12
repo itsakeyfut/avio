@@ -42,7 +42,7 @@ log = "0.4.29"
 image = { version = "0.25.9", default-features = false }
 
 # Build tools
-bindgen = "0.72.1"
+bindgen = "0.73.1"
 pkg-config = "0.3.32"
 vcpkg = "0.2.15"
 

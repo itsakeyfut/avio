@@ -4,7 +4,7 @@ Read media file metadata with one function call. `open` returns a structured `Me
 
 `ff-probe` safely wraps FFmpeg's container inspection (libavformat demuxing and stream discovery) as a read-only metadata reader, with no decoding or encoding. Errors are typed and carry path and message context (`ProbeError`), so a failure reads as an actionable message rather than a raw FFmpeg return code.
 
-It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them.
+It is an independent crate: use it on its own, or combine it with the other `ff-*` crates to build any media app or editing model. The `ff-*` crates are model-free primitives that impose no editing model; [`avio`](https://github.com/itsakeyfut/avio) is one editing engine built on top of them. See the [library comparison](https://github.com/itsakeyfut/avio#choosing-a-rust-ffmpeg-library) to choose the right layer.
 
 ## Installation
 
