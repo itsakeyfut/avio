@@ -554,6 +554,9 @@ impl Timeline {
             .video_codec(config.video_codec)
             .bitrate_mode(config.bitrate_mode)
             .hardware_encoder(hw);
+        if config.allow_codec_substitution {
+            enc_builder = enc_builder.allow_codec_substitution();
+        }
         if has_audio {
             enc_builder = enc_builder.audio(48_000, 2).audio_codec(config.audio_codec);
         }

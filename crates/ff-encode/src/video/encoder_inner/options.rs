@@ -12,35 +12,11 @@
 
 use super::{
     AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC,
-    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS,
-    AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG,
-    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AudioCodec,
-    EncodeError, VideoCodec, VideoEncoderInner,
+    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FLAC,
+    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_NONE,
+    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
+    AVCodecID_AV_CODEC_ID_VORBIS, AudioCodec, EncodeError, VideoCodec, VideoEncoderInner,
 };
-
-/// Convert VideoCodec to FFmpeg AVCodecID.
-pub(super) fn codec_to_id(codec: VideoCodec) -> AVCodecID {
-    match codec {
-        VideoCodec::H264 => AVCodecID_AV_CODEC_ID_H264,
-        VideoCodec::H265 => AVCodecID_AV_CODEC_ID_HEVC,
-        VideoCodec::Vp9 => AVCodecID_AV_CODEC_ID_VP9,
-        VideoCodec::Av1 => AVCodecID_AV_CODEC_ID_AV1,
-        VideoCodec::Av1Svt => AVCodecID_AV_CODEC_ID_AV1,
-        VideoCodec::ProRes => AVCodecID_AV_CODEC_ID_PRORES,
-        VideoCodec::DnxHd => AVCodecID_AV_CODEC_ID_DNXHD,
-        VideoCodec::Mpeg4 => AVCodecID_AV_CODEC_ID_MPEG4,
-        VideoCodec::Vp8 => AVCodecID_AV_CODEC_ID_VP8,
-        VideoCodec::Mpeg2 => AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
-        VideoCodec::Mjpeg => AVCodecID_AV_CODEC_ID_MJPEG,
-        VideoCodec::Png => AVCodecID_AV_CODEC_ID_PNG,
-        VideoCodec::Ffv1 => AVCodecID_AV_CODEC_ID_FFV1,
-        _ => AVCodecID_AV_CODEC_ID_NONE,
-    }
-}
 
 pub fn preset_to_string(preset: crate::Preset) -> String {
     match preset {
@@ -393,15 +369,21 @@ impl VideoEncoderInner {
 
     /// Select best available video encoder for the given codec.
     ///
-    /// This method implements LGPL-compliant codec selection with automatic fallback:
-    /// - For H.264: Hardware encoders → libx264 (GPL only) → VP9 fallback
-    /// - For H.265: Hardware encoders → libx265 (GPL only) → AV1 fallback
-    /// - Hardware encoders (NVENC, QSV, AMF, VideoToolbox) are LGPL-compatible
-    /// - VP9 and AV1 are LGPL-compatible
+    /// Encoders are tried within the requested codec's own family first:
+    /// - For H.264: hardware encoders, then libx264 (requires the `gpl` feature)
+    /// - For H.265: hardware encoders, then libx265 (requires the `gpl` feature)
+    ///
+    /// An encoder from a *different* family (VP9 for H.264, AV1 for H.265) is
+    /// LGPL-compatible and can stand in, but produces a file in that other
+    /// codec. That is only done when `allow_codec_substitution` is set, and it
+    /// is logged when it happens; otherwise the caller gets an error naming what
+    /// would be needed. Silently returning a different codec than the one asked
+    /// for is what #1835 was about.
     pub(super) fn select_video_encoder(
         &self,
         codec: VideoCodec,
         hardware_encoder: crate::HardwareEncoder,
+        allow_codec_substitution: bool,
     ) -> Result<String, EncodeError> {
         // Early check: when Av1Svt is requested, verify that libsvtav1 is registered.
         if codec == VideoCodec::Av1Svt {
@@ -446,17 +428,102 @@ impl VideoEncoderInner {
             _ => vec![],
         };
 
-        // Try each candidate
+        // Try each candidate from the requested codec's own family.
         for &name in &candidates {
             if ff_sys::Codec::find_encoder_by_name(name).is_some() {
                 return Ok(name.to_string());
             }
         }
 
+        // Nothing in the family is available. A substitute from another family
+        // may be, but it encodes a different codec, so it is opt-in.
+        let substitutes = Self::substitute_encoders(codec);
+        let available_substitute = substitutes
+            .iter()
+            .copied()
+            .find(|name| ff_sys::Codec::find_encoder_by_name(name).is_some());
+
+        if allow_codec_substitution && let Some(name) = available_substitute {
+            log::warn!(
+                "codec substituted requested={codec:?} encoder={name} \
+                 reason=no_encoder_in_requested_family"
+            );
+            return Ok(name.to_string());
+        }
+
+        let gated = Self::gpl_gated_encoder(codec).filter(|name| {
+            !cfg!(feature = "gpl") && ff_sys::Codec::find_encoder_by_name(name).is_some()
+        });
+
+        if available_substitute.is_some() || gated.is_some() {
+            return Err(EncodeError::EncoderUnavailable {
+                codec: Self::codec_label(codec),
+                hint: Self::unavailable_hint(gated, available_substitute),
+            });
+        }
+
         Err(EncodeError::NoSuitableEncoder {
             codec: format!("{:?}", codec),
-            tried: candidates.iter().map(|s| (*s).to_string()).collect(),
+            tried: candidates
+                .iter()
+                .chain(substitutes.iter())
+                .map(|s| (*s).to_string())
+                .collect(),
         })
+    }
+
+    /// Encoders from a different codec family that can stand in for `codec`.
+    ///
+    /// These are LGPL-compatible and are what the selection used to fall back to
+    /// silently. They produce a file in their own codec, not the requested one.
+    pub(super) const fn substitute_encoders(codec: VideoCodec) -> &'static [&'static str] {
+        match codec {
+            VideoCodec::H264 => &["libvpx-vp9"],
+            VideoCodec::H265 => &["libaom-av1", "libsvtav1"],
+            _ => &[],
+        }
+    }
+
+    /// The same-family software encoder that the `gpl` feature would enable.
+    const fn gpl_gated_encoder(codec: VideoCodec) -> Option<&'static str> {
+        match codec {
+            VideoCodec::H264 => Some("libx264"),
+            VideoCodec::H265 => Some("libx265"),
+            _ => None,
+        }
+    }
+
+    /// A human-readable name for the codec family, matching the existing
+    /// `EncoderUnavailable` messages.
+    fn codec_label(codec: VideoCodec) -> String {
+        match codec {
+            VideoCodec::H264 => "h264/avc".to_string(),
+            VideoCodec::H265 => "h265/hevc".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Builds guidance from what this FFmpeg build actually registers, so the
+    /// caller is told the specific remedy rather than a generic one.
+    fn unavailable_hint(gated: Option<&str>, substitute: Option<&str>) -> String {
+        let mut parts = Vec::new();
+        if let Some(name) = gated {
+            parts.push(format!(
+                "{name} is present in this FFmpeg build but is only tried when ff-encode is \
+                 built with the `gpl` feature"
+            ));
+        }
+        if let Some(name) = substitute {
+            parts.push(format!(
+                "{name} is available and would encode a different codec, which \
+                 allow_codec_substitution opts into"
+            ));
+        }
+        if parts.is_empty() {
+            "no encoder for this codec is registered in this FFmpeg build".to_string()
+        } else {
+            parts.join("; ")
+        }
     }
 
     /// Select H.264 encoder candidates with LGPL compliance.
@@ -464,7 +531,10 @@ impl VideoEncoderInner {
     /// Priority order:
     /// 1. Hardware encoders (LGPL-compatible)
     /// 2. libx264 (GPL only, requires `gpl` feature)
-    /// 3. VP9 fallback (LGPL-compatible)
+    ///
+    /// H.264 only. The VP9 stand-in lives in
+    /// [`substitute_encoders`](Self::substitute_encoders) because it encodes a
+    /// different codec and is opt-in.
     pub(super) fn select_h264_encoder_candidates(
         &self,
         hardware_encoder: crate::HardwareEncoder,
@@ -509,9 +579,6 @@ impl VideoEncoderInner {
             candidates.push("libx264");
         }
 
-        // Add LGPL-compatible fallback (VP9)
-        candidates.push("libvpx-vp9");
-
         candidates
     }
 
@@ -520,7 +587,10 @@ impl VideoEncoderInner {
     /// Priority order:
     /// 1. Hardware encoders (LGPL-compatible)
     /// 2. libx265 (GPL only, requires `gpl` feature)
-    /// 3. AV1 fallback (LGPL-compatible)
+    ///
+    /// HEVC only. The AV1 stand-in lives in
+    /// [`substitute_encoders`](Self::substitute_encoders) because it encodes a
+    /// different codec and is opt-in.
     pub(super) fn select_h265_encoder_candidates(
         &self,
         hardware_encoder: crate::HardwareEncoder,
@@ -564,9 +634,6 @@ impl VideoEncoderInner {
         {
             candidates.push("libx265");
         }
-
-        // Add LGPL-compatible fallback (AV1)
-        candidates.extend_from_slice(&["libaom-av1", "libsvtav1"]);
 
         candidates
     }

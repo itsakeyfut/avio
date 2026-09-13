@@ -42,6 +42,13 @@ pub struct EncoderConfig {
     ///
     /// `None` uses software (CPU) encoding.
     pub hardware: Option<HwAccel>,
+
+    /// Accept an encoder from a different codec family when `video_codec` has no
+    /// encoder available.
+    ///
+    /// Defaults to `false`, which makes an encode that cannot honour
+    /// `video_codec` fail rather than quietly produce another codec.
+    pub allow_codec_substitution: bool,
 }
 
 impl EncoderConfig {
@@ -63,6 +70,7 @@ pub struct EncoderConfigBuilder {
     resolution: Option<(u32, u32)>,
     framerate: Option<f64>,
     hardware: Option<HwAccel>,
+    allow_codec_substitution: bool,
 }
 
 impl EncoderConfigBuilder {
@@ -74,6 +82,7 @@ impl EncoderConfigBuilder {
             resolution: None,
             framerate: None,
             hardware: None,
+            allow_codec_substitution: false,
         }
     }
 
@@ -126,6 +135,17 @@ impl EncoderConfigBuilder {
         self
     }
 
+    /// Accepts an encoder from a different codec family when the requested video
+    /// codec has no encoder available.
+    ///
+    /// Without this, an encode that cannot honour the requested codec fails
+    /// instead of silently writing a different one.
+    #[must_use]
+    pub fn allow_codec_substitution(mut self) -> Self {
+        self.allow_codec_substitution = true;
+        self
+    }
+
     /// Builds the [`EncoderConfig`]. Never fails; returns the config directly.
     #[must_use]
     pub fn build(self) -> EncoderConfig {
@@ -136,6 +156,7 @@ impl EncoderConfigBuilder {
             resolution: self.resolution,
             framerate: self.framerate,
             hardware: self.hardware,
+            allow_codec_substitution: self.allow_codec_substitution,
         }
     }
 }

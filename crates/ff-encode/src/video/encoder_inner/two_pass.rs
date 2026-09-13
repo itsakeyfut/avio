@@ -13,7 +13,6 @@
 use super::color::{
     color_primaries_to_av, color_space_to_av, color_transfer_to_av, pixel_format_to_av,
 };
-use super::options::codec_to_id;
 use super::{
     AVPixelFormat_AV_PIX_FMT_YUV420P, CString, EncodeError, VideoEncoderConfig, VideoEncoderInner,
 };
@@ -213,12 +212,16 @@ impl VideoEncoderInner {
                     tried: vec![encoder_name.clone()],
                 }
             })?;
+        let codec_ptr = selected_codec.as_ptr();
 
         let mut codec_ctx = ff_sys::CodecContext::new(Some(selected_codec))
             .map_err(|e| EncodeError::from_ffmpeg_error(e.code()))?;
 
-        // Mirror the same codec configuration as pass 1.
-        codec_ctx.set_codec_id(codec_to_id(config.video_codec));
+        // Mirror the same codec configuration as pass 1, including its codec_id:
+        // the encoder here is whatever pass 1 actually selected, which is not
+        // always from the requested codec's family, and `avcodec_open2` rejects
+        // a context whose codec_id disagrees with its encoder (EINVAL).
+        codec_ctx.set_codec_id((*codec_ptr).id);
         codec_ctx.set_width(width as i32);
         codec_ctx.set_height(height as i32);
         codec_ctx.set_time_base(ff_sys::AVRational {

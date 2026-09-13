@@ -1,8 +1,8 @@
-//! Codec selection and fallback tests.
+//! Codec selection tests.
 //!
-//! Tests the automatic codec selection and fallback behavior:
-//! - H.264 codec selection (hardware → software fallback → VP9)
-//! - H.265 codec selection (hardware → software fallback → AV1)
+//! Tests how an encoder is chosen for a requested codec:
+//! - within the requested codec's own family (hardware, then software)
+//! - across families, which is opt-in and never silent
 //! - LGPL compliance verification
 //! - Hardware encoder preference
 
@@ -10,47 +10,56 @@
 
 mod fixtures;
 
-use ff_encode::{HardwareEncoder, VideoCodec, VideoEncoder};
+use ff_encode::{EncodeError, HardwareEncoder, VideoCodec, VideoEncoder};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
+
+/// Whether an encoder name belongs to the H.264 family.
+///
+/// Covers `libx264` and every `h264_*` hardware encoder.
+fn is_h264_encoder(name: &str) -> bool {
+    name.contains("264")
+}
+
+/// Whether an encoder name belongs to the HEVC family.
+fn is_hevc_encoder(name: &str) -> bool {
+    name.contains("265") || name.contains("hevc")
+}
 
 // ============================================================================
 // H.264 Codec Selection Tests
 // ============================================================================
 
 #[test]
-fn test_h264_codec_fallback() {
-    let output_path = test_output_path("test_h264_fallback.mp4");
+fn requesting_h264_should_yield_h264_or_fail() {
+    let output_path = test_output_path("test_h264_family.mp4");
     let _guard = FileGuard::new(output_path.clone());
 
-    // Request H.264, let the encoder choose the best available
     let result = VideoEncoder::create(&output_path)
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H264)
         .build();
 
+    // The outcome depends on what this FFmpeg build registers, so the assertion
+    // is on the shape: H.264 or a refusal, never a different codec.
     match result {
         Ok(encoder) => {
             let actual_codec = encoder.actual_video_codec();
-            println!("H.264 selected codec: {}", actual_codec);
-
-            // Should be one of: h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox,
-            // h264_vaapi, libx264 (if GPL), or libvpx-vp9 (fallback)
             assert!(
-                actual_codec.contains("h264")
-                    || actual_codec.contains("nvenc")
-                    || actual_codec.contains("qsv")
-                    || actual_codec.contains("amf")
-                    || actual_codec.contains("videotoolbox")
-                    || actual_codec.contains("vaapi")
-                    || actual_codec.contains("x264")
-                    || actual_codec.contains("vp9"),
-                "Unexpected codec: {}",
-                actual_codec
+                is_h264_encoder(actual_codec),
+                "requested H.264 and got {actual_codec}, which is a different codec"
             );
         }
-        Err(e) => {
-            println!("H.264 encoder creation failed: {}", e);
+        Err(EncodeError::EncoderUnavailable { codec, hint }) => {
+            println!("no H.264 encoder: codec={codec} hint={hint}");
+            assert!(
+                !hint.is_empty(),
+                "the refusal must say what would be needed"
+            );
         }
+        Err(EncodeError::NoSuitableEncoder { .. }) => {
+            println!("skipped: this build registers no H.264 encoder and no stand-in");
+        }
+        Err(e) => panic!("unexpected error: {e}"),
     }
 }
 
@@ -116,25 +125,13 @@ fn test_h264_software_only() {
                 "Should use software encoder"
             );
 
-            // Should be libx264 (if GPL enabled) or VP9 fallback
-            #[cfg(feature = "gpl")]
-            {
-                assert!(
-                    actual_codec.contains("x264") || actual_codec.contains("vp9"),
-                    "Expected libx264 or VP9, got: {}",
-                    actual_codec
-                );
-            }
-
-            #[cfg(not(feature = "gpl"))]
-            {
-                // Without GPL, should fallback to VP9
-                assert!(
-                    actual_codec.contains("vp9"),
-                    "Expected VP9 fallback, got: {}",
-                    actual_codec
-                );
-            }
+            // Whatever was chosen, it must still be H.264. Without the `gpl`
+            // feature there is usually nothing left to choose and this arm is
+            // not reached at all.
+            assert!(
+                is_h264_encoder(actual_codec),
+                "requested H.264 and got {actual_codec}, which is a different codec"
+            );
         }
         Err(e) => {
             println!("H.264 software encoder creation failed: {}", e);
@@ -147,7 +144,7 @@ fn test_h264_software_only() {
 // ============================================================================
 
 #[test]
-fn test_h265_codec_fallback() {
+fn requesting_h265_should_yield_hevc_or_fail() {
     let output_path = test_output_path("test_h265_fallback.mp4");
     let _guard = FileGuard::new(output_path.clone());
 
@@ -162,22 +159,49 @@ fn test_h265_codec_fallback() {
             let actual_codec = encoder.actual_video_codec();
             println!("H.265 selected codec: {}", actual_codec);
 
-            // Should be one of: hevc_nvenc, hevc_qsv, hevc_amf, hevc_videotoolbox,
-            // hevc_vaapi, libx265 (if GPL), or libaom-av1 (fallback)
             assert!(
-                actual_codec.contains("hevc")
-                    || actual_codec.contains("h265")
-                    || actual_codec.contains("x265")
-                    || actual_codec.contains("av1")
-                    || actual_codec.contains("aom"),
-                "Unexpected codec: {}",
-                actual_codec
+                is_hevc_encoder(actual_codec),
+                "requested H.265 and got {actual_codec}, which is a different codec"
             );
         }
         Err(e) => {
             println!("H.265 encoder creation failed: {}", e);
         }
     }
+}
+
+#[test]
+fn allow_codec_substitution_should_permit_what_the_default_refuses() {
+    let refused_path = test_output_path("test_substitution_refused.mp4");
+    let _refused_guard = FileGuard::new(refused_path.clone());
+
+    let refused = VideoEncoder::create(&refused_path)
+        .video(320, 180, 30.0)
+        .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
+        .build();
+
+    // Only meaningful where the default refused because a stand-in exists.
+    let Err(EncodeError::EncoderUnavailable { .. }) = refused else {
+        println!("skipped: this build does not reach the substitution decision");
+        return;
+    };
+
+    let allowed_path = test_output_path("test_substitution_allowed.mp4");
+    let _allowed_guard = FileGuard::new(allowed_path.clone());
+
+    let encoder = VideoEncoder::create(&allowed_path)
+        .video(320, 180, 30.0)
+        .video_codec(VideoCodec::H264)
+        .hardware_encoder(HardwareEncoder::None)
+        .allow_codec_substitution()
+        .build()
+        .expect("opting in should accept the stand-in the default refused");
+
+    println!(
+        "substitution accepted: encoder={}",
+        encoder.actual_video_codec()
+    );
 }
 
 // ============================================================================
@@ -207,13 +231,6 @@ fn test_lgpl_compliance_without_gpl_feature() {
                 assert!(
                     encoder.is_lgpl_compliant(),
                     "Encoder should be LGPL-compliant, got: {}",
-                    actual_codec
-                );
-
-                // Should have fallen back to VP9
-                assert!(
-                    actual_codec.contains("vp9"),
-                    "Should fallback to VP9 without GPL, got: {}",
                     actual_codec
                 );
             }

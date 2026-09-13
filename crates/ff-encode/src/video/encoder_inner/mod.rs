@@ -29,15 +29,11 @@ use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
     AVAudioFifo, AVChannelLayout, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
-    AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD,
-    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1,
-    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
-    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
-    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
-    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
-    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
-    AVCodecID_AV_CODEC_ID_VP9, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
-    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3,
+    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
+    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_VORBIS,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
     AVPixelFormat_AV_PIX_FMT_YUV420P, OutputFormatContext, swresample,
 };
@@ -120,6 +116,9 @@ pub(super) struct VideoEncoderInner {
 
 /// VideoEncoder configuration (stored from builder).
 #[derive(Debug, Clone)]
+// Mirrors the builder's independent output toggles one for one; the bool
+// count is inherent, as it is on `VideoEncoderBuilder` itself.
+#[allow(clippy::struct_excessive_bools)]
 pub(super) struct VideoEncoderConfig {
     pub(super) path: std::path::PathBuf,
     pub(super) video_width: Option<u32>,
@@ -129,6 +128,9 @@ pub(super) struct VideoEncoderConfig {
     pub(super) video_bitrate_mode: Option<crate::BitrateMode>,
     pub(super) preset: String,
     pub(super) hardware_encoder: crate::HardwareEncoder,
+    /// Accept an encoder from another codec family when the requested one
+    /// has none available.
+    pub(super) allow_codec_substitution: bool,
     pub(super) audio_sample_rate: Option<u32>,
     pub(super) audio_channels: Option<u32>,
     pub(super) audio_codec: AudioCodec,
@@ -216,6 +218,7 @@ impl VideoEncoderInner {
                     config.video_bitrate_mode.as_ref(),
                     &config.preset,
                     config.hardware_encoder,
+                    config.allow_codec_substitution,
                     config.two_pass,
                     config.codec_options.as_ref(),
                     &config.codec_opts,
@@ -709,8 +712,8 @@ mod tests {
             assert!(candidates.contains(&"libx264"));
         }
 
-        // Should always include VP9 fallback
-        assert!(candidates.contains(&"libvpx-vp9"));
+        // VP9 is a substitute, not an H.264 candidate.
+        assert!(!candidates.contains(&"libvpx-vp9"));
     }
 
     #[test]
@@ -724,8 +727,8 @@ mod tests {
             assert_eq!(candidates[0], "h264_nvenc");
         }
 
-        // Should include VP9 fallback
-        assert!(candidates.contains(&"libvpx-vp9"));
+        // VP9 is a substitute, not an H.264 candidate.
+        assert!(!candidates.contains(&"libvpx-vp9"));
     }
 
     #[test]
@@ -740,8 +743,123 @@ mod tests {
             assert!(!candidates.contains(&"h264_qsv"));
         }
 
-        // Should include VP9 fallback
-        assert!(candidates.contains(&"libvpx-vp9"));
+        // VP9 is a substitute, not an H.264 candidate.
+        assert!(!candidates.contains(&"libvpx-vp9"));
+    }
+
+    #[test]
+    fn h264_candidates_should_all_be_h264_encoders() {
+        let inner = create_dummy_encoder_inner();
+        for hw in [
+            crate::HardwareEncoder::Auto,
+            crate::HardwareEncoder::None,
+            crate::HardwareEncoder::Nvenc,
+        ] {
+            for name in inner.select_h264_encoder_candidates(hw) {
+                assert!(
+                    name.contains("264"),
+                    "{name} is not an H.264 encoder but is offered for H.264"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn h265_candidates_should_all_be_hevc_encoders() {
+        let inner = create_dummy_encoder_inner();
+        for hw in [
+            crate::HardwareEncoder::Auto,
+            crate::HardwareEncoder::None,
+            crate::HardwareEncoder::Nvenc,
+        ] {
+            for name in inner.select_h265_encoder_candidates(hw) {
+                assert!(
+                    name.contains("265") || name.contains("hevc"),
+                    "{name} is not an HEVC encoder but is offered for H.265"
+                );
+            }
+        }
+    }
+
+    /// The candidates the requested codec's own family offers, for the two
+    /// codecs that have a cross-family stand-in.
+    fn same_family_candidates(inner: &VideoEncoderInner, codec: VideoCodec) -> Vec<&'static str> {
+        match codec {
+            VideoCodec::H264 => inner.select_h264_encoder_candidates(crate::HardwareEncoder::None),
+            VideoCodec::H265 => inner.select_h265_encoder_candidates(crate::HardwareEncoder::None),
+            other => panic!("{other:?} has no cross-family substitute"),
+        }
+    }
+
+    /// End to end: whatever is selected, it is never a stand-in from another
+    /// family unless the caller asked for one.
+    ///
+    /// This one only bites where the requested family has nothing available,
+    /// which is the configuration #1835 was reported from. On a build that has
+    /// `libx264`, selection stops there and this passes without reaching the
+    /// decision. The tests that catch a regression in every configuration are
+    /// the list-shape ones above, which assert the data the decision reads.
+    #[test]
+    fn refusing_substitution_should_never_return_another_family() {
+        let inner = create_dummy_encoder_inner();
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            let substitutes = VideoEncoderInner::substitute_encoders(codec);
+            if let Ok(name) = inner.select_video_encoder(codec, crate::HardwareEncoder::None, false)
+            {
+                assert!(
+                    !substitutes.contains(&name.as_str()),
+                    "{codec:?} selected {name} without allow_codec_substitution, \
+                     which encodes a different codec"
+                );
+            }
+        }
+    }
+
+    /// Opting in widens what is accepted; it must not change a choice that was
+    /// already available, or reach an encoder that is on neither list.
+    #[test]
+    fn allowing_substitution_should_only_widen_what_is_accepted() {
+        let inner = create_dummy_encoder_inner();
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            let strict = inner
+                .select_video_encoder(codec, crate::HardwareEncoder::None, false)
+                .ok();
+            let relaxed = inner
+                .select_video_encoder(codec, crate::HardwareEncoder::None, true)
+                .ok();
+
+            if let Some(ref chosen) = strict {
+                assert_eq!(
+                    strict, relaxed,
+                    "{codec:?} already had {chosen} available, so opting in must not change it"
+                );
+            }
+
+            if let Some(name) = relaxed {
+                let allowed = same_family_candidates(&inner, codec);
+                let substitutes = VideoEncoderInner::substitute_encoders(codec);
+                assert!(
+                    allowed.contains(&name.as_str()) || substitutes.contains(&name.as_str()),
+                    "{codec:?} selected {name}, which is on neither the family list nor \
+                     the substitute list"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn substitute_encoders_should_hold_the_cross_family_fallbacks() {
+        assert_eq!(
+            VideoEncoderInner::substitute_encoders(VideoCodec::H264),
+            &["libvpx-vp9"]
+        );
+        assert_eq!(
+            VideoEncoderInner::substitute_encoders(VideoCodec::H265),
+            &["libaom-av1", "libsvtav1"]
+        );
+        // A codec with no cross-family stand-in has none.
+        assert!(VideoEncoderInner::substitute_encoders(VideoCodec::Vp9).is_empty());
+        assert!(VideoEncoderInner::substitute_encoders(VideoCodec::Mpeg4).is_empty());
     }
 
     #[test]
@@ -762,8 +880,9 @@ mod tests {
             assert!(candidates.contains(&"libx265"));
         }
 
-        // Should always include AV1 fallback
-        assert!(candidates.contains(&"libaom-av1") || candidates.contains(&"libsvtav1"));
+        // AV1 is a substitute, not an HEVC candidate.
+        assert!(!candidates.contains(&"libaom-av1"));
+        assert!(!candidates.contains(&"libsvtav1"));
     }
 
     #[test]
@@ -775,8 +894,9 @@ mod tests {
 
         #[cfg(not(feature = "gpl"))]
         {
-            // Without GPL feature, should only have VP9
-            assert_eq!(h264_candidates, vec!["libvpx-vp9"]);
+            // Without the GPL feature and without hardware, no H.264 encoder is
+            // offered at all. VP9 is reachable only through substitution.
+            assert!(h264_candidates.is_empty());
         }
 
         // Test H265 candidates
@@ -784,9 +904,8 @@ mod tests {
 
         #[cfg(not(feature = "gpl"))]
         {
-            // Without GPL feature, should only have AV1 options
-            assert!(h265_candidates.contains(&"libaom-av1"));
-            assert!(!h265_candidates.contains(&"libx265"));
+            // Same for HEVC: AV1 moved to the substitute list.
+            assert!(h265_candidates.is_empty());
         }
     }
 

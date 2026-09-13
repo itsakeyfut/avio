@@ -124,6 +124,10 @@ impl Pipeline {
             .bitrate_mode(enc_config.bitrate_mode)
             .hardware_encoder(hw);
 
+        if enc_config.allow_codec_substitution {
+            enc_builder = enc_builder.allow_codec_substitution();
+        }
+
         if run_audio && let Some((sample_rate, channels)) = audio_config {
             enc_builder = enc_builder
                 .audio(sample_rate, channels)
