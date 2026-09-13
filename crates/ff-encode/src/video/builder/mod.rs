@@ -48,6 +48,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) video_bitrate_mode: Option<crate::BitrateMode>,
     pub(crate) preset: Preset,
     pub(crate) hardware_encoder: HardwareEncoder,
+    pub(crate) allow_codec_substitution: bool,
     pub(crate) audio_sample_rate: Option<u32>,
     pub(crate) audio_channels: Option<u32>,
     pub(crate) audio_codec: AudioCodec,
@@ -89,6 +90,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("video_bitrate_mode", &self.video_bitrate_mode)
             .field("preset", &self.preset)
             .field("hardware_encoder", &self.hardware_encoder)
+            .field("allow_codec_substitution", &self.allow_codec_substitution)
             .field("audio_sample_rate", &self.audio_sample_rate)
             .field("audio_channels", &self.audio_channels)
             .field("audio_codec", &self.audio_codec)
@@ -129,6 +131,7 @@ impl VideoEncoderBuilder {
             video_bitrate_mode: None,
             preset: Preset::default(),
             hardware_encoder: HardwareEncoder::default(),
+            allow_codec_substitution: false,
             audio_sample_rate: None,
             audio_channels: None,
             audio_codec: AudioCodec::default(),
@@ -626,6 +629,7 @@ impl VideoEncoder {
             video_bitrate_mode: builder.video_bitrate_mode,
             preset: preset_to_string(builder.preset),
             hardware_encoder: builder.hardware_encoder,
+            allow_codec_substitution: builder.allow_codec_substitution,
             audio_sample_rate: builder.audio_sample_rate,
             audio_channels: builder.audio_channels,
             audio_codec: builder.audio_codec,
@@ -935,6 +939,7 @@ mod tests {
                 video_bitrate_mode: None,
                 preset: "medium".to_string(),
                 hardware_encoder: HardwareEncoder::Auto,
+                allow_codec_substitution: false,
                 audio_sample_rate: None,
                 audio_channels: None,
                 audio_codec: crate::AudioCodec::Aac,

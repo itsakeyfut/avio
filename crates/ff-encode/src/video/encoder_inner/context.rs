@@ -118,6 +118,7 @@ impl VideoEncoderInner {
         bitrate_mode: Option<&crate::BitrateMode>,
         preset: &str,
         hardware_encoder: crate::HardwareEncoder,
+        allow_codec_substitution: bool,
         two_pass: bool,
         codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
         codec_opts: &[(String, String)],
@@ -128,7 +129,8 @@ impl VideoEncoderInner {
     ) -> Result<(), EncodeError> {
         use crate::BitrateMode;
         // Select encoder based on codec and availability
-        let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
+        let encoder_name =
+            self.select_video_encoder(codec, hardware_encoder, allow_codec_substitution)?;
         self.actual_video_codec.clone_from(&encoder_name);
 
         let selected_codec =

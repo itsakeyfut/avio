@@ -149,3 +149,18 @@ See [perf.md](./perf.md). Critical paths only; not run in CI.
 - CI clippy runs **without** `--tests` / `--all-targets`, so test-only lints (`expect_used`,
   `print_stdout`) do not gate CI. Non-test library code must stay clippy-clean; do not chase local
   `--tests` clippy errors that CI never runs.
+- **Nothing here runs tests at any feature configuration other than all-features.** The two jobs
+  that execute tests both pass `--all-features` (`ci.yml`'s `cargo test --all --all-features` and
+  `coverage.yml`'s `cargo llvm-cov`), and `.claude/scripts/test.sh` adds `--all-features` unless a
+  feature flag is given. The jobs that do use other configurations never run a test: `cargo check`
+  / `cargo build` only compile, and the feature powerset job passes `--no-dev-deps`, which does not
+  compile tests at all.
+
+  So **a property that only holds when a feature is off must be asserted as a feature-independent
+  invariant, not inside a `#[cfg(not(feature = "..."))]` body**, because nothing executes such a
+  body. Where the feature is not in `default` (`ff-encode`'s `gpl`, for one), the configuration that
+  never runs is the one published to crates.io. Prefer asserting the data a decision reads (for example, "the
+  H.264 candidate list never contains an encoder from another family") over asserting the decision's
+  outcome, which depends on what the local FFmpeg registers. #1835 shipped in v0.18.0 this way: the
+  off-side test existed, had never once run, and asserted a property the wrong encoder also
+  satisfied.

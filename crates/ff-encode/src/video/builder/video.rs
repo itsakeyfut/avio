@@ -41,6 +41,22 @@ impl VideoEncoderBuilder {
         self.hardware_encoder = hw;
         self
     }
+
+    /// Accept an encoder from a different codec family when the requested codec
+    /// has no encoder available.
+    ///
+    /// By default, asking for H.264 and getting anything that is not H.264 is an
+    /// error. Some codecs have an LGPL-compatible stand-in (VP9 for H.264, AV1
+    /// for H.265) that can encode the frames, but the output is that other
+    /// codec, so it is only used when this is set. When it is used, a warning
+    /// names the encoder that was chosen, and
+    /// [`actual_video_codec`](super::VideoEncoder::actual_video_codec) reports
+    /// it.
+    #[must_use]
+    pub fn allow_codec_substitution(mut self) -> Self {
+        self.allow_codec_substitution = true;
+        self
+    }
 }
 
 #[cfg(test)]
