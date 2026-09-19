@@ -128,6 +128,14 @@ impl VideoEncoderInner {
         color_primaries: Option<ff_format::ColorPrimaries>,
     ) -> Result<(), EncodeError> {
         use crate::BitrateMode;
+        // One frame as a fraction of a second, kept for packet durations. Built
+        // from the same expression as the time base below so the two cannot
+        // drift; `1 / fps as i32` would round 29.97 fps to 29.
+        self.video_frame_period = Some(ff_sys::AVRational {
+            num: 1000,
+            den: (fps * 1000.0) as i32,
+        });
+
         // Select encoder based on codec and availability
         let encoder_name =
             self.select_video_encoder(codec, hardware_encoder, allow_codec_substitution)?;

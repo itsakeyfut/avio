@@ -461,7 +461,11 @@ impl VideoDecoder {
         self.inner.position()
     }
 
-    /// Returns `true` if the end of stream has been reached.
+    /// Returns `true` once the decoder has been fully drained.
+    ///
+    /// This becomes `true` only when no further frame will be returned. Reaching
+    /// the end of the file is not enough on its own: a decoder still holds
+    /// buffered frames at that point, and those are returned first.
     #[must_use]
     pub fn is_eof(&self) -> bool {
         self.inner.is_eof()
