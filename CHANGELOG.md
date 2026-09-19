@@ -11,6 +11,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.1] - 2026-09-19
+
+A correctness release for the write and read paths. Everything here is about the file avio produces
+being the file that was asked for: the codec named in the request, the number of frames that were
+pushed, and a time base the container reads back the way it was written. Two of these changed what
+existing output actually was, so an export made with 0.18.0 is not the file 0.18.1 writes from the
+same timeline.
+
+### Fixed
+
+#### ff-encode
+
+- Requesting H.264 no longer silently produces VP9. The candidate list held only encoders from the
+  requested codec's own family; a stand-in from another family (VP9 for H.264, AV1 for H.265) is now
+  used only when the caller sets `allow_codec_substitution`, and refusing it reports what would be
+  needed, naming `libx264` and the `gpl` feature when that is the remedy. `libx264` sat behind a
+  non-default feature, so a default build fell through to VP9 and reported success
+  ([#1835](https://github.com/itsakeyfut/avio/issues/1835))
+- An MP4 export is no longer one decodable frame short, and a one-frame export is no longer empty.
+  Packets reached the muxer with `duration` unset, so the track ended where the last frame starts:
+  4 frames at 30 fps reported 100ms instead of 133ms, and a single frame reported 0ns
+  ([#1810](https://github.com/itsakeyfut/avio/issues/1810))
+- Matroska and WebM are written at the requested frame rate. Timestamps reached the muxer in the
+  codec time base rather than the stream's, which MP4 hid because the two coincide; Matroska forces
+  1/1000 and read a 4-frame clip as 1 fps over 3 seconds. Audio in those containers was out by
+  roughly fifty times for the same reason ([#1807](https://github.com/itsakeyfut/avio/issues/1807))
+- Two-pass encoding configures its second pass with the codec id of the encoder that was actually
+  selected, which `avcodec_open2` requires when a substitute was accepted ([#1835](https://github.com/itsakeyfut/avio/issues/1835))
+
+#### ff-decode
+
+- Reading a file back returns every frame it holds. The decoder treated "the demuxer reached the end
+  of the file" as "the decoder has no more frames", so whatever was still buffered was discarded;
+  at an ordinary quality setting that cost roughly one frame per buffer depth. `is_eof` now reports
+  the end of the stream only once no further frame will be returned, instead of while one was still
+  to come ([#1836](https://github.com/itsakeyfut/avio/issues/1836))
+
+### Docs
+
+- The README compares avio with the neighbouring FFmpeg crates and states the pitch in those terms
+  ([#1801](https://github.com/itsakeyfut/avio/issues/1801))
+- `docs/rules/test.md` records that nothing in this repository runs tests at any feature
+  configuration other than all-features, so a property that only holds when a feature is off has to
+  be asserted as a feature-independent invariant
+
+### Internal
+
+- `bindgen` 0.73.1, and the GitHub Actions minor/patch group
+
+---
+
 ## [0.18.0] - 2026-09-08
 
 This release makes `avio` a **GPU-default editing engine**: preview and export both composite on the
