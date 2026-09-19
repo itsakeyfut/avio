@@ -285,6 +285,32 @@ impl VideoEncoderInner {
                 }
             }
 
+            // Stamp the packet before writing it. The encoder leaves `duration`
+            // unset, and without it the muxer has no length for the final sample,
+            // so the track ends at the last frame's timestamp instead of one frame
+            // later (#1810). The timestamps also still carry the codec's time base,
+            // which is not the stream's: MP4 happens to use the same one, Matroska
+            // forces 1/1000 and reads them as seconds (#1807).
+            //
+            // The codec time base is read here rather than at initialisation
+            // because some encoders rewrite it on the first `send_frame`. See
+            // `ff-stream`'s `drain_encoder` for the same reasoning.
+            if let Some(cc) = self.video_codec_ctx.as_ref() {
+                let enc_tb = cc.time_base();
+                if let Some(period) = self.video_frame_period {
+                    // SAFETY: `av_rescale_q` is a pure integer rescale with no
+                    //         pointer arguments.
+                    let frame_dur = unsafe { ff_sys::av_rescale_q(1, period, enc_tb) };
+                    if frame_dur > 0 {
+                        packet.set_duration(frame_dur);
+                    }
+                }
+                let stream_tb = self
+                    .format_ctx
+                    .stream_time_base(self.video_stream_index as usize);
+                packet.rescale_ts(enc_tb, stream_tb);
+            }
+
             // Set stream index and, for keyframes, attach HDR10 side data.
             packet.set_stream_index(self.video_stream_index);
 
@@ -473,6 +499,25 @@ impl VideoEncoderInner {
                         ),
                     });
                 }
+            }
+
+            // Stamp the packet before writing it. The timestamps still carry the
+            // codec's time base, which is not the stream's: MP4 happens to use the
+            // same one, Matroska forces 1/1000 and reads them as seconds (#1807).
+            //
+            // The codec time base is read here rather than at initialisation
+            // because some encoders rewrite it on the first `send_frame`. See
+            // `ff-stream`'s `drain_encoder` for the same reasoning.
+            //
+            // Unlike video, no duration is stamped: every audio encoder measured
+            // here already sets one, and overriding it with `frame_size` worth of
+            // time moved the container duration further from the truth for Opus.
+            if let Some(cc) = self.audio_codec_ctx.as_ref() {
+                let enc_tb = cc.time_base();
+                let stream_tb = self
+                    .format_ctx
+                    .stream_time_base(self.audio_stream_index as usize);
+                packet.rescale_ts(enc_tb, stream_tb);
             }
 
             // Set stream index.

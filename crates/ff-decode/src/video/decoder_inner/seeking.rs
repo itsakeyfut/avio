@@ -9,9 +9,13 @@ impl VideoDecoderInner {
         self.position
     }
 
-    /// Returns whether end of file has been reached.
+    /// Returns whether the decoder has been fully drained.
+    ///
+    /// True only once no further frame will be returned. Reaching the end of the
+    /// file is not enough on its own: the decoder still holds buffered frames at
+    /// that point, and those are returned first.
     pub(crate) fn is_eof(&self) -> bool {
-        self.eof
+        self.drained
     }
 
     /// Returns whether the source is a live or streaming input.
@@ -129,7 +133,8 @@ impl VideoDecoderInner {
         }
 
         // 5. Reset internal state
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
         // Note: We don't update self.position here because it will be updated
         // when the next frame is decoded. This ensures position reflects actual decoded position.
 
@@ -220,7 +225,8 @@ impl VideoDecoderInner {
     pub(crate) fn flush(&mut self) {
         // SAFETY: the codec context was opened during construction.
         unsafe { self.codec_ctx.flush_buffers() };
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
     }
 
     /// Scales a video frame to the specified dimensions while preserving aspect ratio.
@@ -466,7 +472,8 @@ impl VideoDecoderInner {
         // SAFETY: the codec context was opened during construction.
         unsafe { self.codec_ctx.flush_buffers() };
 
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
         Ok(())
     }
 }

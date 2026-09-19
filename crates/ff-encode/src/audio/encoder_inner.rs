@@ -701,6 +701,23 @@ impl AudioEncoderInner {
                 }
             }
 
+            // Stamp the packet before writing it. The timestamps still carry the
+            // codec's time base, which is not the stream's: MP4 happens to use the
+            // same one, Matroska forces 1/1000 and reads them as seconds (#1807).
+            //
+            // The codec time base is read here rather than at initialisation
+            // because some encoders rewrite it on the first `send_frame`. See
+            // `ff-stream`'s `drain_encoder` for the same reasoning.
+            //
+            // Unlike video, no duration is stamped: every audio encoder measured
+            // here already sets one, and overriding it with `frame_size` worth of
+            // time moved the container duration further from the truth for Opus.
+            if let Some(cc) = self.codec_ctx.as_ref() {
+                let enc_tb = cc.time_base();
+                let stream_tb = self.format_ctx.stream_time_base(self.stream_index as usize);
+                packet.rescale_ts(enc_tb, stream_tb);
+            }
+
             // Set stream index
             packet.set_stream_index(self.stream_index);
 

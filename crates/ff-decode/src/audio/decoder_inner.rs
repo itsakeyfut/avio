@@ -60,8 +60,12 @@ pub(crate) struct AudioDecoderInner {
     swr_key: Option<resample_inner::SwrKey>,
     /// Whether the source is a live/streaming input (seeking is not supported)
     is_live: bool,
-    /// Whether end of file has been reached
-    eof: bool,
+    /// Whether the demuxer has reached end of file and `send_eof` has been sent
+    /// to the decoder. Frames may still be buffered inside the decoder.
+    demuxer_eof: bool,
+    /// Whether the decoder has been fully drained: no further frame will be
+    /// returned.
+    drained: bool,
     /// Current playback position
     position: Duration,
     /// Reusable packet for reading from file
@@ -239,7 +243,8 @@ impl AudioDecoderInner {
                 swr_ctx: None,
                 swr_key: None,
                 is_live,
-                eof: false,
+                demuxer_eof: false,
+                drained: false,
                 position: Duration::ZERO,
                 packet,
                 frame,
@@ -426,7 +431,7 @@ impl AudioDecoderInner {
     }
 
     fn decode_one_inner(&mut self) -> Result<Option<AudioFrame>, DecodeError> {
-        if self.eof {
+        if self.drained {
             return Ok(None);
         }
 
@@ -468,14 +473,26 @@ impl AudioDecoderInner {
                         return Ok(Some(audio_frame));
                     }
                     ff_sys::ReceiveOutcome::NeedInput => {
+                        // The decoder was already told the input ended and still
+                        // wants more, so nothing further will come out of it.
+                        // Some decoders report this instead of `Drained` once
+                        // their buffer is empty.
+                        if self.demuxer_eof {
+                            self.drained = true;
+                            return Ok(None);
+                        }
+
                         // Need to send more packets to the decoder
                         // Read a packet from the file
                         match self.format_ctx.read_frame(&mut self.packet) {
                             Ok(()) => {}
                             Err(e) if e.is_eof() => {
-                                // End of file - flush the decoder
+                                // End of file. Frames already buffered inside the
+                                // decoder still have to come out, so only the
+                                // demuxer is marked finished here; `Drained` is
+                                // what ends the stream.
                                 let _ = self.codec_ctx.send_eof();
-                                self.eof = true;
+                                self.demuxer_eof = true;
                                 continue;
                             }
                             Err(e) => {
@@ -522,7 +539,7 @@ impl AudioDecoderInner {
                     }
                     ff_sys::ReceiveOutcome::Drained => {
                         // Decoder has been fully flushed
-                        self.eof = true;
+                        self.drained = true;
                         return Ok(None);
                     }
                 }
@@ -535,9 +552,13 @@ impl AudioDecoderInner {
         self.position
     }
 
-    /// Returns whether end of file has been reached.
+    /// Returns whether the decoder has been fully drained.
+    ///
+    /// True only once no further frame will be returned. Reaching the end of the
+    /// file is not enough on its own: the decoder still holds buffered frames at
+    /// that point, and those are returned first.
     pub(crate) fn is_eof(&self) -> bool {
-        self.eof
+        self.drained
     }
 
     /// Returns whether the source is a live or streaming input.
@@ -611,7 +632,8 @@ impl AudioDecoderInner {
         }
 
         // 5. Reset internal state
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
 
         // 6. For exact mode, skip frames to reach exact position
         if mode == SeekMode::Exact {
@@ -646,7 +668,8 @@ impl AudioDecoderInner {
     pub(crate) fn flush(&mut self) {
         // SAFETY: the codec context was opened during construction.
         unsafe { self.codec_ctx.flush_buffers() };
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
     }
 
     // Reconnect helpers
@@ -718,7 +741,8 @@ impl AudioDecoderInner {
         // SAFETY: the codec context was opened during construction.
         unsafe { self.codec_ctx.flush_buffers() };
 
-        self.eof = false;
+        self.demuxer_eof = false;
+        self.drained = false;
         Ok(())
     }
 }

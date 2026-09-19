@@ -83,8 +83,12 @@ pub(crate) struct VideoDecoderInner {
     pub(super) output_scale: Option<OutputScale>,
     /// Whether the source is a live/streaming input (seeking is not supported)
     pub(super) is_live: bool,
-    /// Whether end of file has been reached
-    pub(super) eof: bool,
+    /// Whether the demuxer has reached end of file and `send_eof` has been sent
+    /// to the decoder. Frames may still be buffered inside the decoder.
+    pub(super) demuxer_eof: bool,
+    /// Whether the decoder has been fully drained: no further frame will be
+    /// returned.
+    pub(super) drained: bool,
     /// Current playback position
     pub(super) position: Duration,
     /// Reusable packet for reading from file
@@ -314,7 +318,8 @@ impl VideoDecoderInner {
                 output_format,
                 output_scale,
                 is_live,
-                eof: false,
+                demuxer_eof: false,
+                drained: false,
                 position: Duration::ZERO,
                 packet,
                 frame,

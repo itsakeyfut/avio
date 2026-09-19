@@ -29,7 +29,7 @@ impl VideoDecoderInner {
     }
 
     fn decode_one_inner(&mut self) -> Result<Option<VideoFrame>, DecodeError> {
-        if self.eof {
+        if self.drained {
             return Ok(None);
         }
 
@@ -77,14 +77,26 @@ impl VideoDecoderInner {
                         return Ok(Some(video_frame));
                     }
                     ff_sys::ReceiveOutcome::NeedInput => {
+                        // The decoder was already told the input ended and still
+                        // wants more, so nothing further will come out of it.
+                        // Some decoders report this instead of `Drained` once
+                        // their buffer is empty.
+                        if self.demuxer_eof {
+                            self.drained = true;
+                            return Ok(None);
+                        }
+
                         // Need to send more packets to the decoder
                         // Read a packet from the file
                         match self.format_ctx.read_frame(&mut self.packet) {
                             Ok(()) => {}
                             Err(e) if e.is_eof() => {
-                                // End of file - flush the decoder
+                                // End of file. Frames already buffered inside the
+                                // decoder still have to come out, so only the
+                                // demuxer is marked finished here; `Drained` is
+                                // what ends the stream.
                                 let _ = self.codec_ctx.send_eof();
-                                self.eof = true;
+                                self.demuxer_eof = true;
                                 continue;
                             }
                             Err(e) => {
@@ -145,7 +157,7 @@ impl VideoDecoderInner {
                     }
                     ff_sys::ReceiveOutcome::Drained => {
                         // Decoder has been fully flushed
-                        self.eof = true;
+                        self.drained = true;
                         return Ok(None);
                     }
                 }

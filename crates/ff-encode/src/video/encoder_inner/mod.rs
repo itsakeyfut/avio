@@ -112,6 +112,15 @@ pub(super) struct VideoEncoderInner {
     ///
     /// `None` if no HDR metadata was requested.
     pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
+
+    /// Length of one video frame as a fraction of a second, for stamping packet
+    /// durations at drain time.
+    ///
+    /// Held as a rational rather than a tick count because the encoder's time
+    /// base is not fixed: some encoders rewrite it on the first `send_frame`, so
+    /// the conversion has to happen against the live value. `None` until the
+    /// video encoder is initialised.
+    pub(super) video_frame_period: Option<ff_sys::AVRational>,
 }
 
 /// VideoEncoder configuration (stored from builder).
@@ -204,6 +213,7 @@ impl VideoEncoderInner {
                 two_pass_config: None,
                 subtitle_passthrough: None,
                 hdr10_metadata: config.hdr10_metadata.clone(),
+                video_frame_period: None,
             };
 
             // Initialize video encoder if configured
@@ -887,25 +897,22 @@ mod tests {
 
     #[test]
     fn test_lgpl_fallback_priority() {
-        let inner = create_dummy_encoder_inner();
-
-        // Test H264 candidates
-        let h264_candidates = inner.select_h264_encoder_candidates(crate::HardwareEncoder::None);
-
         #[cfg(not(feature = "gpl"))]
         {
-            // Without the GPL feature and without hardware, no H.264 encoder is
-            // offered at all. VP9 is reachable only through substitution.
-            assert!(h264_candidates.is_empty());
-        }
-
-        // Test H265 candidates
-        let h265_candidates = inner.select_h265_encoder_candidates(crate::HardwareEncoder::None);
-
-        #[cfg(not(feature = "gpl"))]
-        {
-            // Same for HEVC: AV1 moved to the substitute list.
-            assert!(h265_candidates.is_empty());
+            let inner = create_dummy_encoder_inner();
+            // Without the GPL feature and without hardware, neither family offers
+            // an encoder at all: the LGPL stand-ins are reachable only through
+            // substitution.
+            assert!(
+                inner
+                    .select_h264_encoder_candidates(crate::HardwareEncoder::None)
+                    .is_empty()
+            );
+            assert!(
+                inner
+                    .select_h265_encoder_candidates(crate::HardwareEncoder::None)
+                    .is_empty()
+            );
         }
     }
 
@@ -1095,6 +1102,7 @@ mod tests {
             two_pass_config: None,
             subtitle_passthrough: None,
             hdr10_metadata: None,
+            video_frame_period: None,
         }
     }
 }

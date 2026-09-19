@@ -929,6 +929,7 @@ mod tests {
                 two_pass_config: None,
                 subtitle_passthrough: None,
                 hdr10_metadata: None,
+                video_frame_period: None,
             }),
             _config: VideoEncoderConfig {
                 path: "test.mp4".into(),
