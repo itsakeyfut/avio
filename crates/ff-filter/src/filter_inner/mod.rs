@@ -24,6 +24,7 @@ pub(crate) use build::{
     add_composite_step, video_buffersrc_args,
 };
 pub(crate) use convert::pixel_format_to_av;
+pub(crate) use normalize::linear_to_db;
 
 use std::ptr::NonNull;
 

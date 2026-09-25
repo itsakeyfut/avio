@@ -176,11 +176,17 @@ unsafe fn measure_loudness_unsafe(path: &Path) -> Result<LoudnessResult, FilterE
         // `av_dict_get` handles null dictionaries by returning null.
         read_f32_meta(raw_frame, c"lavfi.r128.I".as_ptr(), &mut integrated_lufs);
         read_f32_meta(raw_frame, c"lavfi.r128.LRA".as_ptr(), &mut lra_lu);
+        // `lavfi.r128.true_peak` is a linear amplitude despite its name, so it is
+        // read raw and converted; the field this ends up in promises dBTP (#1822).
+        let mut true_peak_linear = 0.0f32;
         read_f32_meta(
             raw_frame,
             c"lavfi.r128.true_peak".as_ptr(),
-            &mut true_peak_dbtp,
+            &mut true_peak_linear,
         );
+        if true_peak_linear > 0.0 {
+            true_peak_dbtp = crate::filter_inner::linear_to_db(true_peak_linear);
+        }
         let mut ptr = raw_frame;
         ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
     }
