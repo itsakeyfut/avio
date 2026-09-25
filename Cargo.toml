@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples"]
+members = ["crates/*", "examples", "xtask"]
 resolver = "2"
 
 # Lockstep versioning: every crate shares this one version (crates inherit it via

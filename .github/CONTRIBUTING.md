@@ -17,6 +17,7 @@ If you're unsure where to start, feel free to open an issue and ask.
 - [Pull Requests](#pull-requests)
 - [Commit Messages](#commit-messages)
 - [Code Style](#code-style)
+- [Task runner](#task-runner)
 - [Testing](#testing)
 - [Minimum Supported Rust Version (MSRV)](#minimum-supported-rust-version-msrv)
 - [Documentation](#documentation)
@@ -218,6 +219,36 @@ Key style rules enforced by the workspace `Cargo.toml`:
 
 ---
 
+## Task runner
+
+Repository tasks live in the `xtask` crate and are run through a cargo alias, so they need no
+setup beyond a Rust toolchain:
+
+```sh
+cargo xtask help                  # every task and its arguments
+cargo xtask test -p ff-encode     # test one crate, GPU targets serialised
+cargo xtask dep-graph             # internal crate dependency edges, cycle check
+cargo xtask publish-readiness     # what CI checks before a release
+```
+
+A few of them answer the questions that come up when reviewing a change, and print one JSON
+object so the answer is the same every time:
+
+```sh
+cargo xtask diff-scope            # which files and crates a change touches
+cargo xtask unsafe-count          # `unsafe` occurrences in the changed .rs files
+cargo xtask build -p ff-render    # build result, summarised
+cargo xtask clippy -p ff-render   # lint result, summarised
+```
+
+With no argument the two above read your uncommitted work; pass a base ref (`cargo xtask
+diff-scope origin/main`) to read a branch instead.
+
+Adding a task there rather than writing a script keeps it compiled, linted and tested along with
+the rest of the workspace, and keeps it working the same on every platform.
+
+---
+
 ## Testing
 
 Run the full test suite:
@@ -225,6 +256,19 @@ Run the full test suite:
 ```sh
 cargo test --all --all-features
 ```
+
+When you are working on one crate, prefer the task runner:
+
+```sh
+cargo xtask test -p ff-render
+```
+
+It runs the GPU test targets one at a time and leaves everything else at the default parallelism.
+A test binary that builds many wgpu contexts concurrently can livelock, and it happens
+intermittently, so a bare `cargo test` on a GPU-touching crate will eventually hang
+([#1718](https://github.com/itsakeyfut/avio/issues/1718)). Serialising the whole run instead is
+the wrong fix: it hides defects that only appear under parallelism. Each target is also killed
+after a timeout, so a hang is reported rather than blocking the terminal.
 
 Tests must pass under a plain `cargo test` on any machine. If a test drives an FFmpeg filter
 graph, probe the graph first and skip gracefully when filters are unavailable (return early

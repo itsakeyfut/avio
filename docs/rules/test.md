@@ -156,7 +156,7 @@ See [perf.md](./perf.md). Critical paths only; not run in CI.
   `--tests` clippy errors that CI never runs.
 - **Nothing here runs tests at any feature configuration other than all-features.** The two jobs
   that execute tests both pass `--all-features` (`ci.yml`'s `cargo test --all --all-features` and
-  `coverage.yml`'s `cargo llvm-cov`), and `.claude/scripts/test.sh` adds `--all-features` unless a
+  `coverage.yml`'s `cargo llvm-cov`), and `cargo xtask test` adds `--all-features` unless a
   feature flag is given. The jobs that do use other configurations never run a test: `cargo check`
   / `cargo build` only compile, and the feature powerset job passes `--no-dev-deps`, which does not
   compile tests at all.
