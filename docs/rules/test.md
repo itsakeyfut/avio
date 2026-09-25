@@ -103,6 +103,11 @@ See [perf.md](./perf.md). Critical paths only; not run in CI.
 
 - **Small (<= 1 MB)**: commit under `tests/fixtures/`.
 - **Large (> 1 MB)**: download in CI; tests read the path from `FF_TEST_LARGE_FIXTURE_DIR`.
+- **Generated and committed**: `assets/test/`, written by `tools/gen_test_assets.rs` and shared
+  across crates. This is how a crate gets an encoded fixture without a dev-dependency on
+  `ff-encode`, which would invert the dependency order for `ff-analysis` and `ff-decode`. Reference
+  it from the test as `CARGO_MANIFEST_DIR` + `../../assets/test/<name>`, and skip when the file is
+  absent so a consumer building from a published crate still passes.
 
 ## Integration test policy
 

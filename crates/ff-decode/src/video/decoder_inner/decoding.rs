@@ -1,5 +1,5 @@
 use super::{
-    Arc, DecodeError, Duration, Frame, OutputScale, PixelFormat, PooledBuffer, Rational, Timestamp,
+    Arc, DecodeError, Frame, OutputScale, PixelFormat, PooledBuffer, Rational, Timestamp,
     VideoDecoderInner, VideoFrame,
 };
 
@@ -69,9 +69,9 @@ impl VideoDecoderInner {
                             && let Some(stream) = self.format_ctx.stream(self.stream_index as usize)
                         {
                             let time_base = stream.time_base();
-                            let timestamp_secs =
-                                pts as f64 * time_base.num as f64 / time_base.den as f64;
-                            self.position = Duration::from_secs_f64(timestamp_secs);
+                            self.position =
+                                Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
+                                    .as_duration();
                         }
 
                         return Ok(Some(video_frame));

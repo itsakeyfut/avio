@@ -185,7 +185,14 @@ impl Timestamp {
 
     /// Converts the timestamp to a Duration.
     ///
-    /// Note: Negative timestamps will be clamped to zero Duration.
+    /// A timestamp `Duration` cannot represent is clamped to zero. That covers a
+    /// negative value, which a codec delay such as Opus's pre-skip or AAC's
+    /// priming expresses normally, a non-finite one, which [`Rational::as_f64`]
+    /// yields for a zero denominator, and one too large for `Duration`.
+    ///
+    /// The negative case is silent, being ordinary media on a path that runs once
+    /// per frame; the other two log a warning, because they mean the container's
+    /// own time base is unusable.
     ///
     /// # Examples
     ///
@@ -200,15 +207,26 @@ impl Timestamp {
     #[must_use]
     pub fn as_duration(&self) -> Duration {
         let secs = self.as_secs_f64();
-        if secs < 0.0 {
-            log::warn!(
-                "timestamp is negative, clamping to zero \
-                 secs={secs} fallback=Duration::ZERO"
-            );
-            Duration::ZERO
-        } else {
-            Duration::from_secs_f64(secs)
+        // One fallible conversion covers every value `Duration` rejects:
+        // negative, non-finite and overflowing. A hand-written sign test does
+        // not, because `secs < 0.0` is false for both `NaN` and `+inf`.
+        if let Ok(duration) = Duration::try_from_secs_f64(secs) {
+            return duration;
         }
+        // Decoders call this once per frame, so a negative value stays silent:
+        // it is a codec delay such as Opus's pre-skip, which is ordinary media
+        // (ADR-0017) and not worth a line. A non-finite or overflowing value
+        // means the container's own time base is unusable, which is.
+        if !secs.is_finite() || secs > 0.0 {
+            log::warn!(
+                "timestamp is not representable as a duration, clamping to zero \
+                 secs={secs} pts={pts} time_base={num}/{den} fallback=Duration::ZERO",
+                pts = self.pts,
+                num = self.time_base.num(),
+                den = self.time_base.den()
+            );
+        }
+        Duration::ZERO
     }
 
     /// Converts the timestamp to seconds as a floating-point value.
@@ -566,6 +584,38 @@ mod tests {
 
             // Negative timestamp clamps to zero
             let ts = Timestamp::new(-100, time_base_90k());
+            assert_eq!(ts.as_duration(), Duration::ZERO);
+        }
+
+        #[test]
+        fn as_duration_should_clamp_a_negative_codec_delay_to_zero() {
+            // Opus states its pre-skip as a negative first timestamp, so this is
+            // ordinary media rather than corruption.
+            let ts = Timestamp::new(-7, time_base_1k());
+            assert_eq!(ts.as_duration(), Duration::ZERO);
+        }
+
+        #[test]
+        fn as_duration_should_clamp_an_infinite_time_base_to_zero() {
+            // `Rational::as_f64` answers INFINITY for a positive numerator over a
+            // zero denominator, which no sign test catches.
+            let ts = Timestamp::new(1, Rational::new(1, 0));
+            assert!(ts.as_secs_f64().is_infinite());
+            assert_eq!(ts.as_duration(), Duration::ZERO);
+        }
+
+        #[test]
+        fn as_duration_should_clamp_a_nan_time_base_to_zero() {
+            // 0/0 answers NaN, for which `secs < 0.0` is also false.
+            let ts = Timestamp::new(1, Rational::new(0, 0));
+            assert!(ts.as_secs_f64().is_nan());
+            assert_eq!(ts.as_duration(), Duration::ZERO);
+        }
+
+        #[test]
+        fn as_duration_should_clamp_seconds_beyond_duration_to_zero() {
+            let ts = Timestamp::new(i64::MAX, Rational::new(i32::MAX, 1));
+            assert!(ts.as_secs_f64() > Duration::MAX.as_secs_f64());
             assert_eq!(ts.as_duration(), Duration::ZERO);
         }
 
