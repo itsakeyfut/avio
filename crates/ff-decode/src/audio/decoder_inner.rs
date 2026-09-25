@@ -29,6 +29,7 @@ use std::time::Duration;
 use ff_format::channel::ChannelLayout;
 use ff_format::codec::AudioCodec;
 use ff_format::container::ContainerInfo;
+use ff_format::time::{Rational, Timestamp};
 use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
 use ff_sys::{AVCodecID, AVMediaType_AVMEDIA_TYPE_AUDIO, Frame, InputFormatContext, Packet};
 
@@ -465,9 +466,9 @@ impl AudioDecoderInner {
                             && let Some(stream) = self.format_ctx.stream(self.stream_index as usize)
                         {
                             let time_base = stream.time_base();
-                            let timestamp_secs =
-                                pts as f64 * time_base.num as f64 / time_base.den as f64;
-                            self.position = Duration::from_secs_f64(timestamp_secs);
+                            self.position =
+                                Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
+                                    .as_duration();
                         }
 
                         return Ok(Some(audio_frame));
