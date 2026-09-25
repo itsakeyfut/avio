@@ -6,6 +6,7 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::time::Duration;
@@ -54,6 +55,34 @@ pub(super) fn subtitles_filter_available() -> bool {
     !unsafe { ff_sys::avfilter_get_by_name(c"subtitles".as_ptr()) }.is_null()
 }
 
+/// The `color` source arguments for the base canvas.
+///
+/// Split out so the one part of the graph that is a plain string can be asserted
+/// without an `FFmpeg` able to build filters, which CI's Linux build is not.
+///
+/// `composition_duration` is what gives the canvas, and therefore the whole
+/// composition, an end. Without it the `color` source runs forever and the graph
+/// has to borrow its end from a layer instead.
+pub(super) fn canvas_args(
+    background: Rgb,
+    canvas_width: u32,
+    canvas_height: u32,
+    fps_str: &str,
+    composition_duration: Option<Duration>,
+) -> String {
+    let r = (background.r.clamp(0.0, 1.0) * 255.0) as u8;
+    let g_ch = (background.g.clamp(0.0, 1.0) * 255.0) as u8;
+    let b = (background.b.clamp(0.0, 1.0) * 255.0) as u8;
+    let mut args =
+        format!("c=#{r:02x}{g_ch:02x}{b:02x}:s={canvas_width}x{canvas_height}:r={fps_str}");
+    if let Some(d) = composition_duration {
+        // Fixed precision rather than `{}`: a plain f64 Display can reach for
+        // exponent notation, which `color` does not parse.
+        let _ = write!(args, ":d={:.6}", d.as_secs_f64());
+    }
+    args
+}
+
 /// Safe entry point for [`build_video_composition_unsafe`].
 ///
 /// # Safety argument (RK-017)
@@ -69,6 +98,7 @@ pub(super) fn build_video_composition(
     background: Rgb,
     frame_rate: f64,
     layers: &[VideoLayer],
+    composition_duration: Option<Duration>,
 ) -> Result<FilterGraph, FilterError> {
     // Refused before any FFmpeg allocation: the filter path cannot build these
     // operators correctly (#1753, ADR-0014; the implementation is #1784).
@@ -82,7 +112,14 @@ pub(super) fn build_video_composition(
     }
     // SAFETY: see the safety argument above.
     unsafe {
-        build_video_composition_unsafe(canvas_width, canvas_height, background, frame_rate, layers)
+        build_video_composition_unsafe(
+            canvas_width,
+            canvas_height,
+            background,
+            frame_rate,
+            layers,
+            composition_duration,
+        )
     }
 }
 
@@ -103,6 +140,7 @@ unsafe fn build_video_composition_unsafe(
     background: Rgb,
     frame_rate: f64,
     layers: &[VideoLayer],
+    composition_duration: Option<Duration>,
 ) -> Result<FilterGraph, FilterError> {
     use std::ffi::CString;
 
@@ -130,11 +168,13 @@ unsafe fn build_video_composition_unsafe(
     }
 
     // Base canvas
-    let r = (background.r.clamp(0.0, 1.0) * 255.0) as u8;
-    let g_ch = (background.g.clamp(0.0, 1.0) * 255.0) as u8;
-    let b = (background.b.clamp(0.0, 1.0) * 255.0) as u8;
-    let color_args_str =
-        format!("c=#{r:02x}{g_ch:02x}{b:02x}:s={canvas_width}x{canvas_height}:r={fps_str}");
+    let color_args_str = canvas_args(
+        background,
+        canvas_width,
+        canvas_height,
+        &fps_str,
+        composition_duration,
+    );
     let Ok(color_args) = CString::new(color_args_str.as_str()) else {
         bail!(graph, "CString::new failed for color filter args");
     };
@@ -154,10 +194,7 @@ unsafe fn build_video_composition_unsafe(
     if ret < 0 {
         bail!(graph, format!("failed to create color filter code={ret}"));
     }
-    log::debug!(
-        "video composition color source canvas={canvas_width}x{canvas_height} \
-         color=#{r:02x}{g_ch:02x}{b:02x}"
-    );
+    log::debug!("video composition color source args={color_args_str}");
 
     let mut prev_ctx = base_ctx;
     let layer_count = layers.len();
@@ -666,8 +703,14 @@ unsafe fn build_video_composition_unsafe(
                 };
                 // `endall` on the last layer terminates output when its finite input
                 // EOFs (see the photographic blend branch); without it the blend runs
-                // forever against the infinite canvas.
-                let eof_action = if is_last { "endall" } else { "pass" };
+                // forever against the infinite canvas. A canvas given a
+                // `composition_duration` is not infinite, so the composition ends there
+                // instead and this layer no longer decides it (#1803).
+                let eof_action = if is_last && composition_duration.is_none() {
+                    "endall"
+                } else {
+                    "pass"
+                };
                 let cbl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
                     format!("all_expr={expr}:eof_action={eof_action}")
                 } else {
@@ -800,7 +843,12 @@ unsafe fn build_video_composition_unsafe(
                     chain_end = uccm_ctx;
                 }
 
-                let eof_action = if is_last { "endall" } else { "pass" };
+                // As above: only an endless canvas needs a layer to stop it (#1803).
+                let eof_action = if is_last && composition_duration.is_none() {
+                    "endall"
+                } else {
+                    "pass"
+                };
                 let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
                 if overlay_filter.is_null() {
                     bail!(graph, "filter not found: overlay (composite under)");
@@ -893,8 +941,14 @@ unsafe fn build_video_composition_unsafe(
             // last layer ends output when its (finite) input EOFs. Without this the
             // `blend` filter's framesync defaults to `repeat` and runs forever
             // against the infinite `color` canvas that earlier `pass` overlays
-            // forward — hanging the render.
-            let eof_action = if is_last { "endall" } else { "pass" };
+            // forward — hanging the render. A canvas built with a
+            // `composition_duration` is finite, so `pass` is safe there and the
+            // composition's own length ends it rather than this layer (#1803).
+            let eof_action = if is_last && composition_duration.is_none() {
+                "endall"
+            } else {
+                "pass"
+            };
             let bl_args_str = if (opacity_initial - 1.0).abs() < f64::from(f32::EPSILON) {
                 format!("all_mode={mode_name}:eof_action={eof_action}")
             } else {
@@ -937,13 +991,23 @@ unsafe fn build_video_composition_unsafe(
             prev_ctx = blend_ctx;
         } else {
             // Normal blend mode: overlay
-            // Last layer uses eof_action=endall so the graph terminates when that
-            // layer's source ends.  Intermediate layers use pass so the canvas
-            // continues while other layers are still producing.
+            //
+            // `pass` lets the canvas continue while other layers are still
+            // producing, so the composition's end is the canvas's end. That only
+            // works when the canvas has one: without `composition_duration` the
+            // `color` source runs forever, and the graph has to borrow its end
+            // from the last layer instead. Borrowing it is what made the export
+            // depend on the order of the layer list rather than on where each
+            // layer sits in time (#1803), so it is now the fallback for a caller
+            // that cannot say how long the composition is, not the rule.
             //
             // When the overlay input has an alpha channel (animated opacity path),
             // `format=auto` tells FFmpeg to blend using that alpha.
-            let eof_action = if is_last { "endall" } else { "pass" };
+            let eof_action = if is_last && composition_duration.is_none() {
+                "endall"
+            } else {
+                "pass"
+            };
             let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
             if overlay_filter.is_null() {
                 bail!(graph, "filter not found: overlay");

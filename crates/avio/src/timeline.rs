@@ -360,6 +360,11 @@ impl Timeline {
             .and_then(|idx| crate::gpu_compositor::GpuCompositor::new().map(|core| (idx, core)))
         };
 
+        // How long the composition is, resolved once because both export routes need
+        // the same answer: the CPU graph ends its canvas here and the GPU drain stops
+        // here, so the two cannot disagree about where the programme ends.
+        let composition_end = composition_end(&video_tracks, any_video_solo);
+
         // The CPU composition graph is skipped when the GPU export path will run.
         let build_cpu_video = {
             #[cfg(feature = "gpu")]
@@ -473,6 +478,9 @@ impl Timeline {
                     *stream_len_by_track.entry(track_idx).or_insert(0.0) += end_secs;
                 }
             }
+            if let Some(end) = composition_end {
+                composer = composer.duration(end);
+            }
             // Lavfi overlay sits above all regular tracks.
             if let Some(ref lavfi_str) = lavfi_overlay {
                 use ff_filter::{BlendMode, CompositeOp, LayerSource};
@@ -579,6 +587,7 @@ impl Timeline {
                 &on_progress,
                 start,
                 total_frames,
+                composition_end,
             )?;
         } else if let Some(vgraph) = video_graph {
             log::info!("export compositor path=cpu");
@@ -683,6 +692,54 @@ impl Timeline {
         );
         Ok(())
     }
+}
+
+/// How long the composition is: the latest point any active video clip reaches.
+///
+/// This is the composition's own length, not any one layer's. The background canvas
+/// is generated for exactly this long and the GPU drain runs for exactly this long,
+/// so neither route ends at whichever track or clip happens to be last in a vector.
+/// Ending there is what made an export depend on list order rather than on where its
+/// clips sit in time, and what let a short overlay truncate a longer programme
+/// (#1803).
+///
+/// A transition is **not** subtracted. It preserves the timeline length, being fed by
+/// the outgoing clip's handle rather than by material taken out of the timeline
+/// (ADR-0009), which is the same reading the cross-fade bookkeeping in `render_inner`
+/// takes.
+///
+/// `None` when any active clip's length cannot be established: no `out_point`, and the
+/// source could not be probed for one. Both routes then keep their older behaviour,
+/// because the alternative is inventing a length for a clip that runs to end-of-file.
+///
+/// A clip with no `out_point` is measured by probing its source, and that reading is
+/// the stream's, which a longer audio stream in the same file can push past the video
+/// it carries: a 15-frame 30 fps file whose audio rounds up to 24 packets measures
+/// 0.512s rather than 0.5s, so the export gains a frame. The cross-fade bookkeeping in
+/// `render_inner` reads the same number, so the two agree; trimming the clip avoids it
+/// entirely.
+fn composition_end(video_tracks: &[Track], any_video_solo: bool) -> Option<Duration> {
+    let mut end = 0.0_f64;
+    for track in video_tracks {
+        if !track.is_active(any_video_solo) {
+            continue;
+        }
+        for clip in &track.clips {
+            let source_secs = if let Some(d) = clip.duration() {
+                d.as_secs_f64()
+            } else {
+                // `?` rather than a default: an unknown length has to propagate, not
+                // be read as zero.
+                let decoder = VideoDecoder::open(clip.source_path()?).build().ok()?;
+                let total = decoder.duration().as_secs_f64();
+                clip.in_point
+                    .map_or(total, |ip| (total - ip.as_secs_f64()).max(0.0))
+            };
+            let span = crate::transition::composited_secs(source_secs, clip.speed);
+            end = end.max(clip.offset.as_secs_f64() + span);
+        }
+    }
+    (end > 0.0).then(|| Duration::from_secs_f64(end))
 }
 
 /// Drains a built CPU composition [`FilterGraph`] to the encoder (the historical
