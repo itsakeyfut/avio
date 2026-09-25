@@ -432,9 +432,34 @@ pub(crate) fn audio_pan(clip: &Clip, automation: &TrackAutomation) -> AnimatedVa
 /// the preview projection ([`Timeline::to_scene`](crate::Timeline::to_scene)) so
 /// they cannot diverge.
 pub(crate) fn audio_pitch(clip: &Clip) -> f64 {
-    clip.pitch_track
-        .as_ref()
-        .map_or(clip.pitch, |t| t.value_at(Duration::ZERO))
+    let Some(track) = clip.pitch_track.as_ref() else {
+        return clip.pitch;
+    };
+    let value = track.value_at(Duration::ZERO);
+
+    // Static evaluation is the contract (ADR-0002), but a caller who wrote a
+    // track that moves has no way to tell it was reduced to its first value:
+    // the render succeeds and the audio is whatever `t=0` asked for, which for a
+    // track starting at 0 is no shift at all (#1817). Say it once per clip here,
+    // where the model is turned into primitive steps, not per sample.
+    let keyframes = track.keyframes();
+    if keyframes.len() > 1
+        && keyframes
+            .iter()
+            .any(|k| (k.value - value).abs() > f64::EPSILON)
+    {
+        log::warn!(
+            "pitch track static-evaluated at t=0, per-sample pitch automation is \
+             a deferred primitive capability (ADR-0002) source={source} \
+             value={value} keyframes={n}",
+            source = clip
+                .source_path()
+                .unwrap_or(Path::new("<generated>"))
+                .display(),
+            n = keyframes.len(),
+        );
+    }
+    value
 }
 
 /// Derives the export [`AudioTrack`] for one clip.
@@ -1197,6 +1222,28 @@ mod tests {
             s,
             FilterStep::PitchShift { semitones, .. } if (semitones - 4.0).abs() < 1e-6
         )));
+    }
+
+    /// A track that moves is still reduced to its `t=0` value. That is the
+    /// contract ADR-0002 records, not an oversight: a primitive may
+    /// static-evaluate any track it does not yet animate, and per-sample pitch
+    /// is named there as deferred follow-up work. `audio_pitch` warns when it
+    /// does this so the reduction is visible (#1817), but the value is unchanged.
+    #[test]
+    fn audio_track_varying_pitch_track_should_still_static_evaluate_at_t0() {
+        let clip = Clip::new("a.mp3").with_pitch_track(
+            AnimationTrack::new()
+                .push(Keyframe::new(Duration::ZERO, 3.0, Easing::Linear))
+                .push(Keyframe::new(Duration::from_secs(2), 12.0, Easing::Linear)),
+        );
+        let track = audio_track(&clip, &no_anim(), None);
+        assert!(
+            track.effects.iter().any(|s| matches!(
+                s,
+                FilterStep::PitchShift { semitones, .. } if (semitones - 3.0).abs() < 1e-6
+            )),
+            "the step must carry the t=0 value (3.0), not the final or an averaged one"
+        );
     }
 
     #[test]

@@ -1031,6 +1031,69 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
     Ok(ctx)
 }
 
+/// Expands a [`FilterStep::PitchShift`] into the filters that implement it and
+/// links them after `prev_ctx`, returning the new chain end.
+///
+/// `asetrate` changes the declared sample rate, which shifts the pitch and the
+/// duration together; the `atempo` chain then restores the duration. For
+/// `|semitones| > 12` the compensating factor falls outside a single `atempo`
+/// instance's range, so [`add_atempo_chain`] decomposes it into linked
+/// instances.
+///
+/// `sample_rate` must be the rate the audio **actually has at `prev_ctx`**, not a
+/// nominal target. `asetrate` replaces the rate it finds rather than scaling it,
+/// so a mismatch scales the pitch ratio by the difference and the compensating
+/// `atempo` factor with it, leaving both the pitch and the duration wrong.
+///
+/// A caller whose chain may still be at a source file's native rate must
+/// normalise first: the composition builder does, because `amovie` outputs at the
+/// file's rate while the mix runs at another (#1817). The single-source builder
+/// reads the rate out of its own buffersrc args, so it is already correct there.
+///
+/// Shared rather than reimplemented per builder: a pitch shift decomposing into
+/// two different filters is one fact, and a second copy is how a caller ends up
+/// creating a bare `asetrate` that cannot configure (#1817).
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers into the same graph.
+pub(crate) unsafe fn add_pitch_shift_chain(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    semitones: f32,
+    algo: PitchAlgo,
+    sample_rate: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    // Rubberband backend: one formant-preserving filter when the build has it.
+    if algo == PitchAlgo::Rubberband && rubberband_available() {
+        return add_raw_filter_step(
+            graph,
+            prev_ctx,
+            "rubberband",
+            &rubberband_pitch_args(semitones),
+            index,
+            "pitch_rubberband",
+        );
+    }
+    if algo == PitchAlgo::Rubberband {
+        log::warn!("rubberband unavailable, falling back algo=signal");
+    }
+
+    let rate = 2f64.powf(f64::from(semitones) / 12.0);
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let new_sr = (f64::from(sample_rate) * rate).round() as u64;
+    let ctx = add_raw_filter_step(
+        graph,
+        prev_ctx,
+        "asetrate",
+        &format!("r={new_sr}"),
+        index,
+        "pitch_asetrate",
+    )?;
+    add_atempo_chain(graph, ctx, 1.0 / rate, index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::decompose_atempo;
@@ -3272,37 +3335,11 @@ impl FilterGraphInner {
             // The actual sample rate is resolved from buffersrc_args so the
             // integer value is substituted literally.
             if let FilterStep::PitchShift { semitones, algo } = step {
-                // Rubberband backend: a single formant-preserving `rubberband`
-                // filter when available, else fall back to asetrate + atempo.
-                if *algo == PitchAlgo::Rubberband && rubberband_available() {
-                    prev_ctx = add_raw_filter_step(
-                        graph,
-                        prev_ctx,
-                        "rubberband",
-                        &rubberband_pitch_args(*semitones),
-                        i,
-                        "pitch_rubberband",
-                    )?;
-                    continue;
-                }
-                if *algo == PitchAlgo::Rubberband {
-                    log::warn!("rubberband unavailable, falling back algo=signal");
-                }
-                let rate = 2f64.powf(f64::from(*semitones) / 12.0);
+                // The expansion lives in `add_pitch_shift_chain` so the
+                // composition builder runs the same one (#1817); only the way the
+                // sample rate is obtained differs between the two callers.
                 let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                let new_sr = (f64::from(sr) * rate).round() as u64;
-                let atempo = 1.0 / rate;
-                // SAFETY: graph and prev_ctx are valid pointers in the same graph.
-                prev_ctx = add_raw_filter_step(
-                    graph,
-                    prev_ctx,
-                    "asetrate",
-                    &format!("r={new_sr}"),
-                    i,
-                    "pitch_asetrate",
-                )?;
-                prev_ctx = add_atempo_chain(graph, prev_ctx, atempo, i)?;
+                prev_ctx = add_pitch_shift_chain(graph, prev_ctx, *semitones, *algo, sr, i)?;
                 continue;
             }
 
