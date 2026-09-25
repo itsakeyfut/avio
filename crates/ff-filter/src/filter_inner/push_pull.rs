@@ -534,17 +534,28 @@ impl FilterGraphInner {
 
     /// Run EBU R128 two-pass loudness normalization over `self.loudness_buf`:
     ///
-    /// 1. Measure integrated loudness with an `ebur128=peak=true:metadata=1` graph.
-    /// 2. Compute `gain_db = target_lufs − measured_lufs`.
+    /// 1. Measure integrated loudness and true peak with an
+    ///    `ebur128=peak=true:metadata=1` graph.
+    /// 2. Take the gain the loudness target asks for, `target_lufs − measured_lufs`,
+    ///    bounded by the gain the ceiling allows, `true_peak_db − measured_peak_db`.
     /// 3. Apply gain with a `volume={gain_db}dB` graph.
     /// 4. Store corrected frames in `self.loudness_output`.
+    ///
+    /// When the ceiling binds, the loudness target is undershot. A delivery
+    /// specification treats the ceiling as a hard constraint and the target as a
+    /// goal, so that is the right way round (#1822).
     fn run_loudness_normalization(&mut self) -> Result<(), FilterError> {
-        let target_lufs = self
+        let (target_lufs, true_peak_db) = self
             .steps
             .iter()
             .find_map(|s| {
-                if let FilterStep::LoudnessNormalize { target_lufs, .. } = s {
-                    Some(*target_lufs)
+                if let FilterStep::LoudnessNormalize {
+                    target_lufs,
+                    true_peak_db,
+                    ..
+                } = s
+                {
+                    Some((*target_lufs, *true_peak_db))
                 } else {
                     None
                 }
@@ -558,8 +569,8 @@ impl FilterGraphInner {
             return Ok(());
         }
 
-        // === Pass 1: measure integrated loudness ===
-        let measured_lufs = unsafe {
+        // === Pass 1: measure integrated loudness and true peak ===
+        let (measured_lufs, measured_peak_db) = unsafe {
             let graph = ff_sys::avfilter_graph_alloc();
             if graph.is_null() {
                 return Err(FilterError::BuildFailed);
@@ -570,12 +581,35 @@ impl FilterGraphInner {
             result?
         };
 
-        let gain_db = target_lufs - measured_lufs;
+        // The ceiling bounds the gain rather than the other way round: exceeding it
+        // clips downstream, whereas missing the target only sounds quiet.
+        let loudness_gain_db = target_lufs - measured_lufs;
+        let gain_db = match measured_peak_db {
+            // Silence measures as negative infinity. No gain lifts it past the
+            // ceiling, so the loudness term decides and nothing is being skipped.
+            Some(peak) if peak.is_infinite() => loudness_gain_db,
+            Some(peak) => loudness_gain_db.min(true_peak_db - peak),
+            // The graph published no peak, so the ceiling cannot be applied. Say so:
+            // silently ignoring this parameter is the defect being fixed (#1822).
+            None => {
+                log::warn!(
+                    "loudness normalization measured no true peak, so the ceiling \
+                     was not applied true_peak_db={true_peak_db:.1} \
+                     fallback=loudness_target_only"
+                );
+                loudness_gain_db
+            }
+        };
         log::info!(
-            "loudness normalization measured_lufs={:.1} target_lufs={:.1} gain_db={:.2}",
-            measured_lufs,
-            target_lufs,
-            gain_db,
+            "loudness normalization measured_lufs={measured_lufs:.1} \
+             target_lufs={target_lufs:.1} measured_peak_db={peak} \
+             true_peak_db={true_peak_db:.1} gain_db={gain_db:.2} bound_by={bound_by}",
+            peak = measured_peak_db.map_or_else(|| "none".to_string(), |p| format!("{p:.1}")),
+            bound_by = if gain_db < loudness_gain_db {
+                "ceiling"
+            } else {
+                "target"
+            },
         );
 
         // === Pass 2: apply volume correction ===
