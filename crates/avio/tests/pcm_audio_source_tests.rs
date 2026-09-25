@@ -19,7 +19,8 @@ mod fixtures;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use avio::{Clip, EncoderConfig, Timeline};
+use avio::{Clip, EncoderConfig, Timeline, TimelineError};
+use ff_filter::FilterError;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 /// Writes a PCM WAV by hand. `bits` is 16 or 24.
@@ -64,12 +65,18 @@ fn write_wav(path: &Path, sample_rate: u32, channels: u16, bits: u16, secs: f64)
 }
 
 /// Renders `audio_source` on an audio track beside a short video track.
-/// `None` means this FFmpeg build could not take part, so the caller skips.
-fn render_with_audio(
-    tag: &str,
-    audio_source: &PathBuf,
-    out: &PathBuf,
-) -> Option<Result<(), String>> {
+///
+/// `None` means this FFmpeg build could not take part, so the caller skips: the
+/// source could not be encoded, or the composition graph could not be *built*
+/// because the build has no filters, which is CI's Linux FFmpeg
+/// (`--disable-everything`).
+///
+/// Any other failure panics. The gate turns on graph *construction* only, so it
+/// cannot swallow the defect under test: reverting the fix makes the render fail
+/// with `FilterError::ProcessFailed`, since `AudioFrame::new` rejects the short
+/// plane while the frame is being pulled, and that lands in the panic arm.
+/// Measured, not assumed.
+fn render_with_audio(tag: &str, audio_source: &PathBuf, out: &PathBuf) -> Option<()> {
     // Each test gets its own source file: a shared path would let one test's
     // `FileGuard` delete the file another is still reading, since the suite runs
     // at default parallelism.
@@ -91,11 +98,16 @@ fn render_with_audio(
         }
     };
 
-    Some(
-        timeline
-            .render(out, EncoderConfig::builder().build())
-            .map_err(|e| e.to_string()),
-    )
+    match timeline.render(out, EncoderConfig::builder().build()) {
+        Ok(()) => Some(()),
+        Err(TimelineError::Filter(
+            FilterError::BuildFailed | FilterError::CompositionFailed { .. },
+        )) => {
+            println!("Skipping: the composition graph needs filters this build lacks");
+            None
+        }
+        Err(e) => panic!("render failed for a reason other than a missing filter: {e}"),
+    }
 }
 
 /// The RMS of the output's audio, or `None` where this build cannot decode it.
@@ -154,10 +166,9 @@ fn a_pcm16_stereo_source_should_render_with_its_audio() {
 
     let out = test_output_path("pcm1812_s16_stereo_out.mp4");
     let _go = FileGuard::new(out.clone());
-    let Some(result) = render_with_audio("s16_stereo", &wav, &out) else {
+    let Some(()) = render_with_audio("s16_stereo", &wav, &out) else {
         return;
     };
-    result.expect("a PCM16 stereo source must render");
     assert_audio_of_length(&out, 1.0);
     assert_audio_is_audible(&out);
 }
@@ -170,10 +181,9 @@ fn a_pcm16_mono_source_should_render_with_its_audio() {
 
     let out = test_output_path("pcm1812_s16_mono_out.mp4");
     let _go = FileGuard::new(out.clone());
-    let Some(result) = render_with_audio("s16_mono", &wav, &out) else {
+    let Some(()) = render_with_audio("s16_mono", &wav, &out) else {
         return;
     };
-    result.expect("a PCM16 mono source must render");
     assert_audio_of_length(&out, 1.0);
     assert_audio_is_audible(&out);
 }
@@ -186,10 +196,9 @@ fn a_pcm24_stereo_source_should_render_with_its_audio() {
 
     let out = test_output_path("pcm1812_s24_stereo_out.mp4");
     let _go = FileGuard::new(out.clone());
-    let Some(result) = render_with_audio("s24_stereo", &wav, &out) else {
+    let Some(()) = render_with_audio("s24_stereo", &wav, &out) else {
         return;
     };
-    result.expect("a PCM24 stereo source must render");
     assert_audio_of_length(&out, 1.0);
     assert_audio_is_audible(&out);
 }
@@ -233,10 +242,9 @@ fn a_flac_source_should_render_with_its_audio() {
 
     let out = test_output_path("pcm1812_flac_out.mp4");
     let _go = FileGuard::new(out.clone());
-    let Some(result) = render_with_audio("flac", &flac, &out) else {
+    let Some(()) = render_with_audio("flac", &flac, &out) else {
         return;
     };
-    result.expect("a FLAC source must render");
     assert_audio_of_length(&out, 1.0);
 }
 
@@ -251,9 +259,8 @@ fn rendering_a_pcm_source_repeatedly_should_not_abort_the_process() {
     for i in 0..8 {
         let out = test_output_path(&format!("pcm1849_repeat_out_{i}.mp4"));
         let _go = FileGuard::new(out.clone());
-        let Some(result) = render_with_audio(&format!("repeat_{i}"), &wav, &out) else {
+        let Some(()) = render_with_audio(&format!("repeat_{i}"), &wav, &out) else {
             return;
         };
-        result.unwrap_or_else(|e| panic!("render {i} failed: {e}"));
     }
 }
