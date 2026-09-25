@@ -11,6 +11,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.2] - 2026-09-25
+
+A correctness release for the audio path. Four of the fixes below change what an export actually
+contains and one removes a way for the process to die, so audio rendered with 0.18.1 is not what
+0.18.2 writes from the same timeline.
+
+### Fixed
+
+#### ff-filter
+
+- A packed audio frame keeps every channel. The conversion that copies a frame's planes recomputed
+  each plane's length from the sample count and the sample size, which is the right answer only for
+  a planar format; a packed plane lost its channel factor, and the frame was left declaring more
+  samples than it carried. Whatever read it next read past the data that was there, which is how an
+  audio effect could be applied and leave the signal untouched. The plane is now taken at the length
+  the frame's own format, channel count and sample count give it, and `AudioFrame::new` rejects
+  planes too short for what the frame claims ([#1812](https://github.com/itsakeyfut/avio/issues/1812), [#1849](https://github.com/itsakeyfut/avio/issues/1849))
+- `LoudnessNormalize` no longer amplifies the master bus by roughly fifty decibels. A two-pass audio
+  step measured its input before that input had ended, so the loudness it corrected for was the
+  loudness of a fraction of the programme. The measuring pass now runs once the input is complete
+  ([#1821](https://github.com/itsakeyfut/avio/issues/1821))
+- `LoudnessNormalize`'s `true_peak_db` ceiling bounds the gain it applies. The ceiling was accepted
+  and then ignored, so a normalisation could push the signal past the limit it had been given
+  ([#1822](https://github.com/itsakeyfut/avio/issues/1822))
+- `PitchShift` works on a timeline. The step is compound, `asetrate` to move the pitch and an
+  `atempo` chain to restore the duration, and that expansion existed only in the single-source
+  builder; a multi-track composition built a bare `asetrate` and every render failed to configure
+  the graph. Both builders now share the expansion, and the chain is normalised to the rate it is
+  actually running at before the ratio is computed, because `asetrate` replaces the rate it finds
+  rather than scaling it. A pitch track that varies is still evaluated at `t=0` per ADR-0002, but it
+  now says so rather than doing it silently ([#1817](https://github.com/itsakeyfut/avio/issues/1817))
+
+#### ff-format
+
+- A timestamp `Duration` cannot represent no longer takes the process down. A negative presentation
+  time is ordinary media, an Opus pre-skip being the common case, and it reached
+  `Duration::from_secs_f64`, which panics. `Timestamp::as_duration` clamps it to zero instead, and a
+  value that is not finite or does not fit is reported rather than passed on. The decoders route
+  through that one conversion, so no call site is left with its own arithmetic (ADR-0017)
+  ([#1819](https://github.com/itsakeyfut/avio/issues/1819))
+
+#### ff-encode
+
+- The global-header flag is set when the muxer asks for it, so a container that expects the codec's
+  extradata in its own header is written with it there ([#1842](https://github.com/itsakeyfut/avio/issues/1842))
+
+### Docs
+
+- ADR-0017 records the decision to clamp an unrepresentable timestamp rather than refuse the frame,
+  and which test fails if that is violated
+- `tools/gen_test_assets.rs` names the manifest it actually reads and the crate that consumes its
+  output ([#1846](https://github.com/itsakeyfut/avio/issues/1846))
+
+### Internal
+
+- Repository tasks live in an `xtask` crate and run as `cargo xtask <command>`, so they are compiled,
+  linted and tested with the rest of the workspace and behave the same on every platform. The
+  publishing-readiness gate and the release notes extraction run from there
+  ([#1858](https://github.com/itsakeyfut/avio/issues/1858))
+- `ACompressor` and `ANoiseGate` reaching the signal are pinned by tests, so the packed-plane defect
+  above cannot return unnoticed ([#1818](https://github.com/itsakeyfut/avio/issues/1818))
+
+---
+
 ## [0.18.1] - 2026-09-19
 
 A correctness release for the write and read paths. Everything here is about the file avio produces
