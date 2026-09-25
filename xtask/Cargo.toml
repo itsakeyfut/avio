@@ -1,0 +1,23 @@
+# The repository's own task runner, invoked as `cargo xtask <command>` through the
+# alias in `.cargo/config.toml`. Automating a task here rather than in a shell or
+# Python file means it is built, type-checked and lint-checked by the same CI that
+# checks the library crates, and that it behaves identically on every platform a
+# contributor develops on.
+#
+# It has no dependencies on purpose. A task runner that must resolve a dependency
+# tree before it can run the tests is a worse tool for the job, so everything here
+# is written against `std`: argument parsing, JSON emission, and the small JSON
+# reader `publish-readiness` needs for `cargo metadata` output.
+#
+# Like `avio-examples`, it is never published and does not inherit the workspace
+# lints: those encode the library's API policy, which does not apply to a binary
+# that only ever runs from this repository.
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

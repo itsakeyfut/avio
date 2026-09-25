@@ -195,7 +195,7 @@ jobs:
   # --------------------------------------------------------------------------
   # Publishing readiness: verify every library crate has complete publish
   # metadata and passes `cargo publish --dry-run`, and that non-library members
-  # stay publish=false. No FFmpeg: the script uses --no-verify (matching
+  # stay publish=false. No FFmpeg: the task uses --no-verify (matching
   # release-plz's publish_no_verify), so it skips the compile step the test and
   # features jobs already cover.
   # --------------------------------------------------------------------------
@@ -206,7 +206,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: python3 .github/scripts/check-publish-readiness.py
+      - run: cargo xtask publish-readiness
 
   # --------------------------------------------------------------------------
   # Aggregation gate: the single required check for branch protection. Passes
