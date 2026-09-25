@@ -60,15 +60,14 @@ impl Drop for FileGuard {
         if self.path.exists() {
             let _ = std::fs::remove_file(&self.path);
         }
-        // Remove empty ancestor directories (test-output/, then target/).
-        // remove_dir is a no-op when the directory is not empty, so this is
-        // safe when multiple tests run in parallel.
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::remove_dir(parent);
-            if let Some(grandparent) = parent.parent() {
-                let _ = std::fs::remove_dir(grandparent);
-            }
-        }
+        // The output directory is deliberately left in place. Removing it here
+        // when it happened to be empty raced with every other test between
+        // `test_output_path`'s `create_dir_all` and its own `File::create`, so a
+        // test could be handed a path whose directory a finishing test had just
+        // deleted, and fail with `NotFound` on a file it was about to write.
+        // `remove_dir` refusing to delete a non-empty directory does not help:
+        // the window is that the directory is momentarily empty. It lives under
+        // `target/`, which `cargo clean` owns, so leaving it costs nothing.
     }
 }
 
