@@ -213,16 +213,24 @@ pub fn write_tone_wav(
         .expect("write wav");
 }
 
-/// The peak and RMS of a file's audio, or `None` where this build cannot decode
-/// it. A duration check alone passes on silence, so tests that care whether an
-/// effect reached the signal measure level with this.
-pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64)> {
+/// The peak, RMS and decoded length in seconds of a file's audio, or `None`
+/// where this build cannot decode it.
+///
+/// A duration check alone passes on silence, so tests that care whether an
+/// effect reached the signal measure level with this. The length is the decoded
+/// one on purpose: a container's own duration follows its longest stream, so it
+/// stays at the video length even when most of the audio never arrived.
+pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64, f64)> {
     let mut decoder = ff_decode::AudioDecoder::open(path)
         .output_format(SampleFormat::F32)
         .build()
         .ok()?;
     let (mut peak, mut sum, mut count) = (0.0f64, 0.0f64, 0usize);
+    let mut samples_per_channel = 0usize;
+    let mut sample_rate = 0u32;
     while let Ok(Some(frame)) = decoder.decode_one() {
+        samples_per_channel += frame.samples();
+        sample_rate = frame.sample_rate();
         for chunk in frame.planes()[0].chunks_exact(4) {
             let v = f64::from(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             peak = peak.max(v.abs());
@@ -230,5 +238,9 @@ pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64)> {
             count += 1;
         }
     }
-    (count > 0).then(|| (peak, (sum / count as f64).sqrt()))
+    if count == 0 || sample_rate == 0 {
+        return None;
+    }
+    let secs = samples_per_channel as f64 / f64::from(sample_rate);
+    Some((peak, (sum / count as f64).sqrt(), secs))
 }

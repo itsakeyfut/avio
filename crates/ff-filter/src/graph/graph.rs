@@ -215,9 +215,18 @@ impl FilterGraph {
     ///
     /// Call this once after the final [`push_audio`](Self::push_audio) and
     /// before draining the remaining frames with
-    /// [`pull_audio`](Self::pull_audio). A WSOLA filter like `atempo` holds its
-    /// tail until EOF, so without a flush the last frames never emerge. No-op if
-    /// no audio has been pushed yet.
+    /// [`pull_audio`](Self::pull_audio).
+    ///
+    /// A WSOLA filter like `atempo` holds its tail until EOF, so without a flush
+    /// the last frames never emerge.
+    ///
+    /// A two-pass step measures the whole programme at once, so it emits
+    /// **nothing at all** until this is called: pulling between pushes yields
+    /// `None` rather than a frame measured on a prefix of the input (#1821).
+    /// That covers [`LoudnessNormalize`](super::FilterStep::LoudnessNormalize)
+    /// and [`NormalizePeak`](super::FilterStep::NormalizePeak).
+    ///
+    /// No-op if no audio has been pushed yet.
     pub fn flush_audio(&mut self) {
         self.inner.flush_audio();
     }

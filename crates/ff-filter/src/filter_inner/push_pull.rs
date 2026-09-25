@@ -439,6 +439,10 @@ impl FilterGraphInner {
             .iter()
             .any(|s| matches!(s, FilterStep::LoudnessNormalize { .. }))
         {
+            if !self.audio_eof {
+                // Measuring now would measure only what has been pushed so far.
+                return Ok(None);
+            }
             if !self.loudness_pass2_done {
                 self.run_loudness_normalization()?;
             }
@@ -457,6 +461,10 @@ impl FilterGraphInner {
             .iter()
             .any(|s| matches!(s, FilterStep::NormalizePeak { .. }))
         {
+            if !self.audio_eof {
+                // Same reasoning as the loudness branch above.
+                return Ok(None);
+            }
             if !self.peak_pass2_done {
                 self.run_peak_normalization()?;
             }
@@ -501,6 +509,11 @@ impl FilterGraphInner {
     /// [`pull_audio`](Self::pull_audio) drain. No-op if the audio graph has not
     /// been built yet (nothing has been pushed).
     pub(crate) fn flush_audio(&mut self) {
+        // Recorded before the early return below: a two-pass step buffers instead
+        // of building a graph, so `asink_ctx` is `None` for exactly the case that
+        // needs to know the input has ended (#1821).
+        self.audio_eof = true;
+
         if self.asink_ctx.is_none() {
             return;
         }
