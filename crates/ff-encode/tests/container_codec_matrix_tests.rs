@@ -10,7 +10,8 @@
 //! `build()` and reads the answer off the error: a pair avio refuses on purpose
 //! and a codec this FFmpeg build does not have are both skips, and anything else
 //! is a failure. That way the test cannot drift away from the validation it is
-//! meant to guard.
+//! meant to guard. A container whose muxer this build lacks is probed for
+//! separately, because that failure happens before the codec is considered.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -66,6 +67,14 @@ enum Cell {
 fn write_pair(codec: VideoCodec, ext: &str, label: &str) -> Cell {
     let path = test_output_path(&format!("matrix_{label}.{ext}"));
     let _guard = FileGuard::new(path.clone());
+
+    // A build can be missing the muxer itself, not just an encoder: CI's Linux
+    // FFmpeg writes only ipod, mp4, mov and matroska, so allocating the output
+    // context for .avi fails before any codec question is asked. Probe for it
+    // here rather than reading that failure off an errno further down.
+    if ff_sys::OutputFormatContext::new(None, &path).is_err() {
+        return Cell::Skipped("no muxer for this container in this build".to_string());
+    }
 
     let built = VideoEncoder::create(&path)
         .video(WIDTH, HEIGHT, FPS)

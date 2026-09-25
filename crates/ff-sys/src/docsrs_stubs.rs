@@ -1593,6 +1593,11 @@ impl OutputFormatContext {
         false
     }
 
+    #[must_use]
+    pub fn wants_global_header(&self) -> bool {
+        false
+    }
+
     /// # Errors
     /// Stub; never executed on docs.rs.
     pub fn open_io(&mut self, _path: &std::path::Path) -> Result<(), crate::AvError> {
