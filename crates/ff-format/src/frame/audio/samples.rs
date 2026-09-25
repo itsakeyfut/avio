@@ -549,7 +549,9 @@ mod tests {
         let samples = 512;
         let channels = 2u32;
         let bytes_per_sample = 4; // F32
-        let plane_data = vec![7u8; samples * bytes_per_sample];
+        // Packed stereo interleaves both channels into one plane, so the buffer is
+        // `samples * channels * bytes_per_sample`.
+        let plane_data = vec![7u8; samples * channels as usize * bytes_per_sample];
         let ts = Timestamp::new(500, Rational::new(1, 1000));
 
         let original = AudioFrame::new(

@@ -68,6 +68,30 @@ impl AudioFrame {
             });
         }
 
+        // A plane short of its declared sample count overruns itself once something
+        // downstream reads what the frame says it holds, which is how a packed plane
+        // copied one channel short reached `swr_convert` and read past its end
+        // (#1812, #1849). `Other` is exempt because its `bytes_per_sample` is a
+        // guess, and `new` accepts it where `empty` does not.
+        if !matches!(format, SampleFormat::Other(_)) {
+            // Saturating rather than checked: a geometry that overflows `usize`
+            // cannot be satisfied by any plane either way, and saturating keeps
+            // the comparison below as the single place that reports a length, so
+            // the error carries a measured `actual` instead of a placeholder.
+            let per_plane_samples = if format.is_planar() {
+                samples
+            } else {
+                samples.saturating_mul(channels as usize)
+            };
+            let expected_len = per_plane_samples.saturating_mul(format.bytes_per_sample());
+            if let Some(plane) = planes.iter().find(|p| p.len() < expected_len) {
+                return Err(FrameError::InvalidDataSize {
+                    expected: expected_len,
+                    actual: plane.len(),
+                });
+            }
+        }
+
         Ok(Self {
             planes,
             samples,
@@ -419,6 +443,84 @@ mod tests {
     }
 
     #[test]
+    fn new_should_reject_a_packed_plane_missing_its_channel_factor() {
+        // The defect behind #1812 and #1849: a packed plane sized as though it held
+        // one channel. 4096 stereo F32 samples need 4096 * 2 * 4 bytes.
+        let result = AudioFrame::new(
+            vec![vec![0u8; 4096 * 4]],
+            4096,
+            2,
+            48_000,
+            SampleFormat::F32,
+            Timestamp::default(),
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            FrameError::InvalidDataSize {
+                expected: 4096 * 2 * 4,
+                actual: 4096 * 4
+            },
+            "a packed plane one channel short must be rejected at construction"
+        );
+    }
+
+    #[test]
+    fn new_should_accept_a_correctly_sized_packed_plane() {
+        let frame = AudioFrame::new(
+            vec![vec![0u8; 4096 * 2 * 4]],
+            4096,
+            2,
+            48_000,
+            SampleFormat::F32,
+            Timestamp::default(),
+        )
+        .expect("a correctly sized packed plane must be accepted");
+
+        assert_eq!(frame.samples(), 4096);
+        assert_eq!(frame.num_planes(), 1);
+    }
+
+    #[test]
+    fn new_should_reject_a_planar_plane_shorter_than_its_sample_count() {
+        // Planar planes hold one channel each, so the channel factor must NOT apply.
+        let result = AudioFrame::new(
+            vec![vec![0u8; 1024 * 4], vec![0u8; 512 * 4]],
+            1024,
+            2,
+            48_000,
+            SampleFormat::F32p,
+            Timestamp::default(),
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            FrameError::InvalidDataSize {
+                expected: 1024 * 4,
+                actual: 512 * 4
+            },
+            "every planar plane must cover the declared sample count"
+        );
+    }
+
+    #[test]
+    fn new_should_skip_the_length_check_for_an_unknown_format() {
+        // `bytes_per_sample` is a guess for `Other`, so a length check on it would
+        // reject frames it cannot measure. `new` accepts `Other` where `empty` does not.
+        let frame = AudioFrame::new(
+            vec![vec![0u8; 8]],
+            4096,
+            2,
+            48_000,
+            SampleFormat::Other(99),
+            Timestamp::default(),
+        )
+        .expect("an unknown format must not be length checked");
+
+        assert_eq!(frame.format(), SampleFormat::Other(99));
+    }
+
+    #[test]
     fn test_new_invalid_plane_count_packed() {
         // Packed format should have 1 plane, but we provide 2
         let result = AudioFrame::new(
@@ -585,7 +687,9 @@ mod tests {
         let samples = 512;
         let channels = 2u32;
         let bytes_per_sample = 4; // F32
-        let plane_data = vec![7u8; samples * bytes_per_sample];
+        // Packed stereo interleaves both channels into one plane, so the buffer is
+        // `samples * channels * bytes_per_sample`.
+        let plane_data = vec![7u8; samples * channels as usize * bytes_per_sample];
         let ts = Timestamp::new(500, Rational::new(1, 1000));
 
         let original = AudioFrame::new(
