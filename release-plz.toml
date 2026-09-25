@@ -36,3 +36,8 @@ publish_timeout = "10m"
 name = "avio-examples"
 publish = false
 release = false
+
+[[package]]
+name = "xtask"
+publish = false
+release = false

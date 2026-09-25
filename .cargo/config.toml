@@ -1,0 +1,7 @@
+# `cargo xtask <command>` runs the repository's task runner (the `xtask/` crate).
+# The alias is what makes the tasks discoverable: a contributor who clones the repo
+# can run `cargo xtask test -p ff-encode` without being told where the script lives.
+[alias]
+# `--quiet` keeps cargo's own "Compiling"/"Finished" lines out of the commands that
+# print JSON on stdout. Build errors are still shown, because they go to stderr.
+xtask = "run --quiet --package xtask --"

@@ -136,7 +136,7 @@ jobs:
           fi
           # Fails loudly if the curated CHANGELOG section is missing, so a release
           # is never cut with empty notes.
-          python3 .github/scripts/extract-changelog.py "${VERSION}" > "${RUNNER_TEMP}/notes.md"
+          cargo xtask changelog "${VERSION}" > "${RUNNER_TEMP}/notes.md"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file "${RUNNER_TEMP}/notes.md" \
