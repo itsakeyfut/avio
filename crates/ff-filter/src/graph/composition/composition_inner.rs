@@ -1832,38 +1832,17 @@ unsafe fn build_audio_mix_unsafe(
                 // Normalise to sample_rate before the speed chain so that
                 //   new_sr = sample_rate * factor
                 // is correct regardless of the source file's sample rate.
-                let norm_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
-                if norm_filter.is_null() {
-                    bail!(graph, "filter not found: aresample (speed pre-norm)");
-                }
-                let Ok(norm_name) = CString::new(format!("spd_norm_sr{combined_idx}")) else {
-                    bail!(graph, "CString::new failed for spd_norm_sr name");
-                };
-                let Ok(norm_args) = CString::new(format!("{sample_rate}")) else {
-                    bail!(graph, "CString::new failed for spd_norm_sr args");
-                };
-                let mut norm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-                let ret = ff_sys::avfilter_graph_create_filter(
-                    &raw mut norm_ctx,
-                    norm_filter,
-                    norm_name.as_ptr(),
-                    norm_args.as_ptr(),
-                    std::ptr::null_mut(),
+                let Ok(norm_ctx) = add_rate_normaliser(
                     graph,
-                );
-                if ret < 0 {
+                    chain_end,
+                    sample_rate,
+                    &format!("spd{combined_idx}"),
+                ) else {
                     bail!(
                         graph,
-                        format!(
-                            "failed to create aresample for speed pre-norm \
-                             track={idx} code={ret}"
-                        )
+                        format!("failed to normalise rate for speed track={idx}")
                     );
-                }
-                let ret = ff_sys::avfilter_link(chain_end, 0, norm_ctx, 0);
-                if ret < 0 {
-                    bail!(graph, format!("link failed: →spd_norm_sr track={idx}"));
-                }
+                };
                 chain_end = norm_ctx;
 
                 // Now chain_end is at sample_rate; new_sr = sample_rate * factor
@@ -1875,6 +1854,38 @@ unsafe fn build_audio_mix_unsafe(
                     new_sr,
                     sample_rate,
                     channel_layout.channels(),
+                    combined_idx,
+                )
+            } else if let crate::FilterStep::PitchShift { semitones, algo } = step {
+                // PitchShift is compound: `asetrate` shifts the pitch and the
+                // duration together, and an `atempo` chain restores the duration.
+                // The generic step path below creates a bare `asetrate`, which
+                // cannot configure, so the whole render failed here (#1817).
+                // The expansion is shared with the single-source builder rather
+                // than repeated, the same way `Speed` above reuses
+                // `add_asetrate_resample_chain`.
+                // `asetrate` sets an absolute rate, so the chain must actually be
+                // at `sample_rate` before one is computed from `sample_rate`. The
+                // audio may still be at the source file's rate here, for the reason
+                // `add_rate_normaliser` documents: without this a 44.1 kHz source in
+                // a 48 kHz mix shifted by 48000/44100 too much (#1817).
+                let Ok(norm_ctx) = add_rate_normaliser(
+                    graph,
+                    chain_end,
+                    sample_rate,
+                    &format!("pitch{combined_idx}"),
+                ) else {
+                    bail!(
+                        graph,
+                        format!("failed to normalise rate for pitch track={idx}")
+                    );
+                };
+                crate::filter_inner::add_pitch_shift_chain(
+                    graph,
+                    norm_ctx,
+                    *semitones,
+                    *algo,
+                    sample_rate,
                     combined_idx,
                 )
             } else {
@@ -2891,6 +2902,60 @@ unsafe fn add_movie(
         return None;
     }
     Some(movie_ctx)
+}
+
+/// Inserts an `aresample` that brings the chain to `rate`, links it after
+/// `prev_ctx`, and returns the new chain end.
+///
+/// `amovie` outputs at the source file's native rate while `sample_rate` is the
+/// target mix rate, and the optional `aresample` earlier in the track chain only
+/// fires when `track.sample_rate != sample_rate` (which the pipeline sets to the
+/// target rate). So audio reaching the per-track effects may still be at the
+/// file's rate.
+///
+/// Any step that computes an **absolute** rate, `asetrate` in the `Speed` and
+/// `PitchShift` paths, must call this first: `asetrate` does not scale the rate
+/// it finds, it replaces it, so a mismatch scales the result by the difference
+/// (#1817).
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers into the same graph.
+unsafe fn add_rate_normaliser(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    rate: u32,
+    tag: &str,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    let filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
+    if filter.is_null() {
+        log::warn!("filter not found name=aresample (rate normaliser) tag={tag}");
+        return Err(FilterError::BuildFailed);
+    }
+    let name = CString::new(format!("norm_sr_{tag}")).map_err(|_| FilterError::BuildFailed)?;
+    let args = CString::new(format!("{rate}")).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=aresample rate={rate} tag={tag} code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
+    if ret < 0 {
+        log::warn!("link failed name=aresample tag={tag} code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    Ok(ctx)
 }
 
 /// Creates a `color` source (`<color_args>`) followed by `format=rgba`, links

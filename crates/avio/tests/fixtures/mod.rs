@@ -244,3 +244,42 @@ pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64, f64)> {
     let secs = samples_per_channel as f64 / f64::from(sample_rate);
     Some((peak, (sum / count as f64).sqrt(), secs))
 }
+
+/// The dominant frequency of a file's audio over a window, by zero-crossing rate.
+///
+/// `None` where this build cannot decode the file or the window is out of range.
+/// The estimate is crude but sufficient for a single tone, and a caller should
+/// measure the untouched source first as calibration: a known 440 Hz tone reads
+/// about 438 Hz here, so a reading that lands far off says the measurement broke
+/// rather than the audio.
+pub fn dominant_hz(path: &std::path::Path, start_secs: f64, window_secs: f64) -> Option<f64> {
+    let mut decoder = ff_decode::AudioDecoder::open(path)
+        .output_format(SampleFormat::F32)
+        .build()
+        .ok()?;
+    let mut samples: Vec<f32> = Vec::new();
+    let mut rate = 0u32;
+    while let Ok(Some(frame)) = decoder.decode_one() {
+        rate = frame.sample_rate();
+        let channels = frame.channels().max(1) as usize;
+        // One channel is enough for a frequency estimate, so take the first of
+        // each interleaved group rather than mixing.
+        for group in frame.planes()[0].chunks_exact(4 * channels) {
+            samples.push(f32::from_ne_bytes([group[0], group[1], group[2], group[3]]));
+        }
+    }
+    if rate == 0 {
+        return None;
+    }
+    let begin = (start_secs * f64::from(rate)) as usize;
+    let end = ((start_secs + window_secs) * f64::from(rate)) as usize;
+    let slice = samples.get(begin..end.min(samples.len()))?;
+    if slice.len() < 2 {
+        return None;
+    }
+    let crossings = slice
+        .windows(2)
+        .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+        .count();
+    Some(crossings as f64 / (2.0 * window_secs))
+}

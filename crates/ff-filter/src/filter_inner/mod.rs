@@ -19,6 +19,7 @@ mod push_pull;
 
 pub(crate) use build::add_and_link_step;
 pub(crate) use build::add_asetrate_resample_chain;
+pub(crate) use build::add_pitch_shift_chain;
 pub(crate) use build::{
     MIN_INPUT_FRAME_RATE, NormalBlendParams, add_blend_normal_step, add_blend_photographic_step,
     add_composite_step, video_buffersrc_args,
