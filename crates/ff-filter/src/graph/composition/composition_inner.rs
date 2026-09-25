@@ -318,9 +318,11 @@ unsafe fn build_video_composition_unsafe(
             chain_end = ps_ctx;
         }
 
-        // Trim / timeline placement (`Trim` + `ResetPts` + `OffsetPts`) arrive as
-        // leading entries in `layer.effects` (emitted by the engine derive) and are
-        // built by the per-layer effects loop below.
+        // Timeline trim (`Trim` + `ResetPts`) arrives as the leading entries in
+        // `layer.effects` (emitted by the engine derive) and the placement
+        // (`OffsetPts`) follows any `Speed`, which is where a placement has to sit to
+        // survive the retime. All of them are built by the per-layer effects loop
+        // below; see `VideoLayer::effects` for the ordering contract.
 
         // Optional scale
         let sx = layer.scale_x.value_at(Duration::ZERO);

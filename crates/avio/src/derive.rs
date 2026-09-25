@@ -257,9 +257,15 @@ pub(crate) fn video_layer(
         transition: transition_dur,
         handle,
     } = *placement;
-    // Timeline trim + placement are emitted as leading filter steps so they
-    // precede timing-sensitive effects (Speed), matching the compositor node
-    // order (trim → setpts=PTS-STARTPTS → setpts=PTS+offset).
+    // Timeline trim is emitted first so it precedes everything timing-sensitive, and
+    // the clip's placement on the timeline is emitted last of the temporal steps: the
+    // retime (`setpts=PTS/factor`) scales every timestamp upstream of it, so an offset
+    // emitted before it would be scaled too and the clip would start at
+    // `offset / speed` (#1804). `offset` is a position on the timeline, which a retime
+    // does not move. The GPU compositor is not a second reading to reconcile against
+    // here: it declines a retimed clip outright (`gpu_export.rs`), so the two orders
+    // never meet today. #1773 removes that restriction, and the compositor's node
+    // order has to adopt this one when it does.
     let mut layer_effects: Vec<FilterStep> = Vec::new();
     if clip.in_point.is_some() || clip.out_point.is_some() {
         layer_effects.push(FilterStep::Trim {
@@ -275,16 +281,16 @@ pub(crate) fn video_layer(
         });
         layer_effects.push(FilterStep::ResetPts);
     }
+    if (clip.speed - 1.0).abs() > 1e-9 {
+        layer_effects.push(FilterStep::Speed { factor: clip.speed });
+    }
     if clip.offset > Duration::ZERO {
         layer_effects.push(FilterStep::OffsetPts {
             seconds: clip.offset.as_secs_f64(),
         });
     }
-    if (clip.speed - 1.0).abs() > 1e-9 {
-        layer_effects.push(FilterStep::Speed { factor: clip.speed });
-    }
     // Per-frame scale/rotation: when the model animates them, splice self-animating
-    // steps here — after the temporal placement (`Trim`/`ResetPts`/`OffsetPts`/`Speed`),
+    // steps here — after the temporal placement (`Trim`/`ResetPts`/`Speed`/`OffsetPts`),
     // so the `t`-expression sees timeline time — and neutralize the static layer
     // transform below to avoid double-application (ADR-0005).
     let transform = video_transform(clip, automation);
@@ -490,15 +496,20 @@ pub(crate) fn audio_track(
         });
         effects.push(FilterStep::AResetPts);
     }
+    if (clip.speed - 1.0).abs() > 1e-9 {
+        effects.push(FilterStep::Speed { factor: clip.speed });
+    }
+    // Placed after the retime for the reason `video_layer` gives: `adelay` prepends
+    // silence, and an `atempo` chain ahead of it would compress that silence along
+    // with the content, starting the clip at `offset / speed` (#1804). The two domains
+    // move together because they were wrong together: A/V stayed in sync only because
+    // both were scaled by the same factor.
     if clip.offset > Duration::ZERO {
         // `as_millis()` matches the old inline `adelay` (integer ms); offset
         // magnitudes are far below f64's exact-integer range.
         #[allow(clippy::cast_precision_loss)]
         let ms = clip.offset.as_millis() as f64;
         effects.push(FilterStep::AudioDelay { ms });
-    }
-    if (clip.speed - 1.0).abs() > 1e-9 {
-        effects.push(FilterStep::Speed { factor: clip.speed });
     }
     // Per-clip pitch shift (semitones), via the shared `audio_pitch` so export and
     // preview cannot diverge on the value.
@@ -977,8 +988,11 @@ mod tests {
         );
     }
 
+    /// The placement sits after the retime, not before it: `setpts=PTS/factor` scales
+    /// every timestamp upstream of itself, so an offset emitted first would be scaled
+    /// with the content (#1804).
     #[test]
-    fn video_layer_should_order_trim_offset_speed_chain_xfade() {
+    fn video_layer_should_order_trim_speed_offset_chain_xfade() {
         let mut clip = Clip::new("a.mp4")
             .trim(Duration::from_secs(1), Duration::from_secs(5))
             .offset(Duration::from_secs(2))
@@ -1002,8 +1016,8 @@ mod tests {
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Trim { .. }));
         assert!(matches!(e[1], FilterStep::ResetPts));
-        assert!(matches!(e[2], FilterStep::OffsetPts { .. }));
-        assert!(matches!(e[3], FilterStep::Speed { .. }));
+        assert!(matches!(e[2], FilterStep::Speed { .. }));
+        assert!(matches!(e[3], FilterStep::OffsetPts { .. }));
         assert!(matches!(e[4], FilterStep::Eq { .. }));
         assert!(matches!(e[5], FilterStep::XFade { .. }));
     }
@@ -1168,8 +1182,11 @@ mod tests {
         assert!(matches!(track.volume, AnimatedValue::Static(v) if (v + 6.0).abs() < 1e-9));
     }
 
+    /// The audio twin of `video_layer_should_order_trim_speed_offset_chain_xfade`:
+    /// `adelay` sits after the `atempo` chain, because an `atempo` ahead of it would
+    /// compress the silence it prepends and start the clip at `offset / speed` (#1804).
     #[test]
-    fn audio_track_should_order_trim_delay_speed_fades_effects() {
+    fn audio_track_should_order_trim_speed_delay_fades_effects() {
         let clip = Clip::new("a.mp3")
             .trim(Duration::from_secs(1), Duration::from_secs(5))
             .offset(Duration::from_millis(500))
@@ -1180,8 +1197,8 @@ mod tests {
         let kinds: Vec<&FilterStep> = track.effects.iter().collect();
         assert!(matches!(kinds[0], FilterStep::ATrim { .. }));
         assert!(matches!(kinds[1], FilterStep::AResetPts));
-        assert!(matches!(kinds[2], FilterStep::AudioDelay { .. }));
-        assert!(matches!(kinds[3], FilterStep::Speed { .. }));
+        assert!(matches!(kinds[2], FilterStep::Speed { .. }));
+        assert!(matches!(kinds[3], FilterStep::AudioDelay { .. }));
         assert!(matches!(kinds[4], FilterStep::AFadeIn { .. }));
         assert!(matches!(kinds[5], FilterStep::AFadeOut { .. }));
     }

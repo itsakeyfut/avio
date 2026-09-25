@@ -114,11 +114,16 @@ pub struct VideoLayer {
     pub composite_op: CompositeOp,
     /// Per-layer video filter steps applied to this layer's decoded stream before compositing.
     ///
-    /// Applied in order after scale/rotate/opacity and before the `overlay` node. Any timeline
-    /// trim / placement steps (`Trim` + `ResetPts` + `OffsetPts`) the caller emits belong at the
-    /// front of this list so they precede timing-sensitive effects (`Speed`). Typical use:
-    /// `FilterStep::Eq { brightness, contrast, saturation }` for per-clip color correction.
-    /// An empty `Vec` (the default) is a no-op.
+    /// Applied in order after scale/rotate/opacity and before the `overlay` node.
+    ///
+    /// A timeline trim (`Trim` + `ResetPts`) belongs at the front, so it precedes
+    /// everything timing-sensitive. The clip's **placement** (`OffsetPts`) belongs after a
+    /// `Speed` rather than before it: `setpts=PTS/factor` scales every timestamp upstream
+    /// of itself, so a placement emitted first is scaled along with the content and the
+    /// clip starts at `offset / speed` instead of at `offset`.
+    ///
+    /// Typical use: `FilterStep::Eq { brightness, contrast, saturation }` for per-clip
+    /// color correction. An empty `Vec` (the default) is a no-op.
     pub effects: Vec<crate::graph::filter_step::FilterStep>,
 }
 

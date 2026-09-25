@@ -212,6 +212,43 @@ pub fn write_tone_wav(
         .expect("write wav");
 }
 
+/// The frame rate and the mean luma of every decoded video frame, or `None` where
+/// this build cannot decode the file.
+///
+/// Where a clip's picture *starts* cannot be read from a duration any more: the
+/// composition's background canvas sets the length, so a layer placed at the wrong
+/// time shows black in the wrong places while the file stays exactly as long as it
+/// should be. Reading the frames is the only instrument that sees the placement.
+pub fn video_luma_per_frame(path: &std::path::Path) -> Option<(f64, Vec<f64>)> {
+    let mut decoder = ff_decode::VideoDecoder::open(path)
+        .output_format(ff_format::PixelFormat::Yuv420p)
+        .build()
+        .ok()?;
+    let fps = decoder.frame_rate();
+    let mut luma = Vec::new();
+    while let Ok(Some(frame)) = decoder.decode_one() {
+        let stride = frame.stride(0).unwrap_or(frame.width() as usize);
+        let plane = frame.plane(0)?;
+        let (w, h) = (frame.width() as usize, frame.height() as usize);
+        let mut sum = 0u64;
+        for y in 0..h {
+            let row = &plane[y * stride..y * stride + w];
+            sum += row.iter().map(|&v| u64::from(v)).sum::<u64>();
+        }
+        luma.push(sum as f64 / (w * h) as f64);
+    }
+    (fps > 0.0 && !luma.is_empty()).then_some((fps, luma))
+}
+
+/// The time of the first video frame whose mean luma clears `floor`, in seconds.
+///
+/// The background canvas is black, so a floor between it and the fixture's own luma
+/// finds where the clip's picture begins.
+pub fn first_visible_secs(path: &std::path::Path, floor: f64) -> Option<f64> {
+    let (fps, luma) = video_luma_per_frame(path)?;
+    luma.iter().position(|&v| v > floor).map(|i| i as f64 / fps)
+}
+
 /// The peak, RMS and decoded length in seconds of a file's audio, or `None`
 /// where this build cannot decode it.
 ///
@@ -242,6 +279,42 @@ pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64, f64)> {
     }
     let secs = samples_per_channel as f64 / f64::from(sample_rate);
     Some((peak, (sum / count as f64).sqrt(), secs))
+}
+
+/// The time of the first audio sample whose level clears `floor`, in seconds, or
+/// `None` where this build cannot decode the file or the audio never rises above it.
+///
+/// Where the sound *starts* is the measurement a placement test needs, and neither
+/// `measure_audio` nor a duration can give it: a clip placed late and a clip placed
+/// early carry the same peak, the same RMS and the same length. The floor is a
+/// parameter because the caller knows its own fixture: a synthesised tone wants a
+/// value well above the codec's noise, while a quiet source wants a lower one.
+pub fn first_sound_secs(path: &std::path::Path, floor: f64) -> Option<f64> {
+    let mut decoder = ff_decode::AudioDecoder::open(path)
+        .output_format(SampleFormat::F32)
+        .build()
+        .ok()?;
+    let mut elapsed = 0usize;
+    while let Ok(Some(frame)) = decoder.decode_one() {
+        let sample_rate = frame.sample_rate();
+        if sample_rate == 0 {
+            return None;
+        }
+        let channels = frame.channels().max(1) as usize;
+        for (i, chunk) in frame.planes()[0].chunks_exact(4).enumerate() {
+            let v = f64::from(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            if v.abs() > floor {
+                // `output_format(SampleFormat::F32)` above forces a packed layout, so
+                // `planes()[0]` interleaves every channel and the sample index advances
+                // once per channel. This would be wrong for a planar format, where
+                // plane 0 holds channel 0 alone while `channels` still counts them all.
+                let frames_in = i / channels;
+                return Some((elapsed + frames_in) as f64 / f64::from(sample_rate));
+            }
+        }
+        elapsed += frame.samples();
+    }
+    None
 }
 
 /// The dominant frequency of a file's audio over a window, by zero-crossing rate.
