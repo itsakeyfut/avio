@@ -21,6 +21,15 @@ use super::{
     VideoCodec, VideoEncoderInner,
 };
 
+/// FFmpeg global-header flag: write the parameter sets into `extradata` rather
+/// than repeating them in the stream, for muxers that ask via
+/// `AVFMT_GLOBALHEADER`.
+///
+/// Hand-defined rather than taken from bindgen, whose `AV_CODEC_FLAG_*` values
+/// are not typed consistently across platforms while `set_flags` takes `c_int`;
+/// the pass flags in `two_pass.rs` are carried the same way.
+const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
+
 impl VideoEncoderInner {
     /// Set each container metadata entry before `avformat_write_header`.
     pub(super) fn apply_metadata(
@@ -171,6 +180,14 @@ impl VideoEncoderInner {
             den: 1,
         });
         codec_ctx.set_pix_fmt(AVPixelFormat_AV_PIX_FMT_YUV420P);
+
+        // Without this the encoder emits its parameter sets in band, extradata
+        // stays empty, and Matroska has nothing to write a CodecPrivate from, so
+        // the header write fails (#1842). MP4 and MOV survive only because the mov
+        // muxer rebuilds avcC from the first packet itself.
+        if self.format_ctx.wants_global_header() {
+            codec_ctx.set_flags(codec_ctx.flags() | AV_CODEC_FLAG_GLOBAL_HEADER);
+        }
 
         // Set bitrate control mode
         match bitrate_mode {

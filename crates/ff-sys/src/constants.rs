@@ -22,6 +22,15 @@ pub const AVFMT_TS_DISCONT: i32 = 0x0200;
 /// close one on drop.
 pub const AVFMT_NOFILE: i32 = 0x0001;
 
+/// `AVFMT_GLOBALHEADER`: an `AVOutputFormat` flag asking for the encoder's
+/// parameter sets in `extradata` rather than repeated in the stream.
+///
+/// Set for MP4, MOV, Matroska, WebM and similar. An encoder that is not told
+/// about it (via `AV_CODEC_FLAG_GLOBAL_HEADER`) emits its parameter sets in band
+/// and leaves `extradata` empty, which Matroska cannot write a `CodecPrivate`
+/// from. Hand-defined for the same reason as [`AVFMT_NOFILE`].
+pub const AVFMT_GLOBALHEADER: i32 = 0x0040;
+
 /// `AVFMT_FLAG_CUSTOM_IO`: the caller supplied the context's `pb`, so libavformat
 /// must not `avio_close()` it.
 ///
