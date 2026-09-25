@@ -333,18 +333,16 @@ pub(super) fn av_frame_to_audio_frame(frame: &ff_sys::Frame) -> Result<AudioFram
     } else {
         1
     };
-    let bytes_per_sample = format.bytes_per_sample();
     let mut planes: Vec<Vec<u8>> = Vec::with_capacity(num_planes);
 
     for i in 0..num_planes {
-        let byte_count = samples * bytes_per_sample;
-        // `audio_plane` returns `None` for a null/absent plane, which maps to
-        // `Err`. Copy only the frame's sample bytes (`byte_count`), matching the
-        // previous behavior.
-        let plane = frame
-            .audio_plane(i)
-            .and_then(|p| p.get(..byte_count))
-            .ok_or(())?;
+        // Take the slice as `audio_plane` sizes it, from the frame's own format,
+        // channel count and sample count. Recomputing that length here is what
+        // dropped the channel factor on a packed plane and left the frame
+        // declaring more samples than it carried (#1812, #1849); it would also
+        // get the size wrong for a format `SampleFormat` does not model, whose
+        // `bytes_per_sample` is a guess. `None` means a null or absent plane.
+        let plane = frame.audio_plane(i).ok_or(())?;
         planes.push(plane.to_vec());
     }
 
@@ -358,6 +356,70 @@ mod tests {
 
     // Negative-linesize (RK-008 / #1306) plane copying now lives in
     // `ff_sys::Frame::copy_plane_rows`, which carries its own regression test.
+
+    // Audio plane extraction (#1812 / #1849)
+
+    /// Builds a buffer-allocated audio frame. Returns `None` where this FFmpeg
+    /// build cannot allocate one, so the test skips rather than failing.
+    fn audio_frame(sample_fmt: i32, samples: i32, channels: i32) -> Option<ff_sys::Frame> {
+        let mut frame = ff_sys::Frame::new().ok()?;
+        frame.set_format(sample_fmt);
+        frame.set_nb_samples(samples);
+        frame.set_sample_rate(48_000);
+        let layout = ff_sys::swresample::channel_layout::with_channels(channels);
+        frame.set_ch_layout(&layout).ok()?;
+        frame.get_buffer(0).ok()?;
+        frame.set_pts(0);
+        Some(frame)
+    }
+
+    /// A packed plane interleaves every channel, so the copy must keep
+    /// `samples * channels * bytes_per_sample` bytes. Keeping only one channel's
+    /// worth is what let a frame overrun itself inside `swr_convert` (#1812/#1849).
+    #[test]
+    fn av_frame_to_audio_frame_should_keep_every_channel_of_a_packed_plane() {
+        const SAMPLES: i32 = 1024;
+        const CHANNELS: i32 = 2;
+        let Some(frame) = audio_frame(ff_sys::swresample::sample_format::FLT, SAMPLES, CHANNELS)
+        else {
+            println!("skipping: cannot allocate a packed audio frame in this build");
+            return;
+        };
+
+        let out = av_frame_to_audio_frame(&frame).expect("conversion must succeed");
+
+        assert_eq!(out.num_planes(), 1, "a packed format has one plane");
+        assert_eq!(
+            out.planes()[0].len(),
+            SAMPLES as usize * CHANNELS as usize * 4,
+            "a packed plane must cover every channel"
+        );
+        assert_eq!(out.samples(), SAMPLES as usize);
+        assert_eq!(out.channels(), CHANNELS as u32);
+    }
+
+    /// Planar planes hold one channel each, so the channel factor must not apply.
+    #[test]
+    fn av_frame_to_audio_frame_should_keep_one_channel_per_planar_plane() {
+        const SAMPLES: i32 = 1024;
+        const CHANNELS: i32 = 2;
+        let Some(frame) = audio_frame(ff_sys::swresample::sample_format::FLTP, SAMPLES, CHANNELS)
+        else {
+            println!("skipping: cannot allocate a planar audio frame in this build");
+            return;
+        };
+
+        let out = av_frame_to_audio_frame(&frame).expect("conversion must succeed");
+
+        assert_eq!(out.num_planes(), CHANNELS as usize, "one plane per channel");
+        for (i, plane) in out.planes().iter().enumerate() {
+            assert_eq!(
+                plane.len(),
+                SAMPLES as usize * 4,
+                "planar plane {i} must hold exactly one channel"
+            );
+        }
+    }
 
     // PTS helpers
 
