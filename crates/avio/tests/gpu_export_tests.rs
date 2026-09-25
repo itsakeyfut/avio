@@ -601,11 +601,15 @@ fn a_transition_on_the_base_track_should_render_under_a_live_overlay() {
 
 #[cfg(feature = "gpu")]
 #[test]
-fn tracks_of_unequal_length_should_end_where_the_cpu_ends() {
-    // Measured on the CPU route: the export ends with the **topmost** track, not the
-    // longest -- the last overlay is built with `eof_action=endall`. A 15-frame base
-    // under a 6-frame overlay exports ~5 frames. The scheduler has to reproduce that,
-    // and it is exactly the kind of rule an implementation invents differently.
+fn tracks_of_unequal_length_should_run_to_the_longest_on_both_routes() {
+    // The export runs for as long as the composition is, which is where its longest
+    // track ends: a 15-frame base under a 6-frame overlay exports the base in full,
+    // with the overlay's slot standing empty once it has finished. It used to end with
+    // the **topmost** track instead, so a short overlay truncated the programme
+    // underneath it (#1803) -- the last overlay carried `eof_action=endall` and the
+    // canvas ran forever, so the graph had to borrow its end from a layer. Both routes
+    // read the one composition length now, and this is the rule an implementation is
+    // most likely to invent differently, so it is pinned on both.
     let dark = test_output_path("mtlen_dark.mp4");
     let short = test_output_path("mtlen_short.mp4");
     let _gd = FileGuard::new(dark.clone());
@@ -641,8 +645,8 @@ fn tracks_of_unequal_length_should_end_where_the_cpu_ends() {
     let (gpu_n, _) = count_and_bbox(&out_gpu, 0);
     println!("unequal length: cpu={cpu_n} gpu={gpu_n}");
     assert!(
-        cpu_n < SRC_FRAMES,
-        "the control must actually be truncated by the short overlay, got {cpu_n}"
+        cpu_n >= SRC_FRAMES,
+        "the 6-frame overlay must not truncate the {SRC_FRAMES}-frame base, got {cpu_n}"
     );
     assert_eq!(
         gpu_n, cpu_n,

@@ -971,11 +971,15 @@ fn wrap_rgba((rgba, w, h): (Vec<u8>, u32, u32)) -> Result<VideoFrame, TimelineEr
 /// composites the z-ordered stack in one pass; a track that has ended contributes
 /// nothing further.
 ///
-/// **The export ends when the topmost track ends**, not when the longest does. That is
-/// the CPU's rule, not a choice made here: the last overlay is built with
-/// `eof_action=endall` (`composition_inner.rs:930-936`), so the graph terminates with it.
-/// Measured on the CPU route -- a 15-frame base under a 6-frame overlay exports 5 frames,
-/// and the mirror exports 14.
+/// **The export ends when the composition does**, not when any one track does. That is
+/// the CPU's rule, not a choice made here: its graph generates the background canvas
+/// for exactly `composition_end`, so the export ends there whatever the individual
+/// tracks are doing, and this drain stops at the same point.
+///
+/// Without a `composition_end` (a clip whose length is unknown) both routes fall back
+/// to the older rule, where the last layer's `eof_action=endall` ends the graph. That
+/// rule is why a 6-frame topmost track used to truncate a 15-frame one underneath it
+/// (#1803).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_video_gpu(
     tracks: &[&Track],
@@ -986,6 +990,7 @@ pub(crate) fn drain_video_gpu(
     on_progress: &(impl Fn(&Progress) -> bool + Send),
     start: Instant,
     total_frames: Option<u64>,
+    composition_end: Option<Duration>,
 ) -> Result<(), TimelineError> {
     let mut sources: Vec<TrackSource<'_>> = Vec::with_capacity(tracks.len());
     for track in tracks {
@@ -1010,9 +1015,15 @@ pub(crate) fn drain_video_gpu(
         for ts in &mut sources {
             pulled.push(ts.next(core, t)?);
         }
-        // The export ends with the **topmost** track, whatever the others are doing.
-        if pulled[top].is_none() {
-            break;
+        // The composition's own length ends the export, so a track that ends early no
+        // longer cuts the programme short; the loop below already stands a finished
+        // track in with a transparent frame, which is what lets it keep going. Only a
+        // composition whose length could not be established falls back to ending with
+        // the topmost track (#1803).
+        match composition_end {
+            Some(end) if t >= end => break,
+            None if pulled[top].is_none() => break,
+            _ => {}
         }
         // A track that has ended still occupies its slot, contributing nothing visible.
         // Measured on the CPU route: with a 6-frame base under a 15-frame overlay, the

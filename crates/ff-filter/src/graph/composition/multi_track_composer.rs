@@ -1,6 +1,7 @@
 //! Multi-track video composition onto a solid-colour canvas.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ff_format::{Color, TextSpec};
 
@@ -160,6 +161,7 @@ pub struct MultiTrackComposer {
     canvas_height: u32,
     background: Rgb,
     frame_rate: f64,
+    duration: Option<Duration>,
     layers: Vec<VideoLayer>,
 }
 
@@ -175,6 +177,7 @@ impl MultiTrackComposer {
                 b: 0.0,
             },
             frame_rate: 30.0,
+            duration: None,
             layers: Vec::new(),
         }
     }
@@ -199,6 +202,25 @@ impl MultiTrackComposer {
     pub fn frame_rate(self, fps: f64) -> Self {
         Self {
             frame_rate: if fps > 0.0 { fps } else { 30.0 },
+            ..self
+        }
+    }
+
+    /// Sets how long the composition is, and returns the updated composer.
+    ///
+    /// This is the composition's own length, not any layer's: the background
+    /// canvas is generated for exactly this long, so the graph ends here whatever
+    /// the layers are doing. A layer that starts late or runs past the end is
+    /// placed against that canvas rather than defining it.
+    ///
+    /// **Set it whenever the length is known.** Without it the canvas is
+    /// generated indefinitely and the composition has to end with the last layer
+    /// in the list instead, which makes the result depend on the order layers
+    /// were added rather than on where they sit in time.
+    #[must_use]
+    pub fn duration(self, duration: Duration) -> Self {
+        Self {
+            duration: Some(duration),
             ..self
         }
     }
@@ -246,6 +268,7 @@ impl MultiTrackComposer {
             self.background,
             self.frame_rate,
             &layers,
+            self.duration,
         )
     }
 }
@@ -255,6 +278,29 @@ impl MultiTrackComposer {
 mod tests {
     use super::*;
     use crate::graph::filter_step::FilterStep;
+
+    /// The canvas is what ends the composition, so whether it carries a duration is
+    /// the whole of the fix for #1803. Asserted as a string because CI's Linux
+    /// `FFmpeg` is built without filters and cannot construct the graph to look.
+    #[test]
+    fn canvas_args_should_carry_the_duration_only_when_one_is_set() {
+        let black = Rgb {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        };
+        let without = super::super::composition_inner::canvas_args(black, 1920, 1080, "30", None);
+        assert_eq!(without, "c=#000000:s=1920x1080:r=30");
+
+        let with = super::super::composition_inner::canvas_args(
+            black,
+            1920,
+            1080,
+            "30",
+            Some(Duration::from_millis(12_500)),
+        );
+        assert_eq!(with, "c=#000000:s=1920x1080:r=30:d=12.500000");
+    }
 
     #[test]
     fn composer_zero_canvas_size_should_err() {
