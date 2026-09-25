@@ -36,7 +36,7 @@ enum Placement {
 /// source, or no filters to build the graph with, which is CI's Linux `FFmpeg`
 /// (`--disable-everything`). Any other failure panics, so a genuine render
 /// regression cannot be mistaken for an unavailable environment.
-fn render_and_measure(tag: &str, placement: Placement) -> Option<(f64, f64)> {
+fn render_and_measure(tag: &str, placement: Placement) -> Option<(f64, f64, f64)> {
     let video = test_output_path(&format!("afx_video_{tag}.mp4"));
     let _gv = FileGuard::new(video.clone());
     make_source_file(&video, 160, 120, 30.0, 30, 80, 90, 120)?;
@@ -108,7 +108,7 @@ fn gate() -> FilterStep {
 /// A render that passes it through unchanged lands near those.
 #[test]
 fn a_track_with_no_audio_effects_should_pass_the_tone_through() {
-    let Some((peak, rms)) = render_and_measure("baseline", Placement::None) else {
+    let Some((peak, rms, _)) = render_and_measure("baseline", Placement::None) else {
         return;
     };
     assert!(
@@ -121,7 +121,8 @@ fn a_track_with_no_audio_effects_should_pass_the_tone_through() {
 /// factor, which is what #1818's acceptance criterion asks to observe.
 #[test]
 fn a_compressor_on_a_track_chain_should_reduce_the_peak() {
-    let Some((peak, rms)) = render_and_measure("comp_track", Placement::Track(compressor())) else {
+    let Some((peak, rms, _)) = render_and_measure("comp_track", Placement::Track(compressor()))
+    else {
         return;
     };
     assert!(
@@ -136,7 +137,7 @@ fn a_compressor_on_a_track_chain_should_reduce_the_peak() {
 
 #[test]
 fn a_compressor_as_a_master_filter_should_reduce_the_peak() {
-    let Some((peak, rms)) = render_and_measure("comp_master", Placement::Master(compressor()))
+    let Some((peak, rms, _)) = render_and_measure("comp_master", Placement::Master(compressor()))
     else {
         return;
     };
@@ -154,7 +155,7 @@ fn a_compressor_as_a_master_filter_should_reduce_the_peak() {
 /// render succeeding and the signal surviving, which is what regressed.
 #[test]
 fn a_noise_gate_on_a_track_chain_should_pass_a_tone_above_its_threshold() {
-    let Some((peak, rms)) = render_and_measure("gate_track", Placement::Track(gate())) else {
+    let Some((peak, rms, _)) = render_and_measure("gate_track", Placement::Track(gate())) else {
         return;
     };
     assert!(
@@ -165,7 +166,7 @@ fn a_noise_gate_on_a_track_chain_should_pass_a_tone_above_its_threshold() {
 
 #[test]
 fn a_noise_gate_as_a_master_filter_should_pass_a_tone_above_its_threshold() {
-    let Some((peak, rms)) = render_and_measure("gate_master", Placement::Master(gate())) else {
+    let Some((peak, rms, _)) = render_and_measure("gate_master", Placement::Master(gate())) else {
         return;
     };
     assert!(

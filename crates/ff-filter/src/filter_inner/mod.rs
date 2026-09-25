@@ -243,6 +243,13 @@ pub(crate) struct FilterGraphInner {
     peak_output_idx: usize,
     /// True once the two-pass peak measurement + correction has been executed.
     peak_pass2_done: bool,
+    /// True once `flush_audio` has signalled end of input.
+    ///
+    /// A two-pass step measures the whole programme, so it cannot run before
+    /// every frame has been pushed; `pull_audio` yields nothing until this is
+    /// set. Without the gate a caller that pulls after each push measures the
+    /// first frame alone and applies the gain that implies (#1821).
+    audio_eof: bool,
     /// Frame rate declared on the video buffersrc, or `None` to leave it unset.
     /// Required by filters that demand a constant frame rate (`xfade`).
     input_frame_rate: Option<f64>,
@@ -269,6 +276,7 @@ impl FilterGraphInner {
             steps,
             hw,
             hw_device_ctx: None,
+            audio_eof: false,
             loudness_buf: Vec::new(),
             loudness_output: Vec::new(),
             loudness_output_idx: 0,
@@ -316,6 +324,7 @@ impl FilterGraphInner {
             steps: Vec::new(),
             hw: None,
             hw_device_ctx: None,
+            audio_eof: false,
             loudness_buf: Vec::new(),
             loudness_output: Vec::new(),
             loudness_output_idx: 0,
@@ -351,6 +360,7 @@ impl FilterGraphInner {
             steps: Vec::new(),
             hw: None,
             hw_device_ctx: None,
+            audio_eof: false,
             loudness_buf: Vec::new(),
             loudness_output: Vec::new(),
             loudness_output_idx: 0,
@@ -382,6 +392,7 @@ impl FilterGraphInner {
             steps: Vec::new(),
             hw: None,
             hw_device_ctx: None,
+            audio_eof: false,
             loudness_buf: Vec::new(),
             loudness_output: Vec::new(),
             loudness_output_idx: 0,

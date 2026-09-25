@@ -282,6 +282,18 @@ impl Pipeline {
                     }
                 }
             }
+
+            // Signal the end of the input once every frame has been pushed, then
+            // drain what the graph held back. A two-pass step such as
+            // `LoudnessNormalize` measures the whole programme and so emits
+            // nothing before this, and a WSOLA filter such as `atempo` keeps its
+            // tail until EOF (#1821).
+            if let Some(ref mut fg) = filter {
+                fg.flush_audio();
+                while let Some(aframe) = fg.pull_audio()? {
+                    encoder.push_audio(&aframe)?;
+                }
+            }
         }
 
         // Flush encoder and write trailer regardless of cancellation.
