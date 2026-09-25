@@ -8,7 +8,7 @@ publish = false
 
 [[bin]]
 name = "gen_test_assets"
-path = "../tools/gen_test_assets.rs"
+path = "gen_test_assets.rs"
 
 [dependencies]
 ff-encode = { path = "../crates/ff-encode" }

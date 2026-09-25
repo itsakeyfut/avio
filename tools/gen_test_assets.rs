@@ -1,11 +1,11 @@
 //! Standalone tool to generate committed test assets.
 //!
 //! Run with:
-//!   cargo run --manifest-path tools/gen_test_assets_manifest.toml
+//!   cargo run --manifest-path tools/Cargo.toml
 //!
-//! Writes `assets/test/hard_cut_video.mp4` — a 6-second video with five
+//! Writes `assets/test/hard_cut_video.mp4`: a 6-second video with five
 //! hard scene cuts at 1 s, 2 s, 3 s, 4 s, and 5 s.  Used by
-//! `ff-decode/tests/analysis_tests.rs` so that test does not need
+//! `ff-analysis/tests/analysis_tests.rs` so that test does not need
 //! `ff-encode` as a dev-dependency.
 
 use std::path::{Path, PathBuf};
