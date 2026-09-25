@@ -160,3 +160,75 @@ pub fn make_source_file(
 
     Some(())
 }
+
+/// Writes a PCM WAV holding a 440 Hz tone at half scale (`bits` is 16 or 24).
+///
+/// Hand-written rather than encoded, so a test using it does not pass merely
+/// because avio's encoder and decoder agree with each other. `make_source_file`
+/// writes silent audio, which cannot show whether an audio effect changed the
+/// signal, so tests that measure level use this instead.
+pub fn write_tone_wav(
+    path: &std::path::Path,
+    sample_rate: u32,
+    channels: u16,
+    bits: u16,
+    secs: f64,
+) {
+    use std::io::Write;
+
+    let frames = (f64::from(sample_rate) * secs) as u32;
+    let bytes_per_sample = u32::from(bits / 8);
+    let block_align = u32::from(channels) * bytes_per_sample;
+    let data_len = frames * block_align;
+
+    let mut b: Vec<u8> = Vec::with_capacity(44 + data_len as usize);
+    b.extend(b"RIFF");
+    b.extend(&(36 + data_len).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(&16u32.to_le_bytes());
+    b.extend(&1u16.to_le_bytes()); // PCM
+    b.extend(&channels.to_le_bytes());
+    b.extend(&sample_rate.to_le_bytes());
+    b.extend(&(sample_rate * block_align).to_le_bytes());
+    b.extend(&u16::try_from(block_align).unwrap_or(u16::MAX).to_le_bytes());
+    b.extend(&bits.to_le_bytes());
+    b.extend(b"data");
+    b.extend(&data_len.to_le_bytes());
+
+    for i in 0..frames {
+        let t = f64::from(i) / f64::from(sample_rate);
+        let v = (t * 440.0 * std::f64::consts::TAU).sin() * 0.5;
+        for _ in 0..channels {
+            if bits == 16 {
+                b.extend(&((v * f64::from(i16::MAX)) as i16).to_le_bytes());
+            } else {
+                b.extend(&((v * 8_388_607.0) as i32).to_le_bytes()[0..3]);
+            }
+        }
+    }
+
+    std::fs::File::create(path)
+        .expect("create wav")
+        .write_all(&b)
+        .expect("write wav");
+}
+
+/// The peak and RMS of a file's audio, or `None` where this build cannot decode
+/// it. A duration check alone passes on silence, so tests that care whether an
+/// effect reached the signal measure level with this.
+pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64)> {
+    let mut decoder = ff_decode::AudioDecoder::open(path)
+        .output_format(SampleFormat::F32)
+        .build()
+        .ok()?;
+    let (mut peak, mut sum, mut count) = (0.0f64, 0.0f64, 0usize);
+    while let Ok(Some(frame)) = decoder.decode_one() {
+        for chunk in frame.planes()[0].chunks_exact(4) {
+            let v = f64::from(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            peak = peak.max(v.abs());
+            sum += v * v;
+            count += 1;
+        }
+    }
+    (count > 0).then(|| (peak, (sum / count as f64).sqrt()))
+}

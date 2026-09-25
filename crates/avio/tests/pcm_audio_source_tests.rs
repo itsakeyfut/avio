@@ -16,53 +16,11 @@
 
 mod fixtures;
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_filter::FilterError;
-use fixtures::{FileGuard, make_source_file, test_output_path};
-
-/// Writes a PCM WAV by hand. `bits` is 16 or 24.
-fn write_wav(path: &Path, sample_rate: u32, channels: u16, bits: u16, secs: f64) {
-    let frames = (f64::from(sample_rate) * secs) as u32;
-    let bytes_per_sample = u32::from(bits / 8);
-    let block_align = u32::from(channels) * bytes_per_sample;
-    let data_len = frames * block_align;
-
-    let mut b: Vec<u8> = Vec::with_capacity(44 + data_len as usize);
-    b.extend(b"RIFF");
-    b.extend(&(36 + data_len).to_le_bytes());
-    b.extend(b"WAVEfmt ");
-    b.extend(&16u32.to_le_bytes());
-    b.extend(&1u16.to_le_bytes()); // PCM
-    b.extend(&channels.to_le_bytes());
-    b.extend(&sample_rate.to_le_bytes());
-    b.extend(&(sample_rate * block_align).to_le_bytes());
-    b.extend(&u16::try_from(block_align).unwrap().to_le_bytes());
-    b.extend(&bits.to_le_bytes());
-    b.extend(b"data");
-    b.extend(&data_len.to_le_bytes());
-
-    // A 440 Hz tone at half scale, so a silent output is distinguishable from a
-    // correct one by level and not only by duration.
-    for i in 0..frames {
-        let t = f64::from(i) / f64::from(sample_rate);
-        let v = (t * 440.0 * std::f64::consts::TAU).sin() * 0.5;
-        for _ in 0..channels {
-            if bits == 16 {
-                b.extend(&((v * f64::from(i16::MAX)) as i16).to_le_bytes());
-            } else {
-                b.extend(&((v * 8_388_607.0) as i32).to_le_bytes()[0..3]);
-            }
-        }
-    }
-
-    std::fs::File::create(path)
-        .expect("create wav")
-        .write_all(&b)
-        .expect("write wav");
-}
+use fixtures::{FileGuard, make_source_file, test_output_path, write_tone_wav};
 
 /// Renders `audio_source` on an audio track beside a short video track.
 ///
@@ -162,7 +120,7 @@ fn assert_audio_of_length(out: &Path, expected_secs: f64) {
 fn a_pcm16_stereo_source_should_render_with_its_audio() {
     let wav = test_output_path("pcm1812_s16_stereo.wav");
     let _gw = FileGuard::new(wav.clone());
-    write_wav(&wav, 48_000, 2, 16, 1.0);
+    write_tone_wav(&wav, 48_000, 2, 16, 1.0);
 
     let out = test_output_path("pcm1812_s16_stereo_out.mp4");
     let _go = FileGuard::new(out.clone());
@@ -177,7 +135,7 @@ fn a_pcm16_stereo_source_should_render_with_its_audio() {
 fn a_pcm16_mono_source_should_render_with_its_audio() {
     let wav = test_output_path("pcm1812_s16_mono.wav");
     let _gw = FileGuard::new(wav.clone());
-    write_wav(&wav, 48_000, 1, 16, 1.0);
+    write_tone_wav(&wav, 48_000, 1, 16, 1.0);
 
     let out = test_output_path("pcm1812_s16_mono_out.mp4");
     let _go = FileGuard::new(out.clone());
@@ -192,7 +150,7 @@ fn a_pcm16_mono_source_should_render_with_its_audio() {
 fn a_pcm24_stereo_source_should_render_with_its_audio() {
     let wav = test_output_path("pcm1812_s24_stereo.wav");
     let _gw = FileGuard::new(wav.clone());
-    write_wav(&wav, 48_000, 2, 24, 1.0);
+    write_tone_wav(&wav, 48_000, 2, 24, 1.0);
 
     let out = test_output_path("pcm1812_s24_stereo_out.mp4");
     let _go = FileGuard::new(out.clone());
@@ -254,7 +212,7 @@ fn a_flac_source_should_render_with_its_audio() {
 fn rendering_a_pcm_source_repeatedly_should_not_abort_the_process() {
     let wav = test_output_path("pcm1849_repeat.wav");
     let _gw = FileGuard::new(wav.clone());
-    write_wav(&wav, 48_000, 2, 16, 0.5);
+    write_tone_wav(&wav, 48_000, 2, 16, 0.5);
 
     for i in 0..8 {
         let out = test_output_path(&format!("pcm1849_repeat_out_{i}.mp4"));
