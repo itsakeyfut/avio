@@ -544,6 +544,16 @@ impl OutputFormatContext {
         self.oformat_flags() & crate::constants::AVFMT_NOFILE != 0
     }
 
+    /// Returns `true` when the muxer wants the encoder's parameter sets in
+    /// `extradata` rather than in the stream (`AVFMT_GLOBALHEADER`).
+    ///
+    /// The encoder has to be opened with `AV_CODEC_FLAG_GLOBAL_HEADER` for such a
+    /// muxer, or it emits its parameter sets in band and leaves `extradata` empty.
+    #[must_use]
+    pub fn wants_global_header(&self) -> bool {
+        self.oformat_flags() & crate::constants::AVFMT_GLOBALHEADER != 0
+    }
+
     /// Opens the output IO for `path` (write mode) and attaches it as the
     /// context's `pb`.
     ///
@@ -1265,6 +1275,39 @@ impl ChapterRef<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An output context for `name`, or `None` when this FFmpeg build has no such
+    /// muxer. Allocating one needs no encoder, so this runs in every environment.
+    fn output_for(name: &str) -> Option<OutputFormatContext> {
+        OutputFormatContext::new(None, Path::new(name)).ok()
+    }
+
+    #[test]
+    fn wants_global_header_should_follow_the_muxer_not_the_extension() {
+        // The muxers that carry parameter sets out of band. An encoder writing to
+        // one of these has to be opened with AV_CODEC_FLAG_GLOBAL_HEADER, which is
+        // what #1842 was about.
+        for name in ["a.mp4", "a.mkv", "a.webm", "a.mov"] {
+            let Some(ctx) = output_for(name) else {
+                continue;
+            };
+            assert!(
+                ctx.wants_global_header(),
+                "{name} declares AVFMT_GLOBALHEADER, so the predicate must say so"
+            );
+        }
+
+        // The muxers that do not. A codec flag set for these would be wrong.
+        for name in ["a.avi", "a.gif", "a.png", "a.wav"] {
+            let Some(ctx) = output_for(name) else {
+                continue;
+            };
+            assert!(
+                !ctx.wants_global_header(),
+                "{name} does not declare AVFMT_GLOBALHEADER, so the predicate must not either"
+            );
+        }
+    }
 
     #[test]
     fn open_should_error_on_missing_path() {
