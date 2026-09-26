@@ -1879,17 +1879,25 @@ unsafe fn build_audio_mix_unsafe(
         for (eff_idx, step) in track.effects.iter().enumerate() {
             let combined_idx = idx * 1000 + eff_idx;
             // FilterStep::Speed uses `setpts` for video but needs audio-specific
-            // handling here.  For factor in [0.5, 2.0] use atempo (pitch-preserving
-            // WSOLA).  For factor > 2.0 the FFmpeg atempo ring buffer silently
-            // overflows (the internal assert skips the check when tempo > 2.0),
-            // producing NaN samples.  Fall back to asetrate+aresample (vinyl effect:
-            // pitch shifts proportionally) which is free of WSOLA arithmetic.
+            // handling here, and `atempo` (pitch-preserving WSOLA) is not used on this
+            // path at any factor. Its ring buffer silently overflows above 2.0 (the
+            // internal assert skips the check when tempo > 2.0), and it produces NaN
+            // when both the current fragment and the ring buffer are silent (the
+            // cross-correlation denominator goes 0/0), which a timeline carrying silent
+            // tracks reaches easily. `asetrate` + `aresample` is free of WSOLA
+            // arithmetic, so it is used for every non-unity speed.
+            //
+            // **The two expansions do not mean the same thing.** This one shifts the
+            // pitch with the speed (the "vinyl effect"); the single-source builder's
+            // `add_atempo_chain` preserves it. So `speed` sounds different depending on
+            // which builder a clip went through, and that difference is not settled:
+            // making them agree would change what `speed` means in the editing model,
+            // which wants an ADR rather than a quiet choice here (#1863 records it and
+            // does not decide).
             let result = if let crate::FilterStep::Speed { factor } = step {
-                // Always use asetrate+aresample for any non-unity speed.
-                // atempo (WSOLA) produces NaN when both the current fragment and the
-                // ring buffer are silent (cross-correlation denominator → 0/0).
-                // asetrate+aresample avoids all WSOLA arithmetic; for small ratios
-                // (e.g. 1.5x) the SWR FIR is only ~48 taps and never produces NaN.
+                // For small ratios (e.g. 1.5x) the SWR FIR is only ~48 taps, so the
+                // resampler stays well clear of the arithmetic that troubles WSOLA.
+                //
                 // amovie outputs at the file's native rate (e.g. 44100 Hz) while
                 // `sample_rate` is the target mix rate (e.g. 48000 Hz).  The optional
                 // aresample earlier in the chain fires only when track.sample_rate !=
