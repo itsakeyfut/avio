@@ -37,6 +37,7 @@ use super::resample_inner;
 
 use crate::error::DecodeError;
 use crate::shared::guards_inner::{open_input_ctx, open_url_ctx};
+use crate::shared::stream_duration::stream_duration;
 
 /// Internal decoder state holding FFmpeg contexts.
 ///
@@ -204,13 +205,15 @@ impl AudioDecoderInner {
 
         // Extract stream and container information through the borrowed
         // stream / codec-context accessors.
-        let duration_val = ctx.duration();
+        // The container's duration, which `extract_stream_info` uses only as the
+        // fallback for a stream that does not carry its own (#1861).
+        let container_micros = ctx.duration();
         let stream = ctx
             .stream(stream_index)
             .ok_or_else(|| DecodeError::NoAudioStream {
                 path: path.to_path_buf(),
             })?;
-        let stream_info = Self::extract_stream_info(stream, &codec_ctx, duration_val)?;
+        let stream_info = Self::extract_stream_info(stream, &codec_ctx, container_micros)?;
 
         // Extract container information
         let container_info = Self::extract_container_info(&ctx);
@@ -284,10 +287,13 @@ impl AudioDecoderInner {
 
     /// Extracts audio stream information from the borrowed stream and codec
     /// context.
+    ///
+    /// `container_micros` is the **container's** duration, used only as the fallback for
+    /// a stream that does not carry its own (see [`stream_duration`]).
     fn extract_stream_info(
         stream: ff_sys::StreamRef<'_>,
         codec_ctx: &ff_sys::CodecContext,
-        duration_val: i64,
+        container_micros: i64,
     ) -> Result<AudioStreamInfo, DecodeError> {
         let codecpar = stream.codecpar();
         let stream_index = stream.index();
@@ -297,13 +303,10 @@ impl AudioDecoderInner {
         let sample_fmt = codec_ctx.sample_fmt();
         let codec_id = codecpar.codec_id();
 
-        // Extract duration
-        let duration = if duration_val > 0 {
-            let duration_secs = duration_val as f64 / 1_000_000.0;
-            Some(Duration::from_secs_f64(duration_secs))
-        } else {
-            None
-        };
+        // This stream's own duration, not the container's: the container's follows its
+        // longest stream, so a file whose video outruns its audio reported more time
+        // than the audio holds (#1861).
+        let duration = stream_duration(stream, container_micros);
 
         // Extract sample format
         let sample_format = resample_inner::convert_sample_format(sample_fmt);

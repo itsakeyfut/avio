@@ -12,6 +12,19 @@
 //! Matroska, whose first decoded frame carries a negative timestamp because the
 //! encoder's priming delay is expressed that way.  Used by
 //! `ff-decode/tests/negative_pts_tests.rs` for the same reason.
+//!
+//! **Running this rewrites every asset below, and two of them no longer come out as they
+//! are committed**: `hard_cut_video.mp4` regenerates one frame longer (6.000s against the
+//! committed 5.967s) because the encoder has changed since it was written, and
+//! `negative_first_pts.mkv` differs byte for byte. `ff-analysis` asserts scene cuts on the
+//! first of those, so regenerate one asset at a time and commit only the one you meant to.
+//!
+//! Writes `assets/test/audio_longer_than_video.mp4` and
+//! `assets/test/video_longer_than_audio.mp4`: the same content with the two stream
+//! lengths swapped, half a second against two seconds.  A container's duration is its
+//! longest stream, so each file is a case where the container says four times what one
+//! of its streams holds.  Used by `ff-decode/tests/stream_duration_tests.rs` and
+//! `avio/tests/clip_order_tests.rs` (#1861).
 
 use std::path::{Path, PathBuf};
 
@@ -93,6 +106,49 @@ fn generate_negative_first_pts_audio(path: &Path) {
     println!("Written: {}", path.display());
 }
 
+/// Writes an MP4 whose video and audio deliberately run for different lengths.
+///
+/// A container's duration is its longest stream, so `video_secs` of picture beside
+/// `audio_secs` of sound gives a file where the container overstates the shorter of the
+/// two by the difference. Both are written with a four-fold gap, which is far wider than
+/// the rounding an AAC frame (1024 samples, about 21 ms) can account for, so a test using
+/// them cannot pass by accident.
+fn generate_mismatched_stream_lengths(path: &Path, video_secs: f64, audio_secs: f64) {
+    const WIDTH: u32 = 160;
+    const HEIGHT: u32 = 120;
+    const FPS: f64 = 30.0;
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHANNELS: u32 = 2;
+    // The AAC frame size, so the audio lands on a whole number of packets.
+    const SAMPLES_PER_FRAME: usize = 1024;
+
+    let mut encoder = VideoEncoder::create(path)
+        .video(WIDTH, HEIGHT, FPS)
+        .video_codec(VideoCodec::Mpeg4)
+        .audio(SAMPLE_RATE, CHANNELS)
+        .audio_codec(AudioCodec::Aac)
+        .audio_bitrate(128_000)
+        .build()
+        .expect("failed to build encoder");
+
+    let video_frames = (video_secs * FPS).round() as usize;
+    for _ in 0..video_frames {
+        encoder
+            .push_video(&yuv420p_frame(WIDTH, HEIGHT, 120, 90, 160))
+            .expect("push_video failed");
+    }
+
+    let audio_samples = (f64::from(SAMPLE_RATE) * audio_secs).round() as usize;
+    for _ in 0..audio_samples.div_ceil(SAMPLES_PER_FRAME) {
+        let frame = AudioFrame::empty(SAMPLES_PER_FRAME, CHANNELS, SAMPLE_RATE, SampleFormat::F32)
+            .expect("failed to create silent frame");
+        encoder.push_audio(&frame).expect("push_audio failed");
+    }
+
+    encoder.finish().expect("encoder finish failed");
+    println!("Written: {}", path.display());
+}
+
 fn main() {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -102,4 +158,6 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("failed to create assets/test/");
     generate_hard_cut_video(&out_dir.join("hard_cut_video.mp4"));
     generate_negative_first_pts_audio(&out_dir.join("negative_first_pts.mkv"));
+    generate_mismatched_stream_lengths(&out_dir.join("audio_longer_than_video.mp4"), 0.5, 2.0);
+    generate_mismatched_stream_lengths(&out_dir.join("video_longer_than_audio.mp4"), 2.0, 0.5);
 }

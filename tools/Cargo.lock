@@ -64,14 +64,14 @@ dependencies = [
 
 [[package]]
 name = "ff-common"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "ff-encode"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "ff-format",
  "ff-sys",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "ff-format"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "ff-common",
  "log",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "ff-sys"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "bindgen",
  "log",

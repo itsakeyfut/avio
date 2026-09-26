@@ -1,7 +1,8 @@
 use super::{
-    AVCodecID, AVMediaType_AVMEDIA_TYPE_VIDEO, CStr, ContainerInfo, DecodeError, Duration,
+    AVCodecID, AVMediaType_AVMEDIA_TYPE_VIDEO, CStr, ContainerInfo, DecodeError,
     InputFormatContext, Rational, VideoDecoderInner, VideoStreamInfo,
 };
+use crate::shared::stream_duration::stream_duration;
 
 impl VideoDecoderInner {
     /// Finds the first video stream in the format context.
@@ -30,10 +31,13 @@ impl VideoDecoderInner {
 
     /// Extracts video stream information from the borrowed stream and codec
     /// context.
+    ///
+    /// `container_micros` is the **container's** duration, used only as the fallback for
+    /// a stream that does not carry its own (see [`stream_duration`]).
     pub(super) fn extract_stream_info(
         stream: ff_sys::StreamRef<'_>,
         codec_ctx: &ff_sys::CodecContext,
-        duration_val: i64,
+        container_micros: i64,
     ) -> Result<VideoStreamInfo, DecodeError> {
         let codecpar = stream.codecpar();
         let stream_index = stream.index();
@@ -57,13 +61,10 @@ impl VideoDecoderInner {
             Rational::new(30, 1)
         };
 
-        // Extract duration
-        let duration = if duration_val > 0 {
-            let duration_secs = duration_val as f64 / 1_000_000.0;
-            Some(Duration::from_secs_f64(duration_secs))
-        } else {
-            None
-        };
+        // This stream's own duration, not the container's: the container's follows its
+        // longest stream, so a file whose audio outruns its video reported more time
+        // than the video holds (#1861).
+        let duration = stream_duration(stream, container_micros);
 
         // Extract pixel format
         let pixel_format = Self::convert_pixel_format(pix_fmt);

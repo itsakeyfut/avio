@@ -279,13 +279,15 @@ impl VideoDecoderInner {
 
         // Extract stream and container information through the borrowed
         // stream / codec-context accessors.
-        let duration_val = ctx.duration();
+        // The container's duration, which `extract_stream_info` uses only as the
+        // fallback for a stream that does not carry its own (#1861).
+        let container_micros = ctx.duration();
         let stream = ctx
             .stream(stream_index)
             .ok_or_else(|| DecodeError::NoVideoStream {
                 path: path.to_path_buf(),
             })?;
-        let stream_info = Self::extract_stream_info(stream, &codec_ctx, duration_val)?;
+        let stream_info = Self::extract_stream_info(stream, &codec_ctx, container_micros)?;
 
         // Extract container information
         let container_info = Self::extract_container_info(&ctx);

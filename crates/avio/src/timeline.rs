@@ -713,13 +713,6 @@ impl Timeline {
 /// source could not be probed for one. Both routes then keep their older behaviour,
 /// because the alternative is inventing a length for a clip that runs to end-of-file.
 ///
-/// A clip with no `out_point` is measured by probing its source, and that reading is
-/// the stream's, which a longer audio stream in the same file can push past the video
-/// it carries: a 15-frame 30 fps file whose audio rounds up to 24 packets measures
-/// 0.512s rather than 0.5s, so the export gains a frame. The cross-fade bookkeeping in
-/// `render_inner` reads the same number, so the two agree; trimming the clip avoids it
-/// entirely.
-///
 /// # Why this counts frames rather than adding seconds
 ///
 /// The length is quantised to whole frames at `frame_rate`, **per clip**, as
