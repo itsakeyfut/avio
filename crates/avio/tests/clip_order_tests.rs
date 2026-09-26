@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use avio::{BlendMode, Clip, Command, EncoderConfig, Timeline, TimelineError};
 use ff_filter::FilterError;
-use fixtures::{FileGuard, make_source_file, test_output_path};
+use fixtures::{FileGuard, assets_dir, make_source_file, test_output_path, video_luma_per_frame};
 
 /// Every clip is this long, so a clip at `offset` ends at `offset + CLIP_SECS`.
 const CLIP_SECS: f64 = 2.0;
@@ -262,4 +262,61 @@ fn a_blended_top_layer_should_not_truncate_the_track_below() {
         (measured - CLIP_SECS).abs() < TOLERANCE_SECS,
         "a 0.5s Multiply layer must not truncate the {CLIP_SECS}s track below it, got {measured}s"
     );
+}
+
+/// The composition's length for an untrimmed clip is the clip's **video**, not the file
+/// it came out of (#1861).
+///
+/// A clip with no `out_point` is measured by probing its source, and that reading used to
+/// be the container's duration, which follows whichever stream is longest. The reference
+/// file holds 0.5s of picture beside 2s of sound, so the composition ran for 2s and
+/// rendered 45 frames of background after the picture ended. Nothing reported it: the
+/// programme had a length, it was just the audio's.
+///
+/// Both routes are measured because both read the one composition length. A single
+/// untrimmed clip at offset 0 at unity speed is GPU-eligible, so the default route hands
+/// it to the GPU compositor and only `render_forcing_cpu` builds the CPU graph (RK-030).
+/// The labels say which route was **asked for**, not which one ran: without the `gpu`
+/// feature or an adapter the default route falls back to the CPU (RK-028). The length has
+/// to be the same either way, which is what makes the assertion worth running anyway.
+#[test]
+fn an_untrimmed_clips_composition_should_be_as_long_as_its_video() {
+    let src = assets_dir().join("test/audio_longer_than_video.mp4");
+    if !src.exists() {
+        println!("Skipping: reference asset not found at {}", src.display());
+        println!("  regenerate it with `cargo run --manifest-path tools/Cargo.toml`");
+        return;
+    }
+    // 0.5s of video at the timeline rate. Frames, not seconds: the canvas fixes the
+    // length whatever the layers do, so a duration cannot see this (RK-031).
+    const EXPECTED_FRAMES: usize = 15;
+
+    for (tag, force_cpu) in [("forced-CPU", true), ("default", false)] {
+        let out = test_output_path(&format!("order_out_streamlen_{tag}.mp4"));
+        let _go = FileGuard::new(out.clone());
+        let timeline = match Timeline::builder()
+            .canvas(160, 120)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new(&src)])
+            .build()
+        {
+            Ok(t) => t,
+            Err(e) => {
+                println!("Skipping: Timeline::builder().build() failed: {e}");
+                return;
+            }
+        };
+        if measure_route(timeline, &out, force_cpu).is_none() {
+            return;
+        }
+        let Some((_fps, luma)) = video_luma_per_frame(&out) else {
+            println!("Skipping: cannot decode the rendered video here");
+            return;
+        };
+        assert_eq!(
+            luma.len(),
+            EXPECTED_FRAMES,
+            "the {tag} route must run for the video's 0.5s, not the audio's 2s"
+        );
+    }
 }

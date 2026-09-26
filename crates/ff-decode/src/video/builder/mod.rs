@@ -434,16 +434,25 @@ impl VideoDecoder {
         self.stream_info.fps()
     }
 
-    /// Returns the total duration of the video.
+    /// Returns the duration of the **video stream** this decoder opened.
     ///
-    /// Returns [`Duration::ZERO`] if duration is unknown.
+    /// Not the container's duration, which follows whichever stream is longest: a file
+    /// whose audio outruns its video says more than the video holds, and reporting that
+    /// here made a composition's length depend on the audio in a source file (#1861).
+    /// For the duration of the *file*, probe it: `MediaInfo::duration` is the
+    /// container's by contract.
+    ///
+    /// The container's duration is the **fallback** for a stream that does not carry
+    /// its own, which some formats leave unset.
+    ///
+    /// Returns [`Duration::ZERO`] if neither is known.
     #[must_use]
     pub fn duration(&self) -> Duration {
         self.stream_info.duration().unwrap_or(Duration::ZERO)
     }
 
-    /// Returns the total duration of the video, or `None` for live streams
-    /// or formats that do not carry duration information.
+    /// Returns the duration of the video stream as [`duration`](Self::duration) reads
+    /// it, or `None` for live streams and formats that carry no duration at all.
     #[must_use]
     pub fn duration_opt(&self) -> Option<Duration> {
         self.stream_info.duration()
