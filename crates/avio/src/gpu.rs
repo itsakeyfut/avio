@@ -2049,6 +2049,7 @@ mod tests {
             &auto,
             1920,
             1080,
+            30.0,
             &crate::derive::Placement::default(),
             None,
         );

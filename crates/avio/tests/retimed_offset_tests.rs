@@ -31,6 +31,9 @@ use fixtures::{
 
 /// The clip is trimmed to 1s of source and run at 2x, so it contributes 0.5s.
 const SOURCE_SECS: f64 = 1.0;
+/// The timeline rate every render here uses. Held once because the expected frame
+/// counts are computed from it as well as the timeline being built with it.
+const FPS: f64 = 30.0;
 const SPEED: f64 = 2.0;
 const CONTENT_SECS: f64 = SOURCE_SECS / SPEED;
 /// One frame at 30 fps is 33ms. The audio start is read from the decoded stream and
@@ -211,6 +214,206 @@ fn a_retimed_clips_video_and_audio_should_start_together() {
     );
 }
 
+/// What a rendered video-only timeline actually holds.
+///
+/// Neither quantity can be read from a duration. The canvas is generated for a whole
+/// number of frames; a layer fills a whole number of them; and when the two are derived
+/// by different roundings the canvas gets a slot no layer reaches, which renders as
+/// background (#1862). Counting the frames is the only way to see any of it (RK-031).
+struct Rendered {
+    /// How many frames the canvas was generated for.
+    frames: usize,
+    /// How many of them carry picture.
+    lit: usize,
+    /// The first and last frame carrying picture. **Where** the picture sits is the
+    /// property this issue is about, and a count cannot see it: a layer placed one slot
+    /// early keeps its count while leaving the final frame black, which is the same
+    /// "the two rules disagree" defect in the other direction.
+    first_lit: usize,
+    last_lit: usize,
+}
+
+/// Renders a video-only timeline of the given clips.
+fn render_clips(tag: &str, clips: Vec<Clip>) -> Option<Rendered> {
+    let out = test_output_path(&format!("retime_f_{tag}.mp4"));
+    let _go = FileGuard::new(out.clone());
+
+    let timeline = match Timeline::builder()
+        .canvas(160, 120)
+        .frame_rate(FPS)
+        .video_track(clips)
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return None;
+        }
+    };
+    measure(timeline, &out)?;
+    let (_fps, luma) = video_luma_per_frame(&out)?;
+    let lit: Vec<usize> = luma
+        .iter()
+        .enumerate()
+        .filter(|&(_, &v)| v > LUMA_FLOOR)
+        .map(|(i, _)| i)
+        .collect();
+    if lit.is_empty() {
+        panic!(
+            "the render carried no picture at all: {} frames",
+            luma.len()
+        );
+    }
+    Some(Rendered {
+        frames: luma.len(),
+        lit: lit.len(),
+        first_lit: lit[0],
+        last_lit: lit[lit.len() - 1],
+    })
+}
+
+/// One clip, which is all it takes to reproduce #1862.
+fn render_frames(tag: &str, in_pt: f64, out_pt: f64, offset: f64, speed: f64) -> Option<Rendered> {
+    let (video, _gv, _tone, _gt) = sources(tag)?;
+    render_clips(
+        tag,
+        vec![
+            Clip::new(&video)
+                .trim(s(in_pt), s(out_pt))
+                .offset(s(offset))
+                .with_speed(speed),
+        ],
+    )
+}
+
+/// An offset between two frames still has to land on one, and the composition's length
+/// has to agree about which. When the two were derived separately the canvas ended a slot
+/// past the layer and that slot rendered as background: one black frame at the end of a
+/// retimed clip, with the programme keeping its length so nothing reported it (#1862).
+///
+/// Both conditions are needed, so unity speed is covered as the control: at 1.0 no offset
+/// reproduced it.
+#[test]
+fn a_retimed_clip_at_an_offgrid_offset_should_keep_its_last_frame() {
+    // 30 fps, so an offset is on the grid when `offset * 30` is a whole number. The
+    // fractional part has to be sampled on both sides of a half frame: rounding the
+    // summed end agrees with rounding the parts whenever it is at or above 0.5, so a
+    // case below 0.5 is the only one that tells the two apart.
+    for (tag, offset, speed) in [
+        ("grid1x", 1.0, 1.0),                  // 30.00 frames
+        ("quarter1x", 1.0 + 1.0 / 120.0, 1.0), // 30.25, under half
+        ("half1x", 1.0 + 1.0 / 60.0, 1.0),     // 30.50
+        ("odd1x", 1.125, 1.0),                 // 33.75
+        ("grid2x", 1.0, SPEED),
+        ("quarter2x", 1.0 + 1.0 / 120.0, SPEED), // 30.25, under half
+        ("threeq2x", 1.0 + 1.0 / 40.0, SPEED),   // 30.75
+        ("half2x", 1.0 + 1.0 / 60.0, SPEED),     // 30.50
+        ("odd2x", 1.125, SPEED),                 // 33.75
+        ("odd2xb", 1.25, SPEED),                 // 37.50
+    ] {
+        let Some(r) = render_frames(tag, 0.0, SOURCE_SECS, offset, speed) else {
+            return;
+        };
+        let expected_lit = (SOURCE_SECS / speed * FPS).ceil() as usize;
+        assert_eq!(
+            r.lit, expected_lit,
+            "a {speed}x clip at {offset}s must keep every frame it contributes"
+        );
+        // The criterion is "every frame it covers, including the last", so the last
+        // frame is asserted directly. The counts above cannot see it: a layer one slot
+        // early keeps them both while the final frame renders as background.
+        assert_eq!(
+            r.last_lit,
+            r.frames - 1,
+            "the last frame must carry picture: {speed}x at {offset}s left it black"
+        );
+        let lead_in = (offset * FPS).round() as usize;
+        assert_eq!(
+            r.first_lit, lead_in,
+            "and the picture must start on the frame the offset lands on"
+        );
+        assert_eq!(
+            r.frames,
+            lead_in + expected_lit,
+            "the canvas must end where the clip does: got {} frames for {} lit",
+            r.frames,
+            r.lit
+        );
+    }
+}
+
+/// The regression the obvious fix would cause. A clip's contribution is not always a
+/// whole number of frames, and one that is 13.5 or 7.5 frames long legitimately occupies
+/// 14 or 8. Rounding the composition's end down would take one of those away, which is
+/// why the rounding is applied to the offset and the content separately rather than to
+/// their sum.
+#[test]
+fn a_clip_contributing_a_fraction_of_a_frame_should_keep_all_of_them() {
+    for (tag, out_pt, expected_lit) in [
+        ("frac135", 0.9, 14),      // 0.45s at 2x -> 13.5 frames
+        ("frac75", 0.5, 8),        // 0.25s at 2x -> 7.5 frames
+        ("frac03", 1.0 / 45.0, 1), // a third of a frame still occupies one
+    ] {
+        let Some(r) = render_frames(tag, 0.0, out_pt, 1.0, SPEED) else {
+            return;
+        };
+        assert_eq!(
+            r.lit,
+            expected_lit,
+            "a clip contributing {} frames must occupy {expected_lit}",
+            out_pt / SPEED * FPS
+        );
+        assert_eq!(
+            r.frames,
+            30 + expected_lit,
+            "and the canvas must hold exactly those, after the lead-in"
+        );
+        assert_eq!(
+            r.last_lit,
+            r.frames - 1,
+            "with the picture running to the final frame"
+        );
+    }
+}
+
+/// Clips that tile the timeline are the shape the GPU route accepts, and the rounding is
+/// applied per clip, so the sum of the parts is not the rounding of the sum: two clips of
+/// 13.5 frames each occupy 14 + 14 = 28 frames, where rounding their combined 27 frames
+/// would give 27 and take one away. Both halves of a razored retimed clip have this shape,
+/// so it is the case the fix has to get right for an editor, and a single clip cannot see
+/// it.
+#[test]
+fn tiled_retimed_clips_should_each_keep_their_fractional_frame() {
+    let Some((video, _gv, _tone, _gt)) = sources("tiled") else {
+        return;
+    };
+    // 0.9s of source at 2x is 0.45s on the timeline, which is 13.5 frames: each clip
+    // needs 14, and the second starts where the first ended.
+    let half = |in_pt: f64, offset: f64| {
+        Clip::new(&video)
+            .trim(s(in_pt), s(in_pt + 0.9))
+            .offset(s(offset))
+            .with_speed(SPEED)
+    };
+    let Some(r) = render_clips("tiled", vec![half(0.0, 0.0), half(1.0, 0.45)]) else {
+        return;
+    };
+    assert_eq!(
+        r.frames, 28,
+        "each clip occupies the frame its fraction needs: 14 + 14, not 27"
+    );
+    assert_eq!(
+        r.last_lit,
+        r.frames - 1,
+        "and the second clip must reach the final frame"
+    );
+    assert_eq!(r.first_lit, 0, "the first clip starts the programme");
+    assert_eq!(
+        r.lit, r.frames,
+        "no slot between or after them may render as background"
+    );
+}
+
 /// Criterion 2. A razor is where this reaches an editor: the right-hand half is created
 /// with a non-zero offset, so splitting a retimed clip used to place that half at
 /// `at / speed`, overlapping its own left half and leaving a hole after the cut.
@@ -281,16 +484,15 @@ fn splitting_a_retimed_clip_should_not_change_the_programme_length() {
 
     // Every frame the clip covers must still carry picture: a half placed at
     // `at / speed` lands early, overlapping its own sibling and leaving the tail of
-    // the span black. The final frame is excluded because a separate defect drops it
-    // for a retimed clip whatever the placement does (#1862): including it here would
-    // make this test fail for a reason it is not about.
+    // the span black. The final frame is included: it used to be excluded because a
+    // retimed clip lost it whatever the placement did, which is #1862 and is fixed.
     let Some((fps, luma)) = video_luma_per_frame(&out_split) else {
         println!("Skipping: cannot decode the rendered video here");
         return;
     };
     let first = ((1.0 + 0.02) * fps).ceil() as usize;
     let last =
-        (((1.0 + CONTENT_SECS - 0.02) * fps).floor() as usize).min(luma.len().saturating_sub(2));
+        (((1.0 + CONTENT_SECS - 0.02) * fps).floor() as usize).min(luma.len().saturating_sub(1));
     // An empty range would satisfy the assertion below without looking at anything,
     // so the span being non-empty is asserted first.
     assert!(

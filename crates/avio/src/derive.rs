@@ -238,17 +238,43 @@ pub(crate) struct Placement {
     pub(crate) handle: Duration,
 }
 
+/// Which output frame a timeline position falls on at `frame_rate`.
+///
+/// **The one rounding rule for a clip's placement.** The emitted `OffsetPts` and the
+/// composition's own length both have to land on the same frame, or the composition ends
+/// up a slot longer or shorter than the layer fills (#1862). Both read this, so they
+/// cannot drift apart.
+///
+/// `None` when the rate is not a usable number, which leaves a caller free to fall back
+/// to the unquantised position rather than collapsing every offset to zero.
+pub(crate) fn offset_frames(seconds: f64, frame_rate: f64) -> Option<f64> {
+    if !frame_rate.is_finite() || frame_rate <= 0.0 || !seconds.is_finite() {
+        return None;
+    }
+    Some((seconds * frame_rate).round())
+}
+
+/// A timeline position snapped to the frame [`offset_frames`] puts it on.
+fn snap_to_frame(seconds: f64, frame_rate: f64) -> f64 {
+    offset_frames(seconds, frame_rate).map_or(seconds, |f| f / frame_rate)
+}
+
 /// Derives the export [`VideoLayer`] for one clip.
 ///
 /// `canvas_width`/`canvas_height` are the project canvas dimensions (for the
 /// [`fit`](Clip::fit) framing step). `placement` carries the clip's transition
 /// boundaries; `proxy` is the caller-probed proxy source.
+// The canvas size and the frame rate are the project's output format rather than
+// separate knobs, but folding them into a struct would touch every caller for no gain
+// here; `drain_video_gpu` carries the same allow for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn video_layer(
     clip: &Clip,
     track_idx: usize,
     automation: &TrackAutomation,
     canvas_width: u32,
     canvas_height: u32,
+    frame_rate: f64,
     placement: &Placement,
     proxy: Option<ProxySource>,
 ) -> VideoLayer {
@@ -286,7 +312,21 @@ pub(crate) fn video_layer(
     }
     if clip.offset > Duration::ZERO {
         layer_effects.push(FilterStep::OffsetPts {
-            seconds: clip.offset.as_secs_f64(),
+            // Snapped to a whole frame at the timeline rate. A layer cannot show a frame
+            // part way through an output slot, so an offset between two of them leaves
+            // the composition one slot longer than the layer can fill and that slot
+            // renders as background (#1862). Snapping here makes the grid alignment a
+            // property of what is emitted rather than something the composition's length
+            // has to predict.
+            //
+            // A sub-frame offset does move, to the nearest slot: it has to land on one,
+            // and the two export routes did not previously agree on which. Measured at
+            // 30 fps, an offset of 1.01667s showed from slot 30 at 2x and from slot 31 at
+            // unity; both now show from 31, the nearest. The shift is at most half a
+            // frame and it is what "on a frame boundary" means for a position between
+            // two of them. Audio keeps its own quantisation (`adelay` takes whole
+            // milliseconds), so the two stay within the frame they always shared.
+            seconds: snap_to_frame(clip.offset.as_secs_f64(), frame_rate),
         });
     }
     // Per-frame scale/rotation: when the model animates them, splice self-animating
@@ -589,6 +629,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -608,6 +649,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -627,6 +669,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -645,6 +688,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -667,6 +711,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -684,6 +729,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -705,6 +751,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement {
                 stream_start: Some(4.0),
                 transition: Duration::from_millis(500),
@@ -731,6 +778,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -756,6 +804,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -794,6 +843,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -824,6 +874,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -863,6 +914,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -878,6 +930,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -901,6 +954,7 @@ mod tests {
             &automation,
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -919,6 +973,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -937,6 +992,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement {
                 stream_start: None,
                 transition: Duration::ZERO,
@@ -971,6 +1027,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement {
                 stream_start: None,
                 transition: Duration::ZERO,
@@ -1006,6 +1063,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement {
                 stream_start: Some(10.0),
                 transition: Duration::from_millis(500),
@@ -1033,6 +1091,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1053,6 +1112,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1074,6 +1134,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1092,6 +1153,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1117,6 +1179,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1487,6 +1550,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1508,6 +1572,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1541,6 +1606,7 @@ mod tests {
             &automation,
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1578,6 +1644,7 @@ mod tests {
             &automation,
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1594,6 +1661,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
@@ -1613,6 +1681,7 @@ mod tests {
             &no_anim(),
             1920,
             1080,
+            30.0,
             &Placement::default(),
             None,
         );
