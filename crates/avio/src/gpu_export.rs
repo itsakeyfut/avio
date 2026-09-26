@@ -109,7 +109,12 @@ fn budget_frames(clip: &Clip, frame_rate: f64) -> Option<u64> {
 ///
 /// A transition on the track's *first* clip is genuinely ignored, matching `derive` on
 /// the CPU route (there is no preceding clip to cross-fade from).
-fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> VideoLayer {
+fn transitionless_layer(
+    clip: &Clip,
+    track: &Track,
+    canvas: (u32, u32),
+    frame_rate: f64,
+) -> VideoLayer {
     if clip.transition.is_none() {
         // `Placement::default()`: the drain runs the transition itself, and reads past the
         // out-point through `ClipSource` rather than through a widened trim.
@@ -119,6 +124,7 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
             &track.automation,
             canvas.0,
             canvas.1,
+            frame_rate,
             &derive::Placement::default(),
             None,
         );
@@ -131,6 +137,7 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
         &track.automation,
         canvas.0,
         canvas.1,
+        frame_rate,
         &derive::Placement::default(),
         None,
     )
@@ -241,7 +248,7 @@ fn eligible_one_track(
         {
             return None;
         }
-        let layer = transitionless_layer(clip, track, canvas);
+        let layer = transitionless_layer(clip, track, canvas, frame_rate);
         let GpuMapping::Gpu(plan) = map_scene(std::slice::from_ref(&layer), canvas, Duration::ZERO)
         else {
             return None;
@@ -733,7 +740,7 @@ impl<'a> TrackSource<'a> {
         let Some(first) = track.clips.first() else {
             return Ok(None);
         };
-        let cur_layer = transitionless_layer(first, track, canvas);
+        let cur_layer = transitionless_layer(first, track, canvas, frame_rate);
         Ok(Some(Self {
             track,
             canvas,
@@ -777,7 +784,7 @@ impl<'a> TrackSource<'a> {
         // the blend reads, not part of the clip's on-screen duration.
         self.cur.allow_handle(window);
         let inc = ClipSource::open(next, self.frame_rate)?;
-        let inc_layer = transitionless_layer(next, self.track, self.canvas);
+        let inc_layer = transitionless_layer(next, self.track, self.canvas, self.frame_rate);
         // Start each clip with a clean effect cache: a stateful effect (MotionBlur's
         // exposure trail) must not accumulate across a cut into the next clip (RK-025).
         core.reset_effect_cache();

@@ -363,7 +363,7 @@ impl Timeline {
         // How long the composition is, resolved once because both export routes need
         // the same answer: the CPU graph ends its canvas here and the GPU drain stops
         // here, so the two cannot disagree about where the programme ends.
-        let composition_end = composition_end(&video_tracks, any_video_solo);
+        let composition_end = composition_end(&video_tracks, any_video_solo, frame_rate);
 
         // The CPU composition graph is skipped when the GPU export path will run.
         let build_cpu_video = {
@@ -443,6 +443,7 @@ impl Timeline {
                         &track.automation,
                         canvas_width,
                         canvas_height,
+                        frame_rate,
                         &derive::Placement {
                             stream_start,
                             transition: transition_dur,
@@ -718,8 +719,31 @@ impl Timeline {
 /// 0.512s rather than 0.5s, so the export gains a frame. The cross-fade bookkeeping in
 /// `render_inner` reads the same number, so the two agree; trimming the clip avoids it
 /// entirely.
-fn composition_end(video_tracks: &[Track], any_video_solo: bool) -> Option<Duration> {
-    let mut end = 0.0_f64;
+///
+/// # Why this counts frames rather than adding seconds
+///
+/// The length is quantised to whole frames at `frame_rate`, **per clip**, as
+/// `offset_frames(offset) + ceil(content * fps)`. A layer fills a whole number of frames
+/// of lead-in and then a whole number of its own, so a canvas generated from a length in
+/// seconds can end up one slot longer than any layer reaches: at 30 fps a clip at offset
+/// 1.125s running at 2x ends at 1.625s, which is 48.75 frames, and the canvas rounds that
+/// up to 49 while the layer covers 48. The last slot then renders as background (#1862).
+///
+/// Rounding the summed end instead is not the same thing and is wrong: a clip whose
+/// content is 13.5 frames legitimately occupies 14, so flooring `offset + content` would
+/// take one of them away. Both roundings have to be applied to the quantity they belong
+/// to.
+fn composition_end(
+    video_tracks: &[Track],
+    any_video_solo: bool,
+    frame_rate: f64,
+) -> Option<Duration> {
+    // A rate that is not a positive number makes every count below meaningless. Written
+    // as a positive test so a `NaN` rate is rejected too, which `<= 0.0` would let past.
+    if !frame_rate.is_finite() || frame_rate <= 0.0 {
+        return None;
+    }
+    let mut end_frames = 0.0_f64;
     for track in video_tracks {
         if !track.is_active(any_video_solo) {
             continue;
@@ -736,10 +760,25 @@ fn composition_end(video_tracks: &[Track], any_video_solo: bool) -> Option<Durat
                     .map_or(total, |ip| (total - ip.as_secs_f64()).max(0.0))
             };
             let span = crate::transition::composited_secs(source_secs, clip.speed);
-            end = end.max(clip.offset.as_secs_f64() + span);
+            // The lead-in comes from `derive::offset_frames`, the same rule the emitted
+            // `OffsetPts` is snapped with, so the canvas ends on the frame the layer
+            // actually starts from. Deriving it separately here is what left the two a
+            // slot apart (#1862). The content ceils because a clip shorter than one frame
+            // still occupies one, so a clip that contributes anything contributes a frame.
+            let lead_in = crate::derive::offset_frames(clip.offset.as_secs_f64(), frame_rate)?;
+            let content = (span * frame_rate).ceil();
+            if !content.is_finite() {
+                return None;
+            }
+            end_frames = end_frames.max(lead_in + content);
         }
     }
-    (end > 0.0).then(|| Duration::from_secs_f64(end))
+    // `try_from_secs_f64` rather than the panicking form: a frame count that overflows a
+    // `Duration` is a length that cannot be established, which is what `None` means here
+    // and is already handled by both routes.
+    (end_frames >= 1.0)
+        .then(|| Duration::try_from_secs_f64(end_frames / frame_rate).ok())
+        .flatten()
 }
 
 /// Drains a built CPU composition [`FilterGraph`] to the encoder (the historical
