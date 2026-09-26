@@ -11,6 +11,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.3] - 2026-09-26
+
+A correctness release for the video export. Every fix below changes what a render actually contains,
+so a timeline exported with 0.18.2 is not what 0.18.3 writes from the same model. They are related:
+giving the composition its own length is what made the next three defects visible, and the last one
+depends on that length existing.
+
+### Fixed
+
+#### avio
+
+- An export ends where the composition does, not where the layer list does. The background canvas ran
+  forever and the graph borrowed its end from whichever clip happened to be last in
+  `Track::clips`, so anything later in time than that clip was cut away: dragging a clip to the right
+  through `Command::MoveClip` silently exported a shorter programme than the one on screen, and a
+  short overlay truncated the longer track underneath it. The composition now carries an explicit
+  length that both export routes read ([#1803](https://github.com/itsakeyfut/avio/issues/1803))
+- A clip is placed on the timeline after being retimed, not before. `setpts=PTS/factor` and the speed
+  chain scale every timestamp upstream of themselves, including the placement, so a clip at 1s
+  running at 2x started at 0.5s. Video and audio were wrong by the same factor, which is why they
+  stayed in sync while both sat in the wrong place; at `offset = 0` nothing was visible at all
+  ([#1804](https://github.com/itsakeyfut/avio/issues/1804))
+- A clip's placement and the composition's length are derived from one rounding rule. The emitted
+  `OffsetPts` carried the offset in seconds while the canvas was generated for a length that became a
+  whole number of frames, so an offset that did not land on a frame left the composition one slot
+  longer than any layer could fill and the last frame rendered as background. Both now read
+  `derive::offset_frames` and cannot drift apart ([#1862](https://github.com/itsakeyfut/avio/issues/1862))
+- A still image is held for its clip's length. An image source yields one frame and signals EOF, and
+  a layer that has ended stops contributing, so a logo or title card appeared in the first output
+  frame and nowhere else. The frame is now cloned for as long as the composition runs; the GPU export
+  declines a still rather than exporting black frames, because its drain decodes forward and has
+  nothing to hold one frame with ([#1802](https://github.com/itsakeyfut/avio/issues/1802))
+
+#### ff-filter
+
+- A retimed clip's audio is as long as its speed says. The `asetrate` chain began with
+  `apad=pad_dur=1`, and `asetrate` scales everything upstream of it including that padded second, so
+  the output ran `(content + 1) / speed`: a one-second clip came out four seconds long at 0.5x, and
+  unchanged at 2x, which is the coincidence that made this hard to read. The pad is gone and `aeval`
+  still sanitises the resampler's output ([#1863](https://github.com/itsakeyfut/avio/issues/1863))
+
+#### ff-decode
+
+- `VideoDecoder::duration()` and `AudioDecoder::duration()` report the duration of the stream they
+  opened, not the container's. A container's duration follows whichever stream is longest, so a file
+  whose audio outran its video said more time than the video held: 15 frames at 30 fps beside 24 AAC
+  packets measured 0.512s against 0.5s of picture. The engine derives a composition's length from
+  that reading for a clip with no out-point, so a video composition ran for as long as the audio in a
+  source file happened to be. The container's duration remains the documented fallback for a stream
+  that carries none ([#1861](https://github.com/itsakeyfut/avio/issues/1861))
+
+### Changed
+
+#### ff-filter
+
+- `LayerSource` gained a `Still` variant for a single-image source that has to be held rather than
+  played. The enum is not `#[non_exhaustive]`, so code that matches it exhaustively needs a new arm;
+  no crate outside this workspace depends on `ff-filter`, and nothing in the workspace matches the
+  enum outside the crate that defines it. `#[non_exhaustive]` is added in 0.19.0 so later variants
+  are additive ([#1802](https://github.com/itsakeyfut/avio/issues/1802))
+
+---
+
 ## [0.18.2] - 2026-09-25
 
 A correctness release for the audio path. Four of the fixes below change what an export actually
