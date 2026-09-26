@@ -16,14 +16,28 @@ use crate::graph::types::Rgb;
 
 /// The source of a composited [`VideoLayer`]'s frames.
 ///
-/// `File`/`Lavfi` are opened via the `movie` filter (a media file, or a `lavfi`
-/// filtergraph string via the lavfi demuxer). `Text`/`Solid` are **generated**
-/// inline via the `color` filter source (and `drawtext` for text), so they render
-/// without any file or the lavfi demuxer.
+/// `File`/`Still`/`Lavfi` are opened via the `movie` filter (a media file, or a
+/// `lavfi` filtergraph string via the lavfi demuxer). `Text`/`Solid` are
+/// **generated** inline via the `color` filter source (and `drawtext` for text), so
+/// they render without any file or the lavfi demuxer.
 #[derive(Debug, Clone)]
 pub enum LayerSource {
     /// A media file opened via `movie=filename=<path>`.
     File(PathBuf),
+    /// A single-image file, held for as long as the composition runs.
+    ///
+    /// The same `movie` source as [`File`](Self::File) with its loop count set to
+    /// infinite and its output conformed to the composition's frame rate. An image
+    /// yields one frame and then signals EOF, and a layer that has ended stops
+    /// contributing, so a still placed as a `File` appears in the first output frame
+    /// and nowhere else (#1802). Which variant a caller uses is its decision: this one
+    /// says "hold this frame", which is only correct for a source that has exactly one.
+    ///
+    /// Holding needs the composition to have a length, because a held frame has no end of
+    /// its own; without one the source is used as it comes and contributes its single
+    /// frame. This is the composition graph only: the realtime path carries its own layer
+    /// types and is untouched by this variant.
+    Still(PathBuf),
     /// A `lavfi` filtergraph string opened via `movie=<str>:format_name=lavfi`.
     Lavfi(String),
     /// A generated text/title layer over a transparent canvas.
@@ -305,6 +319,31 @@ mod tests {
             Some(Duration::from_millis(12_500)),
         );
         assert_eq!(with, "c=#000000:s=1920x1080:r=30:d=12.500000");
+    }
+
+    /// A still is held by cloning its final frame, not by looping the source: looping
+    /// was measured to hang the export for an `image2` input (a JPEG) while working for
+    /// `png_pipe` (a PNG), so the spelling is what the fix for #1802 turns on. Asserted
+    /// as strings because CI's Linux `FFmpeg` is built without filters and cannot
+    /// construct the graph to look.
+    #[test]
+    fn still_source_args_should_clone_the_last_frame_and_retime_it() {
+        let tpad = super::super::composition_inner::still_tpad_args();
+        assert_eq!(
+            tpad, "stop=-1:stop_mode=clone",
+            "stop=-1 is infinite and clone repeats the frame; a finite count ends the still early"
+        );
+
+        let setpts = super::super::composition_inner::rate_setpts_expr("30");
+        assert_eq!(
+            setpts, "expr=N/(30)/TB",
+            "a cloned frame repeats its source timestamp, so the rate has to be reimposed"
+        );
+        // A rate that is itself a division has to survive being spliced in.
+        assert_eq!(
+            super::super::composition_inner::rate_setpts_expr("30000/1001"),
+            "expr=N/(30000/1001)/TB"
+        );
     }
 
     #[test]
