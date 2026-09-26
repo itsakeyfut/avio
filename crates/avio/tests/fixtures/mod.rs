@@ -212,6 +212,42 @@ pub fn write_tone_wav(
         .expect("write wav");
 }
 
+/// Writes a WAV of digital silence, for a test that needs a source carrying no signal.
+///
+/// Separate from `write_tone_wav` rather than an amplitude on it: a caller asking for
+/// silence is asking for a different fixture, not a quieter tone, and the two are read
+/// by different assertions.
+pub fn write_silence_wav(path: &std::path::Path, sample_rate: u32, secs: f64) {
+    use std::io::Write as _;
+
+    let (channels, bits) = (2u16, 16u16);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let frames = (f64::from(sample_rate) * secs) as u32;
+    let block_align = u32::from(channels) * u32::from(bits / 8);
+    let data_len = frames * block_align;
+
+    let mut b: Vec<u8> = Vec::with_capacity(44 + data_len as usize);
+    b.extend(b"RIFF");
+    b.extend(&(36 + data_len).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(&16u32.to_le_bytes());
+    b.extend(&1u16.to_le_bytes()); // PCM
+    b.extend(&channels.to_le_bytes());
+    b.extend(&sample_rate.to_le_bytes());
+    b.extend(&(sample_rate * block_align).to_le_bytes());
+    b.extend(&u16::try_from(block_align).unwrap_or(u16::MAX).to_le_bytes());
+    b.extend(&bits.to_le_bytes());
+    b.extend(b"data");
+    b.extend(&data_len.to_le_bytes());
+    // Silence is the zero sample for signed PCM, so the body needs no loop.
+    b.resize(44 + data_len as usize, 0);
+
+    std::fs::File::create(path)
+        .expect("create wav")
+        .write_all(&b)
+        .expect("write wav");
+}
+
 /// The frame rate and the mean luma of every decoded video frame, or `None` where
 /// this build cannot decode the file.
 ///

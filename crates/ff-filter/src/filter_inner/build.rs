@@ -863,23 +863,38 @@ pub(crate) unsafe fn add_atempo_chain(
     Ok(ctx)
 }
 
-/// Insert a speed-change filter chain for `factor > 2.0`:
+/// Insert a speed-change filter chain for any non-unity `factor`:
 ///
 /// ```text
-/// apad=pad_dur=1  →  asetrate=r={new_sr}  →  aresample={output_sr}  →  aeval (NaN clamp)
+/// asetrate=r={new_sr}  →  aresample={output_sr}  →  aeval (NaN clamp)
 /// ```
 ///
-/// * `apad` appends 1 s of silence so SWR's polyphase FIR resampler has enough
-///   input at EOF to flush its filter window without reading uninitialised memory
-///   (which produces NaN → AAC encoder EINVAL at high downsampling ratios).
-/// * `aeval` replaces any residual NaN/Inf samples with 0 as a last-resort guard.
-///   The expression is generated for `nb_channels` channels so it matches the
-///   actual stream layout (the per-track aformat has already normalised the layout
-///   before this chain is appended).
-/// * Both `apad` and `aeval` are optional: if their filter is unavailable the
-///   chain proceeds with just `asetrate → aresample`.
+/// * `aeval` replaces any NaN/Inf samples with 0. The expression is generated for
+///   `nb_channels` channels so it matches the actual stream layout (the per-track
+///   aformat has already normalised the layout before this chain is appended).
+///   It is optional: if the filter is unavailable the chain proceeds without it.
 ///
-/// Audio pitch changes proportionally ("vinyl effect"); no WSOLA processing.
+/// Audio pitch changes proportionally ("vinyl effect"); no WSOLA processing. That
+/// is a different reading of `speed` from the single-source builder's, which uses
+/// [`add_atempo_chain`] and preserves pitch. Whether the two should agree is open;
+/// see the note at the mixer's `Speed` arm in `composition_inner`.
+///
+/// # The tail pad this chain used to carry
+///
+/// The chain began with `apad=pad_dur=1`, so SWR's polyphase FIR had input to flush
+/// its window at EOF rather than reading uninitialised memory, which was reported to
+/// produce NaN and an AAC encoder `EINVAL` at high downsampling ratios. Its size was
+/// justified by the high-speed case, where a second shrinks to milliseconds.
+///
+/// It was removed in #1863. `asetrate` scales everything upstream of it, including
+/// that second, so the output was `(content + 1) / factor` seconds instead of
+/// `content / factor`. The justification never covered `factor <= 1.0`, where the
+/// pad **grows** instead of shrinking: a one-second clip at 0.5x came out four
+/// seconds long. Measured at 0.5, 1.5, 2, 4, 20 and 150, over tonal and silent
+/// audio alike, removing it produced the expected length everywhere and not one
+/// non-finite sample. `aeval` remains as the value-level guard, and it is the one
+/// that does not distort timing. If a NaN at a high ratio is ever reported again,
+/// this is the note to reopen rather than rediscover.
 ///
 /// # Safety
 ///
@@ -895,41 +910,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     let mut ctx = prev_ctx;
 
-    // 1. apad=pad_dur=1 (optional)
-    // Prevents SWR polyphase resampler from reading uninitialised memory at EOF
-    // when the last output frame cannot be filled from remaining input samples.
-    // At speed=150 the 1 s of appended silence shrinks to ~7 ms — imperceptible.
-    let apad_filter = ff_sys::avfilter_get_by_name(c"apad".as_ptr());
-    if apad_filter.is_null() {
-        log::warn!("apad filter unavailable — SWR tail-flush NaN guard skipped index={index}");
-    } else {
-        let name = std::ffi::CString::new(format!("apad_spd{index}"))
-            .map_err(|_| FilterError::BuildFailed)?;
-        let args = c"pad_dur=1";
-        let mut apad_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-        let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut apad_ctx,
-            apad_filter,
-            name.as_ptr(),
-            args.as_ptr(),
-            std::ptr::null_mut(),
-            graph,
-        );
-        if ret < 0 || apad_ctx.is_null() {
-            log::warn!(
-                "apad creation FAILED ret={ret} index={index} — continuing without tail padding"
-            );
-        } else {
-            let ret = ff_sys::avfilter_link(ctx, 0, apad_ctx, 0);
-            if ret < 0 {
-                log::warn!("apad link FAILED ret={ret} index={index}");
-            } else {
-                ctx = apad_ctx;
-            }
-        }
-    }
-
-    // 2. asetrate=r={new_sr} (required)
+    // 1. asetrate=r={new_sr} (required)
     let asetrate_filter = ff_sys::avfilter_get_by_name(c"asetrate".as_ptr());
     if asetrate_filter.is_null() {
         log::warn!("filter not found name=asetrate (speed fallback)");
@@ -958,7 +939,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
     }
     ctx = asetrate_ctx;
 
-    // 3. aresample={output_sr} (required)
+    // 2. aresample={output_sr} (required)
     // aresample accepts the rate as a positional arg (just the number).
     // "r=" is not a valid option name in this FFmpeg version.
     let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
@@ -989,7 +970,7 @@ pub(crate) unsafe fn add_asetrate_resample_chain(
     }
     ctx = aresample_ctx;
 
-    // 4. aeval NaN/Inf sanitizer (optional)
+    // 3. aeval NaN/Inf sanitizer (optional)
     // Replaces any NaN or Inf samples that survive the resampler with 0.
     // One expression per channel, joined by `|`, so the output layout matches
     // the input layout exactly regardless of mono/stereo/surround.
@@ -3259,6 +3240,10 @@ impl FilterGraphInner {
 
             // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
             // standard `add_and_link_step` path and insert the atempo chain here.
+            // `atempo` preserves pitch. The multi-track mixer reads `speed` the other
+            // way, shifting pitch with it via `add_asetrate_resample_chain`, so the
+            // two builders do not agree on what a speed change sounds like; see the
+            // note at the mixer's `Speed` arm (#1863).
             if let FilterStep::Speed { factor } = step {
                 prev_ctx = add_atempo_chain(graph, prev_ctx, *factor, i)?;
                 continue;
