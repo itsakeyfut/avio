@@ -2052,6 +2052,7 @@ mod tests {
             30.0,
             &crate::derive::Placement::default(),
             None,
+            false,
         );
         let descriptor = crate::derive::realtime_descriptor(&clip, &auto, 1920, 1080);
 

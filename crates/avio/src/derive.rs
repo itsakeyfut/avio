@@ -263,7 +263,9 @@ fn snap_to_frame(seconds: f64, frame_rate: f64) -> f64 {
 ///
 /// `canvas_width`/`canvas_height` are the project canvas dimensions (for the
 /// [`fit`](Clip::fit) framing step). `placement` carries the clip's transition
-/// boundaries; `proxy` is the caller-probed proxy source.
+/// boundaries; `proxy` is the caller-probed proxy source, and `still` the caller-probed
+/// answer to whether the source is a single image, which decides whether the emitted
+/// [`LayerSource`] holds its frame (#1802).
 // The canvas size and the frame rate are the project's output format rather than
 // separate knobs, but folding them into a struct would touch every caller for no gain
 // here; `drain_video_gpu` carries the same allow for the same reason.
@@ -277,6 +279,7 @@ pub(crate) fn video_layer(
     frame_rate: f64,
     placement: &Placement,
     proxy: Option<ProxySource>,
+    still: bool,
 ) -> VideoLayer {
     let Placement {
         stream_start,
@@ -376,8 +379,11 @@ pub(crate) fn video_layer(
         }
     }
 
-    // Pure model→primitive source mapping (no FFmpeg translation here).
+    // Pure model→primitive source mapping (no FFmpeg translation here). `still` is a
+    // fact about the file that only a probe can establish, so the caller resolves it and
+    // passes it in, as it does for `proxy`.
     let source = match &clip.source {
+        ClipSource::File(path) if still => LayerSource::Still(path.clone()),
         ClipSource::File(path) => LayerSource::File(path.clone()),
         ClipSource::Text(spec) => LayerSource::Text(spec.clone()),
         ClipSource::Solid(color) => LayerSource::Solid(*color),
@@ -632,6 +638,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         match layer.source {
             LayerSource::File(path) => assert_eq!(path.to_str(), Some("a.mp4")),
@@ -652,6 +659,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         match layer.source {
             LayerSource::Text(spec) => assert_eq!(spec.text, "title"),
@@ -672,6 +680,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         match layer.source {
             LayerSource::Solid(color) => assert_eq!(color, Color::rgb(1, 2, 3)),
@@ -691,6 +700,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(
             layer.effects[0],
@@ -714,6 +724,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(layer.effects.iter().any(
             |s| matches!(s, FilterStep::OffsetPts { seconds } if (seconds - 2.0).abs() < 1e-9)
@@ -732,6 +743,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(
             layer
@@ -758,6 +770,7 @@ mod tests {
                 handle: Duration::ZERO,
             },
             None,
+            false,
         );
         // The offset is this clip's own authored start on the stream, unshifted: the
         // transition preserves the timeline length (ADR-0009).
@@ -781,6 +794,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(
             !layer
@@ -807,6 +821,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
 
         // The static layer transform is neutralized so the compositor's static scale
@@ -846,6 +861,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
 
         assert!(matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
@@ -877,6 +893,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(
             !layer
@@ -917,6 +934,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
     }
@@ -933,6 +951,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.opacity, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
     }
@@ -957,6 +976,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.opacity, AnimatedValue::Track(_)));
     }
@@ -976,6 +996,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.blend_mode, BlendMode::Multiply));
         assert!(matches!(layer.composite_op, CompositeOp::Under));
@@ -999,6 +1020,7 @@ mod tests {
                 handle: Duration::from_millis(500),
             },
             None,
+            false,
         );
         assert!(
             layer.effects.iter().any(|s| matches!(
@@ -1034,6 +1056,7 @@ mod tests {
                 handle: Duration::from_millis(500),
             },
             None,
+            false,
         );
         assert!(
             layer.effects.iter().any(|s| matches!(
@@ -1070,6 +1093,7 @@ mod tests {
                 handle: Duration::ZERO,
             },
             None,
+            false,
         );
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Trim { .. }));
@@ -1094,6 +1118,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(!layer.effects.iter().any(|s| matches!(
             s,
@@ -1115,6 +1140,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(layer.effects.iter().any(|s| matches!(
             s,
@@ -1137,6 +1163,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(layer.effects.iter().any(|s| matches!(
             s,
@@ -1156,6 +1183,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(layer.effects.iter().any(|s| matches!(
             s,
@@ -1182,6 +1210,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         let e = &layer.effects;
         assert!(matches!(e[0], FilterStep::Speed { .. }));
@@ -1553,6 +1582,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
@@ -1575,6 +1605,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 1.0).abs() < 1e-9));
@@ -1609,6 +1640,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         // The scale_x timeline animation is carried into ScaleAnimated's width; the
         // un-animated scale_y axis maps to a static height (1.0 × canvas).
@@ -1647,6 +1679,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.scale_x, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
         assert!(matches!(layer.scale_y, AnimatedValue::Static(v) if (v - 0.5).abs() < 1e-9));
@@ -1664,6 +1697,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.rotation, AnimatedValue::Static(v) if (v - 30.0).abs() < 1e-9));
     }
@@ -1684,6 +1718,7 @@ mod tests {
             30.0,
             &Placement::default(),
             None,
+            false,
         );
         assert!(matches!(layer.rotation, AnimatedValue::Static(v) if v.abs() < 1e-9));
         assert!(

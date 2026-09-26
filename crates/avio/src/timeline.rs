@@ -450,6 +450,7 @@ impl Timeline {
                             handle,
                         },
                         proxy,
+                        clip_is_still(clip),
                     ));
 
                     // Accumulate how many seconds this clip contributes, so the next
@@ -693,6 +694,52 @@ impl Timeline {
         );
         Ok(())
     }
+}
+
+/// Whether a clip is backed by a single still image, which has to be held rather than
+/// played (#1802).
+///
+/// `false` for a generated source and for anything that cannot be probed: a clip whose
+/// source will not open is going to fail further down for a better reason than this, and
+/// guessing "still" for it would hold a frame that does not exist.
+pub(crate) fn clip_is_still(clip: &Clip) -> bool {
+    let Some(src) = clip.source_path() else {
+        return false;
+    };
+    match ff_probe::open(src) {
+        Ok(info) => is_still_source(
+            info.format(),
+            info.video_streams().first().and_then(|v| v.frame_count()),
+        ),
+        Err(e) => {
+            log::debug!(
+                "still detection skipped: cannot probe {}: {e}",
+                src.display()
+            );
+            false
+        }
+    }
+}
+
+/// Whether a probed source is one image rather than a moving picture.
+///
+/// Two conditions, because either alone is wrong:
+///
+/// 1. **The demuxer is an image demuxer.** `FFmpeg` reads a lone image through a
+///    `<codec>_pipe` demuxer or through `image2`; measured, a PNG reports `png_pipe` and a
+///    JPEG `image2`, against `mov,mp4,m4a,3gp,3g2,mj2` for a video file. The `_pipe`
+///    suffix is a family rule rather than a list that has to be kept up to date.
+/// 2. **The probe found at most one frame.** `image2` is also the demuxer for an image
+///    *sequence*, which is a moving source and must not be held on its first frame. A
+///    still reports no frame count at all (the measured PNG and JPEG both do), where a
+///    video file reports one: 180 and 1514 for the two committed fixtures.
+///
+/// A frame count is trusted only to exclude, never to include, so a format that reports
+/// nothing is not thereby a still.
+fn is_still_source(format: &str, frame_count: Option<u64>) -> bool {
+    let image_demuxer = format == "image2" || format.ends_with("_pipe");
+    let at_most_one_frame = frame_count.is_none_or(|n| n <= 1);
+    image_demuxer && at_most_one_frame
 }
 
 /// How long the composition is: the latest point any active video clip reaches.
@@ -1410,6 +1457,32 @@ impl Timeline {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The predicate that decides whether a clip's frame is held (#1802). Both halves
+    /// matter: the demuxer name alone would take an image *sequence* for a still, and the
+    /// frame count alone would take any format that does not report one.
+    ///
+    /// Every value here was measured with `avio::open` on a real file rather than guessed.
+    #[test]
+    fn is_still_source_should_hold_a_lone_image_and_nothing_else() {
+        // A PNG reads through a `<codec>_pipe` demuxer and reports no frame count.
+        assert!(is_still_source("png_pipe", None));
+        // A JPEG reads through `image2`, which is the same demuxer as a sequence.
+        assert!(is_still_source("image2", None));
+        // Other `_pipe` demuxers follow the same naming, which is why the rule is the
+        // suffix rather than a list that has to be kept up to date.
+        assert!(is_still_source("webp_pipe", Some(1)));
+
+        // An `image2` source with more than one frame is a sequence: a moving picture
+        // that must not be frozen on its first frame.
+        assert!(!is_still_source("image2", Some(180)));
+        // A container is not a still however few frames it happens to report, and a
+        // format that reports nothing is not thereby an image.
+        assert!(!is_still_source("mov,mp4,m4a,3gp,3g2,mj2", Some(1514)));
+        assert!(!is_still_source("mov,mp4,m4a,3gp,3g2,mj2", None));
+        assert!(!is_still_source("mp3", None));
+        assert!(!is_still_source("matroska,webm", Some(1)));
+    }
 
     #[cfg(feature = "preview")]
     #[test]

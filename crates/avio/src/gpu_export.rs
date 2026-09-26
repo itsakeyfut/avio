@@ -127,6 +127,9 @@ fn transitionless_layer(
             frame_rate,
             &derive::Placement::default(),
             None,
+            // Never a still: `eligible_one_track` declines a single-image source, so a
+            // timeline holding one takes the CPU route and never reaches here (#1802).
+            false,
         );
     }
     let mut without = clip.clone();
@@ -140,6 +143,7 @@ fn transitionless_layer(
         frame_rate,
         &derive::Placement::default(),
         None,
+        false,
     )
 }
 
@@ -274,6 +278,21 @@ fn eligible_one_track(
             .layers
             .iter()
             .all(|l| is_neutral_composite(l) && !l.effects.iter().any(is_stateful_effect));
+
+        // A still has to be held for the clip's length, and the drain has nothing to hold
+        // it with: `ClipSource` decodes forward, so a one-frame source runs out and the
+        // canvas shows through, and an exact seek to the in-point on it fails outright
+        // (#1802). The CPU composition holds it instead, so decline and let the fallback
+        // take it.
+        //
+        // **Last of the per-clip checks**, because it is the only one that opens the file:
+        // a timeline declined for its speed, its rotation, an unmappable layer or a
+        // stateful effect never pays for the probe. A timeline that gets past here pays
+        // once more when the CPU layer is built, which is the one place left where the same
+        // question is asked twice.
+        if crate::timeline::clip_is_still(clip) {
+            return None;
+        }
     }
 
     // Transition pass (no I/O). A transition on the *first* clip is ignored rather than
@@ -1557,6 +1576,41 @@ mod tests {
             eligible_now,
             Some(vec![0]),
             "a Fade into the last clip must be GPU-eligible after #1659"
+        );
+    }
+
+    #[test]
+    fn eligible_track_should_decline_a_still() {
+        // #1802: the drain decodes forward, so a one-frame source runs out and the canvas
+        // shows through for the rest of the clip, and an exact seek to the in-point of one
+        // fails outright. The CPU composition holds the frame instead, so the still has to
+        // reach it. Probe-backed, because the decision ends in reading the file's demuxer.
+        let still = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/img/hello-triangle.png");
+        if !still.exists() {
+            println!("Skipping: fixture not found at {}", still.display());
+            return;
+        }
+        let t = square_timeline(vec![placed(&still.to_string_lossy(), 0.0, 1.0)]);
+        assert_eq!(
+            eligible(&t),
+            None,
+            "a still must be declined so the export falls back to the CPU composition"
+        );
+
+        // The control: the same shape with a moving source stays eligible, so the
+        // rejection is the still and not the timeline around it.
+        let moving = std::env::temp_dir().join("avio_eligible_still_control.mp4");
+        if !probe_source_or_skip(&moving, 64, 64, 30.0) {
+            return;
+        }
+        let control = square_timeline(vec![placed(&moving.to_string_lossy(), 0.0, 1.0)]);
+        let eligible_now = eligible(&control);
+        let _ = std::fs::remove_file(&moving);
+        assert_eq!(
+            eligible_now,
+            Some(vec![0]),
+            "a moving source with the same shape must stay eligible"
         );
     }
 

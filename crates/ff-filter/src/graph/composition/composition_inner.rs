@@ -231,15 +231,64 @@ unsafe fn build_video_composition_unsafe(
                     Some(p) => p.path.as_path(),
                     None => path.as_path(),
                 };
-                let arg = decode_path
-                    .to_string_lossy()
-                    .replace('\\', "/")
-                    .replace(':', "\\:");
+                let arg = movie_filename_arg(decode_path);
                 let Some(ctx) = add_movie(graph, idx, &format!("filename={arg}")) else {
                     bail!(graph, format!("failed to build movie source layer={idx}"));
                 };
                 log::debug!("video composition layer={idx} movie source");
                 ctx
+            }
+            LayerSource::Still(path) => {
+                // One image, held for the whole composition. The frame is **cloned** after
+                // the source ends rather than the source being looped: `movie:loop=0` was
+                // measured to hang the export for a JPEG (an `image2` source), where the
+                // same spelling worked for a PNG (`png_pipe`), so re-reading the file is
+                // not something a still can rely on. `tpad` never reads it twice (#1802).
+                //
+                // A proxy substitutes for the source here as it does for `File`, so what is
+                // held is the proxy's last frame. Nothing forbids pairing an image source
+                // with a moving proxy, and that combination would freeze the proxy on its
+                // final frame; a proxy for a still is not a shape this expects.
+                let decode_path = match &layer.proxy {
+                    Some(p) => p.path.as_path(),
+                    None => path.as_path(),
+                };
+                let arg = movie_filename_arg(decode_path);
+                let Some(src) = add_movie(graph, idx, &format!("filename={arg}")) else {
+                    bail!(graph, format!("failed to build still source layer={idx}"));
+                };
+                // **Held only when something else ends the export.** A held still never
+                // ends, and without a composition duration the canvas never ends either,
+                // so holding here would leave nothing at all to stop the graph: the render
+                // does not return (measured). The composition's length is what the other
+                // endless sources rely on too, and `Solid`/`Text` are safe only because a
+                // generated layer cannot exist without an `out_point` to bound it. A still
+                // can, so the unbounded case falls back to its single frame, which is what
+                // it did before #1802 rather than a hang.
+                if composition_duration.is_none() {
+                    log::warn!(
+                        "still not held: composition has no length layer={idx} path={}",
+                        path.display()
+                    );
+                    log::debug!("video composition layer={idx} still source (unheld)");
+                    src
+                } else {
+                    let Some(src) = add_tpad(graph, &format!("still{idx}"), src) else {
+                        bail!(graph, format!("failed to build still tpad layer={idx}"));
+                    };
+                    // The cloned frames are timestamped from the frame counter at the
+                    // composition's rate, so they arrive one output frame apart whatever
+                    // the image demuxer claimed (it reports 25 fps for a still). **An `fps`
+                    // node is not a substitute**: with a source whose timestamps do not
+                    // advance it reads every frame as one it has already passed, discards
+                    // it and asks for another, and nothing ever reaches the overlay
+                    // (measured; the render never returned).
+                    let Some(ctx) = add_setpts(graph, &format!("still{idx}"), src, &fps_str) else {
+                        bail!(graph, format!("failed to build still setpts layer={idx}"));
+                    };
+                    log::debug!("video composition layer={idx} still source");
+                    ctx
+                }
             }
             LayerSource::Lavfi(spec) => {
                 // A lavfi filtergraph string opened via FFmpeg's lavfi demuxer;
@@ -2942,6 +2991,115 @@ unsafe fn build_lavfi_source_unsafe(lavfi: &str) -> Result<FilterGraph, FilterEr
 }
 
 // Generated-source node helpers (shared by the source graphs and the compositor)
+
+/// A path as the `movie` filter's option parser wants to read it.
+///
+/// Backslashes become forward slashes and colons are escaped, so a Windows path
+/// survives being spliced into `filename=<path>`.
+pub(super) fn movie_filename_arg(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+}
+
+/// The `tpad` arguments that hold the last frame of a source for as long as it is pulled.
+///
+/// `stop=-1` is the infinite setting (its option carries a minimum of -1 against a default
+/// of 0) and `stop_mode=clone` repeats the final frame rather than padding with a colour,
+/// both read off this build's `AVOption` table rather than the documentation (RK-005). For
+/// an image, whose one frame is also its last, this holds the picture.
+///
+/// The alternative, looping the source with `movie:loop=0`, was measured to hang the
+/// export for an `image2` input while working for `png_pipe`, so it is not used.
+pub(super) fn still_tpad_args() -> &'static str {
+    "stop=-1:stop_mode=clone"
+}
+
+/// The `setpts` expression that timestamps a frame stream at `rate`.
+///
+/// `N` is the frame counter and `TB` the output timebase, so `N/rate/TB` spaces frames
+/// exactly one output frame apart however the source timestamped them. The rate is
+/// parenthesised because it is a decimal that may itself contain a division.
+pub(super) fn rate_setpts_expr(rate: &str) -> String {
+    format!("expr=N/({rate})/TB")
+}
+
+/// Creates a `tpad` node that repeats `prev`'s last frame without end and links it in.
+///
+/// **Whether to use one is the caller's decision**, and only safe when something else
+/// ends the graph: a composition with a length. Held without that, neither this node nor
+/// the canvas ever ends and the export does not return (#1802).
+///
+/// # Safety
+///
+/// `graph` must be a valid `AVFilterGraph` the caller owns, and `prev` a node in it.
+unsafe fn add_tpad(
+    graph: *mut ff_sys::AVFilterGraph,
+    tag: &str,
+    prev: *mut ff_sys::AVFilterContext,
+) -> Option<*mut ff_sys::AVFilterContext> {
+    use std::ffi::CString;
+
+    let filter = ff_sys::avfilter_get_by_name(c"tpad".as_ptr());
+    if filter.is_null() {
+        return None;
+    }
+    let name = CString::new(format!("tpad_{tag}")).ok()?;
+    let args = CString::new(still_tpad_args()).ok()?;
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+    if ff_sys::avfilter_link(prev, 0, ctx, 0) < 0 {
+        return None;
+    }
+    Some(ctx)
+}
+
+/// Creates a `setpts` node that retimestamps at `rate` and links `prev` into it.
+///
+/// # Safety
+///
+/// `graph` must be a valid `AVFilterGraph` the caller owns, and `prev` a node in it.
+unsafe fn add_setpts(
+    graph: *mut ff_sys::AVFilterGraph,
+    tag: &str,
+    prev: *mut ff_sys::AVFilterContext,
+    rate: &str,
+) -> Option<*mut ff_sys::AVFilterContext> {
+    use std::ffi::CString;
+
+    let filter = ff_sys::avfilter_get_by_name(c"setpts".as_ptr());
+    if filter.is_null() {
+        return None;
+    }
+    let name = CString::new(format!("setpts_{tag}")).ok()?;
+    let args = CString::new(rate_setpts_expr(rate)).ok()?;
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    if ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    ) < 0
+    {
+        return None;
+    }
+    if ff_sys::avfilter_link(prev, 0, ctx, 0) < 0 {
+        return None;
+    }
+    Some(ctx)
+}
 
 /// Creates a `movie` source node named `movie{idx}` with `movie_args` and
 /// returns it. Returns `None` on any failure; the caller owns and frees the
