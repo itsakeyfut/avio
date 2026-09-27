@@ -226,6 +226,8 @@ impl ScenePlayer {
             clip_dur: Duration,
             offset: Duration,
             out_point: Option<Duration>,
+            /// The source's own end, in source PTS; `None` for a generated source.
+            src_end: Option<Duration>,
             xfade_dur: Duration,
             xfade_kind: Option<XfadeTransition>,
             video_handle: Duration,
@@ -262,25 +264,35 @@ impl ScenePlayer {
 
             // A file clip is probed; a generated (solid/text) clip is sized from the
             // canvas, bounded by its `out_point`, and carries no audio.
-            let (video_w, video_h, unscaled_dur, has_audio) = if let Some(path) = p.source.as_file()
-            {
-                let info = ff_probe::open(path)?;
-                let dur = p.out_point.map_or_else(
-                    || info.duration().saturating_sub(in_pt),
-                    |op| op.saturating_sub(in_pt),
-                );
-                let (w, h) = info
-                    .primary_video()
-                    .map_or((0, 0), |v| (v.width(), v.height()));
-                (w, h, dur, info.has_audio())
-            } else {
-                (
-                    canvas.0,
-                    canvas.1,
-                    generated_span(p.out_point, in_pt),
-                    false,
-                )
-            };
+            let (video_w, video_h, unscaled_dur, has_audio, src_end) =
+                if let Some(path) = p.source.as_file() {
+                    let info = ff_probe::open(path)?;
+                    let dur = p.out_point.map_or_else(
+                        || info.duration().saturating_sub(in_pt),
+                        |op| op.saturating_sub(in_pt),
+                    );
+                    let video = info.primary_video();
+                    let (w, h) = video.map_or((0, 0), |v| (v.width(), v.height()));
+                    // The **video stream's** duration, not the container's. A
+                    // container's duration is its longest stream, so on a file whose
+                    // audio outlasts its video (`audio_longer_than_video.mp4`: 2s
+                    // against 0.5s) the container would say four times what the video
+                    // decoder can deliver, and every such clip would be reported as
+                    // ending early. A stream that reports no duration leaves this
+                    // `None` rather than falling back to the container: a false
+                    // positive here turns the guard in `pacing_test` into a permanent
+                    // skip, which is worse than not reporting.
+                    let src_end = video.and_then(ff_format::VideoStreamInfo::duration);
+                    (w, h, dur, info.has_audio(), src_end)
+                } else {
+                    (
+                        canvas.0,
+                        canvas.1,
+                        generated_span(p.out_point, in_pt),
+                        false,
+                        None,
+                    )
+                };
             let clip_dur = if (speed - 1.0).abs() < 1e-9 {
                 unscaled_dur
             } else {
@@ -295,6 +307,7 @@ impl ScenePlayer {
                 clip_dur,
                 offset: p.offset,
                 out_point: p.out_point,
+                src_end,
                 xfade_dur: p.xfade_dur,
                 xfade_kind: p.xfade_kind,
                 video_handle: p.video_handle,
@@ -362,6 +375,8 @@ impl ScenePlayer {
                 timeline_end,
                 in_point: p.in_pt,
                 out_point: p.out_point,
+                src_end: p.src_end,
+                last_src_pts: None,
                 xfade_dur: p.xfade_dur,
                 xfade_kind: p.xfade_kind,
                 video_handle: p.video_handle,
@@ -392,16 +407,23 @@ impl ScenePlayer {
                 let in_pt = p.in_point;
                 // File clip: probe. Generated (solid/text) clip: canvas-sized, bounded
                 // by `out_point`, no audio.
-                let (clip_dur, has_audio) = match p.source.as_file() {
+                let (clip_dur, has_audio, src_end) = match p.source.as_file() {
                     Some(path) => {
                         let info = ff_probe::open(path)?;
                         let dur = p.out_point.map_or_else(
                             || info.duration().saturating_sub(in_pt),
                             |op| op.saturating_sub(in_pt),
                         );
-                        (dur, info.has_audio())
+                        (
+                            dur,
+                            info.has_audio(),
+                            // The video stream's duration, not the container's; see
+                            // the primary-track probe above.
+                            info.primary_video()
+                                .and_then(ff_format::VideoStreamInfo::duration),
+                        )
                     }
-                    None => (generated_span(p.out_point, in_pt), false),
+                    None => (generated_span(p.out_point, in_pt), false, None),
                 };
                 let timeline_start = p.offset;
                 let timeline_end = timeline_start + clip_dur;
@@ -449,6 +471,8 @@ impl ScenePlayer {
                     timeline_end,
                     in_point: in_pt,
                     out_point: p.out_point,
+                    src_end,
+                    last_src_pts: None,
                     xfade_dur: Duration::ZERO,
                     xfade_kind: None,
                     // Overlays carry no transition, so there is nothing to feed.

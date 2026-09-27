@@ -241,3 +241,70 @@ fn real_time_runner_should_not_deliver_every_frame_through_a_stall() {
          delivered a complete, evenly spaced sequence: {pts:?}"
     );
 }
+
+/// A sink that records every delivered PTS and never stops the player, so the run
+/// ends when its source does.
+struct RecordingSink {
+    pts: Arc<Mutex<Vec<Duration>>>,
+}
+
+impl FrameSink for RecordingSink {
+    fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, pts: Duration) {
+        self.pts.lock().unwrap().push(pts);
+    }
+}
+
+#[test]
+fn a_clip_played_to_its_source_end_should_report_no_error() {
+    // `deliver_scene` turns a `PlayerEvent::Error` into a skip, so a false positive in
+    // the runner's early-stop check (#1839) would make every test in this file skip
+    // forever and say nothing about it. This is the test that would notice.
+    //
+    // The clip asks for three seconds of a two-second video, which is the case the
+    // check must stay quiet for: the source ending at its own end is not an early
+    // stop. It also guarantees the exit path: neither `out_point` nor the clip's
+    // timeline extent can be reached before the video runs out, so the run leaves
+    // through the `FrameResult::Eof` arm where the check lives.
+    //
+    // This covers the false-positive direction only. That the check *fires* when a
+    // decoder stops early without raising an error cannot be reproduced off the macOS
+    // CI runner where #1839 was observed.
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/test/video_longer_than_audio.mp4");
+    let mut scene = one_clip_scene();
+    scene.video_tracks[0].placements[0].source = SceneSource::File(source);
+    scene.video_tracks[0].placements[0].out_point = Some(Duration::from_secs(3));
+
+    let Ok((mut runner, handle)) = ScenePlayer::open(&scene) else {
+        return; // asset unavailable
+    };
+    runner.set_pacing(Pacing::Unpaced);
+    let pts = Arc::new(Mutex::new(Vec::new()));
+    runner.set_sink(Box::new(RecordingSink {
+        pts: Arc::clone(&pts),
+    }));
+    if runner.run().is_err() {
+        return;
+    }
+
+    let errors: Vec<String> = std::iter::from_fn(|| handle.poll_event())
+        .filter_map(|e| match e {
+            PlayerEvent::Error(msg) => Some(msg),
+            _ => None,
+        })
+        .collect();
+    let pts = pts.lock().unwrap().clone();
+
+    // The run must have reached the video's end, or the assertion below is vacuous:
+    // a run that stopped early for some other reason would also report no error.
+    let last = pts.last().copied().unwrap_or_default();
+    assert!(
+        last + frame_period() * 2 >= Duration::from_secs(2),
+        "the two-second video must play out, got {} frames ending at {last:?}",
+        pts.len()
+    );
+    assert!(
+        errors.is_empty(),
+        "a clip that ran to its source's end must report nothing, got {errors:?}"
+    );
+}
