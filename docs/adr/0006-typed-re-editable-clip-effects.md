@@ -73,8 +73,9 @@ fail if the derive contract or the neutral-skip equivalence is broken.
 `crates/avio/src/edit.rs` tests (`apply_add_effect_*`, `apply_remove_effect_*`,
 `apply_set_effect_*`, `apply_reorder_effects_*`, `apply_*_should_stamp_effect_ids*`,
 `apply_split_clip_should_remint_right_half_effect_ids`) and
-`crates/avio/src/editor.rs`'s `editor_should_not_reuse_effect_ids_across_undo` fail if
-the commands or the id invariant regress. `crates/avio/tests/serde_persistence.rs`'s
+`crates/avio/src/editor.rs`'s `editor_should_not_reuse_any_id_across_undo` (which
+subsumed the effect-only test in #1815) fail if the commands or the id invariant
+regress. `crates/avio/tests/serde_persistence.rs`'s
 `clip_typed_effects_should_round_trip_through_serde` fails if the model does not
 persist.
 

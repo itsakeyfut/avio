@@ -75,6 +75,16 @@ Unit tests in `crates/avio/src/edit.rs` fail if the scheme is violated:
 * `apply_unknown_clip_should_err`, `apply_unknown_track_should_err` - an absent
   or removed id resolves to an `EditError` (the stale-reference safety).
 
+The never-reused property across **undo** is guarded separately, because the tests
+above all run `apply` on a value and none of them goes through `Editor`:
+
+* `editor_should_not_reuse_any_id_across_undo` (`crates/avio/src/editor.rs`) adds,
+  undoes and re-adds each of the five id-bearing entities and fails if any id
+  repeats. `Editor` holds the counters outside the snapshotted `Timeline` as a
+  session high-water for exactly this reason; #1815 was two of the five counters
+  being left out of that high-water, so the invariant held for clips, tracks and
+  effects while markers and groups were re-minted.
+
 The monotonic, never-reused property is a code invariant: the counters only
 increment, in `Timeline::build` and `apply`. Serialization determinism will be
 confirmed by the serde round-trip test in #1426.
