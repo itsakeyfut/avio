@@ -154,6 +154,17 @@ pub(super) struct ClipState {
     pub(super) in_point: Duration,
     /// Source-file PTS at which this clip ends (`None` = play to EOF).
     pub(super) out_point: Option<Duration>,
+    /// The source's own end, as probed at open, in source-file PTS. `None` for a
+    /// generated (solid/text) source, which has no file and so cannot stop early.
+    ///
+    /// Kept so the runner can tell "the file ran out" from "the decoder stopped with
+    /// the file still going", which is the difference between a scene that asks for
+    /// more than exists and something going wrong (#1839).
+    pub(super) src_end: Option<Duration>,
+    /// Source-file PTS of the last frame this clip delivered; `None` until it has
+    /// delivered one. Source time, like `in_point` and `out_point`, never the
+    /// timeline time that `speed` divides.
+    pub(super) last_src_pts: Option<Duration>,
     /// Duration of the crossfade from the previous clip into this one.
     /// `Duration::ZERO` = hard cut.
     pub(super) xfade_dur: Duration,

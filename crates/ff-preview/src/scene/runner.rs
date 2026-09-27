@@ -631,6 +631,40 @@ impl SceneRunner {
 
             match pop_result {
                 FrameResult::Eof => {
+                    // The buffer has no more frames for this clip. That is ordinary
+                    // when the clip reached the end it was asked for, and a fault
+                    // when the file still had frames to give: a host would otherwise
+                    // render a short clip with nothing said about it, and a test
+                    // cannot tell it from a pacing defect (#1839).
+                    //
+                    // Source time throughout, matching `out_point` and the frame PTS
+                    // the `Frame` arm records. The handle is timeline time, so it is
+                    // scaled the same way that arm scales it.
+                    let c = &self.clips[active];
+                    let src_handle = if (c.speed - 1.0).abs() < 1e-9 {
+                        c.video_handle
+                    } else {
+                        c.video_handle.mul_f64(c.speed)
+                    };
+                    if let Some(short_by) = early_stop_shortfall(
+                        c.last_src_pts,
+                        c.in_point,
+                        c.out_point,
+                        src_handle,
+                        c.src_end,
+                        // Two periods: the last frame's PTS sits one period before the
+                        // end it presents, and a container's duration rounds.
+                        frame_period * 2,
+                    ) {
+                        let msg = format!(
+                            "source ended early clip={active} short_by={short_by:?} \
+                             last_pts={:?} out_point={:?} src_end={:?}",
+                            c.last_src_pts, c.out_point, c.src_end
+                        );
+                        log::warn!("{msg}");
+                        let _ = self.event_tx.try_send(PlayerEvent::Error(msg));
+                    }
+
                     let old_active = active;
                     if let Some(tp) = self.transition.take() {
                         self.active = tp.next_idx;
@@ -699,6 +733,10 @@ impl SceneRunner {
                     if f_pts < clip_in {
                         continue;
                     }
+                    // How far this clip's source actually got, for the end-of-stream
+                    // check in the `Eof` arm. Recorded after the in_point skip so a
+                    // pre-seek artefact frame does not count as progress.
+                    self.clips[active].last_src_pts = Some(f_pts);
 
                     // The handle in source time, to compare against `out_point` and
                     // `f_pts`: at speed 2.0 half a second of blend is a second of source.
@@ -1387,9 +1425,176 @@ fn try_gpu_blend(
     }
 }
 
+/// How far short of the end it was asked for a clip's source stopped, or `None` when
+/// it ran to that end.
+///
+/// **Every argument is source time**, which is the unit `out_point` and a frame's
+/// PTS are in. The clip's timeline extent is a different quantity (`speed` divides
+/// it), and mixing the two is the mistake this module has made before.
+///
+/// `expected` is the **smaller** of the clip's `out_point` (plus the crossfade
+/// handle, which the frame loop also counts as part of the clip) and the source's own
+/// end: a scene asking for more than the file holds is a different problem, and
+/// reporting it here would fire on every such scene rather than on something going
+/// wrong.
+///
+/// `None` for `src_end` is a generated source, which has no file to stop early.
+/// `None` for `last_src_pts` is a clip that delivered no frame at all, which is the
+/// worst case rather than an exemption.
+fn early_stop_shortfall(
+    last_src_pts: Option<Duration>,
+    in_point: Duration,
+    out_point: Option<Duration>,
+    src_handle: Duration,
+    src_end: Option<Duration>,
+    tolerance: Duration,
+) -> Option<Duration> {
+    let src_end = src_end?;
+    // `saturating_add`: `out_point` comes from the scene, and `Duration`'s `Add`
+    // panics on overflow, so an absurd one must clamp rather than bring the runner
+    // down. The `min` then takes it back to the source's end anyway.
+    let expected = out_point.map_or(src_end, |op| op.saturating_add(src_handle).min(src_end));
+    let last = last_src_pts.unwrap_or(in_point);
+    let shortfall = expected.saturating_sub(last);
+    (shortfall > tolerance).then_some(shortfall)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two frame periods at 30 fps, the tolerance the runner passes.
+    const TOL: Duration = Duration::from_millis(67);
+
+    #[test]
+    fn early_stop_shortfall_should_be_none_when_the_clip_reached_its_out_point() {
+        let got = early_stop_shortfall(
+            Some(Duration::from_millis(1990)),
+            Duration::ZERO,
+            Some(Duration::from_secs(2)),
+            Duration::ZERO,
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_be_none_when_out_point_is_beyond_the_source() {
+        // The scene asks for 90s of a 60s file. Ending at the file's end is correct,
+        // and this signal must not fire: that is a scene problem, not an early stop.
+        let got = early_stop_shortfall(
+            Some(Duration::from_millis(59_990)),
+            Duration::ZERO,
+            Some(Duration::from_secs(90)),
+            Duration::ZERO,
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_report_a_source_that_stopped_partway() {
+        // The failure this exists for: the clip wanted 2s and the decoder gave 833ms.
+        let got = early_stop_shortfall(
+            Some(Duration::from_micros(833_333)),
+            Duration::ZERO,
+            Some(Duration::from_secs(2)),
+            Duration::ZERO,
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, Some(Duration::from_micros(1_166_667)));
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_report_a_clip_that_delivered_no_frame() {
+        let got = early_stop_shortfall(
+            None,
+            Duration::from_secs(1),
+            Some(Duration::from_secs(3)),
+            Duration::ZERO,
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_be_none_for_a_generated_source() {
+        // Solid and text clips have no file, so there is nothing to stop early.
+        let got = early_stop_shortfall(
+            Some(Duration::ZERO),
+            Duration::ZERO,
+            Some(Duration::from_secs(5)),
+            Duration::ZERO,
+            None,
+            TOL,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_be_none_inside_the_tolerance() {
+        // The last frame's PTS sits one period before the end it presents, so a clip
+        // that ran to completion is always slightly short of `expected`.
+        let got = early_stop_shortfall(
+            Some(Duration::from_millis(1_950)),
+            Duration::ZERO,
+            Some(Duration::from_secs(2)),
+            Duration::ZERO,
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_clamp_a_handle_that_runs_past_the_source() {
+        // `out_point` plus the handle lands beyond the file, and the clip stopped
+        // between the two. The source's end is what it was able to give, so the
+        // expected end is that, not the handle's reach.
+        let got = early_stop_shortfall(
+            Some(Duration::from_millis(59_990)),
+            Duration::ZERO,
+            Some(Duration::from_secs(59)),
+            Duration::from_secs(5),
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_not_panic_on_an_absurd_out_point() {
+        // The scene's `out_point` is host data; `Duration`'s `Add` panics on overflow.
+        let got = early_stop_shortfall(
+            Some(Duration::from_secs(1)),
+            Duration::ZERO,
+            Some(Duration::MAX),
+            Duration::from_secs(5),
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, Some(Duration::from_secs(59)));
+    }
+
+    #[test]
+    fn early_stop_shortfall_should_count_the_handle_in_source_time() {
+        // At speed 2.0 a 500ms crossfade handle is a second of source, and the frame
+        // loop treats those frames as part of the clip. A clip that delivered up to
+        // `out_point` but not through the handle is short by the handle.
+        let got = early_stop_shortfall(
+            Some(Duration::from_secs(2)),
+            Duration::ZERO,
+            Some(Duration::from_secs(2)),
+            Duration::from_secs(1), // 500ms of timeline at speed 2.0
+            Some(Duration::from_secs(60)),
+            TOL,
+        );
+        assert_eq!(got, Some(Duration::from_secs(1)));
+    }
 
     /// A `PreviewCompositor` that returns a fixed result, to drive the seam.
     struct MockCompositor {
