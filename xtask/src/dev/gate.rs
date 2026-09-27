@@ -169,9 +169,14 @@ fn msrv(packages: &[String], log: &mut String) -> Step {
             detail: format!("toolchain {MSRV} is not installed (rustup toolchain install {MSRV})"),
         };
     }
+    // Deliberately the CI job's shape: `cargo check` with default features and no
+    // `--all-targets`. Adding either would check a configuration CI never checks,
+    // and `--all-targets` without `--all-features` does not even compile here,
+    // because the tests reach feature-gated API (RK-029). The current toolchain
+    // covers `--all-targets --all-features` in the `check` step above; this step
+    // answers one question, whether the pinned toolchain can build the crate.
     let mut args = owned(&[&format!("+{MSRV}"), "check"]);
     args.extend(packages.iter().cloned());
-    args.push("--all-targets".to_string());
     record("msrv", "cargo", &args, &[], None, log)
 }
 
