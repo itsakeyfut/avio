@@ -149,8 +149,10 @@ See [perf.md](./perf.md). Critical paths only; not run in CI.
 
 ## CI notes
 
-- `cargo test --workspace` is the gate. Integration tests self-skip where FFmpeg is unavailable, so
-  it is expected to always pass.
+- `cargo test --workspace` is **CI's** gate, not a local command: running it here saturates the
+  machine, so locally you scope to the crates you changed (`cargo xtask gate -p <crate>`, which runs
+  `cargo xtask test` for you) and let CI do the sweep. Integration tests self-skip where FFmpeg is
+  unavailable, so the sweep is expected to always pass.
 - CI clippy runs **without** `--tests` / `--all-targets`, so test-only lints (`expect_used`,
   `print_stdout`) do not gate CI. Non-test library code must stay clippy-clean; do not chase local
   `--tests` clippy errors that CI never runs.

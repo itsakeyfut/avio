@@ -1,8 +1,14 @@
 # Long-term Roadmap Plan: v0.19.0 and Beyond
 
-This document records the planned direction for versions after v0.18.0 (API Finalization).
-It is a living reference — not a commitment — and exists so that scope decisions made in
-early 2026 are not lost between conversations.
+This document records the planned direction for the versions that are not scoped yet.
+It is a living reference, not a commitment, and exists so that scope decisions are not lost
+between conversations.
+
+**v0.19.0 and v0.20.0 have since been scoped, and neither matches what this file predicted.**
+Their scope is in [`v0-19-0/ROADMAP.md`](v0-19-0/ROADMAP.md) and in the `v0.20.0` milestone;
+the sections for them below are kept as superseded, because the themes they name are still
+wanted somewhere. Everything from v0.21.0 on is a direction that has not been re-tested
+against what the engine turned out to need, and should be read that way.
 
 The project follows the same philosophy as wgpu and bevy: stability and feature completeness
 take priority over a quick v1.0.0. Each minor version has a clear theme, and each version
@@ -10,11 +16,14 @@ pairs new features with stabilization of the previous version's additions.
 
 ---
 
-## Design Philosophy for v0.19.0+
+## Design Philosophy
 
-After v0.18.0 freezes the public API surface:
+v0.18.0 delivered GPU rendering; it did not freeze the public API surface, and that freeze is
+now a v1.0.0 prerequisite rather than something already done.
 
-- All new additions must be strictly **additive** — no breaking changes to existing APIs.
+- Additions are **additive wherever they can be**. Pre-1.0 they are not always: v0.18.3 shipped a
+  new `LayerSource` variant, which is technically breaking on a non-exhaustive match, and deciding
+  which public enums are `#[non_exhaustive]` is itself scoped work (#1887).
 - Each version targets one of three axes:
   1. **Professional video editing** — features that NLEs (non-linear editors) require.
   2. **Video distribution services** — packaging, delivery, compliance, automation.
@@ -24,7 +33,11 @@ After v0.18.0 freezes the public API surface:
 
 ---
 
-## v0.19.0 — SMPTE Timecode & Advanced Metadata
+## v0.19.0 (superseded) — SMPTE Timecode & Advanced Metadata
+
+> Superseded. v0.19.0 became editing depth, delivery parity and the cost of an edit:
+> see [`v0-19-0/ROADMAP.md`](v0-19-0/ROADMAP.md). Timecode did survive into it as
+> frame-exact addressing (#1827); the rest of this section is unscheduled.
 
 **Theme**: Precise time management required by professional editing workflows.
 
@@ -42,7 +55,10 @@ After v0.18.0 freezes the public API surface:
 
 ---
 
-## v0.20.0 — Advanced Color Science
+## v0.20.0 (superseded) — Advanced Color Science
+
+> Superseded. v0.20.0 became alpha and canvas handling. Colour science is unscheduled
+> and the work it names has no issues behind it yet.
 
 **Theme**: Log footage and ACES pipelines for cinema/broadcast-grade color work.
 
@@ -203,15 +219,15 @@ so the crate remains usable without any ML runtime.
 3. A public commitment to semantic versioning (no breaking changes without a major bump).
 4. A stable C FFI layer so non-Rust consumers can link against avio.
 5. The MSRV is pinned and the upgrade policy is documented.
-6. All `#[non_exhaustive]` audits from v0.18.0 are confirmed still valid.
+6. The `#[non_exhaustive]` decision taken in v0.19.0 (#1887) is confirmed still valid.
 
 ---
 
 ## Summary Timeline
 
 ```
-v0.19  SMPTE timecode & XMP metadata          ← professional editing ①
-v0.20  Advanced color science (ACES / Log)    ← professional editing ②
+v0.19  Editing depth, delivery, edit cost     ← scoped: see v0-19-0/ROADMAP.md
+v0.20  Alpha and canvas handling              ← scoped: see the v0.20.0 milestone
 v0.21  Multi-camera sync                      ← professional editing ③
 v0.22  WebRTC & ultra-low latency             ← distribution services ①
 v0.23  360° video & spatial audio             ← new media formats

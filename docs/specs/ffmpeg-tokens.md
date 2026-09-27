@@ -127,7 +127,7 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 | Full | pc | OK | - |
 | Unknown | None | OK | - |
 
-> The `format` step emits `.name()` (`Limited`→`"limited"`, `Full`→`"full"`), which `av_color_range_from_name` **rejects** — it accepts only `tv`/`pc`/`unknown` (`color_range_names[]`). The correct tokens (`tv`/`pc`) are in `FfmpegToken`, not yet wired (#1212). The `colorspace` filter `range` unit additionally accepts `mpeg`/`jpeg` aliases, but avio's consumer is the `format` filter.
+> Fixed in #1212: the `format` step emits `FfmpegToken` (`Limited`→`tv`, `Full`→`pc`), which is what `av_color_range_from_name` accepts (`color_range_names[]` has only `tv`/`pc`/`unknown`). It previously emitted `.name()` and was rejected. The `colorspace` filter `range` unit additionally accepts `mpeg`/`jpeg` aliases, but avio's consumer is the `format` filter.
 
 ## ColorSpace
 
@@ -150,7 +150,7 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 
 ## ColorPrimaries
 
-**Reference:** `libavfilter/vf_setparams.c` (`color_primaries` unit; tokens match `pixdesc.c color_primaries_names[]`) — planned consumer per the #1217 follow-up (the `format` filter has no `color_primaries` option) — [7.1](https://github.com/FFmpeg/FFmpeg/blob/release/7.1/libavfilter/vf_setparams.c) · [8.0](https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_setparams.c)
+**Reference:** `libavfilter/vf_setparams.c` (`color_primaries` unit; tokens match `pixdesc.c color_primaries_names[]`) — consumed by the `setparams` step, added in #1227 (the `format` filter has no `color_primaries` option) — [7.1](https://github.com/FFmpeg/FFmpeg/blob/release/7.1/libavfilter/vf_setparams.c) · [8.0](https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_setparams.c)
 
 | avio variant | FFmpeg token | status | expected |
 |---|---|---|---|
@@ -164,11 +164,11 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 | Bt2020 | bt2020 | OK | - |
 | Unknown | None | OK | - |
 
-> Redesigned in #1217: `Bt601` split into `Bt470bg`/`Smpte170m`; added `Smpte240m`/`Film`/`DciP3` (token `smpte431`)/`DisplayP3` (token `smpte432`). `FfmpegToken` impl added; the setparams consumer is the #1217 follow-up.
+> Redesigned in #1217: `Bt601` split into `Bt470bg`/`Smpte170m`; added `Smpte240m`/`Film`/`DciP3` (token `smpte431`)/`DisplayP3` (token `smpte432`). `FfmpegToken` impl added; the `setparams` consumer landed in #1227.
 
 ## ColorTransfer
 
-**Reference:** `libavfilter/vf_setparams.c` (`color_trc` unit; tokens match `pixdesc.c color_transfer_names[]`, incl. `arib-std-b67`/`smpte2084`) — planned consumer per the #1217 follow-up (the `format` filter has no `color_transfer` option) — [7.1](https://github.com/FFmpeg/FFmpeg/blob/release/7.1/libavfilter/vf_setparams.c) · [8.0](https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_setparams.c)
+**Reference:** `libavfilter/vf_setparams.c` (`color_trc` unit; tokens match `pixdesc.c color_transfer_names[]`, incl. `arib-std-b67`/`smpte2084`) — consumed by the `setparams` step, added in #1227 (the `format` filter has no `color_transfer` option) — [7.1](https://github.com/FFmpeg/FFmpeg/blob/release/7.1/libavfilter/vf_setparams.c) · [8.0](https://github.com/FFmpeg/FFmpeg/blob/release/8.0/libavfilter/vf_setparams.c)
 
 | avio variant | FFmpeg token | status | expected |
 |---|---|---|---|
@@ -185,7 +185,7 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 | Hlg | arib-std-b67 | OK | - |
 | Unknown | None | OK | - |
 
-> Redesigned in #1217: `Hlg`/`Pq` keep their human names but `FfmpegToken` now emits the canonical `arib-std-b67`/`smpte2084`; added `Gamma22`/`Gamma28`/`Smpte170m`/`Smpte240m`/`Srgb` (token `iec61966-2-1`). The setparams consumer is the #1217 follow-up.
+> Redesigned in #1217: `Hlg`/`Pq` keep their human names but `FfmpegToken` now emits the canonical `arib-std-b67`/`smpte2084`; added `Gamma22`/`Gamma28`/`Smpte170m`/`Smpte240m`/`Srgb` (token `iec61966-2-1`). The `setparams` consumer landed in #1227.
 
 ## AlphaMode
 
@@ -197,7 +197,7 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 | Premultiplied | premultiplied | OK | - |
 | Unknown | None | OK | - |
 
-> Wiring bug: the `format` step emits `format=…:alpha_modes=…`, but the `format` filter has **no** alpha option (7.1/8.0) — AlphaMode must instead drive the `overlay` `alpha=` option (a single value, not a `|`-list). Also note the `format` step uses `.name()`, not `FfmpegToken` (#1212).
+> Fixed: the `format` step no longer emits an alpha option, because the `format` filter has **no** alpha option (7.1/8.0). AlphaMode drives the compositing step's `alpha=` instead (a single value, not a `|`-list), and the `format` step emits `FfmpegToken` rather than `.name()` (#1212).
 >
 > Version note: in **7.1/8.0** the `overlay` `alpha` option (`alpha_format` unit) is **`straight`/`premultiplied` only, default `straight`** (`{.i64=0}`, range 0–1). The ffmpeg.org docs' third value **`auto`** (default auto) is **master-only** — alpha was refactored there to the `alpha_mode` unit (`{.i64=AVALPHA_MODE_UNSPECIFIED}`). Not present in avio's 7.1/8.0 targets; if ever targeted, gate `auto` and map it to `AlphaMode::Unknown`.
 
@@ -225,4 +225,4 @@ aliases of `grainmerge`/`grainextract`). `FfmpegToken` is **all-`Some`** (#1219)
 | Gbrpf32le | gbrpf32le | OK | - |
 | Other(u32) | None | OK | - |
 
-> The `format` step emits `.name()`, not `FfmpegToken` (#1212): `Gray8`→`"gray8"` is accepted (a valid `.alias` of `"gray"` resolved by `av_get_pix_fmt`), but `Other(_)`→`"unknown"` is **invalid** as a pix_fmt (should skip / use `av_get_pix_fmt_name(value)`).
+> Fixed in #1212: the `format` step emits `FfmpegToken`, so `Gray8` becomes the canonical `gray` rather than the `gray8` alias, and `Other(_)` carries no token and is skipped instead of emitting an invalid `unknown`.

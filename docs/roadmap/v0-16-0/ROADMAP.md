@@ -2,6 +2,11 @@
 
 **Goal**: Present `avio` as an editing **engine** and the `ff-*` family as standalone, independently-versioned **primitive libraries**. The engine/primitive boundary is already clean (the model relocation and purification of #1326/#1327 landed, and preview == export via the C4 epic). This milestone makes that separation visible to downstream users: each `ff-*` crate is publishable and consumable on its own, and versions diverge to reflect each crate's own change cadence. (A GitHub organization move is deferred — see below.)
 
+> **Partly superseded.** Independent per-crate versioning shipped in v0.16.0 and was reverted in
+> #1407: all 14 crates share one `[workspace.package]` version again and a release publishes the
+> family together. The rest of this milestone, each `ff-*` crate being publishable and consumable on
+> its own, still holds.
+
 **Prerequisite**: v0.15.x complete — the editing model lives only in `avio`, the `ff-*` crates are model-agnostic primitives, and the single `derive(model, t) -> Scene` feeds both preview and export.
 
 **Crates in scope**: workspace-wide (every crate's manifest; CI; release automation; docs). No source refactoring of the boundary is required — it is already clean.

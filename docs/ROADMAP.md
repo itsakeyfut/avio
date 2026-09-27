@@ -1,64 +1,60 @@
-# ff Roadmap
+# avio Roadmap
 
-## Overview
+What each milestone delivers, and where the direction after it is recorded. [`README.md`](../README.md)
+says what avio is, which crates it publishes and how to install them; that is not repeated here.
 
-The **ff** crate family aims to provide **safe, ergonomic video and audio processing in Rust**, built on top of FFmpeg's libav* libraries via `ff-sys`.
+A milestone's `ROADMAP.md` states the **capabilities** the version delivers, not the tasks that deliver
+them. The tasks are GitHub issues in the matching milestone, which is the only place their status is
+accurate.
 
-All unsafe FFmpeg calls are isolated in `*_inner.rs` files. Public APIs are fully safe.
-
-### Target Users
-
-- **Video editing software developers** — need filters, trimming, overlays, transitions
-- **Streaming service developers** — need HLS/DASH output, real-time encoding, multi-bitrate ladders
-
----
-
-## Crate Family
-
-| Crate | When | Description |
-|---|---|---|
-| `ff-sys` | v0.1.x | Raw FFmpeg FFI bindings |
-| `ff-common` | v0.1.x | Shared pool abstraction |
-| `ff-format` | v0.1.x | Type system (codecs, frames, formats) |
-| `ff-probe` | v0.1.x | Metadata + chapter extraction |
-| `ff-decode` | v0.1.x | Video/audio/image decoding, thumbnails |
-| `ff-encode` | v0.1.x | Video/audio encoding |
-| `ff-filter` | v0.2.0 | Filter graph (libavfilter) |
-| `ff-pipeline` | v0.4.0 | decode→filter→encode unified pipeline |
-| `ff-stream` | v0.5.0 | HLS/DASH streaming output |
-| `ff` | v0.5.0 | Facade crate (re-exports all) |
-
----
-
-## Design Principles
-
-- **Safe public API** — all `unsafe` is contained in `*_inner.rs` modules; callers never touch raw pointers
-- **Explicit errors** — no panics in library code; all failure paths return `Result`
-- **Sync only** — no async/tokio dependency
-- **Structured logging** — `log` crate facade; consumers choose the backend
-- **Layered crates** — each crate depends only on lower layers; no circular dependencies
-
----
+Current workspace version: **0.18.3**. In progress: **v0.19.0**.
 
 ## Milestones
 
-| Version | Status | Details |
+| Version | Theme | Status |
 |---|---|---|
-| [v0.1.x](roadmap/v0-1-x/ROADMAP.md) | In Progress | Stabilization & quality fixes |
-| [v0.2.0](roadmap/v0-2-0/ROADMAP.md) | Planned | ff-filter + still image decoding |
-| [v0.3.0](roadmap/v0-3-0/ROADMAP.md) | Planned | Encoding enhancements + metadata write |
-| [v0.4.0](roadmap/v0-4-0/ROADMAP.md) | Planned | ff-pipeline unified pipeline |
-| [v0.5.0](roadmap/v0-5-0/ROADMAP.md) | Planned | ff-stream + ff facade |
-| [v1.0.0](roadmap/v1-0-0/ROADMAP.md) | Planned | Stable API |
+| [v0.1.x](roadmap/v0-1-x/ROADMAP.md) | Stabilization and quality | Released |
+| [v0.2.0](roadmap/v0-2-0/ROADMAP.md) | `ff-filter` core | Released |
+| [v0.3.0](roadmap/v0-3-0/ROADMAP.md) | Encoding enhancements, metadata write | Released |
+| [v0.4.0](roadmap/v0-4-0/ROADMAP.md) | `ff-pipeline` | Released |
+| [v0.5.0](roadmap/v0-5-0/ROADMAP.md) | `ff-stream` | Released |
+| [v0.6.0](roadmap/v0-6-0/ROADMAP.md) | Async support (opt-in `tokio` feature) | Released |
+| [v0.7.0](roadmap/v0-7-0/ROADMAP.md) | Advanced codec options, professional formats | Released |
+| [v0.8.0](roadmap/v0-8-0/ROADMAP.md) | Network input, live streaming | Released |
+| [v0.9.0](roadmap/v0-9-0/ROADMAP.md) | Advanced filtering, effects, clip processing | Released |
+| [v0.10.0](roadmap/v0-10-0/ROADMAP.md) | Multi-track composition, media analysis | Released |
+| [v0.11.0](roadmap/v0-11-0/ROADMAP.md) | Compositing, keying, blend modes | Released |
+| [v0.12.0](roadmap/v0-12-0/ROADMAP.md) | Keyframe animation | Released |
+| [v0.13.0](roadmap/v0-13-0/ROADMAP.md) | Real-time preview, proxy workflow | Released |
+| [v0.14.0](roadmap/v0-14-0/ROADMAP.md) | Advanced effects, audio processing | Released |
+| [v0.15.0](roadmap/v0-15-0/ROADMAP.md) | FFmpeg token canonicalization | Released |
+| [v0.16.0](roadmap/v0-16-0/ROADMAP.md) | Engine / library split, independent publishing | Released |
+| [v0.17.0](roadmap/v0-17-0/ROADMAP.md) | Editing model maturity, library hardening | Released |
+| [v0.18.0](roadmap/v0-18-0/ROADMAP.md) | Editing model and GPU rendering | Released (see below) |
+| [v0.19.0](roadmap/v0-19-0/ROADMAP.md) | Editing depth, delivery parity, the cost of an edit | In progress |
+| v0.20.0 | Alpha and canvas handling | Planned |
+| [v1.0.0](roadmap/v1-0-0/ROADMAP.md) | Stable API | Planned |
 
----
+**v0.18.0 shipped and its milestone is not empty.** The 0.18.x patch releases fixed part of it, and the
+rest are bugs found after the release plus the milestone's tracking issues. The milestone is the record
+of what that version's scope turned out to contain, so the open issues are left there rather than
+back-dated into a version that has already shipped; where they get fixed is decided per issue.
+
+Two earlier milestones carry no directory here because their scope is recorded only as issues:
+`type-consolidation`, which was a single refactor, and v0.20.0, which is still being shaped.
+
+## Beyond the next release
+
+[`roadmap/plan.md`](roadmap/plan.md) records the long-term direction. It is a living reference and not a
+commitment: v0.19.0 and v0.20.0 in it were both re-scoped after it was written, and the versions past
+them have not been tested against what the engine actually needs yet.
+
+Work that is wanted but not scheduled lives in backlog milestones on GitHub rather than in this file, so
+that it has issue numbers and can be pulled into a release without being retyped:
+`backlog-architecture`, `backlog-audio-music` and `backlog-interchange-gpu`. The last one has notes in
+[`roadmap/backlog/interchange-and-gpu.md`](roadmap/backlog/interchange-and-gpu.md).
 
 ## Contributing
 
-Contributions are welcome. If you want to work on an item above, please open an issue first to coordinate.
-
-Areas where help is especially appreciated:
-
-- `ff-filter` implementation (v0.2.0 scope)
-- Testing on non-Linux platforms (macOS, Windows)
-- Hardware acceleration coverage (VAAPI, VideoToolbox, AMF)
+Open an issue before starting work on anything above, so that scope is agreed before code is written. An
+issue labelled `S-Needs-Design` has its design settled first, as a comment on the issue.
