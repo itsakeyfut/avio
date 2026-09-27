@@ -141,6 +141,14 @@ pub fn run(args: &[String]) -> u8 {
             continue;
         };
 
+        // A crate with no library target has no `--lib` and no `--doc`: asking for
+        // either fails the whole run with "no library targets found in package"
+        // (measured on `xtask`, which is binary-only, when the gate first ran on
+        // it). Its unit tests live in the binaries instead, so they need `--bins`.
+        // `src/lib.rs` is the signal because every library crate here uses the
+        // default path; a crate declaring `[lib] path = ...` would be missed.
+        let has_lib = dir.join("src").join("lib.rs").is_file();
+
         // The lib target is classified by whether anything in its `src` builds a
         // GPU context, because the lib's unit tests run in that same binary.
         let lib_is_gpu = repo::rust_files(&dir.join("src"))
@@ -173,7 +181,9 @@ pub fn run(args: &[String]) -> u8 {
 
         // Pass 1: the lib and every non-GPU integration target, at DEFAULT parallelism.
         let mut selection: Vec<String> = Vec::new();
-        if !lib_is_gpu {
+        if !has_lib {
+            selection.push("--bins".to_string());
+        } else if !lib_is_gpu {
             selection.push("--lib".to_string());
         }
         for target in &parallel_targets {
@@ -195,19 +205,22 @@ pub fn run(args: &[String]) -> u8 {
         }
 
         // Pass 2: doctests. Their own binary, and they do not build GPU contexts.
-        let mut doc = vec!["-p".to_string(), krate.clone(), "--doc".to_string()];
-        doc.extend(cargo_args.iter().cloned());
-        run_one(
-            &format!("{krate}:doc"),
-            "parallel",
-            &doc,
-            timeout,
-            &mut rows,
-            &mut log,
-        );
+        // Only a library has them.
+        if has_lib {
+            let mut doc = vec!["-p".to_string(), krate.clone(), "--doc".to_string()];
+            doc.extend(cargo_args.iter().cloned());
+            run_one(
+                &format!("{krate}:doc"),
+                "parallel",
+                &doc,
+                timeout,
+                &mut rows,
+                &mut log,
+            );
+        }
 
         // Pass 3: every GPU target on its own, serialised (#1718).
-        if lib_is_gpu {
+        if has_lib && lib_is_gpu {
             let mut invocation = vec!["-p".to_string(), krate.clone(), "--lib".to_string()];
             invocation.extend(cargo_args.iter().cloned());
             invocation.push("--".to_string());

@@ -13,9 +13,10 @@ avio is two things in one workspace:
 - **`avio` — the engine.** It owns an opinionated, modern editing model (`Timeline`, `Clip`, tracks,
   per-clip effect stacks, keyframes) and derives every rendered frame from that model. If you want a
   ready-made editing model, you build on `avio`.
-- **`ff-*` — the primitives.** `ff-sys` / `-common` / `-format` / `-probe` / `-decode` / `-encode` /
-  `-filter` / `-pipeline` / `-stream` / `-preview` / `-render` are safe, **model-agnostic** building
-  blocks (decode, encode, filter graphs, a compositor, streaming, GPU). They know nothing about
+- **`ff-*` — the primitives.** `ff-sys` / `-common` / `-format` / `-probe` / `-decode` / `-analysis` /
+  `-encode` / `-remux` / `-filter` / `-pipeline` / `-stream` / `-preview` / `-render` are safe,
+  **model-agnostic** building blocks (decode, encode, stream-copy remux, filter graphs, media
+  analysis, a compositor, streaming, GPU). They know nothing about
   timelines or edits. If you want to design your **own** editing model, you build on `ff-*` and avio
   imposes nothing on you.
 

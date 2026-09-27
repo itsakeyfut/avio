@@ -1,7 +1,11 @@
 # Engine and Primitives — avio's architecture
 
-> Status: design of record. Drives tracking issues #1326 (relocation + purification) and
-> #1327 (immutable model redesign). Internal doc.
+> Status: architecture of record. Both tracking issues it was written to drive have landed,
+> #1326 (relocation + purification) and #1327 (immutable model redesign), both closed 2026-08-20.
+> Sections written as "design for #1327" therefore describe what was built, and are kept because
+> the rationale is the part worth preserving. Two things in here are not in the tree: the `ffx`
+> facade (accepted as ADR-0008, parked in `backlog-architecture`) and structural-sharing history
+> (#1352, deferred to v1.0.0); each says so where it appears. Internal doc.
 
 ## 1. Positioning decision
 
@@ -43,17 +47,20 @@ stateless primitives: decode / filter / composite / encode   (ff-*)
 
 - The **editing model** is an immutable value. Edits produce a new version.
 - **`derive(model, t) -> Scene`** is a pure function: the single source of truth for a frame.
-- **preview == export by construction**: both paths call the same `derive` and the same primitive
-  executor. Equality is structural, not maintained by hand.
+- **preview == export**: both paths call the same `derive`, so the *model* side of the equality is
+  structural. The executors are still two (`MultiTrackComposer` for export, `RealtimeComposer` for
+  preview), so the rest of the equality is verified by test and not free. Treat a claim that they
+  agree as something to measure: they have disagreed on where the base layer sits (ADR-0016).
 - **Undo/Redo** is a history of immutable model versions.
 
-The model's immutable redesign, the pure `derive`, and Do/Undo are implemented in **#1327**.
-Their shape is fixed here so that #1326 purifies toward the right target.
+The model's immutable redesign, the pure `derive`, and Do/Undo were implemented in **#1327**. Their
+shape was fixed here first so that #1326 purified toward the right target.
 
-### 2.1 The immutable model and edit API — design for #1327
+### 2.1 The immutable model and edit API — the design #1327 built
 
-The model relocated in #1326 is a build-once value (`Timeline` via `TimelineBuilder`) with no edit
-or history API. #1327 makes it an immutable, editable value with Do/Undo, per the North Star above.
+Before #1327 the model relocated in #1326 was a build-once value (`Timeline` via `TimelineBuilder`)
+with no edit or history API. #1327 made it an immutable, editable value with Do/Undo, per the North
+Star above.
 Confirmed design (user-approved):
 
 - **Immutable document.** The existing `Timeline` value is reused as the immutable document (already
@@ -69,13 +76,14 @@ Confirmed design (user-approved):
   history: `apply` pushes a new version (truncating the redo tail), `undo`/`redo` move the cursor.
   This is the North Star's "history of immutable versions"; structural sharing / diffs (im/rpds) are a
   later memory optimisation, not needed first.
-- **Unified `derive` — staged.** Today export (`Timeline::render` → `MultiTrackComposer`) and preview
-  (`Timeline::to_scene` → runner → `RealtimeComposer`) are separate derivations that share
-  `Clip::video_effect_chain` but build different layer types and composers, so "preview == export" is
-  not yet structural. #1327 stages this: **first** the immutable model + edit API + Do/Undo (additive,
-  executors unchanged, always-green); **then** a unified pure `derive(model, t) -> Scene` (per-frame)
-  with converging executors so preview == export by construction — the hardest, riskiest part, split
-  into its own child issues.
+- **Unified `derive` — done (#1327, closed 2026-08-20).** `Timeline` is an immutable value with a pure
+  `apply(&Timeline, &Command) -> Timeline` (`edit.rs`) and an `Editor` carrying do/undo/redo/amend/group
+  (`editor.rs`), and both routes derive through `derive.rs`: export via `Timeline::render` →
+  `MultiTrackComposer` and preview via `Timeline::to_scene` → runner → `RealtimeComposer` build their
+  different layer types from the same shared derivation. The two executors still differ, so agreement
+  between them is verified rather than free: measure the CPU routes against each other before claiming
+  parity, because they have disagreed (ADR-0016). Structural-sharing history, the one sub-item left
+  out, is #1352 in v1.0.0.
 - **Per-clip animation lives in the model uniformly.** Every continuous per-clip property carries its
   animation track in the model, and `derive` passes it through uniformly; a primitive may
   static-evaluate at `t=0` any track it does not yet animate (today the compositor static-evaluates
@@ -276,7 +284,7 @@ SceneAudioPlacement { source: PathBuf, offset, in_point, out_point: Option<Durat
 
 ```
 ff-sys → ff-common → ff-format → ff-probe / ff-decode / ff-encode / ff-remux → ff-filter
-       → ff-pipeline → ff-stream / ff-preview / ff-render → ffx (facade) → avio (engine, top)
+       → ff-pipeline → ff-stream / ff-preview / ff-render → avio (engine, top)
 
 ff-decode → ff-analysis   (media analysis reads decoded frames; sits above ff-decode)
 ```
@@ -285,16 +293,19 @@ ff-decode → ff-analysis   (media analysis reads decoded frames; sits above ff-
   structurally model-free — the separation is enforced by dependency direction, not discipline.
 - `avio` stops being a facade-only crate. It defines the editing-model types (and, in #1327, the
   derivation, immutable state, and undo). It still re-exports the model-facing primitive types.
-- **`ffx` is the primitive-family facade (ADR-0008).** It aggregates the whole `ff-*` family under
-  namespaced modules (`ffx::decode`, `ffx::filter`, `ffx::render`, ...) with Bevy-style feature
-  gating (a lightweight `default` core; `render`/wgpu, `preview`, `analysis`, `stream`, `serde`,
-  `hwaccel`, `gpl` behind features). **`avio` depends only on `ffx`**, forwarding its features; the
-  `ff-*` crates and their inter-dependencies are unchanged (the facade is purely additive). This
-  keeps `avio` the engine, not the facade (ADR-0004 holds), and gives the family a single boundary
-  for a future two-repository split (engine vs primitives), which is deferred to its own milestone.
-- Versioning: **independent per-crate** as of v0.16.0 (tokio/`http`-style — each crate's version
-  reflects its own change cadence, so a stable `ff-format` can reach 1.0 while `ff-filter` iterates
-  at 0.x; see `docs/roadmap/v0-16-0/ROADMAP.md`). Lockstep through v0.15.x.
+- **`ffx` is a decision, not yet a crate.** ADR-0008 accepts a primitive-family facade that would
+  aggregate the whole `ff-*` family under namespaced modules (`ffx::decode`, `ffx::filter`,
+  `ffx::render`, ...) with feature gating (a lightweight `default` core; `render`/wgpu, `preview`,
+  `analysis`, `stream`, `serde`, `hwaccel`, `gpl` behind features), after which `avio` would depend
+  only on `ffx` and forward its features. **None of it is built.** `crates/` has no `ffx`, and `avio`
+  depends on the ten `ff-*` crates directly. The work is parked in the `backlog-architecture`
+  milestone (#1673 through #1678, which includes updating these docs when it lands), so this
+  paragraph describes the target and not the tree. The rationale still holds: it would keep `avio`
+  the engine rather than the facade (ADR-0004), and give the family a single boundary for a possible
+  engine/primitives repository split.
+- Versioning: **lockstep across all 14 crates**. Independent per-crate versioning was adopted for
+  v0.16.0 and reverted in #1407; one shared `[workspace.package]` version is released at a time, and
+  a release publishes the whole family together.
 
 ## 6. Project decomposition
 

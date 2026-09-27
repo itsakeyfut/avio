@@ -49,6 +49,36 @@ fn scratch_path() -> PathBuf {
 /// the environment, which is what lets `CARGO_TARGET_DIR` and the rest of the
 /// caller's cargo configuration apply.
 pub fn capture(program: &str, args: &[String], timeout: Option<Duration>) -> Captured {
+    capture_with_env(program, args, timeout, &[])
+}
+
+/// [`capture`], with `env` set on the child on top of the inherited environment.
+///
+/// Separate from `capture` rather than a parameter on it because exactly one
+/// caller needs it (`RUSTDOCFLAGS` for the doc step of the gate) and every other
+/// call site would have to grow an empty slice.
+pub fn capture_with_env(
+    program: &str,
+    args: &[String],
+    timeout: Option<Duration>,
+    env: &[(&str, &str)],
+) -> Captured {
+    capture_in(program, args, timeout, env, None)
+}
+
+/// [`capture_with_env`], run with `cwd` as the working directory.
+///
+/// `commits` needs this: it checks out each commit into a worktree and has to run
+/// cargo *there*, and cargo decides which workspace it is building from the
+/// directory it starts in. Changing this process's own directory instead would be
+/// a shared mutation with nothing to scope it to one call.
+pub fn capture_in(
+    program: &str,
+    args: &[String],
+    timeout: Option<Duration>,
+    env: &[(&str, &str)],
+    cwd: Option<&std::path::Path>,
+) -> Captured {
     let path = scratch_path();
     let sink = match File::create(&path) {
         Ok(file) => file,
@@ -64,11 +94,18 @@ pub fn capture(program: &str, args: &[String], timeout: Option<Duration>) -> Cap
         }
     };
 
-    let spawned = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdout(Stdio::from(sink))
-        .stderr(Stdio::from(sink_err))
-        .spawn();
+        .stderr(Stdio::from(sink_err));
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let spawned = command.spawn();
     let mut child = match spawned {
         Ok(child) => child,
         Err(err) => {

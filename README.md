@@ -119,6 +119,8 @@ sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev lib
 
 API documentation is on [docs.rs/avio](https://docs.rs/avio); each `ff-*` primitive is documented on its own docs.rs page (linked in [Crates](#crates)).
 
+What each release delivers is in [`docs/ROADMAP.md`](./docs/ROADMAP.md); the concepts behind the engine/primitive split are in [`docs/concepts.md`](./docs/concepts.md).
+
 ## Crates
 
 | Crate | Description | crates.io | docs.rs |

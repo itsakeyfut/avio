@@ -58,7 +58,7 @@ Concretely:
 
 * `crates/ff-preview/tests/pacing_test.rs`: with a sink that stalls for five frame periods on its
   first frame, `unpaced_runner_should_deliver_every_frame_through_a_stall` asserts a complete,
-  evenly spaced PTS sequence, and `real_time_runner_should_drop_the_frames_a_stall_makes_late`
+  evenly spaced PTS sequence, and `real_time_runner_should_not_deliver_every_frame_through_a_stall`
   asserts the same stall costs frames under the default pacing. Measured by knocking the mechanism
   out: making `Pacing::Unpaced` install the wall clock turns the first red, and so does removing
   the post-present clock step. Removing the `stepped` guard on the drop arm does **not**: under the
