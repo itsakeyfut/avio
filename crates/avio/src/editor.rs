@@ -14,10 +14,14 @@
 //! The id counters live here, outside the snapshotted `Timeline`, as a session
 //! high-water mark: an `undo` restores an older snapshot (and its older
 //! counters), so seating the high-water before each edit keeps a later
-//! `AddClip` / `AddTrack` / `AddEffect` from re-minting an id a discarded branch
-//! already used.
+//! `AddClip` / `AddTrack` / `AddMarker` / `GroupClips` / `AddEffect` from
+//! re-minting an id a discarded branch already used.
 //! This is what makes the "never reused" guarantee of ADR-0001
 //! (`docs/adr/0001-clip-and-track-identity.md`) hold across undo.
+//!
+//! All five counters travel together as one [`IdHighWater`], because when they
+//! were five fields mirrored by hand the marker and group ones were left out
+//! (#1815) and the guarantee silently held for three id kinds out of five.
 
 use crate::edit::{Command, EditError};
 use crate::timeline::Timeline;
@@ -38,13 +42,63 @@ pub struct Editor {
     history: Vec<Timeline>,
     /// Index of the current version within `history`.
     cursor: usize,
-    /// Session high-water for the next clip/track/effect id, never rewound by
-    /// `undo`. See the module docs.
-    next_clip_id: u64,
-    next_track_id: u64,
-    next_effect_id: u64,
+    /// Session high-water for the next id of each kind, never rewound by `undo`.
+    /// See the module docs.
+    ids: IdHighWater,
     /// An in-progress coalesced gesture, or `None`. See [`Editor::begin_group`].
     group: Option<Group>,
+}
+
+/// The next value each of the document's id counters will hand out.
+///
+/// One value carrying all of them rather than a field per kind, because that shape
+/// is what caused #1815: the counters were mirrored by hand at three sites and two
+/// of the five were missed, so `MarkerId` and `GroupId` were re-minted after an
+/// undo while the other three were not. A new id kind is one field here and three
+/// lines that already exist.
+#[derive(Debug, Clone, Copy)]
+struct IdHighWater {
+    clip: u64,
+    track: u64,
+    marker: u64,
+    group: u64,
+    effect: u64,
+}
+
+impl IdHighWater {
+    /// Reads `timeline`'s counters as the session's starting high-water.
+    fn of(timeline: &Timeline) -> Self {
+        Self {
+            clip: timeline.next_clip_id,
+            track: timeline.next_track_id,
+            marker: timeline.next_marker_id,
+            group: timeline.next_group_id,
+            effect: timeline.next_effect_id,
+        }
+    }
+
+    /// Writes the high-water into `timeline`, so the next mint continues from the
+    /// session's counter rather than from the snapshot's older one.
+    fn seat(self, timeline: &mut Timeline) {
+        timeline.next_clip_id = self.clip;
+        timeline.next_track_id = self.track;
+        timeline.next_marker_id = self.marker;
+        timeline.next_group_id = self.group;
+        timeline.next_effect_id = self.effect;
+    }
+
+    /// Raises each counter to cover `timeline`'s, never rewinding.
+    ///
+    /// `max` rather than assignment so that monotonicity holds by construction: a
+    /// caller seating an externally built timeline cannot lower the session's
+    /// high-water, and harvesting the result of an edit cannot either.
+    fn raise(&mut self, timeline: &Timeline) {
+        self.clip = self.clip.max(timeline.next_clip_id);
+        self.track = self.track.max(timeline.next_track_id);
+        self.marker = self.marker.max(timeline.next_marker_id);
+        self.group = self.group.max(timeline.next_group_id);
+        self.effect = self.effect.max(timeline.next_effect_id);
+    }
 }
 
 /// An in-progress coalesced gesture: edits fold into `working` until commit.
@@ -63,15 +117,11 @@ impl Editor {
     /// version: the session's id high-water starts from `initial`'s counters.
     #[must_use]
     pub fn new(initial: Timeline) -> Self {
-        let next_clip_id = initial.next_clip_id;
-        let next_track_id = initial.next_track_id;
-        let next_effect_id = initial.next_effect_id;
+        let ids = IdHighWater::of(&initial);
         Self {
             history: vec![initial],
             cursor: 0,
-            next_clip_id,
-            next_track_id,
-            next_effect_id,
+            ids,
             group: None,
         }
     }
@@ -91,13 +141,9 @@ impl Editor {
     /// it from the result. Returns the new version. Does not touch history.
     fn edit_current(&mut self, command: &Command) -> Result<Timeline, EditError> {
         let mut seed = self.current().clone();
-        seed.next_clip_id = self.next_clip_id;
-        seed.next_track_id = self.next_track_id;
-        seed.next_effect_id = self.next_effect_id;
+        self.ids.seat(&mut seed);
         let next = crate::edit::apply(&seed, command)?;
-        self.next_clip_id = next.next_clip_id;
-        self.next_track_id = next.next_track_id;
-        self.next_effect_id = next.next_effect_id;
+        self.ids.raise(&next);
         Ok(next)
     }
 
@@ -143,9 +189,7 @@ impl Editor {
     /// tail; inside a group it replaces the gesture's in-progress version. The id
     /// high-water is raised to cover `timeline` (never rewound).
     pub fn replace_current(&mut self, timeline: Timeline) {
-        self.next_clip_id = self.next_clip_id.max(timeline.next_clip_id);
-        self.next_track_id = self.next_track_id.max(timeline.next_track_id);
-        self.next_effect_id = self.next_effect_id.max(timeline.next_effect_id);
+        self.ids.raise(&timeline);
         if let Some(g) = &mut self.group {
             g.working = timeline;
             g.dirty = true;
@@ -409,36 +453,79 @@ mod tests {
     }
 
     #[test]
-    fn editor_should_not_reuse_ids_across_undo() {
-        let mut ed = Editor::new(timeline(30.0));
-        let track = ed.current().video_tracks()[0].id;
-        ed.apply(&Command::AddClip {
+    fn editor_should_not_reuse_any_id_across_undo() {
+        use crate::effect::{EffectKind, Param};
+        use crate::{Marker, TrackKind};
+        use std::time::Duration;
+
+        let ed = || Editor::new(timeline(30.0));
+
+        // One block per id-bearing entity. Each adds, discards the edit, and adds
+        // again: without the session high-water the counter rewinds with the
+        // snapshot and the second add re-mints the first id for a different thing.
+        // ADR-0001 states the never-reused property for ids as a whole, so a gap in
+        // any one of the five makes the guarantee unusable for all of them.
+
+        let mut e = ed();
+        let track = e.current().video_tracks()[0].id;
+        e.apply(&Command::AddClip {
             track,
             clip: Box::new(Clip::new("a.mp4")),
         })
         .unwrap();
-        let first = ed.current().video_tracks()[0].clips[1].id;
-        // Discard that edit; without the session high-water the counter would
-        // rewind and the next AddClip would re-mint `first` for a different clip.
-        ed.undo().unwrap();
-        let after = ed
-            .apply(&Command::AddClip {
-                track,
-                clip: Box::new(Clip::new("b.mp4")),
-            })
-            .unwrap();
-        let second = after.video_tracks()[0].clips[1].id;
-        assert_ne!(
-            first, second,
-            "an id used by a discarded branch must not be reused"
-        );
-    }
+        let first = e.current().video_tracks()[0].clips.last().unwrap().id;
+        e.undo().unwrap();
+        e.apply(&Command::AddClip {
+            track,
+            clip: Box::new(Clip::new("b.mp4")),
+        })
+        .unwrap();
+        let second = e.current().video_tracks()[0].clips.last().unwrap().id;
+        assert_ne!(first, second, "a clip id was reused after undo");
 
-    #[test]
-    fn editor_should_not_reuse_effect_ids_across_undo() {
-        use crate::effect::{EffectKind, Param};
-        let mut ed = Editor::new(timeline(30.0));
-        let clip = ed.current().video_tracks()[0].clips[0].id;
+        let mut e = ed();
+        e.apply(&Command::AddTrack {
+            kind: TrackKind::Video,
+        })
+        .unwrap();
+        let first = e.current().video_tracks().last().unwrap().id;
+        e.undo().unwrap();
+        e.apply(&Command::AddTrack {
+            kind: TrackKind::Video,
+        })
+        .unwrap();
+        let second = e.current().video_tracks().last().unwrap().id;
+        assert_ne!(first, second, "a track id was reused after undo");
+
+        let mut e = ed();
+        e.apply(&Command::AddMarker {
+            marker: Marker::new(Duration::from_secs(1)),
+        })
+        .unwrap();
+        let first = e.current().markers()[0].id;
+        e.undo().unwrap();
+        e.apply(&Command::AddMarker {
+            marker: Marker::new(Duration::from_secs(2)),
+        })
+        .unwrap();
+        let second = e.current().markers()[0].id;
+        assert_ne!(first, second, "a marker id was reused after undo");
+
+        let mut e = ed();
+        let clip = e.current().video_tracks()[0].clips[0].id;
+        e.apply(&Command::GroupClips { clips: vec![clip] }).unwrap();
+        let first = e.current().video_tracks()[0].clips[0].group;
+        e.undo().unwrap();
+        e.apply(&Command::GroupClips { clips: vec![clip] }).unwrap();
+        let second = e.current().video_tracks()[0].clips[0].group;
+        assert!(
+            first.is_some() && second.is_some(),
+            "grouping did not apply"
+        );
+        assert_ne!(first, second, "a group id was reused after undo");
+
+        let mut e = ed();
+        let clip = e.current().video_tracks()[0].clips[0].id;
         let kind = || EffectKind::ColorCorrect {
             brightness: Param::Const(0.5),
             contrast: Param::Const(1.0),
@@ -446,20 +533,12 @@ mod tests {
             temperature: Param::Const(0.0),
             tint: Param::Const(0.0),
         };
-        ed.apply(&Command::AddEffect { clip, kind: kind() })
-            .unwrap();
-        let first = ed.current().video_tracks()[0].clips[0].effects[0].id;
-        // Discard that edit; without the session high-water for effect ids the
-        // counter would rewind and re-mint `first` for a different effect.
-        ed.undo().unwrap();
-        let after = ed
-            .apply(&Command::AddEffect { clip, kind: kind() })
-            .unwrap();
-        let second = after.video_tracks()[0].clips[0].effects[0].id;
-        assert_ne!(
-            first, second,
-            "an effect id used by a discarded branch must not be reused"
-        );
+        e.apply(&Command::AddEffect { clip, kind: kind() }).unwrap();
+        let first = e.current().video_tracks()[0].clips[0].effects[0].id;
+        e.undo().unwrap();
+        e.apply(&Command::AddEffect { clip, kind: kind() }).unwrap();
+        let second = e.current().video_tracks()[0].clips[0].effects[0].id;
+        assert_ne!(first, second, "an effect id was reused after undo");
     }
 
     #[test]
@@ -555,6 +634,54 @@ mod tests {
         let prev = ed.undo().unwrap();
         assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
         assert!(!ed.can_undo());
+    }
+
+    #[test]
+    fn id_high_water_raise_should_never_lower_a_counter() {
+        // `raise` is the only place the "never rewound" half of the high-water lives,
+        // and at the other two call sites `max` and assignment are indistinguishable
+        // (the result of an edit always has counters at least as high as the seed).
+        // So the guarantee is only observable here and through `replace_current`.
+        let mut ids = IdHighWater {
+            clip: 9,
+            track: 9,
+            marker: 9,
+            group: 9,
+            effect: 9,
+        };
+        ids.raise(&timeline(30.0)); // a freshly built timeline's counters are all low
+        assert_eq!(
+            (ids.clip, ids.track, ids.marker, ids.group, ids.effect),
+            (9, 9, 9, 9, 9),
+            "raise must not lower any counter"
+        );
+    }
+
+    #[test]
+    fn editor_replace_current_should_not_lower_the_id_high_water() {
+        let mut ed = Editor::new(timeline(30.0));
+        let track = ed.current().video_tracks()[0].id;
+        ed.apply(&Command::AddClip {
+            track,
+            clip: Box::new(Clip::new("a.mp4")),
+        })
+        .unwrap();
+        let first = ed.current().video_tracks()[0].clips.last().unwrap().id;
+        // A freshly built timeline's counters start low. Seating it as the current
+        // version must not rewind the session's high-water, or the next add re-mints
+        // an id the discarded value already used.
+        ed.replace_current(timeline(30.0));
+        let track = ed.current().video_tracks()[0].id;
+        ed.apply(&Command::AddClip {
+            track,
+            clip: Box::new(Clip::new("b.mp4")),
+        })
+        .unwrap();
+        let second = ed.current().video_tracks()[0].clips.last().unwrap().id;
+        assert_ne!(
+            first, second,
+            "seating a value must not lower the id high-water"
+        );
     }
 
     #[test]
