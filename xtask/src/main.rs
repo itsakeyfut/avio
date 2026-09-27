@@ -31,8 +31,16 @@ const USAGE: &str = "\
 cargo xtask <command> [args]
 
 Development tasks (run these yourself):
+  gate -p <crate> [-p <crate>...] [--timeout <secs>]
+        The whole local gate in one exit code: fmt, clippy, check, doc, msrv, test.
+        --no-tests drops the test step.
   test -p <crate> [-p <crate>...] [--timeout <secs>] [cargo args]
         Run a crate's tests with the GPU targets serialised (#1718).
+  commits [base] [-p <crate>...] [--tests] [--timeout <secs>]
+        Run the gate on every commit of base..HEAD, so a bisect is meaningful.
+        Default base: main. Tests are skipped unless --tests is given.
+  adr-check
+        Check every ADR against the tree: index rows, statuses, Confirmation names.
   dep-graph
         Print the workspace's internal dependency edges and check for cycles.
 
@@ -58,6 +66,9 @@ fn main() -> ExitCode {
     let rest = &args[1..];
 
     let code = match command.as_str() {
+        "gate" => dev::gate::run(rest),
+        "commits" => dev::commits::run(rest),
+        "adr-check" => dev::adr_check::run(rest),
         "test" => dev::test::run(rest),
         "dep-graph" => dev::dep_graph::run(rest),
         "publish-readiness" => ci::publish_readiness::run(rest),
