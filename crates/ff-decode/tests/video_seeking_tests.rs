@@ -88,12 +88,107 @@ fn test_seek_exact_mode() {
         frame_time
     );
 
-    // Should not be too far from target
+    // The tolerance is one frame interval, not 500 ms: a one-frame overshoot is
+    // exactly the defect this mode had (#1811), and a loose bound passes through it.
     let diff = frame_time - target;
     assert!(
-        diff < Duration::from_millis(500),
-        "Frame timestamp should be close to target: diff={:?}",
-        diff
+        diff < frame_interval(),
+        "Exact seek must not overshoot by a whole frame: diff={:?}, interval={:?}",
+        diff,
+        frame_interval()
+    );
+}
+
+/// Timestamps of the first `count` frames, read without seeking.
+///
+/// The expected values are measured in the same run rather than assumed, so the
+/// tests below do not encode a frame rate the asset could change.
+fn frame_grid(count: usize) -> Vec<Duration> {
+    let mut decoder = create_decoder().expect("Failed to create decoder");
+    let mut grid = Vec::with_capacity(count);
+    while grid.len() < count {
+        let frame = decoder
+            .decode_one()
+            .expect("Failed to decode")
+            .expect("Test asset is shorter than the requested grid");
+        grid.push(frame.timestamp().as_duration());
+    }
+    grid
+}
+
+/// The interval between the first two frames of the test asset.
+fn frame_interval() -> Duration {
+    let grid = frame_grid(2);
+    grid[1] - grid[0]
+}
+
+#[test]
+fn seek_exact_should_land_on_the_target_frame_and_not_consume_it() {
+    let grid = frame_grid(60);
+    let mut decoder = create_decoder().expect("Failed to create decoder");
+
+    // Targets are frame timestamps, so the frame owed to the caller is unambiguous:
+    // it is the frame at the target itself.
+    for &target in &[grid[15], grid[40], grid[7]] {
+        decoder
+            .seek(target, SeekMode::Exact)
+            .expect("Exact seek should succeed");
+        let frame = decoder
+            .decode_one()
+            .expect("Failed to decode after seek")
+            .expect("Frame should exist after seek");
+        assert_eq!(
+            frame.timestamp().as_duration(),
+            target,
+            "Exact seek must leave the frame at the target for the caller to read"
+        );
+    }
+}
+
+#[test]
+fn seek_exact_should_not_return_a_frame_held_back_by_an_earlier_seek() {
+    let grid = frame_grid(60);
+    let mut decoder = create_decoder().expect("Failed to create decoder");
+
+    decoder
+        .seek(grid[40], SeekMode::Exact)
+        .expect("Exact seek should succeed");
+    // No decode in between: the frame at grid[40] is still held back when the
+    // second seek runs, and must not survive it.
+    decoder
+        .seek(grid[10], SeekMode::Exact)
+        .expect("Exact seek should succeed");
+
+    let frame = decoder
+        .decode_one()
+        .expect("Failed to decode after seek")
+        .expect("Frame should exist after seek");
+    assert_eq!(
+        frame.timestamp().as_duration(),
+        grid[10],
+        "A frame held back by the first seek must not outlive the second"
+    );
+}
+
+#[test]
+fn flush_should_discard_the_frame_a_seek_held_back() {
+    let grid = frame_grid(60);
+    let mut decoder = create_decoder().expect("Failed to create decoder");
+
+    decoder
+        .seek(grid[20], SeekMode::Exact)
+        .expect("Exact seek should succeed");
+    decoder.flush();
+
+    let frame = decoder
+        .decode_one()
+        .expect("Failed to decode after flush")
+        .expect("Frame should exist after flush");
+    assert!(
+        frame.timestamp().as_duration() > grid[20],
+        "Flush must discard the held-back frame: got {:?}, target was {:?}",
+        frame.timestamp().as_duration(),
+        grid[20]
     );
 }
 

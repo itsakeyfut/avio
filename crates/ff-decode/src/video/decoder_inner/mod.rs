@@ -117,6 +117,16 @@ pub(crate) struct VideoDecoderInner {
     /// Number of consecutive `AVERROR_INVALIDDATA` packets skipped without a successful frame.
     /// Reset to 0 on each successfully decoded frame.
     pub(super) consecutive_invalid: u32,
+    /// The frame a seek stopped on, held back so the caller receives it.
+    ///
+    /// [`SeekMode::Exact`](crate::SeekMode::Exact) has to decode the target frame to
+    /// know it has arrived. With nowhere to put it that frame was dropped along with
+    /// the ones before it and the caller got the *next* one, one frame late on every
+    /// trim (#1811).
+    ///
+    /// Cleared by `seek` and `flush`: a frame from before a seek must never be handed
+    /// out after it, which is the one way this field can be worse than no field.
+    pub(super) pending: Option<VideoFrame>,
 }
 
 impl VideoDecoderInner {
@@ -334,6 +344,7 @@ impl VideoDecoderInner {
                 network_opts: stored_network_opts,
                 reconnect_count: 0,
                 consecutive_invalid: 0,
+                pending: None,
             },
             stream_info,
             container_info,

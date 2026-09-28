@@ -29,6 +29,12 @@ impl VideoDecoderInner {
     }
 
     fn decode_one_inner(&mut self) -> Result<Option<VideoFrame>, DecodeError> {
+        // A frame an `Exact` seek stopped on, owed to this caller. Checked before
+        // `drained`, because a frame captured before the stream ran out is still the
+        // caller's; dropping it there would reintroduce #1811 at the end of a file.
+        if let Some(frame) = self.pending.take() {
+            return Ok(Some(frame));
+        }
         if self.drained {
             return Ok(None);
         }

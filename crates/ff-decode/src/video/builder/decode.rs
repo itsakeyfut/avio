@@ -117,6 +117,16 @@ impl VideoDecoder {
     /// providing significantly better performance than file-reopen-based seeking
     /// (5-10ms vs 50-100ms).
     ///
+    /// # What the decoder is left on
+    ///
+    /// After [`SeekMode::Exact`](crate::SeekMode::Exact), the next
+    /// [`decode_one`](Self::decode_one) returns the first frame at or after
+    /// `position`: reaching that frame requires decoding it, and it is held back
+    /// rather than consumed. [`Keyframe`](crate::SeekMode::Keyframe) and
+    /// [`Backward`](crate::SeekMode::Backward) are approximate by design and leave
+    /// the decoder shortly *before* the target, for a caller that decodes up to it
+    /// itself.
+    ///
     /// # Arguments
     ///
     /// * `position` - Target position to seek to.

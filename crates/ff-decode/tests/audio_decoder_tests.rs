@@ -609,6 +609,91 @@ fn test_audio_seek_exact_mode() {
     );
 }
 
+/// Timestamps of the first `count` audio frames, read without seeking.
+///
+/// Measured in the same run so the tests below do not encode a frame duration the
+/// asset could change.
+fn audio_frame_grid(count: usize) -> Vec<Duration> {
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+    let mut grid = Vec::with_capacity(count);
+    while grid.len() < count {
+        let frame = decoder
+            .decode_one()
+            .expect("Failed to decode")
+            .expect("Test asset is shorter than the requested grid");
+        grid.push(frame.timestamp().as_duration());
+    }
+    grid
+}
+
+#[test]
+fn audio_seek_exact_should_land_on_the_target_frame_and_not_consume_it() {
+    let grid = audio_frame_grid(60);
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+
+    for &target in &[grid[15], grid[40], grid[7]] {
+        decoder
+            .seek(target, SeekMode::Exact)
+            .expect("Audio exact seek should succeed");
+        let frame = decoder
+            .decode_one()
+            .expect("Failed to decode after seek")
+            .expect("Audio frame should exist after seek");
+        assert_eq!(
+            frame.timestamp().as_duration(),
+            target,
+            "Exact seek must leave the frame at the target for the caller to read"
+        );
+    }
+}
+
+#[test]
+fn audio_seek_exact_should_not_return_a_frame_held_back_by_an_earlier_seek() {
+    let grid = audio_frame_grid(60);
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+
+    decoder
+        .seek(grid[40], SeekMode::Exact)
+        .expect("Audio exact seek should succeed");
+    // No decode in between: the frame at grid[40] is still held back when the
+    // second seek runs, and must not survive it.
+    decoder
+        .seek(grid[10], SeekMode::Exact)
+        .expect("Audio exact seek should succeed");
+
+    let frame = decoder
+        .decode_one()
+        .expect("Failed to decode after seek")
+        .expect("Audio frame should exist after seek");
+    assert_eq!(
+        frame.timestamp().as_duration(),
+        grid[10],
+        "A frame held back by the first seek must not outlive the second"
+    );
+}
+
+#[test]
+fn audio_flush_should_discard_the_frame_a_seek_held_back() {
+    let grid = audio_frame_grid(60);
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+
+    decoder
+        .seek(grid[20], SeekMode::Exact)
+        .expect("Audio exact seek should succeed");
+    decoder.flush();
+
+    let frame = decoder
+        .decode_one()
+        .expect("Failed to decode after flush")
+        .expect("Audio frame should exist after flush");
+    assert!(
+        frame.timestamp().as_duration() > grid[20],
+        "Flush must discard the held-back frame: got {:?}, target was {:?}",
+        frame.timestamp().as_duration(),
+        grid[20]
+    );
+}
+
 #[test]
 fn test_audio_seek_to_beginning() {
     let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
