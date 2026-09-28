@@ -72,6 +72,14 @@ Unit tests in `crates/avio/src/edit.rs` fail if the scheme is violated:
   fresh, distinct id.
 * `apply_should_preserve_clip_ids_across_an_unrelated_edit` - ids are stable
   across an unrelated edit.
+* `set_clip_should_keep_an_effect_id_the_clip_already_has` - the same for effect ids
+  through `Command::SetClip`, the escape hatch a host patches whole clips with
+  (#1814). `set_clip_should_restamp_an_effect_id_the_clip_does_not_have` and
+  `set_clip_should_not_hand_out_a_duplicate_effect_id_afterwards` pin the other half:
+  an id this clip does not carry is minted fresh, so uniqueness survives a patch built
+  somewhere else, and
+  `set_clip_should_not_keep_the_same_effect_id_twice_in_one_patch` covers the patch
+  that carries one id twice (a host duplicating an effect row clones its id with it).
 * `apply_unknown_clip_should_err`, `apply_unknown_track_should_err` - an absent
   or removed id resolves to an `EditError` (the stale-reference safety).
 
