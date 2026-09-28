@@ -9,20 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-#### ff-decode
-
-- `seek(t, SeekMode::Exact)` leaves the decoder on the frame it landed on, so the next `decode_one()`
-  returns the first frame at or after `t` rather than the one after it. Deciding the target had
-  arrived required decoding it, and that frame was dropped with the ones before it, which made every
-  exact seek land one frame late: 33 ms at 30 fps for video, 26 ms on an MP3 for audio. The GPU
-  export is the only caller of `Exact` in the workspace, so a trim started one frame later there than
-  on the CPU route, which applies the same in-point by timestamp and never seeks.
-  `Keyframe` and `Backward` are unchanged: they are approximate by design, and `seek`'s documentation
-  now says what each mode leaves behind
-  ([#1811](https://github.com/itsakeyfut/avio/issues/1811))
-
 ---
 
 ## [0.18.3] - 2026-09-26
