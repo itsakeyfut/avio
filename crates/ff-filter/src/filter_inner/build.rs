@@ -27,6 +27,48 @@ pub(crate) fn have_filter(name: &std::ffi::CStr) -> bool {
     unsafe { !ff_sys::avfilter_get_by_name(name.as_ptr()).is_null() }
 }
 
+/// The pixel format both `blend` inputs are converted to before blending in `mode`.
+///
+/// `vf_blend` applies its formula **per plane**, whatever the planes hold, so feeding
+/// it `yuv420p` blends luma against luma and chroma against chroma: `Darken` of a red
+/// and a green returns green (#1806). Planar RGB puts the same formula on R, G and B.
+///
+/// Float planar RGB for almost every mode, because ADR-0010 transcribed the
+/// `DEPTH == 32` branch of `blend_modes.c` into the GPU shaders and that branch is the
+/// float one (`PIXEL float`, `MAX 1.f`). Feeding `gbrpf32` makes both routes evaluate
+/// the same arithmetic rather than merely the same colour space, which is what the
+/// modes whose 8-bit branch wraps (`Bleach`, `Stain`, `GrainExtract`, `GrainMerge`,
+/// `LinearLight`, `Multiply128`, `Divide`) need to agree.
+///
+/// `And` / `Or` / `Xor` are the exception ADR-0010 already names: their C is bitwise
+/// on the raw sample, which on the float branch means the IEEE-754 bit pattern and is
+/// not an image operation at all. The shaders implement the 8-bit integer definition,
+/// so the CPU route is given 8-bit planar RGB for those three and agrees. Measured:
+/// through `gbrpf32` they came out 23, 21 and 221 levels away from the GPU.
+pub(crate) fn blend_work_format(mode: &str) -> &'static str {
+    match mode {
+        "and" | "or" | "xor" => "gbrp",
+        _ => "gbrpf32",
+    }
+}
+
+/// Inserts a `format` filter after `prev_ctx` and returns it.
+///
+/// A thin named wrapper over [`add_raw_filter_step`] so the blend sites can convert
+/// into and back out of [`BLEND_WORK_FORMAT`] without repeating the raw filter
+/// plumbing.
+pub(crate) unsafe fn add_format_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    pix_fmt: &str,
+    index: usize,
+    prefix: &str,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    // SAFETY: the caller guarantees `graph` and `prev_ctx` are live and in the same
+    // graph, which is what `add_raw_filter_step` requires.
+    unsafe { add_raw_filter_step(graph, prev_ctx, "format", pix_fmt, index, prefix) }
+}
+
 // Hardware acceleration helpers
 
 /// Map a [`HwAccel`] variant to the corresponding `AVHWDeviceType` constant.
@@ -1652,16 +1694,41 @@ pub(crate) unsafe fn add_blend_normal_step(
 ///
 /// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
 /// same `AVFilterGraph`.
+/// What a photographic blend needs beyond its two inputs.
+///
+/// Grouped because the step already takes a graph, two contexts and the top chain;
+/// a fourth scalar pushed it past the argument limit.
+#[derive(Clone, Copy)]
+pub(crate) struct PhotographicBlendParams<'a> {
+    /// `blend`'s `all_mode` token for this mode.
+    pub mode_name: &'a str,
+    /// Static opacity in `[0.0, 1.0]`, forwarded as `all_opacity`.
+    pub opacity: f32,
+    /// The pixel format the step must hand back, which is whatever the pipeline
+    /// carries: the blend itself runs in [`blend_work_format`] and converts back
+    /// (#1806).
+    ///
+    /// `None` where the pipeline's format has no `FFmpeg` name ([`PixelFormat::Other`]).
+    /// The step then leaves the chain's format alone and blends per plane as it did
+    /// before #1806: a wrong blend is better than silently rewriting an exotic format
+    /// to an 8-bit one on the way through.
+    pub out_fmt: Option<&'a str>,
+}
+
 pub(crate) unsafe fn add_blend_photographic_step(
     graph: *mut ff_sys::AVFilterGraph,
     bottom_ctx: *mut ff_sys::AVFilterContext,
     top_src_ctx: *mut ff_sys::AVFilterContext,
     top_steps: &[FilterStep],
-    mode_name: &str,
-    opacity: f32,
+    params: &PhotographicBlendParams,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
     use std::ffi::CString;
+    let PhotographicBlendParams {
+        mode_name,
+        opacity,
+        out_fmt,
+    } = *params;
 
     // 1. Chain the top builder's steps starting from the in1 buffersrc.
     let mut top_ctx = top_src_ctx;
@@ -1724,7 +1791,22 @@ pub(crate) unsafe fn add_blend_photographic_step(
     }
     log::debug!("filter added name=blend args={blend_args_str} index={index} (blend_photographic)");
 
-    // 3. Link: bottom → blend[0], top → blend[1].
+    // 3. Link: bottom → blend[0], top → blend[1], both through the blend working
+    // format so this route evaluates the same arithmetic as the export and the GPU
+    // compositor (#1806). Left to libavfilter's negotiation the two inputs meet in
+    // whatever it picks, which is not necessarily RGB at all.
+    // SAFETY: every context here belongs to `graph`, which is what the helper needs.
+    let (bottom_ctx, top_ctx) = if out_fmt.is_some() {
+        let work_fmt = blend_work_format(mode_name);
+        // SAFETY: every context here belongs to `graph`, which is what the helper needs.
+        let bottom =
+            unsafe { add_format_step(graph, bottom_ctx, work_fmt, index, "blend_phot_base_fmt")? };
+        // SAFETY: as above.
+        let top = unsafe { add_format_step(graph, top_ctx, work_fmt, index, "blend_phot_fmt")? };
+        (bottom, top)
+    } else {
+        (bottom_ctx, top_ctx)
+    };
     // SAFETY: bottom_ctx, top_ctx, blend_ctx are all in the same graph.
     let ret = ff_sys::avfilter_link(bottom_ctx, 0, blend_ctx, 0);
     if ret < 0 {
@@ -1738,7 +1820,15 @@ pub(crate) unsafe fn add_blend_photographic_step(
     log::debug!(
         "filter blend_photographic expanded mode={mode_name} opacity={opacity} index={index}"
     );
-    Ok(blend_ctx)
+    // Back to the caller's own format: a blend step must not change what the rest of
+    // the pipeline carries, and this helper serves graphs that run in yuv as well as
+    // the realtime compositor's rgba.
+    let Some(out_fmt) = out_fmt else {
+        return Ok(blend_ctx);
+    };
+    // SAFETY: `blend_ctx` belongs to `graph`.
+    let out_ctx = unsafe { add_format_step(graph, blend_ctx, out_fmt, index, "blend_phot_out")? };
+    Ok(out_ctx)
 }
 
 // Blend Porter-Duff Under compound step
@@ -2660,6 +2750,7 @@ impl FilterGraphInner {
         num_inputs: usize,
         steps: &[FilterStep],
         hw: Option<&HwAccel>,
+        pipeline_fmt: Option<&str>,
     ) -> VideoGraphResult {
         let graph = graph_nn.as_ptr();
 
@@ -2959,8 +3050,11 @@ impl FilterGraphInner {
                     prev_ctx,
                     top_src.as_ptr(),
                     top.steps(),
-                    mode_name,
-                    *opacity,
+                    &PhotographicBlendParams {
+                        mode_name,
+                        opacity: *opacity,
+                        out_fmt: pipeline_fmt,
+                    },
                     i,
                 ) {
                     Ok(ctx) => ctx,

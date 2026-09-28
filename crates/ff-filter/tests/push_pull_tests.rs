@@ -1801,6 +1801,19 @@ fn push_audio_through_concat_audio_should_produce_output() {
 // Blend: Multiply and Screen
 
 /// YUV420p frame filled with a solid luma value; U/V neutral at 128.
+/// Black and white as an untagged `yuv420p` frame comes back from a colour
+/// conversion.
+///
+/// A non-`Normal` blend runs in planar RGB so both render routes agree (#1806), and
+/// `VideoFrame` carries no colour range, so swscale reads YUV as limited: values
+/// inside 16..235 survive the round trip, while a `Y = 0` or `Y = 255` pushed in
+/// lands on the limited-range endpoint. The blend assertions below pin those
+/// endpoints rather than 0 and 255.
+const LIMITED_BLACK: f32 = 16.0;
+const LIMITED_WHITE: f32 = 235.0;
+/// Room for the chroma round trip and the encoder-free path's own rounding.
+const ENDPOINT_TOL: f32 = 6.0;
+
 fn make_solid_yuv_frame(width: u32, height: u32, y_val: u8) -> VideoFrame {
     let y = vec![y_val; (width * height) as usize];
     let u = vec![128u8; ((width / 2) * (height / 2)) as usize];
@@ -1859,7 +1872,7 @@ fn blend_multiply_black_top_should_produce_black_output() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg < 10.0,
+        (avg - LIMITED_BLACK).abs() < ENDPOINT_TOL,
         "Multiply with black top should produce near-black output (avg={avg})"
     );
 }
@@ -1945,7 +1958,7 @@ fn blend_screen_white_top_should_produce_white_output() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg > 245.0,
+        (avg - LIMITED_WHITE).abs() < ENDPOINT_TOL,
         "Screen with white top should produce near-white output (avg={avg})"
     );
 }
@@ -2118,7 +2131,7 @@ fn blend_darken_black_top_should_produce_black_output() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg < 10.0,
+        (avg - LIMITED_BLACK).abs() < ENDPOINT_TOL,
         "Darken with black top should produce near-black output (avg={avg})"
     );
 }
@@ -2161,7 +2174,7 @@ fn blend_lighten_white_top_should_produce_white_output() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg > 245.0,
+        (avg - LIMITED_WHITE).abs() < ENDPOINT_TOL,
         "Lighten with white top should produce near-white output (avg={avg})"
     );
 }
@@ -2204,7 +2217,7 @@ fn blend_difference_with_self_should_produce_black() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg < 10.0,
+        (avg - LIMITED_BLACK).abs() < ENDPOINT_TOL,
         "Difference of identical layers should produce near-black output (avg={avg})"
     );
 }
@@ -2290,7 +2303,7 @@ fn blend_subtract_white_top_should_produce_black() {
     let luma = out.plane(0).expect("Y plane must exist");
     let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
     assert!(
-        avg < 10.0,
+        (avg - LIMITED_BLACK).abs() < ENDPOINT_TOL,
         "Subtract with white top should produce near-black output (avg={avg})"
     );
 }

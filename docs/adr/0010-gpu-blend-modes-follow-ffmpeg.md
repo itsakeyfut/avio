@@ -56,6 +56,47 @@ The `DEPTH == 32` branch applies no clamp, so `Bleach`, `Stain`, `GrainExtract`,
 `Rgba8Unorm` write reproduce FFmpeg's float-to-8-bit conversion; the 8-bit C path wraps instead, and
 that is deliberately not replicated.
 
+### Both routes, not only the GPU (#1806)
+
+This record pinned the shaders to a branch and said nothing about the CPU composition, which was
+handing `vf_blend` a `yuv420p` stream. The filter applies its formula **per plane** whatever the
+planes hold, so that route blended luma against luma and chroma against chroma: `Darken` of a red
+and a green returned green, 120 levels from the GPU's answer, and 35 of the 40 modes disagreed.
+
+`DEPTH` is bit depth, not colour space: `blend_modes.c:37` defines `DEPTH == 32` as `PIXEL float`
+with `MAX 1.f`. Choosing that branch therefore binds **which planes are fed**, and both routes now
+convert both blend inputs to planar float RGB (`gbrpf32`) before the blend, converting straight back
+afterwards. The canvas side has to be converted too: normalising only the layer leaves libavfilter to
+negotiate the pair back to the canvas's format, which measured identically to not fixing it at all.
+
+Two measurements corrected this record's own expectations:
+
+* **8-bit planar RGB (`gbrp`) would have been enough for all but two modes.** The wrap this record
+  describes separates float from 8-bit far enough to matter, at the parity fixture's colours, only
+  for `Bleach` (222 levels) and `Stain` (232). Float is still the right choice, because it is the
+  arithmetic the shaders were transcribed from, but the expectation that seven modes needed it was
+  too broad.
+* **`And` / `Or` / `Xor` must not take the float branch.** The exception stated above is
+  load-bearing: on `gbrpf32` the C operates on the IEEE-754 bit pattern, which put those three 23, 21
+  and 221 levels from the GPU. They are given 8-bit planar RGB so the CPU route runs the same integer
+  definition the shaders implement.
+
+What is left between the routes is the yuv/rgb round trip each takes, one or two levels, amplified to
+five or seven by the modes that divide by a small number (`ColorDodge` is `B / (1 - A)`, about 4.6
+output levels per input level at the fixture's colours).
+
+The conversions cost what they weigh: a CPU render of 120 frames at 640x360 with one blended layer
+goes from 0.118s to 0.233s, while the `Normal` path (`overlay`, no conversion) stays at 0.123s. Two
+float conversions in and one out, on the route that is already the fallback, bought against a result
+that was simply the wrong colour. 8-bit planar RGB would cost a quarter of the samples, but it is not
+the branch the shaders were transcribed from, and `Bleach` and `Stain` measurably need the float one.
+
+One consequence is worth stating because it is visible: `VideoFrame` carries no colour range, so
+swscale reads YUV as limited. Values inside 16..235 survive the conversion, while a `Y = 0` or
+`Y = 255` pushed into a CPU blend now lands on the limited-range endpoint instead of passing through.
+Decoded footage lives inside that range, and the GPU route has always worked this way (it composites
+in RGB and reads back), so this is the CPU route joining it rather than a new loss.
+
 ### Confirmation
 
 * `blend_rgb_should_match_the_ffmpeg_reference_for_every_mode` in
@@ -68,6 +109,9 @@ that is deliberately not replicated.
   (adapter-gated) ties the shader to that Rust for all 44 variants.
 * `map_scene_should_map_every_blend_mode` in `crates/avio/src/gpu.rs` fails if any mode the model can
   express stops mapping to a GPU node.
+* `every_blend_mode_should_agree_between_the_two_render_routes` in
+  `crates/avio/tests/blend_route_parity.rs` renders all 40 modes through both routes on a chromatic
+  fixture and fails if either changes colour space (#1806).
 
 What none of these prove is agreement with a *running* FFmpeg; that comparison is #1671's
 reference-image suite.
