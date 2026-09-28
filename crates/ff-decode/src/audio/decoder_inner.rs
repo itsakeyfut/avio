@@ -68,6 +68,16 @@ pub(crate) struct AudioDecoderInner {
     /// Whether the decoder has been fully drained: no further frame will be
     /// returned.
     drained: bool,
+    /// The frame a seek stopped on, held back so the caller receives it.
+    ///
+    /// [`SeekMode::Exact`](crate::SeekMode::Exact) has to decode the target frame to
+    /// know it has arrived. With nowhere to put it that frame was dropped along with
+    /// the ones before it and the caller got the *next* one, one frame late on every
+    /// trim (#1811).
+    ///
+    /// Cleared by `seek` and `flush`: a frame from before a seek must never be handed
+    /// out after it, which is the one way this field can be worse than no field.
+    pending: Option<AudioFrame>,
     /// Current playback position
     position: Duration,
     /// Reusable packet for reading from file
@@ -249,6 +259,7 @@ impl AudioDecoderInner {
                 is_live,
                 demuxer_eof: false,
                 drained: false,
+                pending: None,
                 position: Duration::ZERO,
                 packet,
                 frame,
@@ -435,6 +446,12 @@ impl AudioDecoderInner {
     }
 
     fn decode_one_inner(&mut self) -> Result<Option<AudioFrame>, DecodeError> {
+        // A frame an `Exact` seek stopped on, owed to this caller. Checked before
+        // `drained`, because a frame captured before the stream ran out is still the
+        // caller's; dropping it there would reintroduce #1811 at the end of a file.
+        if let Some(frame) = self.pending.take() {
+            return Ok(Some(frame));
+        }
         if self.drained {
             return Ok(None);
         }
@@ -589,6 +606,14 @@ impl AudioDecoderInner {
 
     /// Seeks to a specified position in the audio stream.
     ///
+    /// # What the decoder is left on
+    ///
+    /// With [`SeekMode::Exact`](crate::SeekMode::Exact), the next `decode_one`
+    /// returns the first frame at or after `position`: reaching that frame requires
+    /// decoding it, so it is held back rather than consumed.
+    /// [`Keyframe`](crate::SeekMode::Keyframe) and [`Backward`](crate::SeekMode::Backward)
+    /// leave the decoder on the keyframe at or before the target.
+    ///
     /// # Arguments
     ///
     /// * `position` - Target position to seek to.
@@ -610,6 +635,10 @@ impl AudioDecoderInner {
         // 1. Clear any pending packet and frame
         self.packet.unref();
         self.frame.unref();
+        // A frame a previous `Exact` seek held back belongs to where the decoder used
+        // to be. Handing it out after this seek would be worse than the defect the
+        // slot exists to fix, so it goes before the seek rather than after it.
+        self.pending = None;
 
         // 2. Seek in the format context
         self.format_ctx
@@ -660,10 +689,14 @@ impl AudioDecoderInner {
         while let Some(frame) = self.decode_one()? {
             let frame_time = frame.timestamp().as_duration();
             if frame_time >= target {
-                // We've reached the target position
+                // This is the frame the caller asked for. Hold it back rather than
+                // dropping it: deciding it had arrived required decoding it, and
+                // discarding it here is what made every `Exact` seek land one frame
+                // late (#1811).
+                self.pending = Some(frame);
                 break;
             }
-            // Continue decoding to get closer (frames are automatically dropped)
+            // Continue decoding to get closer (frames before the target are dropped)
         }
         Ok(())
     }
@@ -674,6 +707,9 @@ impl AudioDecoderInner {
         unsafe { self.codec_ctx.flush_buffers() };
         self.demuxer_eof = false;
         self.drained = false;
+        // Flushing discards what the decoder was holding; a held-back seek frame is
+        // part of that, or it would outlive the position it belongs to.
+        self.pending = None;
     }
 
     // Reconnect helpers

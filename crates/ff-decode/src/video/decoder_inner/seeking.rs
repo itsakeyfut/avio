@@ -71,6 +71,16 @@ impl VideoDecoderInner {
     /// This method performs efficient seeking without reopening the file.
     /// It uses `av_seek_frame` internally and flushes the decoder buffers.
     ///
+    /// # What the decoder is left on
+    ///
+    /// With [`SeekMode::Exact`](crate::SeekMode::Exact), the next `decode_one` returns
+    /// the first frame at or after `position`: reaching that frame requires decoding it,
+    /// so it is held back rather than consumed.
+    /// [`Keyframe`](crate::SeekMode::Keyframe) and [`Backward`](crate::SeekMode::Backward)
+    /// are approximate by design and leave the decoder within
+    /// `KEYFRAME_SEEK_TOLERANCE_SECS` *before* the target, for a caller that wants to
+    /// decode up to it itself.
+    ///
     /// # Performance Characteristics
     ///
     /// - **Keyframe seek**: 5-10ms for typical GOP sizes (1-2 seconds)
@@ -108,6 +118,10 @@ impl VideoDecoderInner {
         // - frame is valid: allocated in constructor, owned by VideoDecoderInner
         self.packet.unref();
         self.frame.unref();
+        // A frame a previous `Exact` seek held back belongs to where the decoder used
+        // to be. Handing it out after this seek would be worse than the defect the
+        // slot exists to fix, so it goes before the seek rather than after it.
+        self.pending = None;
 
         // 2. Seek in the format context (file is NOT reopened)
         // Use av_seek_frame with the stream index and timestamp in stream time_base units
@@ -200,8 +214,12 @@ impl VideoDecoderInner {
                 Some(frame) => {
                     let frame_time = frame.timestamp().as_duration();
                     if frame_time >= target {
-                        // Reached or passed the target frame
-                        // Position will be updated by decode_one() which was just called
+                        // This is the frame the caller asked for. Hold it back rather
+                        // than dropping it: deciding it had arrived required decoding
+                        // it, and discarding it here is what made every `Exact` seek
+                        // land one frame late (#1811).
+                        self.pending = Some(frame);
+                        // Position was updated by the decode_one() that produced it.
                         break;
                     }
                     // Continue decoding (frame is automatically dropped)
@@ -227,6 +245,9 @@ impl VideoDecoderInner {
         unsafe { self.codec_ctx.flush_buffers() };
         self.demuxer_eof = false;
         self.drained = false;
+        // Flushing discards what the decoder was holding; a held-back seek frame is
+        // part of that, or it would outlive the position it belongs to.
+        self.pending = None;
     }
 
     /// Scales a video frame to the specified dimensions while preserving aspect ratio.
