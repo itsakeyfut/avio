@@ -16,7 +16,7 @@ be built on. Three things are true at the start of it, and each is a theme:
 This version is deliberately large. A minor bump here is a substantial addition to what the engine can
 do, not a handful of fixes.
 
-Scope is 45 issues in the `v0.19.0` milestone. Every one of them starts `S-Needs-Design`: the design is
+Scope is 49 issues in the `v0.19.0` milestone. Every one of them starts `S-Needs-Design`: the design is
 settled as a comment on the issue before any of it is implemented.
 
 ## What you can do after this version
@@ -34,6 +34,25 @@ the user made it (#1885).
 Frame-exact addressing and timecode, so a position means one frame and not a float that rounds (#1827).
 Speed keyframed like every other clip property, rather than one static value per clip (#1874). Export a
 range of the timeline instead of always the whole programme (#1875).
+
+### Place a sound on a beat
+
+The engine can express every edit a music-driven video needs and still cannot be used to make one,
+because the positions have to be computed outside it. Musical time, so a clip goes on beat 3.5 of bar 12
+rather than at a hand-computed 4.137931 seconds (#1914). The tempo is already detectable and was never
+usable: `BpmResult` is re-exported and nothing consumes it. And placement that keeps the precision the
+trim already keeps: the export truncates a clip's audio offset to whole milliseconds, so every clip
+starts up to a millisecond early, one-directionally (#1915).
+
+And the part without which none of it can be authored: **the preview mixes audio and has no way to hand
+it to the host** (#1917). The mixer and its pull API exist and nothing in the workspace calls them, so a
+host driving the preview gets pictures and silence. Picture editing survives that by checking the export;
+laying samples on a beat does not, because that is done by ear. Pitch also stops being one static value
+per clip (#1856, moved here from v0.18.0), since a bend is ordinary in this material.
+
+These four are what turn the milestone's other work into something an editor of chopped-sample material
+can use. They are also why #1871 and #1872 matter here rather than being ordinary optimisation: hundreds
+of short clips cut from one file is that material's normal shape.
 
 ### Deliver what the primitives can already produce
 
