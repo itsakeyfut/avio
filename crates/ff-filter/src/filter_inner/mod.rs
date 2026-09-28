@@ -22,9 +22,10 @@ pub(crate) use build::add_asetrate_resample_chain;
 pub(crate) use build::add_pitch_shift_chain;
 pub(crate) use build::have_filter;
 pub(crate) use build::{
-    MIN_INPUT_FRAME_RATE, NormalBlendParams, add_blend_normal_step, add_blend_photographic_step,
-    add_composite_step, video_buffersrc_args,
+    MIN_INPUT_FRAME_RATE, NormalBlendParams, PhotographicBlendParams, add_blend_normal_step,
+    add_blend_photographic_step, add_composite_step, video_buffersrc_args,
 };
+pub(crate) use build::{add_format_step, blend_work_format};
 pub(crate) use convert::pixel_format_to_av;
 pub(crate) use normalize::linear_to_db;
 

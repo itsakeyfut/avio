@@ -949,36 +949,35 @@ unsafe fn build_video_composition_unsafe(
             // pixel-level blend operation.  Opacity is forwarded via `all_opacity`.
             // The `blend` filter does not support positional (x/y) placement.
             //
-            // Normalise the layer to yuv420p so both inputs share the same format.
-            let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
-            if fmt_filter.is_null() {
-                bail!(graph, "filter not found: format (blend pre-norm)");
-            }
-            let Ok(bfmt_name) = CString::new(format!("blend_fmt{idx}")) else {
-                bail!(graph, "CString::new failed for blend format name");
-            };
-            let mut bfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-            let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut bfmt_ctx,
-                fmt_filter,
-                bfmt_name.as_ptr(),
-                c"yuv420p".as_ptr(),
-                std::ptr::null_mut(),
-                graph,
-            );
-            if ret < 0 {
+            // Both inputs are converted to planar float RGB, so `blend` evaluates its
+            // formula on R/G/B rather than on luma and chroma (#1806). The canvas side
+            // is converted too: leaving it to libavfilter's negotiation would let the
+            // two inputs meet in whatever format it picks, which is how this route
+            // ended up blending in YUV in the first place.
+            let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
+            let work_fmt = crate::filter_inner::blend_work_format(mode_name);
+            let Ok(bfmt_ctx) =
+                crate::filter_inner::add_format_step(graph, chain_end, work_fmt, idx, "blend_fmt")
+            else {
                 bail!(
                     graph,
-                    format!(
-                        "failed to create format filter (blend pre-norm) layer={idx} code={ret}"
-                    )
+                    format!("failed to create format filter (blend pre-norm) layer={idx}")
                 );
-            }
-            let ret = ff_sys::avfilter_link(chain_end, 0, bfmt_ctx, 0);
-            if ret < 0 {
-                bail!(graph, format!("link failed: →blend_fmt layer={idx}"));
-            }
+            };
             chain_end = bfmt_ctx;
+            let Ok(base_fmt_ctx) = crate::filter_inner::add_format_step(
+                graph,
+                prev_ctx,
+                work_fmt,
+                idx,
+                "blend_base_fmt",
+            ) else {
+                bail!(
+                    graph,
+                    format!("failed to create format filter (blend base pre-norm) layer={idx}")
+                );
+            };
+            prev_ctx = base_fmt_ctx;
 
             let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
             if blend_filter.is_null() {
@@ -987,7 +986,6 @@ unsafe fn build_video_composition_unsafe(
             let Ok(bl_name) = CString::new(format!("blend{idx}")) else {
                 bail!(graph, "CString::new failed for blend name");
             };
-            let mode_name = blend_mode_to_ffmpeg(layer.blend_mode);
             // Terminate the composition like the `overlay` path: `endall` on the
             // last layer ends output when its (finite) input EOFs. Without this the
             // `blend` filter's framesync defaults to `repeat` and runs forever
@@ -1036,10 +1034,25 @@ unsafe fn build_video_composition_unsafe(
             if ret < 0 {
                 bail!(graph, format!("link failed: layer→blend[1] layer={idx}"));
             }
+            // Back to the composition's working format immediately: everything after
+            // this point (further layers, the sink's own `format`) is unchanged by
+            // the blend running in float RGB.
+            let Ok(post_ctx) = crate::filter_inner::add_format_step(
+                graph,
+                blend_ctx,
+                "yuv420p",
+                idx,
+                "blend_post",
+            ) else {
+                bail!(
+                    graph,
+                    format!("failed to create format filter (blend post) layer={idx}")
+                );
+            };
             log::debug!(
                 "video composition layer={idx} blend mode={mode_name} opacity={opacity_initial:.3}"
             );
-            prev_ctx = blend_ctx;
+            prev_ctx = post_ctx;
         } else {
             // Normal blend mode: overlay
             //
@@ -1573,8 +1586,12 @@ unsafe fn build_realtime_composition_unsafe(
                 acc,
                 top_src.as_ptr(),
                 &top_steps,
-                mode_name,
-                opacity,
+                &crate::filter_inner::PhotographicBlendParams {
+                    mode_name,
+                    opacity,
+                    // The realtime pipeline is rgba end to end.
+                    out_fmt: Some("rgba"),
+                },
                 idx,
             ) {
                 Ok(c) => c,

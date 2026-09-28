@@ -123,12 +123,18 @@ impl FilterGraphInner {
             // SAFETY: checked non-null above.
             let graph_nn = NonNull::new_unchecked(graph_ptr);
 
+            // The format the graph carries end to end. A step that has to work in
+            // another one (the blend, #1806) converts back to this, so the sink keeps
+            // handing out what the caller pushed in. `None` for a format this crate
+            // cannot name, where such a step leaves the chain alone instead.
+            let pipeline_fmt = crate::graph::FfmpegToken::ffmpeg_token(&frame.format());
             match Self::build_video_graph(
                 graph_nn,
                 &args,
                 num_inputs,
                 &self.steps,
                 self.hw.as_ref(),
+                pipeline_fmt,
             ) {
                 Ok((src_ctxs, vsink_ctx, hw_device_ctx)) => {
                     self.graph = Some(graph_nn);
