@@ -76,6 +76,10 @@ pub enum Command {
         offset: Duration,
     },
     /// Set the source in/out points of the clip with id `clip`.
+    ///
+    /// A grouped clip carries its linked members: each one's window moves by the
+    /// same change expressed in timeline time, clamped to what that member can hold
+    /// (ADR-0019). The addressed clip takes the given values unchanged.
     TrimClip {
         /// Clip to trim.
         clip: ClipId,
@@ -114,6 +118,12 @@ pub enum Command {
     /// `at`, keeps the original properties and the trailing fade-out, and clears the
     /// leading transition and fade-in (a hard cut carries no fade). `at` must be
     /// strictly inside the clip's timeline span, else [`EditError::SplitOutOfRange`].
+    ///
+    /// A grouped clip is razored together with every linked member whose span
+    /// contains `at`; a member the cut does not cross is left whole. The left halves
+    /// keep the original [`GroupId`] and the right halves take one fresh group, so
+    /// audio and video stay linked across the cut while the two sides of it stop
+    /// dragging each other (ADR-0019).
     SplitClip {
         /// Clip to split.
         clip: ClipId,
@@ -155,6 +165,10 @@ pub enum Command {
     /// is unchanged, and other tracks are not touched. When the footprint is
     /// unknown before or after the trim (in- or out-point unset), the trim still
     /// applies but nothing is shifted.
+    ///
+    /// A grouped clip carries its linked members, as [`TrimClip`](Self::TrimClip)
+    /// does, and each member ripples the track it sits on, so a linked pair stays
+    /// aligned after both gaps close.
     RippleTrim {
         /// Clip to trim.
         clip: ClipId,
@@ -167,7 +181,12 @@ pub enum Command {
     ///
     /// Grouped clips are edited together: a [`MoveClip`](Self::MoveClip) /
     /// [`MoveClipToTrack`](Self::MoveClipToTrack) / [`RippleDelete`](Self::RippleDelete)
-    /// on any member propagates to the whole group as one undo step (see [`apply`]).
+    /// / [`TrimClip`](Self::TrimClip) / [`RippleTrim`](Self::RippleTrim) /
+    /// [`SplitClip`](Self::SplitClip) on any member propagates to the whole group as
+    /// one undo step (see [`apply`]). A placement carries the offset delta, a trim
+    /// carries the timeline-time change of each edge, and a razor cuts at the same
+    /// timeline position; ADR-0019 has the rules and what happens to a member that
+    /// cannot follow.
     /// Every named clip must exist, otherwise the edit is rejected with
     /// [`EditError::ClipNotFound`] and the timeline is unchanged. A clip already in a
     /// group is reassigned to the new one; an empty `clips` list is a no-op.
@@ -402,8 +421,26 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             out_point,
         } => {
             let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            // Read the edges before writing them: the deltas the group follows are
+            // this clip's change, expressed in timeline time (ADR-0019).
+            let (d_in, d_out) = trim_deltas(c, *in_point, *out_point);
+            let group = c.group;
+            // The addressed clip takes what the caller asked for, unclamped; only
+            // the members it carries are clamped to what they can hold.
             c.in_point = *in_point;
             c.out_point = *out_point;
+            if let Some(g) = group {
+                for member in collect_group_ids(&next, g) {
+                    if member == *clip {
+                        continue;
+                    }
+                    if let Some(m) = find_clip_mut(&mut next, member) {
+                        let (new_in, new_out) = trimmed_edges(m, d_in, d_out);
+                        m.in_point = new_in;
+                        m.out_point = new_out;
+                    }
+                }
+            }
         }
         Command::SetClipProperty { clip, property } => {
             let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
@@ -443,25 +480,32 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             next.next_effect_id = counter;
         }
         Command::SplitClip { clip, at } => {
-            // Reserve a fresh clip id and copy the effect counter out before
-            // borrowing the tracks (the counter is written back after the borrow).
-            let right_id = ClipId::from_raw(next.next_clip_id);
-            let mut effect_counter = next.next_effect_id;
-            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
-                .ok_or(EditError::ClipNotFound { id: *clip })?;
-            let (left, mut right) =
-                split_clip(&clips[idx], *at).ok_or(EditError::SplitOutOfRange {
+            let group = find_clip_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?
+                .group;
+            // The right halves are linked to each other rather than to the left
+            // ones, so razoring a group does not leave one group spanning both
+            // sides of the cut, where moving either half would drag the other
+            // (ADR-0019). An ungrouped clip's halves stay ungrouped.
+            let right_group = group.map(|_| GroupId::from_raw(next.next_group_id));
+            // The addressed clip is razored first, so a cut outside its span still
+            // fails with `SplitOutOfRange` and leaves the timeline untouched.
+            if !split_one(&mut next, *clip, *at, right_group) {
+                return Err(EditError::SplitOutOfRange {
                     clip: *clip,
                     at: *at,
-                })?;
-            right.id = right_id;
-            // The right half is a fresh clip; its cloned effects must get fresh ids
-            // (the left half keeps the original clip and its effect ids).
-            stamp_effect_ids(&mut right, &mut effect_counter);
-            clips[idx] = left;
-            clips.insert(idx + 1, right);
-            next.next_clip_id += 1;
-            next.next_effect_id = effect_counter;
+                });
+            }
+            if let Some(g) = group {
+                // A member the cut does not cross keeps its single clip: a group
+                // whose members are not aligned is still editable.
+                for member in collect_group_ids(&next, g) {
+                    if member != *clip {
+                        split_one(&mut next, member, *at, right_group);
+                    }
+                }
+                next.next_group_id += 1;
+            }
         }
         Command::MoveClipToTrack { clip, to, offset } => {
             // Verify the destination exists before removing the clip, so a bad
@@ -504,25 +548,22 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             in_point,
             out_point,
         } => {
-            let (clips, idx) = find_clip_track_mut(&mut next, *clip)
-                .ok_or(EditError::ClipNotFound { id: *clip })?;
-            let clip_offset = clips[idx].offset;
-            let old_footprint = clip_footprint(&clips[idx]);
-            clips[idx].in_point = *in_point;
-            clips[idx].out_point = *out_point;
-            let new_footprint = clip_footprint(&clips[idx]);
-            // Shift later same-track clips by the change in footprint: shrink pulls
-            // them left (closes the gap), grow pushes them right. Only when both
-            // footprints are known (as `RippleDelete` requires a known footprint).
-            if let (Some(old), Some(new)) = (old_footprint, new_footprint) {
-                for c in clips.iter_mut() {
-                    if c.offset > clip_offset {
-                        c.offset = if new >= old {
-                            c.offset.saturating_add(new.saturating_sub(old))
-                        } else {
-                            c.offset.saturating_sub(old.saturating_sub(new))
-                        };
+            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
+            let (d_in, d_out) = trim_deltas(c, *in_point, *out_point);
+            let group = c.group;
+            ripple_trim_one(&mut next, *clip, *in_point, *out_point);
+            // Each member ripples its own track, so a linked pair stays aligned
+            // after both tracks close their gaps.
+            if let Some(g) = group {
+                for member in collect_group_ids(&next, g) {
+                    if member == *clip {
+                        continue;
                     }
+                    let Some(m) = find_clip_mut(&mut next, member) else {
+                        continue;
+                    };
+                    let (new_in, new_out) = trimmed_edges(m, d_in, d_out);
+                    ripple_trim_one(&mut next, member, new_in, new_out);
                 }
             }
         }
@@ -791,6 +832,114 @@ fn collect_group_ids(timeline: &Timeline, group: GroupId) -> Vec<ClipId> {
         .collect()
 }
 
+/// The timeline-time change of one trim edge, in seconds, or `None` when it cannot
+/// be expressed.
+///
+/// An unset in-point is exactly the start of the file, so an in-point edge always
+/// yields a value. An unset out-point means "to end of file", a position `apply`
+/// cannot know because it performs no I/O, so an out-point that is unset before or
+/// after the trim yields `None` and does not propagate.
+///
+/// The source advances `speed` times as fast as the timeline, so dividing by it
+/// turns a source-time change into the timeline-time change a viewer sees. `speed`
+/// is floored the way [`clip_footprint`] floors it, so a degenerate value cannot
+/// produce an unbounded delta.
+fn edge_delta_secs(old: Option<Duration>, new: Option<Duration>, speed: f64) -> Option<f64> {
+    Some((new?.as_secs_f64() - old?.as_secs_f64()) / speed.max(0.01))
+}
+
+/// The timeline-time change a trim makes to a clip's two edges.
+///
+/// This is what a group follows: the addressed clip's change, not its new values
+/// (ADR-0019), mirroring `shift_group_offsets` carrying an offset delta.
+fn trim_deltas(
+    clip: &Clip,
+    in_point: Option<Duration>,
+    out_point: Option<Duration>,
+) -> (Option<f64>, Option<f64>) {
+    let speed = clip.speed;
+    let old_in = clip.in_point.unwrap_or(Duration::ZERO);
+    let new_in = in_point.unwrap_or(Duration::ZERO);
+    (
+        edge_delta_secs(Some(old_in), Some(new_in), speed),
+        edge_delta_secs(clip.out_point, out_point, speed),
+    )
+}
+
+/// One linked member's edges after a group trim's timeline-time deltas.
+///
+/// The deltas are converted back through this member's own `speed`, so members that
+/// run at different rates keep their timeline edges together (ADR-0019). The member
+/// is clamped rather than refused: `apply` cannot see source lengths, so the only
+/// clamps available are `in >= 0` and `out >= in`, and a member that runs out of
+/// material is the one place a grouped trim loses sync.
+fn trimmed_edges(
+    clip: &Clip,
+    d_in: Option<f64>,
+    d_out: Option<f64>,
+) -> (Option<Duration>, Option<Duration>) {
+    let speed = clip.speed.max(0.01);
+    // An edge the trim did not move is left exactly as it was, unset included: a
+    // member must not gain an explicit window from an edit that changed nothing,
+    // because `Clip::duration` reads an unset edge as "unknown" and a footprint
+    // appearing out of nowhere would move later clips on a ripple.
+    let shifted = |edge: Duration, delta: Option<f64>| -> Option<Duration> {
+        let delta = delta.filter(|d| *d != 0.0)?;
+        Duration::try_from_secs_f64((edge.as_secs_f64() + delta * speed).max(0.0)).ok()
+    };
+    // The in-point is read as zero when unset, matching `split_clip`, so trimming the
+    // head of a group reaches a member that carries no explicit in-point.
+    let new_in = shifted(clip.in_point.unwrap_or(Duration::ZERO), d_in).or(clip.in_point);
+    let new_out = clip
+        .out_point
+        .and_then(|out| shifted(out, d_out))
+        .or(clip.out_point);
+    // Keep the window the right way round by pulling the in-point back, never by
+    // pushing the out-point out: `apply` cannot see the source, so moving an
+    // out-point beyond where the trim put it would claim material that may not
+    // exist, while an in-point at the out-point is merely an empty window.
+    let new_in = match (new_in, new_out) {
+        (Some(i), Some(o)) if i > o => Some(o),
+        (i, _) => i,
+    };
+    (new_in, new_out)
+}
+
+/// Trims the clip with `id` and closes or opens the gap on its own track.
+///
+/// Extracted from [`Command::RippleTrim`] so a grouped ripple trim can run it once
+/// per member: each member ripples the track it sits on, which is what keeps a
+/// linked pair aligned after the gap closes on both.
+fn ripple_trim_one(
+    timeline: &mut Timeline,
+    id: ClipId,
+    in_point: Option<Duration>,
+    out_point: Option<Duration>,
+) {
+    let Some((clips, idx)) = find_clip_track_mut(timeline, id) else {
+        return;
+    };
+    let clip_offset = clips[idx].offset;
+    let old_footprint = clip_footprint(&clips[idx]);
+    clips[idx].in_point = in_point;
+    clips[idx].out_point = out_point;
+    let new_footprint = clip_footprint(&clips[idx]);
+    // Shift later same-track clips by the change in footprint: shrink pulls them
+    // left (closes the gap), grow pushes them right. Only when both footprints are
+    // known (as `RippleDelete` requires a known footprint).
+    if let (Some(old), Some(new)) = (old_footprint, new_footprint) {
+        for c in clips.iter_mut() {
+            if c.offset > clip_offset {
+                c.offset = if new >= old {
+                    c.offset.saturating_add(new.saturating_sub(old))
+                } else {
+                    c.offset.saturating_sub(old.saturating_sub(new))
+                };
+            }
+        }
+    }
+}
+
 /// Shifts every member of `group` except `except` by the offset delta `new - old`
 /// (saturating), so the group keeps its relative timing when one member moves.
 fn shift_group_offsets(
@@ -828,6 +977,42 @@ fn ripple_delete_one(timeline: &mut Timeline, clip: ClipId) {
             }
         }
     }
+}
+
+/// Razors the clip with `id` at timeline position `at`, returning whether it was cut.
+///
+/// `false` means the cut is not strictly inside the clip's span, which is an error
+/// for the addressed clip and a skip for a linked member. The right half takes a
+/// fresh [`ClipId`], fresh effect ids, and `right_group` (`None` leaves it carrying
+/// whatever the original had, which for an ungrouped clip is nothing).
+fn split_one(
+    timeline: &mut Timeline,
+    id: ClipId,
+    at: Duration,
+    right_group: Option<GroupId>,
+) -> bool {
+    // Reserve a fresh clip id and copy the effect counter out before borrowing the
+    // tracks (both are written back after the borrow).
+    let right_id = ClipId::from_raw(timeline.next_clip_id);
+    let mut effect_counter = timeline.next_effect_id;
+    let Some((clips, idx)) = find_clip_track_mut(timeline, id) else {
+        return false;
+    };
+    let Some((left, mut right)) = split_clip(&clips[idx], at) else {
+        return false;
+    };
+    right.id = right_id;
+    if let Some(g) = right_group {
+        right.group = Some(g);
+    }
+    // The right half is a fresh clip; its cloned effects must get fresh ids (the
+    // left half keeps the original clip and its effect ids).
+    stamp_effect_ids(&mut right, &mut effect_counter);
+    clips[idx] = left;
+    clips.insert(idx + 1, right);
+    timeline.next_clip_id += 1;
+    timeline.next_effect_id = effect_counter;
+    true
 }
 
 /// Splits `orig` at timeline position `at` into `(left, right)`, or `None` when the
@@ -2502,8 +2687,12 @@ mod tests {
         );
     }
 
+    /// Replaces `apply_trim_clip_should_not_propagate_to_grouped_member`, which
+    /// pinned the behaviour #1813 overturned: a group exists so that its members are
+    /// edited together, and a trim that stops at the addressed clip loses A/V sync
+    /// on the most frequent edit there is.
     #[test]
-    fn apply_trim_clip_should_not_propagate_to_grouped_member() {
+    fn trim_clip_should_propagate_to_every_group_member() {
         let t = timeline_with(2);
         let (a, b) = (clip_id(&t, 0), clip_id(&t, 1));
         let t = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
@@ -2516,13 +2705,219 @@ mod tests {
             },
         )
         .unwrap();
-        // Trim is per-clip: the linked member's source window is untouched.
-        assert_eq!(out.video_tracks()[0].clips[1].in_point, None);
+        // The member carried no explicit window: an unset in-point reads as zero, so
+        // it follows the +1s head trim; an unset out-point is the end of a file whose
+        // length `apply` cannot know, so the tail does not move.
+        assert_eq!(
+            out.video_tracks()[0].clips[1].in_point,
+            Some(Duration::from_secs(1))
+        );
         assert_eq!(out.video_tracks()[0].clips[1].out_point, None);
     }
 
     #[test]
-    fn apply_split_clip_should_keep_both_halves_in_the_group() {
+    fn trim_clip_should_carry_the_delta_not_the_value_to_a_member() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::from_secs(2), Duration::from_secs(6)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::from_secs(10), Duration::from_secs(14)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::TrimClip {
+                clip: v,
+                in_point: Some(Duration::from_secs(3)),
+                out_point: Some(Duration::from_secs(5)),
+            },
+        )
+        .unwrap();
+        // +1s on the head, -1s on the tail, applied to the member's own window
+        // rather than copied from the addressed clip's absolute values.
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].in_point,
+            Some(Duration::from_secs(11))
+        );
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].out_point,
+            Some(Duration::from_secs(13))
+        );
+    }
+
+    #[test]
+    fn trim_propagation_should_scale_by_each_member_speed() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4")
+                    .trim(Duration::ZERO, Duration::from_secs(8))
+                    .with_speed(2.0),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::TrimClip {
+                clip: v,
+                in_point: None,
+                out_point: Some(Duration::from_secs(4)),
+            },
+        )
+        .unwrap();
+        // The video runs at 2x, so cutting 4s of its source is 2s of timeline; the
+        // audio runs at 1x and must lose 2s of its own source, not 4s. A plain
+        // source-time delta would leave it at 0s and the two would end apart.
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].out_point,
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn trim_propagation_should_clamp_a_member_instead_of_inverting_it() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(10)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(1)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::TrimClip {
+                clip: v,
+                in_point: Some(Duration::from_secs(5)),
+                out_point: Some(Duration::from_secs(10)),
+            },
+        )
+        .unwrap();
+        let audio = &out.audio_tracks()[0].clips[0];
+        // The member holds only 1s, so the +5s head trim stops at its own tail
+        // rather than producing a window that runs backwards. `apply` performs no
+        // I/O, so this is the only clamp available to it.
+        assert_eq!(audio.in_point, Some(Duration::from_secs(1)));
+        assert_eq!(audio.out_point, Some(Duration::from_secs(1)));
+        // The clamp is not silent: a member left with nothing to play is reported,
+        // so a host can tell the user which half of the pair ran out.
+        let id = audio.id;
+        assert!(
+            out.validate()
+                .iter()
+                .any(|i| matches!(i, crate::TimelineIssue::EmptyFootprint { clip } if *clip == id)),
+            "a clamped-empty member should be reported by validate"
+        );
+    }
+
+    #[test]
+    fn trim_should_not_propagate_an_unset_out_point() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::TrimClip {
+                clip: v,
+                in_point: Some(Duration::from_secs(1)),
+                out_point: None,
+            },
+        )
+        .unwrap();
+        let audio = &out.audio_tracks()[0].clips[0];
+        // Clearing the out-point means "to end of file", a position `apply` cannot
+        // know, so the tail cannot be expressed as a delta and the member keeps its
+        // own. The head still follows.
+        assert_eq!(audio.in_point, Some(Duration::from_secs(1)));
+        assert_eq!(audio.out_point, Some(Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn ripple_trim_should_propagate_to_every_group_member_and_ripple_each_track() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+                Clip::new("v2.mp4")
+                    .trim(Duration::ZERO, Duration::from_secs(4))
+                    .offset(Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+                Clip::new("a2.mp4")
+                    .trim(Duration::ZERO, Duration::from_secs(4))
+                    .offset(Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::RippleTrim {
+                clip: v,
+                // An explicit head: `Clip::duration` reads an unset edge as unknown,
+                // and `RippleTrim` shifts nothing when the footprint is unknown.
+                in_point: Some(Duration::ZERO),
+                out_point: Some(Duration::from_secs(3)),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].out_point,
+            Some(Duration::from_secs(3)),
+            "the linked member is trimmed too"
+        );
+        // Each member closes the gap on its own track, so the two following clips
+        // stay level with each other.
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            out.audio_tracks()[0].clips[1].offset,
+            Duration::from_secs(3)
+        );
+    }
+
+    /// Replaces `apply_split_clip_should_keep_both_halves_in_the_group`, which pinned
+    /// the behaviour #1813 measured as a tear: with both halves in one group, a later
+    /// `MoveClip` on either half dragged the other half on the same track.
+    #[test]
+    fn split_clip_should_put_the_right_halves_in_one_new_group() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
             .frame_rate(30.0)
@@ -2544,11 +2939,157 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.video_tracks()[0].clips.len(), 2);
-        assert_eq!(out.video_tracks()[0].clips[0].group, g);
         assert_eq!(
-            out.video_tracks()[0].clips[1].group,
+            out.video_tracks()[0].clips[0].group,
             g,
-            "the right half inherits the group"
+            "the left half keeps the original group"
+        );
+        let right = out.video_tracks()[0].clips[1].group;
+        assert!(right.is_some(), "the right half is still linked");
+        assert_ne!(right, g, "but to its own side of the cut, not to the left");
+    }
+
+    /// A video and an audio clip, linked, each four seconds from the top.
+    fn linked_pair() -> (Timeline, ClipId, ClipId) {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        (t, v, a)
+    }
+
+    #[test]
+    fn split_clip_should_razor_every_group_member_that_spans_the_cut() {
+        let (t, v, _a) = linked_pair();
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: v,
+                at: Duration::from_secs(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 2);
+        assert_eq!(
+            out.audio_tracks()[0].clips.len(),
+            2,
+            "the linked audio is razored at the same timeline position"
+        );
+        assert_eq!(
+            out.audio_tracks()[0].clips[1].offset,
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            out.audio_tracks()[0].clips[1].in_point,
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn split_clip_should_skip_a_group_member_that_does_not_span_the_cut() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(8)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(2)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: v,
+                at: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips.len(), 2);
+        // The audio ends at 2s, so the cut is past it. A group whose members are not
+        // aligned is still editable: the member that cannot be cut is left alone
+        // rather than failing the razor.
+        assert_eq!(out.audio_tracks()[0].clips.len(), 1);
+        assert_eq!(
+            out.audio_tracks()[0].clips[0].out_point,
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn moving_one_half_after_a_grouped_split_should_not_move_the_other_half() {
+        let (t, v, _a) = linked_pair();
+        let split = apply(
+            &t,
+            &Command::SplitClip {
+                clip: v,
+                at: Duration::from_secs(2),
+            },
+        )
+        .unwrap();
+        let right = split.video_tracks()[0].clips[1].id;
+        let out = apply(
+            &split,
+            &Command::MoveClip {
+                clip: right,
+                offset: Duration::from_secs(9),
+            },
+        )
+        .unwrap();
+        // Before #1813 both halves carried one group id, so this move dragged the
+        // left half from 0s to 7s and tore the material apart.
+        assert_eq!(out.video_tracks()[0].clips[0].offset, Duration::ZERO);
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            Duration::from_secs(9)
+        );
+        // The right halves are linked to each other, so the audio right half follows.
+        assert_eq!(
+            out.audio_tracks()[0].clips[1].offset,
+            Duration::from_secs(9)
+        );
+        assert_eq!(out.audio_tracks()[0].clips[0].offset, Duration::ZERO);
+    }
+
+    #[test]
+    fn split_clip_should_leave_an_ungrouped_clip_ungrouped() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let before = t.next_group_id;
+        let out = apply(
+            &t,
+            &Command::SplitClip {
+                clip: v,
+                at: Duration::from_secs(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks()[0].clips[0].group, None);
+        assert_eq!(out.video_tracks()[0].clips[1].group, None);
+        assert_eq!(
+            out.next_group_id, before,
+            "an ungrouped razor mints no group id"
         );
     }
 
