@@ -467,13 +467,21 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
                     found: value.id,
                 });
             }
-            // Re-stamp the patch's effects before installing it: a caller-built
-            // value may carry effects with UNSET or foreign ids (as with `AddClip`),
-            // so mint fresh document-unique ids to keep them addressable.
+            // An effect id this clip already carries survives the patch, so a host
+            // editing one field does not have every effect renumbered underneath it
+            // (#1814). An UNSET id, or one from another clip or document, is minted
+            // fresh: the first was never assigned, and the second would either
+            // duplicate an id or collide with a later mint.
+            let known: Vec<EffectId> = find_clip_mut(&mut next, *clip)
+                .ok_or(EditError::ClipNotFound { id: *clip })?
+                .effects
+                .iter()
+                .map(|e| e.id)
+                .collect();
             let mut counter = next.next_effect_id;
             let mut new_value = (**value).clone();
             new_value.id = *clip; // preserve identity
-            stamp_effect_ids(&mut new_value, &mut counter);
+            stamp_unknown_effect_ids(&mut new_value, &known, &mut counter);
             let target =
                 find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
             *target = new_value;
@@ -731,6 +739,32 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
 /// document-unique even for caller-built or cloned effects.
 fn stamp_effect_ids(clip: &mut Clip, next_id: &mut u64) {
     for effect in &mut clip.effects {
+        effect.id = EffectId::from_raw(*next_id);
+        *next_id += 1;
+    }
+}
+
+/// Mints ids for the effects of `clip` that this document does not already know,
+/// leaving the ones it does alone.
+///
+/// `known` is what the clip being replaced was carrying. An id in it survives, so a
+/// host that sends a clip back through [`Command::SetClip`] keeps the ids its effect
+/// panel and undo entries are bound to (#1814, ADR-0001).
+///
+/// Anything else is minted fresh: `EffectId::UNSET` because it was never assigned,
+/// and an id from another clip or another document because keeping it would put two
+/// effects under one id, and because a value above `next_id` would collide with a
+/// later mint.
+fn stamp_unknown_effect_ids(clip: &mut Clip, known: &[EffectId], next_id: &mut u64) {
+    // An id survives once. A patch can carry the same known id twice — a host that
+    // duplicates an effect row clones the struct, id included — and keeping both
+    // would put two effects under one id, which is the property ADR-0001 exists for.
+    let mut kept: Vec<EffectId> = Vec::new();
+    for effect in &mut clip.effects {
+        if known.contains(&effect.id) && !kept.contains(&effect.id) {
+            kept.push(effect.id);
+            continue;
+        }
         effect.id = EffectId::from_raw(*next_id);
         *next_id += 1;
     }
@@ -3261,6 +3295,122 @@ mod tests {
         assert!(
             c.video_effect_chain().is_empty(),
             "a disabled effect is skipped in derivation but kept in the list"
+        );
+    }
+
+    /// A clip with one blur effect, and the document that holds it.
+    fn timeline_with_one_effect() -> (Timeline, ClipId, EffectId) {
+        let t = timeline_with(1);
+        let clip = clip_id(&t, 0);
+        let t = apply(
+            &t,
+            &Command::AddEffect {
+                clip,
+                kind: blur(4.0),
+            },
+        )
+        .unwrap();
+        let effect = t.video_tracks()[0].clips[0].effects[0].id;
+        (t, clip, effect)
+    }
+
+    #[test]
+    fn set_clip_should_keep_an_effect_id_the_clip_already_has() {
+        let (t, clip, effect) = timeline_with_one_effect();
+        let mut patched = t.video_tracks()[0].clips[0].clone();
+        patched.opacity = 0.5;
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip,
+                value: Box::new(patched),
+            },
+        )
+        .unwrap();
+        let after = &out.video_tracks()[0].clips[0];
+        assert_eq!(after.opacity, 0.5, "the patch was applied");
+        assert_eq!(
+            after.effects[0].id, effect,
+            "an edit that never touched the effect must not renumber it"
+        );
+    }
+
+    #[test]
+    fn set_clip_should_restamp_an_effect_id_the_clip_does_not_have() {
+        let (t, clip, effect) = timeline_with_one_effect();
+        let mut patched = t.video_tracks()[0].clips[0].clone();
+        // Above `next_effect_id`, so keeping it would also collide with a later mint.
+        patched.effects[0].id = EffectId::from_raw(9_000);
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip,
+                value: Box::new(patched),
+            },
+        )
+        .unwrap();
+        let after = out.video_tracks()[0].clips[0].effects[0].id;
+        assert_ne!(after, EffectId::from_raw(9_000), "a foreign id is not kept");
+        assert_ne!(after, effect, "nor is it silently mapped back");
+        assert!(after.is_set());
+    }
+
+    #[test]
+    fn set_clip_should_not_hand_out_a_duplicate_effect_id_afterwards() {
+        let (t, clip, _effect) = timeline_with_one_effect();
+        let mut patched = t.video_tracks()[0].clips[0].clone();
+        // Exactly the value the document is about to mint: keeping a foreign id has
+        // to be a real collision here, or this test would pass on a rule that keeps
+        // whatever the patch carries.
+        patched.effects[0].id = EffectId::from_raw(t.next_effect_id);
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip,
+                value: Box::new(patched),
+            },
+        )
+        .unwrap();
+        let out = apply(
+            &out,
+            &Command::AddEffect {
+                clip,
+                kind: blur(8.0),
+            },
+        )
+        .unwrap();
+        let ids: Vec<EffectId> = out.video_tracks()[0].clips[0]
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(ids.len(), unique.len(), "two effects share an id: {ids:?}");
+    }
+
+    #[test]
+    fn set_clip_should_not_keep_the_same_effect_id_twice_in_one_patch() {
+        let (t, clip, effect) = timeline_with_one_effect();
+        // A host duplicating an effect row clones the struct, id included.
+        let mut patched = t.video_tracks()[0].clips[0].clone();
+        let duplicate = patched.effects[0].clone();
+        patched.effects.push(duplicate);
+        let out = apply(
+            &t,
+            &Command::SetClip {
+                clip,
+                value: Box::new(patched),
+            },
+        )
+        .unwrap();
+        let effects = &out.video_tracks()[0].clips[0].effects;
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].id, effect, "the first occurrence keeps the id");
+        assert_ne!(
+            effects[1].id, effect,
+            "the copy must not share it: two effects under one id is what ADR-0001 rules out"
         );
     }
 
