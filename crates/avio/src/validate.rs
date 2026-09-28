@@ -1,11 +1,15 @@
-//! Pure, informational validation of a [`Timeline`] document.
+//! Informational validation of a [`Timeline`] document.
 //!
 //! [`Timeline::validate`] returns a typed list of [`TimelineIssue`]s so a host can
 //! surface problems (overlaps, bad trims, unbounded generated clips, dangling
 //! references) before rendering. It is purely informational: it performs no I/O,
 //! never opens source files, and does not block [`Timeline::render`] on its own.
+//!
+//! Almost every check reads the document alone. The exception is
+//! [`TimelineIssue::TextRendererUnavailable`], which asks the linked `FFmpeg` build
+//! whether it can draw text, so that one answer depends on the machine.
 
-use crate::clip::Clip;
+use crate::clip::{Clip, ClipSource};
 use crate::edit::clip_footprint;
 use crate::ids::{ClipId, TrackId};
 use crate::timeline::Timeline;
@@ -49,6 +53,19 @@ pub enum TimelineIssue {
         /// The offending clip.
         clip: ClipId,
     },
+    /// A text clip cannot be rendered, because the linked `FFmpeg` build carries no
+    /// [`TEXT_FILTER`](ff_filter::TEXT_FILTER).
+    ///
+    /// Unlike every other check here, the answer depends on the build rather than on
+    /// the timeline: the same document is clean on a build that has the filter.
+    /// Mirrors the render-time
+    /// [`TextRendererUnavailable`](crate::TimelineError::TextRendererUnavailable)
+    /// check, and lets a host disable its text tool instead of failing mid-export
+    /// (#1809).
+    TextRendererUnavailable {
+        /// The offending clip.
+        clip: ClipId,
+    },
     /// A clip carries a transition but is the first clip on its track, so there is
     /// no preceding clip to cross-fade from (the transition is ignored at render).
     DanglingTransition {
@@ -62,11 +79,16 @@ pub enum TimelineIssue {
 impl Timeline {
     /// Validates this timeline and returns a list of structured diagnostics.
     ///
-    /// Pure and informational: it performs **no I/O**, never opens source files,
-    /// and does not mutate the timeline or block [`render`](Self::render). Checks
-    /// that depend on a clip's timeline footprint (overlap detection) apply only
-    /// to clips whose trim points are set, since an unset in/out point has no
-    /// finite footprint.
+    /// Informational: it performs **no I/O**, never opens source files, and does
+    /// not mutate the timeline or block [`render`](Self::render). Checks that depend
+    /// on a clip's timeline footprint (overlap detection) apply only to clips whose
+    /// trim points are set, since an unset in/out point has no finite footprint.
+    ///
+    /// It is a function of the document alone with one exception:
+    /// [`TimelineIssue::TextRendererUnavailable`] asks the linked `FFmpeg` build
+    /// whether it carries the text filter, so the same timeline can come back clean
+    /// on one machine and flagged on another (#1809). That query opens nothing, so
+    /// the no-I/O promise still holds.
     ///
     /// # Examples
     ///
@@ -97,11 +119,17 @@ impl Timeline {
 /// Per-clip and per-track invariants for one track.
 fn check_track(track: &Track, issues: &mut Vec<TimelineIssue>) {
     // Per-clip checks.
+    // Asked once per track rather than per clip: the answer is a property of the
+    // linked build, not of any clip.
+    let text_available = ff_filter::text_rendering_available();
     for clip in &track.clips {
         check_clip_trim(clip, issues);
         // A generated (text/solid) source is infinite; an out-point must bound it.
         if clip.source_path().is_none() && clip.out_point.is_none() {
             issues.push(TimelineIssue::GeneratedClipWithoutOutPoint { clip: clip.id });
+        }
+        if !text_available && matches!(clip.source, ClipSource::Text(_)) {
+            issues.push(TimelineIssue::TextRendererUnavailable { clip: clip.id });
         }
     }
 
@@ -172,6 +200,47 @@ mod tests {
             .canvas(1920, 1080)
             .frame_rate(30.0)
             .video_track(clips)
+    }
+
+    #[test]
+    fn text_clip_should_be_flagged_when_its_renderer_is_unavailable() {
+        use ff_format::TextSpec;
+
+        let t = base(vec![
+            Clip::text(TextSpec::new("title")).trim(Duration::ZERO, Duration::from_secs(2)),
+        ])
+        .build()
+        .unwrap();
+        let id = t.video_tracks()[0].clips[0].id;
+        let flagged = t
+            .validate()
+            .iter()
+            .any(|i| matches!(i, TimelineIssue::TextRendererUnavailable { clip } if *clip == id));
+        // Asserted as agreement with the build rather than as a fixed answer, so the
+        // test holds both where `drawtext` is missing and where it is present
+        // (CI's FFmpeg carries no filters at all).
+        assert_eq!(
+            flagged,
+            !ff_filter::text_rendering_available(),
+            "the issue and the capability query disagree about this build"
+        );
+    }
+
+    #[test]
+    fn a_timeline_without_text_should_not_be_flagged_for_the_text_renderer() {
+        let t = base(vec![
+            Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            Clip::solid(Color::rgb(10, 10, 10)).trim(Duration::ZERO, Duration::from_secs(2)),
+        ])
+        .build()
+        .unwrap();
+        // Build-independent: a solid is generated too, but it needs no text filter.
+        assert!(
+            !t.validate()
+                .iter()
+                .any(|i| matches!(i, TimelineIssue::TextRendererUnavailable { .. })),
+            "only text clips depend on the text renderer"
+        );
     }
 
     #[test]

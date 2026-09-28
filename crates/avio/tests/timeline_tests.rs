@@ -645,6 +645,12 @@ fn timeline_render_generated_clips_should_produce_valid_output() {
             println!("Skipping: filter graph construction failed: {e}");
             return;
         }
+        // The same environment gate as above, now that a build without `drawtext` is
+        // refused by name before the graph is built rather than inside it (#1809).
+        Err(TimelineError::TextRendererUnavailable) => {
+            println!("Skipping: this FFmpeg build cannot draw text");
+            return;
+        }
         Err(TimelineError::Encode(e)) => {
             println!("Skipping: encoder unavailable: {e}");
             return;

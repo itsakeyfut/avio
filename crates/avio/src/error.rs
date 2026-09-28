@@ -58,6 +58,20 @@ pub enum TimelineError {
     /// [`Clip::trim`](crate::Clip::trim)) to bound its duration before rendering.
     #[error("generated source clip needs an out_point to bound its duration")]
     GeneratedSourceNeedsDuration,
+
+    /// A text clip was rendered on an `FFmpeg` build that carries no `drawtext`
+    /// filter.
+    ///
+    /// `drawtext` needs freetype, which several common packages are built without.
+    /// Ask [`text_rendering_available`](ff_filter::text_rendering_available) before
+    /// offering a text tool, or
+    /// [`Timeline::validate`](crate::Timeline::validate) before rendering.
+    #[error(
+        "text clips need FFmpeg's `drawtext` filter, which this build does not have; \
+         install an FFmpeg built with freetype (Windows: \
+         `vcpkg install ffmpeg[core,drawtext]:x64-windows`)"
+    )]
+    TextRendererUnavailable,
 }
 
 #[cfg(test)]

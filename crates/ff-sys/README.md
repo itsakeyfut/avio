@@ -19,8 +19,10 @@ Building your own project on FFmpeg directly? The crates above are excellent cho
 Install FFmpeg via [vcpkg](https://github.com/microsoft/vcpkg):
 
 ```sh
-vcpkg install ffmpeg:x64-windows
+vcpkg install ffmpeg[core,drawtext]:x64-windows
 ```
+
+The `drawtext` feature adds freetype, which the default triplet does not build; without it every text clip fails when its filter graph is built.
 
 The build script reads `VCPKG_ROOT` to locate the installation (defaulting to `C:\vcpkg`) and expects FFmpeg under `<VCPKG_ROOT>\installed\x64-windows`. bindgen also requires libclang: set `LIBCLANG_PATH` to your LLVM `bin` directory (containing `libclang.dll`) if it is not in a standard location such as `C:\Program Files\LLVM\bin`.
 
@@ -45,7 +47,7 @@ brew install ffmpeg
 
 | Platform | Detection            | Notes                                            |
 |----------|----------------------|--------------------------------------------------|
-| Windows  | vcpkg (`VCPKG_ROOT`) | `ffmpeg:x64-windows` triplet; `LIBCLANG_PATH` for bindgen |
+| Windows  | vcpkg (`VCPKG_ROOT`) | `ffmpeg[core,drawtext]:x64-windows` triplet (freetype for text); `LIBCLANG_PATH` for bindgen |
 | Linux    | pkg-config           | Dev packages (`-dev`) must be installed          |
 | macOS    | Homebrew, pkg-config | Auto-detects `/opt/homebrew` or `/usr/local`, falls back to pkg-config |
 

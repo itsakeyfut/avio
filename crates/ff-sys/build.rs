@@ -8,8 +8,10 @@
 //!
 //! Requires FFmpeg installed via VCPKG:
 //! ```bash
-//! vcpkg install ffmpeg:x64-windows
+//! vcpkg install ffmpeg[core,drawtext]:x64-windows
 //! ```
+//!
+//! The `drawtext` feature adds freetype; without it text clips cannot render.
 //!
 //! Environment variables:
 //! - `VCPKG_ROOT`: Path to VCPKG installation (default: `C:\vcpkg`)
@@ -108,7 +110,7 @@ fn configure_windows() -> Vec<String> {
         panic!(
             "VCPKG FFmpeg not found at: {}\n\
             Please install FFmpeg via VCPKG:\n\
-            vcpkg install ffmpeg:x64-windows",
+            vcpkg install ffmpeg[core,drawtext]:x64-windows",
             lib_path.display()
         );
     }
@@ -120,7 +122,7 @@ fn configure_windows() -> Vec<String> {
             panic!(
                 "FFmpeg library not found: {}\n\
                 Please reinstall FFmpeg via VCPKG:\n\
-                vcpkg install ffmpeg:x64-windows",
+                vcpkg install ffmpeg[core,drawtext]:x64-windows",
                 lib_file.display()
             );
         }
