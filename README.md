@@ -99,9 +99,11 @@ All crates share a single workspace version and are released together in lockste
 ### Windows
 
 ```powershell
-vcpkg install ffmpeg:x64-windows
+vcpkg install ffmpeg[core,drawtext]:x64-windows
 $env:VCPKG_ROOT = "C:\vcpkg"
 ```
+
+The `drawtext` feature adds freetype, which the default triplet does not build; without it every text clip fails when its filter graph is built.
 
 ### macOS
 

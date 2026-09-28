@@ -224,6 +224,8 @@ impl Timeline {
     /// - [`TimelineError::ClipNotFound`] — a clip's source file is missing
     /// - [`TimelineError::GeneratedSourceNeedsDuration`] — a generated (Text/Solid)
     ///   clip on an active track has no `out_point` to bound its duration
+    /// - [`TimelineError::TextRendererUnavailable`] — a text clip on an active track
+    ///   and an `FFmpeg` build with no `drawtext` filter
     /// - [`TimelineError::Cancelled`] — `on_progress` returned `false`
     /// - [`TimelineError::Encode`] — encoder failure
     /// - [`TimelineError::Filter`] — filter graph construction failure
@@ -320,23 +322,29 @@ impl Timeline {
                 continue;
             }
             for clip in &track.clips {
-                match clip.source_path() {
-                    // File source: it must exist on disk.
-                    Some(path) => {
-                        if !path.exists() {
-                            return Err(TimelineError::ClipNotFound {
-                                path: path.to_string_lossy().into_owned(),
-                            });
-                        }
+                // File source: it must exist on disk.
+                if let Some(path) = clip.source_path() {
+                    if !path.exists() {
+                        return Err(TimelineError::ClipNotFound {
+                            path: path.to_string_lossy().into_owned(),
+                        });
                     }
-                    // Generated (Text/Solid) source: infinite, so an out_point is
-                    // required to bound its duration. Only out_point matters — the
-                    // derive emits `Trim { end }` from it (in_point may be unset).
-                    None => {
-                        if clip.out_point.is_none() {
-                            return Err(TimelineError::GeneratedSourceNeedsDuration);
-                        }
-                    }
+                    continue;
+                }
+                // Generated (Text/Solid) source: infinite, so an out_point is
+                // required to bound its duration. Only out_point matters — the
+                // derive emits `Trim { end }` from it (in_point may be unset).
+                if clip.out_point.is_none() {
+                    return Err(TimelineError::GeneratedSourceNeedsDuration);
+                }
+                // A text clip on a build without `drawtext` fails when its layer is
+                // built, as `failed to build text drawtext layer=N`. Refuse it here
+                // instead, where the message can say what is missing and what to
+                // install (#1809).
+                if matches!(clip.source, crate::clip::ClipSource::Text(_))
+                    && !ff_filter::text_rendering_available()
+                {
+                    return Err(TimelineError::TextRendererUnavailable);
                 }
             }
         }

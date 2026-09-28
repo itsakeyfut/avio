@@ -16,6 +16,17 @@ use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel, PitchAlgo};
 use ff_format::AlphaMode;
 
+/// Whether the linked `libavfilter` carries the filter called `name`.
+///
+/// A registry lookup, not a graph operation: it opens nothing and can be asked
+/// before any graph exists. The build `FFmpeg` was configured with decides the
+/// answer, so a filter present on one machine can be absent on another.
+pub(crate) fn have_filter(name: &std::ffi::CStr) -> bool {
+    // SAFETY: `name` is a valid null-terminated C string for the duration of the
+    // call, and the returned pointer is only compared against null, never read.
+    unsafe { !ff_sys::avfilter_get_by_name(name.as_ptr()).is_null() }
+}
+
 // Hardware acceleration helpers
 
 /// Map a [`HwAccel`] variant to the corresponding `AVHWDeviceType` constant.

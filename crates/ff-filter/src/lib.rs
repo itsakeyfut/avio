@@ -28,12 +28,14 @@
 //! ## Module structure
 //!
 //! - [`graph`] — public types: [`FilterGraph`], [`FilterGraphBuilder`], [`ToneMap`], [`HwAccel`]
+//! - [`capability`] — what the linked `FFmpeg` build can do ([`text_rendering_available`])
 //! - [`error`] — [`FilterError`]
 //! - `filter_inner` — `pub(crate)` unsafe `FFmpeg` calls (not part of the public API)
 
 pub mod analysis;
 pub mod animation;
 pub mod blend;
+pub mod capability;
 pub mod composite;
 pub mod effects;
 pub mod error;
@@ -43,6 +45,7 @@ pub mod graph;
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
 pub use animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe, Lerp};
 pub use blend::BlendMode;
+pub use capability::{TEXT_FILTER, text_rendering_available};
 pub use composite::CompositeOp;
 pub use effects::{
     AnalyzeOptions, Interpolation, LensProfile, NoiseType, StabilizeOptions, Stabilizer,

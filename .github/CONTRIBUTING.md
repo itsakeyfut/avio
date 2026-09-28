@@ -58,7 +58,7 @@ version-specific tokens are gated behind an `ffmpeg8` cfg in `ff-sys`.
 |---|---|
 | Ubuntu / Debian | `sudo apt install libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev pkg-config` |
 | macOS | `brew install ffmpeg@8 pkg-config` (see the note below) |
-| Windows | Install via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install ffmpeg:x64-windows` |
+| Windows | Install via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install ffmpeg[core,drawtext]:x64-windows` (the `drawtext` feature adds freetype, without which text clips cannot render) |
 
 On macOS, install the **versioned** formula: Homebrew's plain `ffmpeg` is 9.x, which is
 outside the supported range and fails to build (`no field 'sample_fmts' on type 'AVCodec'`).

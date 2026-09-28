@@ -103,7 +103,8 @@ pub use ff_encode::{BitrateMode, EncodeError};
 pub use ff_filter::{
     AnimatedValue, AnimationTrack, BlendMode, CompositeOp, DrawTextOptions, Easing, EqBand,
     FilterError, FilterStep, HwAccel, Keyframe, PitchAlgo, RealtimeLayer, RealtimeLayerDescriptor,
-    Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    Rgb, ScaleAlgorithm, TEXT_FILTER, ToneMap, XfadeTransition, YadifMode,
+    text_rendering_available,
 };
 
 // editing model (unconditional)
