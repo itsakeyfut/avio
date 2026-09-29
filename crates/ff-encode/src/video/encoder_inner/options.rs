@@ -386,7 +386,9 @@ impl VideoEncoderInner {
         allow_codec_substitution: bool,
     ) -> Result<String, EncodeError> {
         // Early check: when Av1Svt is requested, verify that libsvtav1 is registered.
-        if codec == VideoCodec::Av1Svt {
+        if codec == VideoCodec::Av1Svt
+            && Self::early_availability_check_applies(codec, allow_codec_substitution)
+        {
             let has_svt = ff_sys::Codec::find_encoder_by_name("libsvtav1").is_some();
             if !has_svt {
                 return Err(EncodeError::EncoderUnavailable {
@@ -398,14 +400,20 @@ impl VideoEncoderInner {
 
         // Early check: when H265 is requested, verify that at least one HEVC encoder
         // is registered in this FFmpeg build before attempting candidate selection.
-        if codec == VideoCodec::H265 {
+        // Skipped when the caller opted into substitution, or this would answer before
+        // the decision that opt-in exists for (#1838).
+        if codec == VideoCodec::H265
+            && Self::early_availability_check_applies(codec, allow_codec_substitution)
+        {
             let has_hevc = ff_sys::Codec::find_encoder(AVCodecID_AV_CODEC_ID_HEVC).is_some();
             if !has_hevc {
                 return Err(EncodeError::EncoderUnavailable {
                     codec: "h265/hevc".to_string(),
                     hint: "Requires an FFmpeg build with HEVC encoder support \
                            (hardware: hevc_nvenc/hevc_qsv/etc.; \
-                           software: --enable-libx265, GPL)"
+                           software: --enable-libx265, GPL). \
+                           allow_codec_substitution is not set, so a stand-in from \
+                           another codec family was not considered"
                         .to_string(),
                 });
             }
@@ -470,6 +478,31 @@ impl VideoEncoderInner {
                 .map(|s| (*s).to_string())
                 .collect(),
         })
+    }
+
+    /// Whether the up-front "is any encoder of this family registered" check applies
+    /// to this request.
+    ///
+    /// The check exists to fail early with a specific hint instead of walking a
+    /// candidate list that cannot succeed. It must not run when the caller has opted
+    /// into substitution, because it would answer before the decision that opt-in is
+    /// for: `allow_codec_substitution`'s documentation names AV1 for H.265, and the
+    /// early return made that unreachable (#1838). Whether a stand-in is actually
+    /// registered is a runtime question, which the decision downstream answers; this
+    /// predicate is a policy about the request alone.
+    ///
+    /// `Av1Svt` keeps its check either way: [`substitute_encoders`](Self::substitute_encoders)
+    /// has nothing for it, so there is no decision downstream to reach and
+    /// short-circuiting costs the caller nothing.
+    pub(super) const fn early_availability_check_applies(
+        codec: VideoCodec,
+        allow_codec_substitution: bool,
+    ) -> bool {
+        match codec {
+            VideoCodec::H265 => !allow_codec_substitution,
+            VideoCodec::Av1Svt => true,
+            _ => false,
+        }
     }
 
     /// Encoders from a different codec family that can stand in for `codec`.
