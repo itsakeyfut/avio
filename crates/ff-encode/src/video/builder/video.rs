@@ -52,6 +52,11 @@ impl VideoEncoderBuilder {
     /// names the encoder that was chosen, and
     /// [`actual_video_codec`](super::VideoEncoder::actual_video_codec) reports
     /// it.
+    ///
+    /// The flag is consulted even when the requested family has no encoder
+    /// registered at all, which is the case it is most useful in: asking for H.265
+    /// on a build with no HEVC encoder reaches this decision rather than failing
+    /// before it (#1838).
     #[must_use]
     pub fn allow_codec_substitution(mut self) -> Self {
         self.allow_codec_substitution = true;

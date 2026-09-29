@@ -825,6 +825,68 @@ mod tests {
         }
     }
 
+    /// The gate the fix turns on, asserted as a pure function of the request.
+    ///
+    /// The decision it guards cannot run on a build that registers HEVC, which this
+    /// one does, so the predicate is where a regression is catchable in every
+    /// configuration. Same reasoning as the list-shape tests above (#1838).
+    #[test]
+    fn early_availability_check_should_not_apply_to_h265_when_substitution_is_allowed() {
+        assert!(!VideoEncoderInner::early_availability_check_applies(
+            VideoCodec::H265,
+            true
+        ));
+    }
+
+    #[test]
+    fn early_availability_check_should_apply_to_h265_without_the_opt_in() {
+        assert!(VideoEncoderInner::early_availability_check_applies(
+            VideoCodec::H265,
+            false
+        ));
+    }
+
+    #[test]
+    fn early_availability_check_should_always_apply_to_av1_svt() {
+        // Nothing stands in for it, so there is no decision downstream to reach and
+        // the early exit costs the caller nothing.
+        for allow in [false, true] {
+            assert!(
+                VideoEncoderInner::early_availability_check_applies(VideoCodec::Av1Svt, allow),
+                "Av1Svt keeps its check with allow={allow}"
+            );
+        }
+    }
+
+    #[test]
+    fn early_availability_check_should_not_apply_to_other_codecs() {
+        for codec in [VideoCodec::H264, VideoCodec::Vp9, VideoCodec::ProRes] {
+            for allow in [false, true] {
+                assert!(
+                    !VideoEncoderInner::early_availability_check_applies(codec, allow),
+                    "{codec:?} has no early check to gate"
+                );
+            }
+        }
+    }
+
+    /// What makes the gate worth having: H.265 has somewhere else to go.
+    #[test]
+    fn h265_substitutes_should_be_a_different_family() {
+        let substitutes = VideoEncoderInner::substitute_encoders(VideoCodec::H265);
+        assert!(
+            !substitutes.is_empty(),
+            "gating the early check only matters while a stand-in exists"
+        );
+        let own_family = substitutes
+            .iter()
+            .any(|n| n.contains("265") || n.contains("hevc"));
+        assert!(
+            !own_family,
+            "a stand-in is from another family by definition"
+        );
+    }
+
     /// Opting in widens what is accepted; it must not change a choice that was
     /// already available, or reach an encoder that is on neither list.
     #[test]
