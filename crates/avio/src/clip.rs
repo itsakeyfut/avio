@@ -16,6 +16,14 @@ use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
 
 use crate::effect::{ClipEffect, EffectDomain, EffectKind, Param};
 use crate::error::TimelineError;
+
+/// The slowest playback speed the model will carry.
+///
+/// A clip'''s footprint is `duration / speed`, so zero or a negative value has no
+/// interpretation. The derivation already floors by this value in several places; the
+/// edit path clamps to it, and [`Timeline::validate`](crate::Timeline::validate)
+/// reports anything below it that a builder hands in (#1816).
+pub const MIN_SPEED: f64 = 0.01;
 use crate::ids::{ClipId, GroupId};
 
 /// The origin of a clip's frames.
@@ -264,6 +272,13 @@ pub struct Clip {
     /// let clip = Clip::new("scene.mp4").with_speed(2.0);
     /// assert_eq!(clip.speed, 2.0);
     /// ```
+    ///
+    /// A value that is not positive and finite has no meaning: the clip's footprint
+    /// is `duration / speed`. Such a value is reported by
+    /// [`Timeline::validate`](crate::Timeline::validate) as
+    /// [`DegenerateSpeed`](crate::TimelineIssue::DegenerateSpeed), clamped to
+    /// [`MIN_SPEED`] on the edit path, and floored by the derivation, so it cannot
+    /// reach a filter (#1816).
     pub speed: f64,
     /// Optional low-resolution proxy file to decode from instead of `source`.
     ///

@@ -30,6 +30,9 @@ pub enum ClipProperty {
     /// Overlay opacity in `[0.0, 1.0]`.
     Opacity(f32),
     /// Playback speed multiplier (`1.0` = normal).
+    ///
+    /// Clamped to [`MIN_SPEED`](crate::MIN_SPEED): zero or a negative value has
+    /// no interpretation, since a clip's footprint is `duration / speed`.
     Speed(f64),
     /// Compositing blend mode.
     BlendMode(BlendMode),
@@ -479,7 +482,10 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             match property {
                 // Match `Clip::with_opacity`, which clamps to the documented range.
                 ClipProperty::Opacity(v) => c.opacity = v.clamp(0.0, 1.0),
-                ClipProperty::Speed(v) => c.speed = *v,
+                // Clamped like `Opacity` above: a non-positive speed has no
+                // interpretation, and the edit path is where the model can refuse one
+                // without changing an API that returns `Self` (#1816).
+                ClipProperty::Speed(v) => c.speed = v.max(crate::MIN_SPEED),
                 ClipProperty::BlendMode(v) => c.blend_mode = *v,
                 ClipProperty::VolumeDb(v) => c.volume_db = *v,
                 ClipProperty::Position { x, y } => {
@@ -1367,6 +1373,39 @@ mod tests {
         assert_eq!(
             out.video_tracks()[0].clips[0].out_point,
             Some(Duration::from_secs(4))
+        );
+    }
+
+    #[test]
+    fn set_clip_property_speed_should_clamp_a_degenerate_value() {
+        let t = timeline_with(1);
+        let clip = clip_id(&t, 0);
+        for bad in [0.0, -2.0] {
+            let out = apply(
+                &t,
+                &Command::SetClipProperty {
+                    clip,
+                    property: ClipProperty::Speed(bad),
+                },
+            )
+            .unwrap();
+            let speed = out.video_tracks()[0].clips[0].speed;
+            assert!(
+                speed >= crate::MIN_SPEED,
+                "a speed of {bad} must be clamped, got {speed}"
+            );
+        }
+        let out = apply(
+            &t,
+            &Command::SetClipProperty {
+                clip,
+                property: ClipProperty::Speed(2.0),
+            },
+        )
+        .unwrap();
+        assert!(
+            (out.video_tracks()[0].clips[0].speed - 2.0).abs() < f64::EPSILON,
+            "a sane value is untouched"
         );
     }
 
