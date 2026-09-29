@@ -7,7 +7,8 @@
 //!
 //! `mute` / `solo` / `enabled` decide whether a track contributes to the derived
 //! output (see [`Track::is_active`]); `lock` and `name` are authoring metadata the
-//! derivation ignores.
+//! derivation ignores. `lock` is enforced on the **edit** path instead: a locked
+//! track refuses the commands that would change it (ADR-0021).
 
 use ff_filter::{AnimationTrack, FilterStep};
 
@@ -119,6 +120,15 @@ pub struct Track {
     /// When `false`, the track is disabled and contributes nothing.
     pub enabled: bool,
     /// Authoring flag protecting the track from edits; ignored by the derivation.
+    ///
+    /// When set, [`apply`](crate::apply) refuses every command that would change this
+    /// track or a clip on it, including a grouped edit that reaches one of its clips,
+    /// and returns [`EditError::TrackLocked`](crate::EditError::TrackLocked).
+    /// [`Command::SetTrackLock`](crate::Command::SetTrackLock) is the exception,
+    /// because it is how the lock is released.
+    ///
+    /// The derivation does not read it: a locked track renders and previews exactly as
+    /// an unlocked one (ADR-0021).
     pub lock: bool,
     /// The clips on this track, in order (index 0 first on the timeline).
     pub clips: Vec<Clip>,
@@ -280,6 +290,23 @@ impl Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_active_should_ignore_the_lock_flag() {
+        // The lock constrains editing, not the derivation: a locked track still
+        // contributes to the output (#1805, ADR-0021). `Timeline::render` skips a
+        // track only when `is_active` says so.
+        let locked = Track::new(Vec::new()).locked(true);
+        assert!(locked.lock);
+        assert!(locked.is_active(false), "a locked track still renders");
+        assert!(
+            Track::new(Vec::new())
+                .locked(true)
+                .soloed(true)
+                .is_active(true),
+            "and the lock does not interfere with solo either"
+        );
+    }
 
     #[test]
     fn is_active_should_reflect_enabled_mute_solo() {

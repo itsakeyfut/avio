@@ -293,6 +293,18 @@ pub enum Command {
         /// The effect ids in their new order.
         order: Vec<EffectId>,
     },
+    /// Set the `lock` flag of the track with id `track`.
+    ///
+    /// A locked track refuses every other command that would change it (see
+    /// [`apply`]); this one is the exception, because it is how the lock is
+    /// released. Locking is an authoring constraint only: the derivation ignores
+    /// the flag, so a locked track still renders and still previews.
+    SetTrackLock {
+        /// Track to lock or unlock.
+        track: TrackId,
+        /// The new flag value.
+        lock: bool,
+    },
     /// Apply several commands as one atomic edit (and, through [`Editor`](crate::Editor),
     /// one undo step).
     ///
@@ -342,6 +354,16 @@ pub enum EditError {
         /// The (set) id found on the patch value.
         found: ClipId,
     },
+    /// The edit would change a track whose [`lock`](crate::Track::lock) flag is set,
+    /// or a clip on one.
+    ///
+    /// Release the lock with [`Command::SetTrackLock`], which is the one command a
+    /// locked track still accepts.
+    #[error("track {id:?} is locked; release it with Command::SetTrackLock")]
+    TrackLocked {
+        /// The locked track the edit would have changed.
+        id: TrackId,
+    },
     /// A [`Command::SplitClip`] point is not strictly inside the clip's span.
     #[error("split point {at:?} is not inside clip {clip:?}")]
     SplitOutOfRange {
@@ -378,7 +400,17 @@ pub enum EditError {
 /// [`Command::SetCanvas`] / [`Command::SetFrameRate`] value is invalid, a
 /// [`Command::SetClip`] value's id names a different clip, or a
 /// [`Command::SplitClip`] point is outside the clip's span.
+///
+/// Returns [`EditError::TrackLocked`] when the edit would change a track whose
+/// [`lock`](crate::Track::lock) flag is set, or a clip on one, or a clip grouped with
+/// one. [`Command::SetTrackLock`] is the exception, because it releases the lock.
 pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditError> {
+    // A locked track refuses the edit before anything is cloned or changed.
+    // `Command::Batch` re-enters here per sub-command, so a batch is covered by this
+    // one guard and stays atomic (#1805, ADR-0021).
+    if let Some(id) = locked_target(timeline, command) {
+        return Err(EditError::TrackLocked { id });
+    }
     let mut next = timeline.clone();
     match command {
         Command::AddClip { track, clip } => {
@@ -721,6 +753,11 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             }
             c.effects = reordered;
         }
+        Command::SetTrackLock { track, lock } => {
+            find_track_mut(&mut next, *track)
+                .ok_or(EditError::TrackNotFound { id: *track })?
+                .lock = *lock;
+        }
         Command::Batch(commands) => {
             // Apply each sub-command to the accumulating timeline. On failure `?`
             // returns and `next` is dropped, so the input timeline is unchanged
@@ -775,6 +812,95 @@ fn tracks_mut(timeline: &mut Timeline, kind: TrackKind) -> &mut Vec<Track> {
         TrackKind::Video => &mut timeline.video_tracks,
         TrackKind::Audio => &mut timeline.audio_tracks,
     }
+}
+
+/// The locked track this command would change, if any.
+///
+/// `None` when the command changes no track, changes only unlocked ones, or is
+/// [`Command::SetTrackLock`], which a locked track still accepts because it is how
+/// the lock is released (ADR-0021).
+///
+/// A clip-addressed command resolves the clip's own track. The commands that carry a
+/// grouped edit to the rest of the group (ADR-0019) resolve the members' tracks too:
+/// a linked pair half-edited because one side was locked would break the very sync
+/// the group exists to protect.
+fn locked_target(timeline: &Timeline, command: &Command) -> Option<TrackId> {
+    let locked_track = |id: TrackId| locked_id(timeline, id);
+    let locked_clip = |clip: ClipId| locked_holder(timeline, clip);
+    let locked_group = |clip: ClipId| {
+        let group = clip_of(timeline, clip)?.group;
+        let members = group.map_or_else(|| vec![clip], |g| collect_group_ids(timeline, g));
+        members.into_iter().find_map(locked_clip)
+    };
+    match command {
+        // Clip edits that carry to the rest of the group.
+        Command::MoveClip { clip, .. }
+        | Command::TrimClip { clip, .. }
+        | Command::RippleTrim { clip, .. }
+        | Command::SplitClip { clip, .. }
+        | Command::RippleDelete { clip }
+        // Not a propagating edit, but it clears `group` on every member, so the
+        // members' tracks are what it actually writes to.
+        | Command::UngroupClips { clip } => locked_group(*clip),
+        Command::MoveClipToTrack { clip, to, .. } => {
+            locked_group(*clip).or_else(|| locked_track(*to))
+        }
+        // Clip edits that stop at the clip they name.
+        Command::RemoveClip { clip }
+        | Command::SetClipProperty { clip, .. }
+        | Command::SetClip { clip, .. }
+        | Command::AddEffect { clip, .. }
+        | Command::RemoveEffect { clip, .. }
+        | Command::SetEffectKind { clip, .. }
+        | Command::SetEffectEnabled { clip, .. }
+        | Command::ReorderEffects { clip, .. } => locked_clip(*clip),
+        Command::GroupClips { clips } => clips.iter().copied().find_map(locked_clip),
+        // Track edits.
+        Command::AddClip { track, .. } | Command::RemoveTrack { track } => locked_track(*track),
+        // A locked track still accepts this one, and the rest name no track: adding a
+        // track, the markers, the canvas and the frame rate. `Batch` is covered by the
+        // guard re-entering `apply` for each sub-command.
+        Command::SetTrackLock { .. }
+        | Command::AddTrack { .. }
+        | Command::AddMarker { .. }
+        | Command::RemoveMarker { .. }
+        | Command::MoveMarker { .. }
+        | Command::SetCanvas { .. }
+        | Command::SetFrameRate { .. }
+        | Command::Batch(_) => None,
+    }
+}
+
+/// `Some(id)` when the track with `id` is locked.
+fn locked_id(timeline: &Timeline, id: TrackId) -> Option<TrackId> {
+    timeline
+        .video_tracks
+        .iter()
+        .chain(timeline.audio_tracks.iter())
+        .find(|tr| tr.id == id)
+        .filter(|tr| tr.lock)
+        .map(|tr| tr.id)
+}
+
+/// `Some(id)` when the track holding `clip` is locked.
+fn locked_holder(timeline: &Timeline, clip: ClipId) -> Option<TrackId> {
+    timeline
+        .video_tracks
+        .iter()
+        .chain(timeline.audio_tracks.iter())
+        .find(|tr| tr.clips.iter().any(|c| c.id == clip))
+        .filter(|tr| tr.lock)
+        .map(|tr| tr.id)
+}
+
+/// The clip with `id`, read-only.
+fn clip_of(timeline: &Timeline, id: ClipId) -> Option<&Clip> {
+    timeline
+        .video_tracks
+        .iter()
+        .chain(timeline.audio_tracks.iter())
+        .flat_map(|tr| tr.clips.iter())
+        .find(|c| c.id == id)
 }
 
 /// Finds the track with `id` in either list (video then audio).
@@ -3125,6 +3251,248 @@ mod tests {
             out.next_group_id, before,
             "an ungrouped razor mints no group id"
         );
+    }
+
+    // --- a locked track refuses edits (#1805, ADR-0021) ---
+
+    /// A locked video track holding one clip, plus an unlocked audio track holding
+    /// one, so a grouped edit can cross the boundary.
+    fn locked_and_unlocked() -> (Timeline, ClipId, ClipId, TrackId) {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track_with(
+                Track::new(vec![
+                    Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+                ])
+                .locked(true),
+            )
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let locked_clip = t.video_tracks()[0].clips[0].id;
+        let free_clip = t.audio_tracks()[0].clips[0].id;
+        let locked_track = t.video_tracks()[0].id;
+        (t, locked_clip, free_clip, locked_track)
+    }
+
+    #[test]
+    fn move_clip_on_a_locked_track_should_be_refused() {
+        let (t, clip, _free, track) = locked_and_unlocked();
+        let out = apply(
+            &t,
+            &Command::MoveClip {
+                clip,
+                offset: Duration::from_secs(99),
+            },
+        );
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn add_clip_to_a_locked_track_should_be_refused() {
+        let (t, _clip, _free, track) = locked_and_unlocked();
+        let out = apply(
+            &t,
+            &Command::AddClip {
+                track,
+                clip: Box::new(Clip::new("new.mp4")),
+            },
+        );
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn remove_track_should_be_refused_when_the_track_is_locked() {
+        let (t, _clip, _free, track) = locked_and_unlocked();
+        let out = apply(&t, &Command::RemoveTrack { track });
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn move_clip_to_a_locked_destination_should_be_refused() {
+        let (t, _clip, free, track) = locked_and_unlocked();
+        // The clip itself sits on an unlocked track; the destination is the locked
+        // one, which is the half a check on the source alone would miss.
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: free,
+                to: track,
+                offset: Duration::ZERO,
+            },
+        );
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn an_effect_command_on_a_locked_track_should_be_refused() {
+        let (t, clip, _free, track) = locked_and_unlocked();
+        let out = apply(
+            &t,
+            &Command::AddEffect {
+                clip,
+                kind: blur(4.0),
+            },
+        );
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn a_grouped_edit_reaching_a_locked_member_should_be_refused() {
+        let (t, locked_clip, free_clip, track) = locked_and_unlocked();
+        let t = apply(
+            &t,
+            &Command::GroupClips {
+                clips: vec![free_clip, locked_clip],
+            },
+        );
+        // Grouping itself names a clip on the locked track, so it is refused too.
+        assert_eq!(t.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn a_grouped_move_should_be_refused_when_a_member_is_locked() {
+        // Group first, then lock: the group exists, and the edit is addressed at the
+        // member that is still free.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let video_track = t.video_tracks()[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let t = apply(
+            &t,
+            &Command::SetTrackLock {
+                track: video_track,
+                lock: true,
+            },
+        )
+        .unwrap();
+
+        let out = apply(
+            &t,
+            &Command::MoveClip {
+                clip: a,
+                offset: Duration::from_secs(9),
+            },
+        );
+        assert_eq!(
+            out.unwrap_err(),
+            EditError::TrackLocked { id: video_track },
+            "a grouped move must not half-apply because one member is locked"
+        );
+    }
+
+    #[test]
+    fn ungrouping_from_a_free_member_should_be_refused_when_another_is_locked() {
+        // `UngroupClips` clears `group` on every member, so it writes to the locked
+        // track even when the clip it names sits on a free one.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let v = t.video_tracks()[0].clips[0].id;
+        let a = t.audio_tracks()[0].clips[0].id;
+        let video_track = t.video_tracks()[0].id;
+        let t = apply(&t, &Command::GroupClips { clips: vec![v, a] }).unwrap();
+        let t = apply(
+            &t,
+            &Command::SetTrackLock {
+                track: video_track,
+                lock: true,
+            },
+        )
+        .unwrap();
+
+        let out = apply(&t, &Command::UngroupClips { clip: a });
+        assert_eq!(
+            out.unwrap_err(),
+            EditError::TrackLocked { id: video_track },
+            "ungrouping would have cleared the locked member's group"
+        );
+    }
+
+    #[test]
+    fn set_track_lock_should_release_a_locked_track() {
+        let (t, clip, _free, track) = locked_and_unlocked();
+        let unlocked = apply(&t, &Command::SetTrackLock { track, lock: false }).unwrap();
+        assert!(!unlocked.video_tracks()[0].lock);
+        let moved = apply(
+            &unlocked,
+            &Command::MoveClip {
+                clip,
+                offset: Duration::from_secs(9),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            moved.video_tracks()[0].clips[0].offset,
+            Duration::from_secs(9),
+            "the edit goes through once the lock is released"
+        );
+    }
+
+    #[test]
+    fn a_batch_containing_a_locked_edit_should_change_nothing() {
+        let (t, clip, free, track) = locked_and_unlocked();
+        let out = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::MoveClip {
+                    clip: free,
+                    offset: Duration::from_secs(3),
+                },
+                Command::MoveClip {
+                    clip,
+                    offset: Duration::from_secs(9),
+                },
+            ]),
+        );
+        assert_eq!(out.unwrap_err(), EditError::TrackLocked { id: track });
+    }
+
+    #[test]
+    fn timeline_level_commands_should_be_unaffected_by_a_lock() {
+        let (t, _clip, _free, _track) = locked_and_unlocked();
+        let out = apply(&t, &Command::SetFrameRate { fps: 25.0 }).unwrap();
+        assert!((out.frame_rate() - 25.0).abs() < f64::EPSILON);
+        let out = apply(
+            &out,
+            &Command::SetCanvas {
+                width: 640,
+                height: 360,
+            },
+        )
+        .unwrap();
+        assert_eq!((out.canvas_width(), out.canvas_height()), (640, 360));
+        // And a new track can still be added while another is locked.
+        let out = apply(
+            &out,
+            &Command::AddTrack {
+                kind: TrackKind::Video,
+            },
+        )
+        .unwrap();
+        assert_eq!(out.video_tracks().len(), 2);
     }
 
     // --- typed effect commands (#1458) ---
