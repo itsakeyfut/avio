@@ -24,7 +24,7 @@ use crate::error::TimelineError;
 /// edit path clamps to it, and [`Timeline::validate`](crate::Timeline::validate)
 /// reports anything below it that a builder hands in (#1816).
 pub const MIN_SPEED: f64 = 0.01;
-use crate::ids::{ClipId, GroupId};
+use crate::ids::{ClipId, GroupId, TrackKind};
 
 /// The origin of a clip's frames.
 ///
@@ -41,6 +41,26 @@ pub enum ClipSource {
     Text(TextSpec),
     /// A generated solid-color fill.
     Solid(Color),
+}
+
+impl ClipSource {
+    /// Whether a clip from this source can serve a track of `kind`.
+    ///
+    /// A generated (`Text`/`Solid`) source synthesizes video and carries no audio,
+    /// which the derivation already relies on, so it cannot serve an audio track.
+    /// Everything else is accepted here.
+    ///
+    /// [`File`](Self::File) is accepted for **both** kinds, which is not the whole
+    /// rule: an MP3 cannot serve a video track either, but deciding that means
+    /// reading the file, and the edit path is pure by design (ADR-0023). The
+    /// file-backed half is checked where I/O is allowed (#1850).
+    #[must_use]
+    pub const fn serves_track_kind(&self, kind: TrackKind) -> bool {
+        !matches!(
+            (self, kind),
+            (Self::Text(_) | Self::Solid(_), TrackKind::Audio)
+        )
+    }
 }
 
 /// How a clip's source frame is framed against the project canvas.
@@ -1182,6 +1202,29 @@ impl VideoEffectRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the generated sources are refused, and only on an audio track. A `File`
+    /// source is accepted for both kinds here on purpose: deciding it needs to read
+    /// the file, which the pure edit path cannot do (#1927, ADR-0023).
+    #[test]
+    fn serves_track_kind_should_reject_only_generated_sources_on_audio() {
+        use crate::ids::TrackKind;
+        use ff_format::TextSpec;
+
+        let file = ClipSource::File("a.mp4".into());
+        let text = ClipSource::Text(TextSpec::new("t"));
+        let solid = ClipSource::Solid(Color::WHITE);
+
+        for source in [&file, &text, &solid] {
+            assert!(
+                source.serves_track_kind(TrackKind::Video),
+                "every source serves a video track: {source:?}"
+            );
+        }
+        assert!(file.serves_track_kind(TrackKind::Audio));
+        assert!(!text.serves_track_kind(TrackKind::Audio));
+        assert!(!solid.serves_track_kind(TrackKind::Audio));
+    }
 
     #[test]
     fn clip_new_should_have_zero_offset() {

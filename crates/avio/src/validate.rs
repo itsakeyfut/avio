@@ -19,7 +19,7 @@
 
 use crate::clip::{Clip, ClipSource};
 use crate::edit::clip_footprint;
-use crate::ids::{ClipId, TrackId};
+use crate::ids::{ClipId, TrackId, TrackKind};
 use crate::timeline::Timeline;
 use crate::track::Track;
 
@@ -60,6 +60,22 @@ pub enum TimelineIssue {
     GeneratedClipWithoutOutPoint {
         /// The offending clip.
         clip: ClipId,
+    },
+    /// A clip sits on a track of a kind its source cannot serve.
+    ///
+    /// A generated (text/solid) source synthesizes video and carries no audio, so the
+    /// render skips it when summing an audio track and the clip silently disappears.
+    /// The edit path refuses this
+    /// ([`EditError::ClipCannotServeTrack`](crate::EditError::ClipCannotServeTrack))
+    /// and so does the builder
+    /// ([`TimelineError::ClipCannotServeTrack`](crate::TimelineError::ClipCannotServeTrack)),
+    /// so this reports a timeline that reached neither, which deserialization can
+    /// (ADR-0023).
+    ClipCannotServeTrack {
+        /// The offending clip.
+        clip: ClipId,
+        /// The track it sits on.
+        track: TrackId,
     },
     /// A clip's [`speed`](crate::Clip::speed) is not a positive, finite number, so its
     /// footprint (`duration / speed`) has no interpretation.
@@ -139,8 +155,15 @@ impl Timeline {
     #[must_use]
     pub fn validate(&self) -> Vec<TimelineIssue> {
         let mut issues = Vec::new();
-        for track in self.video_tracks.iter().chain(self.audio_tracks.iter()) {
-            check_track(track, &mut issues);
+        // The kind is which list holds the track, so it is passed down rather than
+        // read off the track (see `Timeline::track_kind`).
+        for (tracks, kind) in [
+            (&self.video_tracks, TrackKind::Video),
+            (&self.audio_tracks, TrackKind::Audio),
+        ] {
+            for track in tracks {
+                check_track(track, kind, &mut issues);
+            }
         }
         // Track-level automation is typed and lives on the track itself, so it can
         // no longer target a non-existent track or use a malformed key.
@@ -149,7 +172,7 @@ impl Timeline {
 }
 
 /// Per-clip and per-track invariants for one track.
-fn check_track(track: &Track, issues: &mut Vec<TimelineIssue>) {
+fn check_track(track: &Track, kind: TrackKind, issues: &mut Vec<TimelineIssue>) {
     // Per-clip checks.
     // Asked once per track rather than per clip: the answer is a property of the
     // linked build, not of any clip.
@@ -164,6 +187,12 @@ fn check_track(track: &Track, issues: &mut Vec<TimelineIssue>) {
         }
         if !text_available && matches!(clip.source, ClipSource::Text(_)) {
             issues.push(TimelineIssue::TextRendererUnavailable { clip: clip.id });
+        }
+        if !clip.source.serves_track_kind(kind) {
+            issues.push(TimelineIssue::ClipCannotServeTrack {
+                clip: clip.id,
+                track: track.id,
+            });
         }
     }
 
@@ -258,6 +287,52 @@ mod tests {
             .canvas(1920, 1080)
             .frame_rate(30.0)
             .video_track(clips)
+    }
+
+    /// A timeline that reached neither `apply` nor `build` with this state, which
+    /// deserialization can produce. Built here by moving the clip behind both guards'
+    /// backs, which only a test can do (#1927).
+    #[test]
+    fn validate_should_report_a_clip_that_cannot_serve_its_track() {
+        use ff_format::TextSpec;
+
+        let mut t = base(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        // Reach past the guards the way a deserialized document would. The id is
+        // stamped by hand, because a clip pushed straight onto a track keeps
+        // `ClipId::UNSET` and the assertion below would then hold whatever id the
+        // report carried.
+        let clip = ClipId::from_raw(t.next_clip_id);
+        let mut title =
+            Clip::text(TextSpec::new("title")).trim(Duration::ZERO, Duration::from_secs(2));
+        title.id = clip;
+        t.audio_tracks[0].clips.push(title);
+        let track = t.audio_tracks()[0].id;
+
+        let issues = t.validate();
+        assert!(
+            issues.contains(&TimelineIssue::ClipCannotServeTrack { clip, track }),
+            "expected the title on the audio track to be reported by id, got {issues:?}"
+        );
+    }
+
+    /// The other direction: a file source is not judged here, because the edit path
+    /// does not judge it either (#1850 owns that half).
+    #[test]
+    fn validate_should_not_report_a_file_clip_on_an_audio_track() {
+        let t = base(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        assert!(
+            !t.validate()
+                .iter()
+                .any(|i| matches!(i, TimelineIssue::ClipCannotServeTrack { .. })),
+            "a file source must not be flagged: {:?}",
+            t.validate()
+        );
     }
 
     #[test]
