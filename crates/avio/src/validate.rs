@@ -8,6 +8,14 @@
 //! Almost every check reads the document alone. The exception is
 //! [`TimelineIssue::TextRendererUnavailable`], which asks the linked `FFmpeg` build
 //! whether it can draw text, so that one answer depends on the machine.
+//!
+//! **It is advisory, and the list is not a proof.** An empty result means the checks
+//! implemented here found nothing, not that the render will succeed;
+//! [`Timeline::render`] keeps its own checks and can still refuse. Two constructions
+//! are deliberately **not** reported: a clip list whose order differs from the clips'
+//! offsets, because the render follows `offset` and not the index (#1803), and a
+//! `fade_in` plus `fade_out` that together exceed the footprint while each fits on its
+//! own, because that is an overlap rather than a fade that cannot be drawn (#1816).
 
 use crate::clip::{Clip, ClipSource};
 use crate::edit::clip_footprint;
@@ -53,6 +61,26 @@ pub enum TimelineIssue {
         /// The offending clip.
         clip: ClipId,
     },
+    /// A clip's [`speed`](crate::Clip::speed) is not a positive, finite number, so its
+    /// footprint (`duration / speed`) has no interpretation.
+    ///
+    /// The edit path clamps such a value to [`MIN_SPEED`](crate::MIN_SPEED), so
+    /// this reports one that reached the document through the builder (#1816).
+    DegenerateSpeed {
+        /// The offending clip.
+        clip: ClipId,
+    },
+    /// A clip's [`fade_in`](crate::Clip::fade_in) or
+    /// [`fade_out`](crate::Clip::fade_out) is longer than the clip itself.
+    ///
+    /// Measured against the clip's **timeline** footprint, which is what the fade is
+    /// applied over, so a retimed clip is judged by what it occupies rather than by
+    /// how much source it consumes. Only checked when the footprint is known (both
+    /// trim points set), as the overlap check is.
+    FadeLongerThanClip {
+        /// The offending clip.
+        clip: ClipId,
+    },
     /// A text clip cannot be rendered, because the linked `FFmpeg` build carries no
     /// [`TEXT_FILTER`](ff_filter::TEXT_FILTER).
     ///
@@ -83,6 +111,10 @@ impl Timeline {
     /// not mutate the timeline or block [`render`](Self::render). Checks that depend
     /// on a clip's timeline footprint (overlap detection) apply only to clips whose
     /// trim points are set, since an unset in/out point has no finite footprint.
+    ///
+    /// Advisory: an empty result means these checks found nothing, not that
+    /// [`render`](Self::render) will succeed. See the module documentation for what is
+    /// deliberately not reported.
     ///
     /// It is a function of the document alone with one exception:
     /// [`TimelineIssue::TextRendererUnavailable`] asks the linked `FFmpeg` build
@@ -124,6 +156,8 @@ fn check_track(track: &Track, issues: &mut Vec<TimelineIssue>) {
     let text_available = ff_filter::text_rendering_available();
     for clip in &track.clips {
         check_clip_trim(clip, issues);
+        check_clip_speed(clip, issues);
+        check_clip_fades(clip, issues);
         // A generated (text/solid) source is infinite; an out-point must bound it.
         if clip.source_path().is_none() && clip.out_point.is_none() {
             issues.push(TimelineIssue::GeneratedClipWithoutOutPoint { clip: clip.id });
@@ -154,6 +188,30 @@ fn check_clip_trim(clip: &Clip, issues: &mut Vec<TimelineIssue>) {
         } else if out_point == in_point {
             issues.push(TimelineIssue::EmptyFootprint { clip: clip.id });
         }
+    }
+}
+
+/// Flags a `speed` that is not a positive, finite number.
+///
+/// `speed` divides the clip's duration, so zero, a negative value, an infinity or a
+/// NaN leaves the footprint undefined (#1816).
+fn check_clip_speed(clip: &Clip, issues: &mut Vec<TimelineIssue>) {
+    if !(clip.speed.is_finite() && clip.speed > 0.0) {
+        issues.push(TimelineIssue::DegenerateSpeed { clip: clip.id });
+    }
+}
+
+/// Flags a fade longer than the clip's timeline footprint.
+///
+/// The comparison is against the footprint rather than the source duration because
+/// that is the span the fade is drawn over: a clip at `speed = 2.0` occupies half its
+/// source, and a fade longer than the occupied span is the one that cannot fit.
+fn check_clip_fades(clip: &Clip, issues: &mut Vec<TimelineIssue>) {
+    let Some(footprint) = clip_footprint(clip) else {
+        return; // no known footprint, as with the overlap check
+    };
+    if clip.fade_in > footprint || clip.fade_out > footprint {
+        issues.push(TimelineIssue::FadeLongerThanClip { clip: clip.id });
     }
 }
 
@@ -240,6 +298,130 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, TimelineIssue::TextRendererUnavailable { .. })),
             "only text clips depend on the text renderer"
+        );
+    }
+
+    /// A two-clip timeline whose **second** clip is the one under test, so a check
+    /// that reports the wrong clip id fails here. The neighbours above pin the id the
+    /// same way, through `contains`.
+    fn second_clip_under_test(f: impl FnOnce(Clip) -> Clip) -> (Timeline, ClipId) {
+        let t = base(vec![
+            Clip::new("first.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            f(Clip::new("a.mp4")
+                .trim(Duration::ZERO, Duration::from_secs(4))
+                .offset(Duration::from_secs(10))),
+        ])
+        .build()
+        .unwrap();
+        let id = t.video_tracks()[0].clips[1].id;
+        (t, id)
+    }
+
+    #[test]
+    fn validate_should_report_a_zero_speed_clip() {
+        let (t, id) = second_clip_under_test(|c| c.with_speed(0.0));
+        assert!(
+            t.validate()
+                .contains(&TimelineIssue::DegenerateSpeed { clip: id })
+        );
+    }
+
+    #[test]
+    fn validate_should_report_a_negative_speed_clip() {
+        let (t, id) = second_clip_under_test(|c| c.with_speed(-2.0));
+        assert!(
+            t.validate()
+                .contains(&TimelineIssue::DegenerateSpeed { clip: id })
+        );
+    }
+
+    #[test]
+    fn validate_should_not_report_a_speed_of_one() {
+        let (t, id) = second_clip_under_test(|c| c.with_speed(1.0));
+        assert!(
+            !t.validate()
+                .contains(&TimelineIssue::DegenerateSpeed { clip: id })
+        );
+    }
+
+    #[test]
+    fn validate_should_report_a_fade_longer_than_its_clip() {
+        // The issue's case: 5s of fade on a 1s clip.
+        let t = base(vec![
+            Clip::new("a.mp4")
+                .trim(Duration::ZERO, Duration::from_secs(1))
+                .with_fade_in(Duration::from_secs(5))
+                .with_fade_out(Duration::from_secs(5)),
+        ])
+        .build()
+        .unwrap();
+        let id = t.video_tracks()[0].clips[0].id;
+        assert!(
+            t.validate()
+                .contains(&TimelineIssue::FadeLongerThanClip { clip: id })
+        );
+
+        // Each edge on its own, so neither is carried by the other.
+        let (fade_in_only, in_id) =
+            second_clip_under_test(|c| c.with_fade_in(Duration::from_secs(5)));
+        assert!(
+            fade_in_only
+                .validate()
+                .contains(&TimelineIssue::FadeLongerThanClip { clip: in_id })
+        );
+        let (fade_out_only, out_id) =
+            second_clip_under_test(|c| c.with_fade_out(Duration::from_secs(5)));
+        assert!(
+            fade_out_only
+                .validate()
+                .contains(&TimelineIssue::FadeLongerThanClip { clip: out_id })
+        );
+    }
+
+    #[test]
+    fn validate_should_not_report_a_fade_that_fits() {
+        let (t, id) = second_clip_under_test(|c| {
+            c.with_fade_in(Duration::from_millis(500))
+                .with_fade_out(Duration::from_millis(500))
+        });
+        assert!(
+            !t.validate()
+                .contains(&TimelineIssue::FadeLongerThanClip { clip: id })
+        );
+    }
+
+    #[test]
+    fn validate_should_judge_a_fade_against_the_timeline_footprint() {
+        // At 2x the clip occupies 2s of timeline for 4s of source, so a 3s fade does
+        // not fit even though it is shorter than the source it consumes. This is what
+        // makes the footprint the right quantity rather than a coincidence.
+        let (t, id) =
+            second_clip_under_test(|c| c.with_speed(2.0).with_fade_in(Duration::from_secs(3)));
+        assert!(
+            t.validate()
+                .contains(&TimelineIssue::FadeLongerThanClip { clip: id })
+        );
+    }
+
+    #[test]
+    fn validate_should_not_report_a_clip_list_out_of_offset_order() {
+        // Deliberately permitted: the render follows `offset`, not the index (#1803),
+        // so reporting this would be a false alarm. Pinned as a test so a later change
+        // has to argue with it.
+        let t = base(vec![
+            Clip::new("a.mp4")
+                .trim(Duration::ZERO, Duration::from_secs(1))
+                .offset(Duration::from_secs(10)),
+            Clip::new("b.mp4")
+                .trim(Duration::ZERO, Duration::from_secs(1))
+                .offset(Duration::from_secs(2)),
+        ])
+        .build()
+        .unwrap();
+        assert!(
+            t.validate().is_empty(),
+            "an out-of-order clip list is permitted: {:?}",
+            t.validate()
         );
     }
 

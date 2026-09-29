@@ -130,7 +130,13 @@ pub struct Track {
     /// The derivation does not read it: a locked track renders and previews exactly as
     /// an unlocked one (ADR-0021).
     pub lock: bool,
-    /// The clips on this track, in order (index 0 first on the timeline).
+    /// The clips on this track.
+    ///
+    /// The order is editorial: it is what a host's own list shows, and the render
+    /// follows each clip's [`offset`](crate::Clip::offset) rather than the index
+    /// (#1803). A list whose order differs from the offsets therefore renders
+    /// correctly, and [`Timeline::validate`](crate::Timeline::validate) deliberately
+    /// does not report it.
     pub clips: Vec<Clip>,
     /// Ordered per-track (pre-mix) audio effect chain applied to this track's
     /// mixed contribution before it enters the timeline mix, on render.

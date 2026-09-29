@@ -135,7 +135,7 @@ mod track;
 mod transition;
 mod validate;
 
-pub use clip::{Clip, ClipSource, FitMode, VideoEffectRenderer};
+pub use clip::{Clip, ClipSource, FitMode, MIN_SPEED, VideoEffectRenderer};
 pub use edit::{ClipProperty, Command, EditError, apply};
 pub use editor::Editor;
 pub use effect::{
