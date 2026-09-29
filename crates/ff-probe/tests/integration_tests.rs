@@ -819,3 +819,63 @@ fn test_probe_video_file_subtitle_stream_count_is_zero() {
         "subtitle_stream_count() should be 0 for a video file without subtitle streams"
     );
 }
+
+// ============================================================================
+// Decoder availability (#1850)
+// ============================================================================
+
+/// The probe records whether this build can decode each stream, and the claim is
+/// checked against the thing it claims about rather than against a fixed answer: a
+/// capability that is only ever compared with itself agrees with itself even when it
+/// lies (the lesson #1809 left).
+#[test]
+fn probe_should_report_decoder_availability_agreeing_with_the_decoder() {
+    let path = test_video_path();
+    if !path.exists() {
+        println!("Skipping: test video not found at {}", path.display());
+        return;
+    }
+    let Ok(info) = open(&path) else {
+        println!("Skipping: this build cannot probe the test video");
+        return;
+    };
+    let Some(stream) = info.video_streams().first() else {
+        println!("Skipping: the build reported no video stream");
+        return;
+    };
+
+    let claimed = stream.decoder_available();
+    assert!(
+        claimed.is_some(),
+        "a probe must record an answer, not leave it unasked"
+    );
+
+    let decoder_opens = ff_decode::VideoDecoder::open(&path).build().is_ok();
+    assert_eq!(
+        claimed,
+        Some(decoder_opens),
+        "the recorded availability must agree with opening a decoder for real"
+    );
+}
+
+/// The same for audio, whose streams answer the question a clip on an audio track asks.
+#[test]
+fn probe_should_report_decoder_availability_for_an_audio_stream() {
+    let path = test_audio_path();
+    if !path.exists() {
+        println!("Skipping: test audio not found at {}", path.display());
+        return;
+    }
+    let Ok(info) = open(&path) else {
+        println!("Skipping: this build cannot probe the test audio");
+        return;
+    };
+    let Some(stream) = info.audio_streams().first() else {
+        println!("Skipping: the build reported no audio stream");
+        return;
+    };
+    assert!(
+        stream.decoder_available().is_some(),
+        "a probe must record an answer, not leave it unasked"
+    );
+}

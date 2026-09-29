@@ -50,10 +50,15 @@ fn extract_single_audio_stream(stream: ff_sys::StreamRef<'_>) -> AudioStreamInfo
     // Build the AudioStreamInfo
     #[expect(clippy::cast_sign_loss, reason = "stream index is always non-negative")]
     let index = stream.index() as u32;
+    // Whether this build can decode the stream, asked with the real codec id while
+    // it is still in hand. Nothing downstream can reconstruct the id: the model's
+    // codec enum maps a handful of ids and calls the rest `Unknown` (#1850).
+    let decoder_available = ff_sys::Codec::find_decoder(codec_id).is_some();
     let mut builder = AudioStreamInfo::builder()
         .index(index)
         .codec(codec)
         .codec_name(codec_name)
+        .decoder_available(decoder_available)
         .sample_rate(sample_rate)
         .channels(channels)
         .channel_layout(channel_layout)
