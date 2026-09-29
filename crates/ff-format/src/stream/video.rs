@@ -58,6 +58,14 @@ pub struct VideoStreamInfo {
     color_range: ColorRange,
     /// Color primaries
     color_primaries: ColorPrimaries,
+    /// Whether the linked build has a decoder for this stream.
+    ///
+    /// `None` means nobody asked, which is what a hand-built value carries: only a
+    /// probe against a real file can answer it, and the answer is a property of the
+    /// linked build rather than of the file. A consumer must treat `None` as
+    /// acceptable, so a stream whose decodability was never established is not
+    /// mistaken for one that cannot be decoded.
+    decoder_available: Option<bool>,
 }
 
 impl VideoStreamInfo {
@@ -181,6 +189,14 @@ impl VideoStreamInfo {
         self.color_primaries
     }
 
+    /// Returns whether the linked build has a decoder for this stream, or `None`
+    /// when nobody asked (see the field's documentation).
+    #[must_use]
+    #[inline]
+    pub const fn decoder_available(&self) -> Option<bool> {
+        self.decoder_available
+    }
+
     /// Returns the aspect ratio as width/height.
     #[must_use]
     #[inline]
@@ -278,6 +294,7 @@ impl Default for VideoStreamInfo {
             color_space: ColorSpace::default(),
             color_range: ColorRange::default(),
             color_primaries: ColorPrimaries::default(),
+            decoder_available: None,
         }
     }
 }
@@ -298,6 +315,7 @@ pub struct VideoStreamInfoBuilder {
     color_space: ColorSpace,
     color_range: ColorRange,
     color_primaries: ColorPrimaries,
+    decoder_available: Option<bool>,
 }
 
 impl VideoStreamInfoBuilder {
@@ -312,6 +330,13 @@ impl VideoStreamInfoBuilder {
     #[must_use]
     pub fn codec(mut self, codec: VideoCodec) -> Self {
         self.codec = codec;
+        self
+    }
+
+    /// Records whether the linked build has a decoder for this stream.
+    #[must_use]
+    pub const fn decoder_available(mut self, available: bool) -> Self {
+        self.decoder_available = Some(available);
         self
     }
 
@@ -409,6 +434,7 @@ impl VideoStreamInfoBuilder {
             color_space: self.color_space,
             color_range: self.color_range,
             color_primaries: self.color_primaries,
+            decoder_available: self.decoder_available,
         }
     }
 }

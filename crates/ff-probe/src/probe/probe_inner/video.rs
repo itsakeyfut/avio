@@ -55,6 +55,11 @@ fn extract_single_video_stream(stream: ff_sys::StreamRef<'_>) -> VideoStreamInfo
     // Extract frame count if available
     let frame_count = extract_frame_count(stream);
 
+    // Whether this build can decode the stream, asked with the real codec id while
+    // it is still in hand. Nothing downstream can reconstruct the id: the model's
+    // codec enum maps a handful of ids and calls the rest `Unknown` (#1850).
+    let decoder_available = ff_sys::Codec::find_decoder(codec_id).is_some();
+
     // Build the VideoStreamInfo
     #[expect(clippy::cast_sign_loss, reason = "stream index is always non-negative")]
     let index = stream.index() as u32;
@@ -62,6 +67,7 @@ fn extract_single_video_stream(stream: ff_sys::StreamRef<'_>) -> VideoStreamInfo
         .index(index)
         .codec(codec)
         .codec_name(codec_name)
+        .decoder_available(decoder_available)
         .width(width)
         .height(height)
         .pixel_format(pixel_format)

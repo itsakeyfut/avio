@@ -50,6 +50,24 @@ pub enum TimelineError {
         path: String,
     },
 
+    /// A source file exists but the configured render path cannot use it.
+    ///
+    /// Either libavformat could not open it, or it carries no stream of the kind the
+    /// track needs that this build has a decoder for. Raised by
+    /// [`TimelineBuilder::build`](crate::TimelineBuilder::build) so the failure lands
+    /// when the clip is added rather than at export (ADR-0023, #1850).
+    ///
+    /// A source that does **not** exist is not reported here: a project reopened with
+    /// a moved file is a relink case, and refusing to build the document would be the
+    /// wrong answer to it.
+    #[error("source {path} cannot be used: {reason}")]
+    SourceUnusable {
+        /// The source file.
+        path: String,
+        /// Why the render path cannot use it.
+        reason: String,
+    },
+
     /// A clip was placed on a track of a kind its source cannot serve.
     ///
     /// A generated (`Text`/`Solid`) source synthesizes video and carries no audio, so

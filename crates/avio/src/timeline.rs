@@ -1233,6 +1233,31 @@ impl TimelineBuilder {
             }
         }
 
+        // A source the render cannot use, refused while the user still knows which file
+        // they picked (#1850). `build` is where a rule that needs to read a file lives,
+        // per ADR-0023; the edit path cannot, because it is pure.
+        for (path, kinds) in required_source_kinds(&self.video_tracks, &self.audio_tracks) {
+            let info = ff_probe::open(path).map_err(|e| TimelineError::SourceUnusable {
+                path: path.display().to_string(),
+                reason: format!("the container could not be opened ({e})"),
+            })?;
+            for kind in kinds {
+                if !source_serves_kind(&info, kind) {
+                    return Err(TimelineError::SourceUnusable {
+                        path: path.display().to_string(),
+                        reason: format!(
+                            "it carries no {} stream this build can decode, \
+                             but it sits on a {kind:?} track",
+                            match kind {
+                                TrackKind::Video => "video",
+                                TrackKind::Audio => "audio",
+                            }
+                        ),
+                    });
+                }
+            }
+        }
+
         let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
         let (canvas_width, canvas_height, frame_rate) = self.resolve_canvas_and_fps()?;
 
@@ -1502,10 +1527,206 @@ impl Timeline {
     }
 }
 
+/// Which track kinds each existing file-backed source has to serve.
+///
+/// Separated from the probing so the "once per distinct path" guarantee is a property
+/// of this map rather than of an incidental cache: a source used by forty clips is one
+/// key, and a source used by a video and an audio track is one key with two kinds
+/// (#1850).
+///
+/// A generated (`Text`/`Solid`) source has no file, and a path that does not exist is
+/// a relink case rather than a broken document, so both are skipped.
+fn required_source_kinds<'a>(
+    video_tracks: &'a [Track],
+    audio_tracks: &'a [Track],
+) -> Vec<(&'a Path, Vec<TrackKind>)> {
+    let mut order: Vec<&Path> = Vec::new();
+    let mut kinds: HashMap<&Path, Vec<TrackKind>> = HashMap::new();
+    for (tracks, kind) in [
+        (video_tracks, TrackKind::Video),
+        (audio_tracks, TrackKind::Audio),
+    ] {
+        for clip in tracks.iter().flat_map(|tr| tr.clips.iter()) {
+            let Some(path) = clip.source_path() else {
+                continue;
+            };
+            if !path.exists() {
+                continue;
+            }
+            let entry = kinds.entry(path).or_insert_with(|| {
+                order.push(path);
+                Vec::new()
+            });
+            if !entry.contains(&kind) {
+                entry.push(kind);
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|path| {
+            let k = kinds.remove(path).unwrap_or_default();
+            (path, k)
+        })
+        .collect()
+}
+
+/// Whether a probed source carries a stream of `kind` this build can decode.
+///
+/// A stream whose `decoder_available` is `None` counts as usable: nobody asked, and a
+/// check that rejects working media is worse than the late failure it replaces. Only an
+/// explicit `Some(false)` disqualifies a stream (#1850).
+fn source_serves_kind(info: &ff_format::MediaInfo, kind: TrackKind) -> bool {
+    match kind {
+        TrackKind::Video => info
+            .video_streams()
+            .iter()
+            .any(|s| s.decoder_available() != Some(false)),
+        TrackKind::Audio => info
+            .audio_streams()
+            .iter()
+            .any(|s| s.decoder_available() != Some(false)),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    // --- a source the render cannot use is refused at build (#1850) ---
+
+    /// An existing file, so `required_source_kinds` does not skip it. Any file in the
+    /// repository will do; the helper only calls `Path::exists`.
+    fn existing_source() -> std::path::PathBuf {
+        std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+    }
+
+    /// A second existing file, distinct from [`existing_source`].
+    fn second_existing_source() -> std::path::PathBuf {
+        std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+    }
+
+    /// Forty clips on one source are one key: this is what makes "probed once per
+    /// distinct path" a property of the structure rather than of a cache.
+    #[test]
+    fn required_kinds_should_dedup_a_path_used_by_many_clips() {
+        let path = existing_source();
+        let clips: Vec<Clip> = (0..40).map(|_| Clip::new(&path)).collect();
+        let tracks = vec![Track::new(clips)];
+        let required = required_source_kinds(&tracks, &[]);
+        assert_eq!(required.len(), 1, "one source, one probe: {required:?}");
+        assert_eq!(required[0].1, vec![TrackKind::Video]);
+    }
+
+    /// A source that only appears on a later clip must still be judged. Without this,
+    /// a loop that looks at the first clip of each track passes every other test here.
+    #[test]
+    fn required_kinds_should_include_a_source_introduced_by_a_later_clip() {
+        let first = existing_source();
+        let second = second_existing_source();
+        let tracks = vec![Track::new(vec![Clip::new(&first), Clip::new(&second)])];
+        let required = required_source_kinds(&tracks, &[]);
+        assert_eq!(
+            required.len(),
+            2,
+            "both sources must be judged: {required:?}"
+        );
+        assert!(
+            required.iter().any(|(p, _)| *p == second.as_path()),
+            "the source introduced by the second clip is missing: {required:?}"
+        );
+    }
+
+    #[test]
+    fn required_kinds_should_record_both_kinds_for_a_shared_path() {
+        let path = existing_source();
+        let video = vec![Track::new(vec![Clip::new(&path)])];
+        let audio = vec![Track::new(vec![Clip::new(&path)])];
+        let required = required_source_kinds(&video, &audio);
+        assert_eq!(required.len(), 1, "still one probe: {required:?}");
+        assert_eq!(
+            required[0].1,
+            vec![TrackKind::Video, TrackKind::Audio],
+            "both kinds must be judged from the one probe"
+        );
+    }
+
+    /// A generated source has no file, and a missing one is a relink case rather than a
+    /// broken document (the decision recorded in #1850).
+    #[test]
+    fn required_kinds_should_skip_generated_and_missing_sources() {
+        let tracks = vec![Track::new(vec![
+            Clip::text(ff_format::TextSpec::new("title")),
+            Clip::new("this-file-does-not-exist-9999.mp4"),
+        ])];
+        assert!(required_source_kinds(&tracks, &[]).is_empty());
+    }
+
+    /// A probe result carrying one video and one audio stream, each with the given
+    /// `decoder_available` state. `None` is a stream the probe recorded nothing about,
+    /// which is a different thing from a stream that is not there (see
+    /// [`audio_only`]).
+    fn both_streams(video: Option<bool>, audio: Option<bool>) -> ff_format::MediaInfo {
+        let mut v = ff_format::stream::VideoStreamInfo::builder();
+        if let Some(available) = video {
+            v = v.decoder_available(available);
+        }
+        let mut a = ff_format::stream::AudioStreamInfo::builder();
+        if let Some(available) = audio {
+            a = a.decoder_available(available);
+        }
+        ff_format::MediaInfo::builder()
+            .path("x.mp4")
+            .video_stream(v.build())
+            .audio_stream(a.build())
+            .build()
+    }
+
+    /// A probe result with no video stream at all, like an MP3.
+    fn audio_only() -> ff_format::MediaInfo {
+        ff_format::MediaInfo::builder()
+            .path("x.mp3")
+            .audio_stream(
+                ff_format::stream::AudioStreamInfo::builder()
+                    .decoder_available(true)
+                    .build(),
+            )
+            .build()
+    }
+
+    #[test]
+    fn a_stream_with_no_decoder_should_not_satisfy_its_kind() {
+        let info = both_streams(Some(false), Some(false));
+        assert!(!source_serves_kind(&info, TrackKind::Video));
+        assert!(!source_serves_kind(&info, TrackKind::Audio));
+    }
+
+    /// The fail-open direction: nobody asked, so the source is accepted and the render
+    /// is left to fail as it did before. A check that rejects working media would be
+    /// worse than the late failure it replaces.
+    #[test]
+    fn an_unasked_stream_should_satisfy_its_kind() {
+        let info = both_streams(None, None);
+        assert!(source_serves_kind(&info, TrackKind::Video));
+        assert!(source_serves_kind(&info, TrackKind::Audio));
+    }
+
+    #[test]
+    fn a_decodable_stream_should_satisfy_its_kind() {
+        let info = both_streams(Some(true), Some(true));
+        assert!(source_serves_kind(&info, TrackKind::Video));
+        assert!(source_serves_kind(&info, TrackKind::Audio));
+    }
+
+    /// A stream of the needed kind that is absent entirely, which is the file-backed
+    /// half of the kind rule relocated from #1927.
+    #[test]
+    fn an_absent_stream_kind_should_not_be_satisfied() {
+        let audio_only = audio_only();
+        assert!(!source_serves_kind(&audio_only, TrackKind::Video));
+        assert!(source_serves_kind(&audio_only, TrackKind::Audio));
+    }
 
     /// The kind is which list holds the track, so the query has to consult both
     /// (#1927).
