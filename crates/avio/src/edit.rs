@@ -406,7 +406,11 @@ pub enum EditError {
         /// Requested height.
         height: u32,
     },
-    /// Frame rate must be positive.
+    /// Frame rate must be a positive, finite number.
+    ///
+    /// `NaN` and infinity are rejected alongside zero and negatives: a frame rate
+    /// divides the timeline into frames, and none of the four has an interpretation
+    /// there (#1932).
     #[error("invalid frame rate: {0}")]
     InvalidFrameRate(f64),
 }
@@ -712,7 +716,9 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             next.canvas_explicit = true;
         }
         Command::SetFrameRate { fps } => {
-            if *fps <= 0.0 {
+            // `<= 0.0` was not this: `NaN` fails every comparison, so it slipped
+            // through, and infinity passed outright (#1932).
+            if !crate::clip::is_positive_finite(*fps) {
                 return Err(EditError::InvalidFrameRate(*fps));
             }
             next.frame_rate = *fps;
@@ -1723,6 +1729,39 @@ mod tests {
         let t = timeline_with(1);
         let err = apply(&t, &Command::SetFrameRate { fps: 0.0 }).unwrap_err();
         assert_eq!(err, EditError::InvalidFrameRate(0.0));
+    }
+
+    /// `NaN` fails every comparison, so the old `<= 0.0` guard let it through (#1932).
+    #[test]
+    fn set_frame_rate_should_refuse_a_nan() {
+        let t = timeline_with(1);
+        let err = apply(&t, &Command::SetFrameRate { fps: f64::NAN }).unwrap_err();
+        assert!(
+            matches!(err, EditError::InvalidFrameRate(fps) if fps.is_nan()),
+            "expected InvalidFrameRate for NaN, got {err:?}"
+        );
+    }
+
+    /// Infinity passed the old guard outright.
+    #[test]
+    fn set_frame_rate_should_refuse_an_infinite_rate() {
+        let t = timeline_with(1);
+        for fps in [f64::INFINITY, f64::NEG_INFINITY] {
+            let err = apply(&t, &Command::SetFrameRate { fps }).unwrap_err();
+            assert_eq!(
+                err,
+                EditError::InvalidFrameRate(fps),
+                "expected InvalidFrameRate for {fps}"
+            );
+        }
+    }
+
+    /// The control: a predicate that refuses everything is not a fix.
+    #[test]
+    fn set_frame_rate_should_accept_a_normal_rate() {
+        let t = timeline_with(1);
+        let out = apply(&t, &Command::SetFrameRate { fps: 24.0 }).unwrap();
+        assert!((out.frame_rate() - 24.0).abs() < f64::EPSILON);
     }
 
     #[test]

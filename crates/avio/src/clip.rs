@@ -24,6 +24,18 @@ use crate::error::TimelineError;
 /// edit path clamps to it, and [`Timeline::validate`](crate::Timeline::validate)
 /// reports anything below it that a builder hands in (#1816).
 pub const MIN_SPEED: f64 = 0.01;
+
+/// Whether `value` is a quantity the model can divide by: positive and finite.
+///
+/// A clip's speed and a timeline's frame rate both divide something, and both used to
+/// state this for themselves. They disagreed, which is what #1932 was: `speed` asked
+/// `is_finite() && > 0.0` while `SetFrameRate` asked `<= 0.0`, and `NaN` fails every
+/// comparison, so it passed the second and not the first. One predicate, so the next
+/// quantity of this shape cannot disagree with them again.
+#[must_use]
+pub(crate) fn is_positive_finite(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
 use crate::ids::{ClipId, GroupId, TrackKind};
 
 /// The origin of a clip's frames.

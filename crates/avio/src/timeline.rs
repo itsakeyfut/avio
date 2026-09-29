@@ -1261,6 +1261,13 @@ impl TimelineBuilder {
         let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
         let (canvas_width, canvas_height, frame_rate) = self.resolve_canvas_and_fps()?;
 
+        // After resolution rather than before, so a rate that came from probing a
+        // source is judged too: a file reporting a nonsense rate is the same broken
+        // document as a caller passing one (#1932).
+        if !crate::clip::is_positive_finite(frame_rate) {
+            return Err(TimelineError::InvalidFrameRate { fps: frame_rate });
+        }
+
         // Stamp stable ids from monotonic counters (0 = unset; ids start at 1),
         // video tracks first. The final counter values are stored so later edits
         // (`AddClip` / `AddTrack`) keep minting fresh, never-reused ids.
@@ -1726,6 +1733,67 @@ mod tests {
         let audio_only = audio_only();
         assert!(!source_serves_kind(&audio_only, TrackKind::Video));
         assert!(source_serves_kind(&audio_only, TrackKind::Audio));
+    }
+
+    // --- a degenerate frame rate is refused when the timeline is built (#1932) ---
+
+    /// The builder reaches the state with no command at all, so `apply`'s guard is not
+    /// enough (ADR-0023).
+    #[test]
+    fn build_should_refuse_a_nan_frame_rate() {
+        let result = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(f64::NAN)
+            .video_track(vec![Clip::new("v.mp4")])
+            .build();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, TimelineError::InvalidFrameRate { fps } if fps.is_nan()),
+            "expected InvalidFrameRate for NaN, got {err:?}"
+        );
+    }
+
+    /// Not only the non-finite half: dropping `> 0.0` from the predicate left every
+    /// other test here green, so zero and negatives are asserted at `build` too.
+    #[test]
+    fn build_should_refuse_a_zero_or_negative_frame_rate() {
+        for fps in [0.0, -30.0] {
+            let result = Timeline::builder()
+                .canvas(1920, 1080)
+                .frame_rate(fps)
+                .video_track(vec![Clip::new("v.mp4")])
+                .build();
+            let err = result.unwrap_err();
+            assert!(
+                matches!(&err, TimelineError::InvalidFrameRate { fps: got } if *got == fps),
+                "expected InvalidFrameRate for {fps}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_should_refuse_an_infinite_frame_rate() {
+        let result = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(f64::INFINITY)
+            .video_track(vec![Clip::new("v.mp4")])
+            .build();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, TimelineError::InvalidFrameRate { fps } if fps.is_infinite()),
+            "expected InvalidFrameRate for infinity, got {err:?}"
+        );
+    }
+
+    /// The control: the check must not refuse an ordinary rate.
+    #[test]
+    fn build_should_accept_a_normal_frame_rate() {
+        let result = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(29.97)
+            .video_track(vec![Clip::new("v.mp4")])
+            .build();
+        assert!(result.is_ok(), "29.97 is an ordinary rate: {result:?}");
     }
 
     /// The kind is which list holds the track, so the query has to consult both

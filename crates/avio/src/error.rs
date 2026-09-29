@@ -50,6 +50,20 @@ pub enum TimelineError {
         path: String,
     },
 
+    /// The timeline's frame rate is not a positive, finite number.
+    ///
+    /// Raised by [`TimelineBuilder::build`](crate::TimelineBuilder::build), which the
+    /// builder reaches with no command at all, so [`apply`](crate::apply)'s guard is
+    /// not enough (ADR-0023). The advisory twin is
+    /// [`TimelineIssue::DegenerateFrameRate`](crate::TimelineIssue::DegenerateFrameRate),
+    /// and the edit path returns
+    /// [`EditError::InvalidFrameRate`](crate::EditError::InvalidFrameRate).
+    #[error("frame rate {fps} is not a positive, finite number")]
+    InvalidFrameRate {
+        /// The rejected frame rate.
+        fps: f64,
+    },
+
     /// A source file exists but the configured render path cannot use it.
     ///
     /// Either libavformat could not open it, or it carries no stream of the kind the
