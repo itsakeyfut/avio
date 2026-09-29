@@ -1591,6 +1591,16 @@ mod tests {
             println!("Skipping: fixture not found at {}", still.display());
             return;
         }
+        // Present is not the same as usable: minimal-`FFmpeg` CI enables no image
+        // demuxer or decoder, and since #1850 a source this build cannot read is
+        // refused when the timeline is built, so the fixture never reaches the check
+        // under test. Same reasoning as `probe_source_or_skip` above, and the gate asks
+        // a different question (can this be decoded) than the assertion does (is it
+        // declined), so a real rejection still fails.
+        if VideoDecoder::open(&still).build().is_err() {
+            println!("Skipping: this build cannot read {}", still.display());
+            return;
+        }
         let t = square_timeline(vec![placed(&still.to_string_lossy(), 0.0, 1.0)]);
         assert_eq!(
             eligible(&t),
