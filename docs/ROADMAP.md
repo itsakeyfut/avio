@@ -7,7 +7,7 @@ A milestone's `ROADMAP.md` states the **capabilities** the version delivers, not
 them. The tasks are GitHub issues in the matching milestone, which is the only place their status is
 accurate.
 
-Current workspace version: **0.18.3**. In progress: **v0.19.0**.
+Current workspace version: **0.18.4**. In progress: **v0.19.0**.
 
 ## Milestones
 
