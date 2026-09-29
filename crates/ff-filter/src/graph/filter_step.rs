@@ -465,16 +465,20 @@ pub enum FilterStep {
     },
     /// EBU R128 two-pass loudness normalization.
     ///
-    /// Pass 1 measures integrated loudness with `ebur128=peak=true:metadata=1`.
-    /// Pass 2 applies a linear volume correction so the output reaches `target_lufs`.
-    /// All audio frames are buffered in memory between the two passes — use only
-    /// for clips that fit comfortably in RAM.
+    /// Pass 1 measures integrated loudness, true peak and loudness range with
+    /// `ebur128=peak=true:metadata=1`. Pass 2 applies a linear volume correction so
+    /// the output reaches `target_lufs`. All audio frames are buffered in memory
+    /// between the two passes, so use this only for clips that fit comfortably in RAM.
     LoudnessNormalize {
         /// Target integrated loudness in LUFS (e.g. −23.0). Must be < 0.0.
         target_lufs: f32,
         /// True-peak ceiling in dBTP (e.g. −1.0). Must be ≤ 0.0.
         true_peak_db: f32,
-        /// Target loudness range in LU (e.g. 7.0). Must be > 0.0.
+        /// The loudness range in LU the programme is required to fit within
+        /// (e.g. 7.0). Must be in `[1.0, 50.0]`.
+        ///
+        /// Verified and reported, not achieved: a single gain cannot narrow a
+        /// range, so a wider source is logged and passed through (#1854).
         lra: f32,
     },
     /// Peak-level two-pass normalization using `astats`.

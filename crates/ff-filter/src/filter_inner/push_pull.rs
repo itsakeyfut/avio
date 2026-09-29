@@ -551,17 +551,17 @@ impl FilterGraphInner {
     /// specification treats the ceiling as a hard constraint and the target as a
     /// goal, so that is the right way round (#1822).
     fn run_loudness_normalization(&mut self) -> Result<(), FilterError> {
-        let (target_lufs, true_peak_db) = self
+        let (target_lufs, true_peak_db, target_lra) = self
             .steps
             .iter()
             .find_map(|s| {
                 if let FilterStep::LoudnessNormalize {
                     target_lufs,
                     true_peak_db,
-                    ..
+                    lra,
                 } = s
                 {
-                    Some((*target_lufs, *true_peak_db))
+                    Some((*target_lufs, *true_peak_db, *lra))
                 } else {
                     None
                 }
@@ -575,8 +575,8 @@ impl FilterGraphInner {
             return Ok(());
         }
 
-        // === Pass 1: measure integrated loudness and true peak ===
-        let (measured_lufs, measured_peak_db) = unsafe {
+        // === Pass 1: measure integrated loudness, true peak and loudness range ===
+        let measured = unsafe {
             let graph = ff_sys::avfilter_graph_alloc();
             if graph.is_null() {
                 return Err(FilterError::BuildFailed);
@@ -586,6 +586,9 @@ impl FilterGraphInner {
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
             result?
         };
+
+        let measured_lufs = measured.integrated_lufs;
+        let measured_peak_db = measured.true_peak_db;
 
         // The ceiling bounds the gain rather than the other way round: exceeding it
         // clips downstream, whereas missing the target only sounds quiet.
@@ -606,17 +609,47 @@ impl FilterGraphInner {
                 loudness_gain_db
             }
         };
+        let lra_outcome = normalize::lra_outcome(measured.lra, target_lra);
         log::info!(
             "loudness normalization measured_lufs={measured_lufs:.1} \
              target_lufs={target_lufs:.1} measured_peak_db={peak} \
-             true_peak_db={true_peak_db:.1} gain_db={gain_db:.2} bound_by={bound_by}",
+             true_peak_db={true_peak_db:.1} gain_db={gain_db:.2} bound_by={bound_by} \
+             measured_lra={lra} target_lra={target_lra:.1} lra_outcome={lra_outcome:?}",
             peak = measured_peak_db.map_or_else(|| "none".to_string(), |p| format!("{p:.1}")),
             bound_by = if gain_db < loudness_gain_db {
                 "ceiling"
             } else {
                 "target"
             },
+            lra = measured
+                .lra
+                .map_or_else(|| "none".to_string(), |v| format!("{v:.1}")),
         );
+
+        // The range target is a constraint this construction verifies rather than
+        // achieves: a single gain moves a programme's level, never its range. Saying
+        // so is the point of #1854, because the parameter used to be dropped here.
+        match lra_outcome {
+            normalize::LraOutcome::Within => {}
+            normalize::LraOutcome::Exceeds => {
+                // `Exceeds` is only reachable with a measurement, and `NaN` rather
+                // than a default keeps a broken invariant from reading as a real
+                // (and maximally narrow) range of 0.0 LU.
+                let measured_lra = measured.lra.unwrap_or(f32::NAN);
+                log::warn!(
+                    "loudness range wider than requested measured_lra={measured_lra:.1} \
+                     target_lra={target_lra:.1} \
+                     effect=range_unchanged reason=a_single_gain_cannot_narrow_a_range"
+                );
+            }
+            normalize::LraOutcome::NotMeasured => {
+                log::warn!(
+                    "loudness normalization measured no loudness range, so the requested \
+                     range was not checked target_lra={target_lra:.1} \
+                     fallback=range_unverified"
+                );
+            }
+        }
 
         // === Pass 2: apply volume correction ===
         self.loudness_output = unsafe {

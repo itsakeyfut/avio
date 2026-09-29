@@ -232,9 +232,14 @@ impl FilterGraphBuilder {
                         ),
                     });
                 }
-                if *lra <= 0.0 {
+                // `loudnorm`'s own accepted range for the same parameter
+                // (`af_loudnorm.c:106`), so a target that cannot be expressed
+                // downstream cannot be built here either.
+                if !(1.0..=50.0).contains(lra) {
                     return Err(FilterError::InvalidConfig {
-                        reason: format!("loudness_normalize lra {lra} must be > 0.0"),
+                        reason: format!(
+                            "loudness_normalize lra {lra} must be in range [1.0, 50.0]"
+                        ),
                     });
                 }
             }
