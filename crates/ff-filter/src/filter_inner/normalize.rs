@@ -21,18 +21,57 @@ pub(crate) fn linear_to_db(linear: f32) -> f32 {
     }
 }
 
+/// What pass 1 of the two-pass loudness step measured.
+///
+/// Each value comes from the last output frame of the `ebur128` graph, which
+/// publishes a running maximum, so the last frame carries the whole programme.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Pass1Measurement {
+    /// Integrated loudness in LUFS from `lavfi.r128.I`, falling back to the
+    /// silence level when no metadata was published.
+    pub(super) integrated_lufs: f32,
+    /// True peak in dBTP from `lavfi.r128.true_peak`.
+    ///
+    /// `None` means the key was absent, which a caller must not confuse with a
+    /// measured silence of negative infinity: one means the ceiling cannot be
+    /// applied, the other that it need not be (#1822).
+    pub(super) true_peak_db: Option<f32>,
+    /// Loudness range in LU from `lavfi.r128.LRA`, or `None` when the key was
+    /// absent, so an unchecked range is never reported as a range that fits.
+    pub(super) lra: Option<f32>,
+}
+
+/// The silence level `ebur128` effectively reports for a programme too short or
+/// too quiet to integrate, and what loudness falls back to with no metadata.
+const SILENCE_LUFS: f32 = -70.0;
+
+/// Reads one `f32`-valued metadata key from a frame.
+///
+/// `ebur128` writes its statistics as decimal strings, one key per statistic, so
+/// every reader is this same three-step dance; three copies of it would be three
+/// `unsafe` blocks to audit instead of one.
+///
+/// # Safety
+///
+/// `frame` must be a valid `AVFrame` pointer. Its `metadata` may be null;
+/// `av_dict_get` handles that by returning null. The entry's `value` is checked
+/// too: `av_dict_set` compares against a null `tag->value` (`dict.c:114`), so the
+/// library treats a valueless entry as a state that exists, and reading one as a
+/// `CStr` would be undefined.
+unsafe fn read_f32_meta(frame: *const ff_sys::AVFrame, key: &std::ffi::CStr) -> Option<f32> {
+    let entry = ff_sys::av_dict_get((*frame).metadata, key.as_ptr(), std::ptr::null(), 0);
+    if entry.is_null() || (*entry).value.is_null() {
+        return None;
+    }
+    std::ffi::CStr::from_ptr((*entry).value)
+        .to_str()
+        .ok()?
+        .parse::<f32>()
+        .ok()
+}
+
 /// Build a temporary `abuffer → ebur128=peak=true:metadata=1 → abuffersink` graph,
-/// feed all `frames` through it, drain the output, and return the integrated
-/// loudness (LUFS) read from `lavfi.r128.I` and the true peak (dBTP) read from
-/// `lavfi.r128.true_peak`, both taken from the last output frame.
-///
-/// `ebur128` publishes a running maximum, so the last frame carries the values
-/// for the whole programme.
-///
-/// Loudness falls back to `−70.0` (silence level) if no metadata is found. The
-/// peak is `None` when the key was absent, which a caller must not confuse with
-/// a measured silence of negative infinity: one means the ceiling cannot be
-/// applied, the other that it need not be (#1822).
+/// feed all `frames` through it, drain the output, and return what it measured.
 ///
 /// # Safety
 ///
@@ -42,7 +81,7 @@ pub(crate) fn linear_to_db(linear: f32) -> f32 {
 pub(super) unsafe fn run_ebur128_graph(
     graph: *mut ff_sys::AVFilterGraph,
     frames: &[ff_format::AudioFrame],
-) -> Result<(f32, Option<f32>), FilterError> {
+) -> Result<Pass1Measurement, FilterError> {
     let first = &frames[0];
     let src_args_str = audio_buffersrc_args(
         first.sample_rate(),
@@ -154,9 +193,12 @@ pub(super) unsafe fn run_ebur128_graph(
     // Signal EOF so the filter flushes all pending frames.
     ff_sys::av_buffersrc_close(src_ctx, ff_sys::AV_NOPTS_VALUE, 0u32);
 
-    // Drain all output; read `lavfi.r128.I` from each frame, keep the last value.
-    let mut last_integrated: f32 = -70.0;
-    let mut last_true_peak_db: Option<f32> = None;
+    // Drain all output, keeping the last value published for each statistic.
+    let mut measurement = Pass1Measurement {
+        integrated_lufs: SILENCE_LUFS,
+        true_peak_db: None,
+        lra: None,
+    };
     loop {
         let raw_frame = ff_sys::av_frame_alloc();
         if raw_frame.is_null() {
@@ -168,39 +210,52 @@ pub(super) unsafe fn run_ebur128_graph(
             ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
             break;
         }
-        // SAFETY: `(*raw_frame).metadata` is a valid `AVDictionary*` (may be null);
-        // `av_dict_get` handles null dictionaries by returning null.
-        let entry = ff_sys::av_dict_get(
-            (*raw_frame).metadata,
-            c"lavfi.r128.I".as_ptr(),
-            std::ptr::null(),
-            0,
-        );
-        if !entry.is_null()
-            && let Ok(s) = std::ffi::CStr::from_ptr((*entry).value).to_str()
-            && let Ok(v) = s.parse::<f32>()
-        {
-            last_integrated = v;
+        // SAFETY: `raw_frame` is a frame `av_buffersink_get_frame` just filled, and
+        // `read_f32_meta` tolerates a null `metadata`.
+        if let Some(v) = read_f32_meta(raw_frame, c"lavfi.r128.I") {
+            measurement.integrated_lufs = v;
         }
-        // SAFETY: same dictionary, same contract as the read above.
-        let peak_entry = ff_sys::av_dict_get(
-            (*raw_frame).metadata,
-            c"lavfi.r128.true_peak".as_ptr(),
-            std::ptr::null(),
-            0,
-        );
-        if !peak_entry.is_null()
-            && let Ok(s) = std::ffi::CStr::from_ptr((*peak_entry).value).to_str()
-            && let Ok(v) = s.parse::<f32>()
-        {
+        // SAFETY: same frame, same contract as the read above.
+        if let Some(v) = read_f32_meta(raw_frame, c"lavfi.r128.true_peak") {
             // The metadata is a linear amplitude despite the key's name.
-            last_true_peak_db = Some(linear_to_db(v));
+            measurement.true_peak_db = Some(linear_to_db(v));
+        }
+        // SAFETY: same frame, same contract as the read above.
+        if let Some(v) = read_f32_meta(raw_frame, c"lavfi.r128.LRA") {
+            measurement.lra = Some(v);
         }
         let mut ptr = raw_frame;
         ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
     }
 
-    Ok((last_integrated, last_true_peak_db))
+    Ok(measurement)
+}
+
+/// What the measured loudness range says about the requested one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LraOutcome {
+    /// The programme already fits the requested range, so a single gain is a
+    /// legitimate way to reach the loudness target.
+    Within,
+    /// The programme's range is wider than requested. No single gain narrows a
+    /// range, so the request cannot be met by this construction.
+    Exceeds,
+    /// Pass 1 published no range, so nothing can be said about the request.
+    NotMeasured,
+}
+
+/// Compare a measured loudness range against the requested one.
+///
+/// This is the condition `loudnorm` itself uses to decide whether a single
+/// gain is allowed: `measured_lra <= target_lra` at `af_loudnorm.c:812` of the
+/// pinned n8.0.1 source, alongside the true-peak test. The construction here is
+/// that linear mode, and it used to apply the gain without ever asking (#1854).
+pub(super) fn lra_outcome(measured: Option<f32>, target: f32) -> LraOutcome {
+    match measured {
+        Some(lra) if lra <= target => LraOutcome::Within,
+        Some(_) => LraOutcome::Exceeds,
+        None => LraOutcome::NotMeasured,
+    }
 }
 
 /// Build a temporary `abuffer → volume={gain_db}dB → abuffersink` graph,
@@ -518,7 +573,29 @@ pub(super) unsafe fn run_astats_graph(
 
 #[cfg(test)]
 mod tests {
-    use super::linear_to_db;
+    use super::{LraOutcome, linear_to_db, lra_outcome};
+
+    #[test]
+    fn lra_outcome_should_accept_a_range_within_the_target() {
+        assert_eq!(lra_outcome(Some(4.2), 7.0), LraOutcome::Within);
+    }
+
+    #[test]
+    fn lra_outcome_should_reject_a_range_wider_than_the_target() {
+        assert_eq!(lra_outcome(Some(11.5), 7.0), LraOutcome::Exceeds);
+    }
+
+    #[test]
+    fn lra_outcome_should_report_a_range_it_could_not_measure() {
+        assert_eq!(lra_outcome(None, 7.0), LraOutcome::NotMeasured);
+    }
+
+    /// `af_loudnorm.c:812` tests `<=`, so a programme sitting exactly on the
+    /// requested range is inside it.
+    #[test]
+    fn lra_outcome_should_treat_an_exactly_equal_range_as_within() {
+        assert_eq!(lra_outcome(Some(7.0), 7.0), LraOutcome::Within);
+    }
 
     /// The conversion the true-peak ceiling depends on. `ebur128` reports a linear
     /// amplitude under a key named `true_peak`, so every decibel comparison in

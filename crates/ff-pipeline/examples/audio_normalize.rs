@@ -13,7 +13,7 @@
 //!   --effect  loudness       \
 //!   [--target-lufs  -23.0]   # loudness: target integrated loudness in LUFS (default: -23.0)
 //!   [--true-peak    -1.0]    # loudness: true-peak ceiling in dBTP (default: -1.0)
-//!   [--lra           7.0]    # loudness: loudness range target in LU (default: 7.0)
+//!   [--lra           7.0]    # loudness: loudness range in LU, [1.0, 50.0] (default: 7.0)
 //!   [--peak-db      -1.0]    # peak: target dBFS ceiling (default: -1.0)
 //! ```
 

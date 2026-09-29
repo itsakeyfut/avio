@@ -48,15 +48,22 @@ impl FilterGraphBuilder {
     ///
     /// `target_lufs` is the target integrated loudness (e.g. `−23.0`),
     /// `true_peak_db` is the true-peak ceiling (e.g. `−1.0`), and
-    /// `lra` is the target loudness range in LU (e.g. `7.0`).
+    /// `lra` is the loudness range in LU the programme is required to fit within
+    /// (e.g. `7.0`), in range `[1.0, 50.0]`.
     ///
-    /// Pass 1 measures integrated loudness with the `ebur128` filter.
-    /// Pass 2 applies a linear `volume` correction.  All audio frames are
-    /// buffered in memory between the two passes — use only for clips that
-    /// fit comfortably in RAM.
+    /// Pass 1 measures integrated loudness, true peak and loudness range with the
+    /// `ebur128` filter. Pass 2 applies a linear `volume` correction.  All audio
+    /// frames are buffered in memory between the two passes, so use this only for
+    /// clips that fit comfortably in RAM.
+    ///
+    /// `lra` is **verified and reported, not achieved**: a single gain moves a
+    /// programme's level, never its range, so a source whose range is wider than
+    /// requested is logged as such and passed through unnarrowed. Measure with
+    /// [`LoudnessMeter`](crate::LoudnessMeter) to know before exporting (#1854).
     ///
     /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
-    /// `target_lufs >= 0.0`, `true_peak_db > 0.0`, or `lra <= 0.0`.
+    /// `target_lufs >= 0.0`, `true_peak_db > 0.0`, or `lra` is outside
+    /// `[1.0, 50.0]`.
     #[must_use]
     pub fn loudness_normalize(mut self, target_lufs: f32, true_peak_db: f32, lra: f32) -> Self {
         self.steps.push(FilterStep::LoudnessNormalize {
@@ -496,6 +503,43 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for lra=-7.0, got {result:?}"
         );
+    }
+
+    /// The accepted range is `loudnorm`'s own, `[1.0, 50.0]` (#1854). A target
+    /// below 1 LU was accepted before, and is not a loudness range.
+    #[test]
+    fn builder_loudness_normalize_below_the_lra_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .loudness_normalize(-23.0, -1.0, 0.5)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for lra=0.5, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_loudness_normalize_above_the_lra_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .loudness_normalize(-23.0, -1.0, 60.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for lra=60.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_loudness_normalize_at_the_lra_bounds_should_build() {
+        for lra in [1.0, 50.0] {
+            let result = FilterGraph::builder()
+                .loudness_normalize(-23.0, -1.0, lra)
+                .build();
+            assert!(
+                result.is_ok(),
+                "expected the bound lra={lra} to be accepted, got {result:?}"
+            );
+        }
     }
 
     #[test]
