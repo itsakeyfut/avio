@@ -16,8 +16,15 @@
 //! offsets, because the render follows `offset` and not the index (#1803), and a
 //! `fade_in` plus `fade_out` that together exceed the footprint while each fits on its
 //! own, because that is an overlap rather than a fade that cannot be drawn (#1816).
+//!
+//! **Whether a source can be used is deliberately not checked here either.** Answering
+//! it means opening the file, which this module does not do, so
+//! [`TimelineBuilder::build`](crate::TimelineBuilder::build) answers it instead and
+//! refuses a source the render path cannot use (#1850). ADR-0023 records the division:
+//! [`apply`](crate::apply) refuses what is decidable from the document alone, `build`
+//! refuses what needs to read a file, and this module reports without refusing.
 
-use crate::clip::{Clip, ClipSource};
+use crate::clip::{Clip, ClipSource, is_positive_finite};
 use crate::edit::clip_footprint;
 use crate::ids::{ClipId, TrackId, TrackKind};
 use crate::timeline::Timeline;
@@ -77,6 +84,17 @@ pub enum TimelineIssue {
         /// The track it sits on.
         track: TrackId,
     },
+    /// The timeline's [`frame_rate`](crate::Timeline::frame_rate) is not a positive,
+    /// finite number, so the timeline cannot be divided into frames.
+    ///
+    /// Carries no id: the frame rate belongs to the timeline, not to a clip or a track.
+    /// The edit path refuses such a value
+    /// ([`EditError::InvalidFrameRate`](crate::EditError::InvalidFrameRate)) and so
+    /// does the builder
+    /// ([`TimelineError::InvalidFrameRate`](crate::TimelineError::InvalidFrameRate)),
+    /// so this reports a timeline that reached neither, which deserialization can
+    /// (#1932).
+    DegenerateFrameRate,
     /// A clip's [`speed`](crate::Clip::speed) is not a positive, finite number, so its
     /// footprint (`duration / speed`) has no interpretation.
     ///
@@ -165,6 +183,11 @@ impl Timeline {
                 check_track(track, kind, &mut issues);
             }
         }
+        // A timeline-level property, so it is checked here rather than per track
+        // (#1932).
+        if !is_positive_finite(self.frame_rate) {
+            issues.push(TimelineIssue::DegenerateFrameRate);
+        }
         // Track-level automation is typed and lives on the track itself, so it can
         // no longer target a non-existent track or use a malformed key.
         issues
@@ -225,7 +248,7 @@ fn check_clip_trim(clip: &Clip, issues: &mut Vec<TimelineIssue>) {
 /// `speed` divides the clip's duration, so zero, a negative value, an infinity or a
 /// NaN leaves the footprint undefined (#1816).
 fn check_clip_speed(clip: &Clip, issues: &mut Vec<TimelineIssue>) {
-    if !(clip.speed.is_finite() && clip.speed > 0.0) {
+    if !is_positive_finite(clip.speed) {
         issues.push(TimelineIssue::DegenerateSpeed { clip: clip.id });
     }
 }
@@ -623,6 +646,32 @@ mod tests {
             !ok.validate()
                 .iter()
                 .any(|i| matches!(i, TimelineIssue::GeneratedClipWithoutOutPoint { .. }))
+        );
+    }
+
+    /// A timeline that reached neither `apply` nor `build` with this value, which
+    /// deserialization can produce. Set directly, because both guarded paths refuse it
+    /// (#1932).
+    #[test]
+    fn validate_should_report_a_degenerate_frame_rate() {
+        for fps in [f64::NAN, f64::INFINITY, 0.0, -30.0] {
+            let mut t = base(vec![Clip::new("v.mp4")]).build().unwrap();
+            t.frame_rate = fps;
+            assert!(
+                t.validate().contains(&TimelineIssue::DegenerateFrameRate),
+                "expected a report for frame_rate={fps}, got {:?}",
+                t.validate()
+            );
+        }
+    }
+
+    #[test]
+    fn validate_should_not_report_a_normal_frame_rate() {
+        let t = base(vec![Clip::new("v.mp4")]).build().unwrap();
+        assert!(
+            !t.validate().contains(&TimelineIssue::DegenerateFrameRate),
+            "30 fps must not be reported: {:?}",
+            t.validate()
         );
     }
 
