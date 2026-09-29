@@ -99,8 +99,9 @@ pub fn silent_audio_frame(samples: usize, sample_rate: u32) -> AudioFrame {
 // Source file generator
 
 /// Encodes `frame_count` synthetic frames to `path` as an MP4 with MPEG-4 video
-/// and AAC audio.  Returns `None` (and prints a skip message) if the encoder
-/// cannot be built — callers should treat this as "skip the test".
+/// and AAC audio.  Returns `None` (and prints a skip message) when the encoder cannot
+/// be built, **or when this build cannot read the file back**. Callers should treat
+/// either as "skip the test".
 ///
 /// * `width` / `height` — video dimensions (must be even)
 /// * `fps` — frame rate
@@ -154,6 +155,16 @@ pub fn make_source_file(
 
     if let Err(e) = encoder.finish() {
         println!("Skipping: encoder finish failed: {e}");
+        return None;
+    }
+
+    // Written is not the same as readable. Minimal-`FFmpeg` CI enables the `mpeg4`
+    // *encoder* but not its decoder, so this fixture is a file the build that wrote it
+    // cannot read back, and since #1850 a timeline refuses such a source when it is
+    // built. Confirming the round trip here turns that into one skip with a reason,
+    // rather than a failure in each of the fifteen suites that use this helper.
+    if let Err(e) = ff_decode::VideoDecoder::open(path).build() {
+        println!("Skipping: this build cannot read back the fixture it wrote: {e}");
         return None;
     }
 
