@@ -11,6 +11,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.4] - 2026-09-29
+
+A model-correctness release. Where 0.18.3 changed what a render contains, this one changes what the
+**document** is allowed to be: four fixes now refuse a timeline that 0.18.3 accepted, and the failure
+moved from the end of an export to the moment the clip is added. Read **Changed** before upgrading, as
+code that built a timeline without checking the result may now be holding an `Err`.
+
+The through-line is ADR-0023, written here: a rule about a document is enforced where it can afford to
+be. `apply` refuses what is decidable from the timeline alone and stays pure, `TimelineBuilder::build`
+refuses what needs to read a file, and `Timeline::validate` reports without refusing. Three of the four
+refusals below are the same rule split along that line.
+
+### Changed
+
+#### avio
+
+- A clip is refused when its source cannot serve the track it is placed on. A generated (`Text`/`Solid`)
+  source carries no audio, so an audio track refuses it in `apply` and in `TimelineBuilder::build`, and
+  `Timeline::validate` reports it for a document that reached neither. Before, the render skipped such a
+  clip while summing the track and it silently disappeared
+  ([#1927](https://github.com/itsakeyfut/avio/issues/1927))
+- A source the render path cannot use is refused when the timeline is built rather than at export.
+  `TimelineBuilder::build` probes each distinct file-backed path once and asks the linked build for a
+  decoder, so an unusable source is named with its path instead of surfacing later as an encoder error.
+  A source that does **not** exist is deliberately unaffected: a project reopened with a moved file is a
+  relink case, not a broken document ([#1850](https://github.com/itsakeyfut/avio/issues/1850))
+- A frame rate that is not positive and finite is refused. `Command::SetFrameRate` guarded with
+  `fps <= 0.0`, which `NaN` fails and infinity passes, so both reached the timeline and failed at the
+  encoder with `Invalid argument`. The builder refuses them too and `validate` reports them, all through
+  one predicate shared with a clip's speed ([#1932](https://github.com/itsakeyfut/avio/issues/1932))
+
+#### ff-filter
+
+- `FilterGraphBuilder::loudness_normalize` accepts `lra` only in `[1.0, 50.0]`, which is the range
+  `loudnorm` itself accepts. Values outside it were accepted and had no meaning as a loudness range
+  ([#1854](https://github.com/itsakeyfut/avio/issues/1854))
+
+### Fixed
+
+#### avio
+
+- A clip group propagates `TrimClip`, `RippleTrim` and `SplitClip`. Only `MoveClip` and `RippleDelete`
+  did, so linked audio and video lost sync on the two most frequent operations. A grouped edit now
+  carries the timeline-time change and is clamped per member, the rule ADR-0019 records
+  ([#1813](https://github.com/itsakeyfut/avio/issues/1813))
+- `Track::lock` protects the track from edits. It was documented as an authoring flag and no command
+  checked it; `apply` now refuses every edit that would change a locked track, with
+  `Command::SetTrackLock` the one way out, and the derivation still ignores the flag so a locked track
+  keeps rendering (ADR-0021, [#1805](https://github.com/itsakeyfut/avio/issues/1805))
+- `Command::SetClip` keeps the effect ids the clip already had. It re-stamped every one of them, so a
+  host's selection and automation references broke on the documented escape hatch for editing clip
+  fields ([#1814](https://github.com/itsakeyfut/avio/issues/1814))
+- `MarkerId` and `GroupId` are no longer reused after an undo, which ADR-0001 says must not happen. The
+  editor's high-water mark now covers all five id types
+  ([#1815](https://github.com/itsakeyfut/avio/issues/1815))
+- `Timeline::validate` reports a degenerate `speed` and a fade longer than the clip it sits on, and
+  `Command::SetClipProperty` clamps a degenerate speed instead of storing it. Its documentation now also
+  states what it deliberately does not report, and why
+  ([#1816](https://github.com/itsakeyfut/avio/issues/1816))
+- A text clip on a build without `drawtext` is reported by `validate` and refused by `render` with a
+  typed error, instead of failing inside the filter graph. The documented Windows install carries no
+  text filter, so the documented example could not draw a title
+  ([#1809](https://github.com/itsakeyfut/avio/issues/1809))
+
+#### ff-decode
+
+- `SeekMode::Exact` no longer consumes the frame it lands on, so a trimmed clip starts on the frame it
+  names rather than one later (ADR-0018, [#1811](https://github.com/itsakeyfut/avio/issues/1811))
+
+#### ff-filter
+
+- CPU blend modes are computed in planar RGB, so the CPU and GPU routes agree. They were computed on
+  the Y, U and V planes, which is a different operation for every mode that is not a per-channel
+  identity ([#1806](https://github.com/itsakeyfut/avio/issues/1806))
+- `LoudnessNormalize` reads the loudness range it was given. `lra` was validated, stored and never
+  used; the measurement pass 1 already takes is now compared against it, and a programme whose range is
+  wider than requested is reported rather than passed through in silence. The parameter is verified, not
+  achieved: a single gain cannot narrow a range, which ADR-0022 records along with why `loudnorm` was
+  not adopted ([#1854](https://github.com/itsakeyfut/avio/issues/1854))
+
+#### ff-encode
+
+- `allow_codec_substitution` reaches the substitution decision for H.265. An up-front availability check
+  returned before the candidate loop, so the flag could never deliver the AV1 stand-in its documentation
+  names ([#1838](https://github.com/itsakeyfut/avio/issues/1838))
+
+### Internal
+
+- The local definition of done is one command, `cargo xtask gate`, and two rot checks catch what used to
+  drift in silence ([#1908](https://github.com/itsakeyfut/avio/issues/1908))
+- Several documents that asserted things the tree contradicted are corrected
+  ([#1909](https://github.com/itsakeyfut/avio/issues/1909))
+- `ff-preview`'s `pacing_test` distinguishes a decoder that stopped early from one that failed, so it no
+  longer fails only under macOS coverage ([#1839](https://github.com/itsakeyfut/avio/issues/1839))
+
+---
+
 ## [0.18.3] - 2026-09-26
 
 A correctness release for the video export. Every fix below changes what a render actually contains,
