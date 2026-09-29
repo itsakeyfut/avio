@@ -20,7 +20,7 @@ use ff_format::{AudioFrame, ChannelLayout};
 use crate::clip::Clip;
 use crate::derive;
 use crate::error::TimelineError;
-use crate::ids::{ClipId, EffectId, TrackId};
+use crate::ids::{ClipId, EffectId, TrackId, TrackKind};
 use crate::marker::Marker;
 use crate::track::{AudioProperty, Track, VideoProperty};
 use ff_pipeline::EncoderConfig;
@@ -147,6 +147,24 @@ impl Timeline {
     /// Returns a slice of all audio tracks.
     pub fn audio_tracks(&self) -> &[Track] {
         &self.audio_tracks
+    }
+
+    /// Which kind of media the track with `id` carries, or `None` if there is no
+    /// such track.
+    ///
+    /// The kind is which list holds the track, not a field on it, so this is the way
+    /// to ask. A host needs the answer for the same reason the edit path does: to
+    /// know whether a drop target can serve a clip before offering it
+    /// ([`ClipSource::serves_track_kind`](crate::ClipSource::serves_track_kind)).
+    #[must_use]
+    pub fn track_kind(&self, id: TrackId) -> Option<TrackKind> {
+        if self.video_tracks.iter().any(|tr| tr.id == id) {
+            return Some(TrackKind::Video);
+        }
+        if self.audio_tracks.iter().any(|tr| tr.id == id) {
+            return Some(TrackKind::Audio);
+        }
+        None
     }
 
     /// Returns the timeline's editorial markers.
@@ -1192,6 +1210,29 @@ impl TimelineBuilder {
             return Err(TimelineError::NoInput);
         }
 
+        // A clip whose source cannot serve the track it was placed on. The builder
+        // reaches this state with no command at all, so `apply`'s guard is not enough
+        // (ADR-0023). Checked before ids are stamped, because the caller has not seen
+        // them: the track's name and the clip's position are what it can act on.
+        for (tracks, kind) in [
+            (&self.video_tracks, TrackKind::Video),
+            (&self.audio_tracks, TrackKind::Audio),
+        ] {
+            for track in tracks {
+                if let Some(index) = track
+                    .clips
+                    .iter()
+                    .position(|clip| !clip.source.serves_track_kind(kind))
+                {
+                    return Err(TimelineError::ClipCannotServeTrack {
+                        track: track.name.clone(),
+                        kind,
+                        clip_index: index,
+                    });
+                }
+            }
+        }
+
         let canvas_explicit = self.canvas_width.is_some() && self.canvas_height.is_some();
         let (canvas_width, canvas_height, frame_rate) = self.resolve_canvas_and_fps()?;
 
@@ -1465,6 +1506,81 @@ impl Timeline {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The kind is which list holds the track, so the query has to consult both
+    /// (#1927).
+    #[test]
+    fn track_kind_should_answer_for_both_lists() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build()
+            .unwrap();
+        assert_eq!(
+            t.track_kind(t.video_tracks()[0].id),
+            Some(crate::ids::TrackKind::Video)
+        );
+        assert_eq!(
+            t.track_kind(t.audio_tracks()[0].id),
+            Some(crate::ids::TrackKind::Audio)
+        );
+    }
+
+    #[test]
+    fn track_kind_should_be_none_for_an_unknown_id() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .build()
+            .unwrap();
+        assert_eq!(t.track_kind(TrackId::UNSET), None);
+    }
+
+    /// The builder reaches the state with no command at all, so `apply`'s guard is
+    /// not enough (#1927).
+    #[test]
+    fn build_should_refuse_a_generated_clip_on_an_audio_track() {
+        let result = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![
+                Clip::text(ff_format::TextSpec::new("title"))
+                    .trim(Duration::ZERO, Duration::from_secs(2)),
+            ])
+            .build();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                TimelineError::ClipCannotServeTrack {
+                    kind: crate::ids::TrackKind::Audio,
+                    clip_index: 0,
+                    ..
+                }
+            ),
+            "expected ClipCannotServeTrack for the audio track's title, got {err:?}"
+        );
+    }
+
+    /// The file-backed half stays #1850's: an MP3 on a video track is wrong too, but
+    /// deciding it means reading the file.
+    #[test]
+    fn build_should_accept_a_file_clip_on_an_audio_track() {
+        let result = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("v.mp4")])
+            .audio_track(vec![Clip::new("a.mp3")])
+            .build();
+        assert!(
+            result.is_ok(),
+            "a file source is not judged here: {result:?}"
+        );
+    }
 
     /// The predicate that decides whether a clip's frame is held (#1802). Both halves
     /// matter: the demuxer name alone would take an image *sequence* for a still, and the

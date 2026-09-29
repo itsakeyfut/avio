@@ -17,7 +17,7 @@ use std::time::Duration;
 use ff_filter::BlendMode;
 use thiserror::Error;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, ClipSource};
 use crate::effect::{ClipEffect, EffectKind};
 use crate::ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 use crate::marker::Marker;
@@ -367,6 +367,29 @@ pub enum EditError {
         /// The locked track the edit would have changed.
         id: TrackId,
     },
+    /// The edit would place a clip on a track of a kind its source cannot serve.
+    ///
+    /// A generated (`Text`/`Solid`) source synthesizes video and carries no audio, so
+    /// it cannot serve an audio track; the render would skip it and the clip would
+    /// silently disappear.
+    ///
+    /// A [`ClipSource::File`](crate::ClipSource::File) clip is **not** refused here
+    /// even when the file cannot serve the track, because deciding that means reading
+    /// the file and [`apply`] is pure (ADR-0023). That half is checked where I/O is
+    /// allowed (#1850).
+    #[error("clip {clip:?} has a source that cannot serve {kind:?} track {track:?}")]
+    ClipCannotServeTrack {
+        /// The clip whose source cannot serve the track.
+        ///
+        /// For [`Command::AddClip`] this is the id carried by the clip the caller
+        /// passed, which is usually [`ClipId::UNSET`] because `AddClip` mints a fresh
+        /// one: the clip is the one in the command, not one in the timeline.
+        clip: ClipId,
+        /// The track it would have been placed on.
+        track: TrackId,
+        /// That track's kind.
+        kind: TrackKind,
+    },
     /// A [`Command::SplitClip`] point is not strictly inside the clip's span.
     #[error("split point {at:?} is not inside clip {clip:?}")]
     SplitOutOfRange {
@@ -413,6 +436,12 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
     // one guard and stays atomic (#1805, ADR-0021).
     if let Some(id) = locked_target(timeline, command) {
         return Err(EditError::TrackLocked { id });
+    }
+    // After the lock: a locked track refuses every edit before any other rule is
+    // consulted (ADR-0021), so an edit that is both locked out and cross-kind reports
+    // the lock.
+    if let Some((clip, track, kind)) = unservable_target(timeline, command) {
+        return Err(EditError::ClipCannotServeTrack { clip, track, kind });
     }
     let mut next = timeline.clone();
     match command {
@@ -897,6 +926,51 @@ fn locked_holder(timeline: &Timeline, clip: ClipId) -> Option<TrackId> {
         .find(|tr| tr.clips.iter().any(|c| c.id == clip))
         .filter(|tr| tr.lock)
         .map(|tr| tr.id)
+}
+
+/// The clip and destination of an edit that would put a source on a track it cannot
+/// serve, or `None` when the edit does not place a clip anywhere new.
+///
+/// Three commands can create the pair: [`Command::AddClip`] places a caller-built
+/// clip on a named track, [`Command::MoveClipToTrack`] carries an existing clip to
+/// another one, and [`Command::SetClip`] replaces a clip's value in place, source
+/// included. Every other command either cannot change which source sits on which
+/// track, or is [`Command::Batch`], which the guard covers by [`apply`] re-entering
+/// for each sub-command. Only the I/O-free half of the rule is decided here
+/// (ADR-0023).
+fn unservable_target(
+    timeline: &Timeline,
+    command: &Command,
+) -> Option<(ClipId, TrackId, TrackKind)> {
+    let refuse = |clip: ClipId, track: TrackId, source: &ClipSource| {
+        let kind = timeline.track_kind(track)?;
+        (!source.serves_track_kind(kind)).then_some((clip, track, kind))
+    };
+    match command {
+        // The clip is the command's own, so it is reported as the caller holds it.
+        // Predicting the id `apply` would have minted would name a clip that does not
+        // exist and never will, and that a later successful add would give to someone
+        // else.
+        Command::AddClip { track, clip } => refuse(clip.id, *track, &clip.source),
+        Command::MoveClipToTrack { clip, to, .. } => {
+            refuse(*clip, *to, &clip_of(timeline, *clip)?.source)
+        }
+        // The patch may change the source under a clip that is not moving, so the
+        // track is wherever the target already lives.
+        Command::SetClip { clip, value } => {
+            refuse(*clip, holder_of(timeline, *clip)?.id, &value.source)
+        }
+        _ => None,
+    }
+}
+
+/// The track that holds the clip with `id`, read-only.
+fn holder_of(timeline: &Timeline, id: ClipId) -> Option<&Track> {
+    timeline
+        .video_tracks
+        .iter()
+        .chain(timeline.audio_tracks.iter())
+        .find(|tr| tr.clips.iter().any(|c| c.id == id))
 }
 
 /// The clip with `id`, read-only.
@@ -3978,5 +4052,210 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, EditError::EffectNotFound { .. }));
+    }
+    // --- a clip may not sit on a track its source cannot serve (#1927, ADR-0023) ---
+
+    /// One video track and one audio track, each holding a file-backed clip.
+    fn video_and_audio() -> (Timeline, ClipId, TrackId, TrackId) {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track(vec![
+                Clip::new("a.mp3").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .build()
+            .unwrap();
+        let video_clip = t.video_tracks()[0].clips[0].id;
+        let video_track = t.video_tracks()[0].id;
+        let audio_track = t.audio_tracks()[0].id;
+        (t, video_clip, video_track, audio_track)
+    }
+
+    fn text_clip() -> Clip {
+        Clip::text(ff_format::TextSpec::new("TITLE")).trim(Duration::ZERO, Duration::from_secs(2))
+    }
+
+    /// The reported clip is the one the caller passed, which `Clip::text` leaves
+    /// unset: `AddClip` mints the id, so there is no timeline clip to name.
+    #[test]
+    fn add_clip_should_refuse_a_generated_source_on_an_audio_track() {
+        let (t, _v, _vt, audio_track) = video_and_audio();
+        let err = apply(
+            &t,
+            &Command::AddClip {
+                track: audio_track,
+                clip: Box::new(text_clip()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::ClipCannotServeTrack {
+                clip: ClipId::UNSET,
+                track: audio_track,
+                kind: TrackKind::Audio,
+            }
+        );
+    }
+
+    #[test]
+    fn move_clip_to_track_should_refuse_a_generated_source_on_an_audio_track() {
+        let (t, _v, _vt, audio_track) = video_and_audio();
+        // Put a title on the video track first, then try to carry it across.
+        let t = apply(
+            &t,
+            &Command::AddClip {
+                track: t.video_tracks()[0].id,
+                clip: Box::new(text_clip()),
+            },
+        )
+        .unwrap();
+        let title = *t.video_tracks()[0].clips.last().map(|c| &c.id).unwrap();
+        let err = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: title,
+                to: audio_track,
+                offset: Duration::ZERO,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::ClipCannotServeTrack {
+                clip: title,
+                track: audio_track,
+                kind: TrackKind::Audio,
+            }
+        );
+    }
+
+    /// The patch can change the source under a clip that is not moving.
+    #[test]
+    fn set_clip_should_refuse_a_patch_that_cannot_serve_the_holding_track() {
+        let (t, _v, _vt, audio_track) = video_and_audio();
+        let audio_clip = t.audio_tracks()[0].clips[0].id;
+        let err = apply(
+            &t,
+            &Command::SetClip {
+                clip: audio_clip,
+                value: Box::new(text_clip()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::ClipCannotServeTrack {
+                clip: audio_clip,
+                track: audio_track,
+                kind: TrackKind::Audio,
+            }
+        );
+    }
+
+    /// The file-backed half of the rule needs to read the file, so it is not decided
+    /// on the edit path and stays #1850's. This pins that it was not taken quietly.
+    #[test]
+    fn move_clip_to_track_should_accept_a_file_source_on_an_audio_track() {
+        let (t, video_clip, _vt, audio_track) = video_and_audio();
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: video_clip,
+                to: audio_track,
+                offset: Duration::ZERO,
+            },
+        )
+        .unwrap();
+        assert_eq!(out.audio_tracks()[0].clips.len(), 2);
+        assert!(out.video_tracks()[0].clips.is_empty());
+    }
+
+    #[test]
+    fn move_clip_to_track_should_accept_any_source_on_a_video_track() {
+        let (t, _v, video_track, _at) = video_and_audio();
+        let t = apply(
+            &t,
+            &Command::AddClip {
+                track: video_track,
+                clip: Box::new(text_clip()),
+            },
+        )
+        .unwrap();
+        let title = *t.video_tracks()[0].clips.last().map(|c| &c.id).unwrap();
+        // A second video track is a legitimate destination for a title.
+        let t = apply(
+            &t,
+            &Command::AddTrack {
+                kind: TrackKind::Video,
+            },
+        )
+        .unwrap();
+        let other = t.video_tracks()[1].id;
+        let out = apply(
+            &t,
+            &Command::MoveClipToTrack {
+                clip: title,
+                to: other,
+                offset: Duration::ZERO,
+            },
+        );
+        assert!(out.is_ok(), "a title belongs on a video track: {out:?}");
+    }
+
+    /// A locked track refuses every edit before any other rule is consulted
+    /// (ADR-0021), so an edit that is both locked out and cross-kind reports the lock.
+    #[test]
+    fn a_locked_track_should_be_refused_before_the_kind_rule() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
+            ])
+            .audio_track_with(
+                Track::new(vec![
+                    Clip::new("a.mp3").trim(Duration::ZERO, Duration::from_secs(4)),
+                ])
+                .locked(true),
+            )
+            .build()
+            .unwrap();
+        let audio_track = t.audio_tracks()[0].id;
+        let err = apply(
+            &t,
+            &Command::AddClip {
+                track: audio_track,
+                clip: Box::new(text_clip()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::TrackLocked { id: audio_track });
+    }
+
+    #[test]
+    fn batch_should_refuse_a_sub_command_that_cannot_serve_its_track() {
+        let (t, _v, video_track, audio_track) = video_and_audio();
+        let err = apply(
+            &t,
+            &Command::Batch(vec![
+                Command::AddClip {
+                    track: video_track,
+                    clip: Box::new(text_clip()),
+                },
+                Command::AddClip {
+                    track: audio_track,
+                    clip: Box::new(text_clip()),
+                },
+            ]),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, EditError::ClipCannotServeTrack { track, .. } if track == audio_track),
+            "the batch should be refused for the audio sub-command, got {err:?}"
+        );
     }
 }

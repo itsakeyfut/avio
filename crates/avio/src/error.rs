@@ -50,6 +50,25 @@ pub enum TimelineError {
         path: String,
     },
 
+    /// A clip was placed on a track of a kind its source cannot serve.
+    ///
+    /// A generated (`Text`/`Solid`) source synthesizes video and carries no audio, so
+    /// it cannot serve an audio track. The clip is named by its position within the
+    /// track, because the builder has not stamped ids yet when this is found. The
+    /// same rule on the edit path is
+    /// [`EditError::ClipCannotServeTrack`](crate::EditError::ClipCannotServeTrack),
+    /// and [`TimelineIssue::ClipCannotServeTrack`](crate::TimelineIssue::ClipCannotServeTrack)
+    /// reports it for a timeline that reached neither (ADR-0023).
+    #[error("clip {clip_index} on {kind:?} track \"{track}\" has a source that cannot serve it")]
+    ClipCannotServeTrack {
+        /// Name of the track the clip was placed on.
+        track: String,
+        /// Kind of that track.
+        kind: crate::ids::TrackKind,
+        /// Position of the offending clip within the track's clip list.
+        clip_index: usize,
+    },
+
     /// A generated (`Text`/`Solid`) clip was placed on an active track without an
     /// out-point.
     ///
