@@ -130,6 +130,8 @@ mod gpu_preview;
 mod gpu_transition;
 mod ids;
 mod marker;
+#[cfg(feature = "serde")]
+mod project;
 mod timeline;
 mod track;
 mod transition;
@@ -154,6 +156,8 @@ pub use gpu_preview::GpuPreviewCompositor;
 pub use gpu_transition::{GpuTransition, map_transition};
 pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
+#[cfg(feature = "serde")]
+pub use project::{PROJECT_FORMAT_VERSION, Project, ProjectError};
 pub use timeline::{Timeline, TimelineBuilder};
 pub use track::{AudioProperty, Track, TrackAutomation, VideoProperty};
 pub use validate::TimelineIssue;

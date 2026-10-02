@@ -17,7 +17,7 @@ default = ["hwaccel"]
 hwaccel = ["ff-encode/hwaccel"] # hardware-accelerated export
 gpl     = ["ff-encode/gpl"]     # GPL-only codecs (x264 / x265)
 preview = ["dep:ff-preview", "ff-preview/timeline"] # real-time TimelinePlayer / Scene
-serde   = ["dep:serde", "ff-filter/serde", "ff-format/serde"] # (de)serialize the model
+serde   = ["dep:serde", "dep:serde_json", "ff-filter/serde", "ff-format/serde"] # (de)serialize the model, and read/write a project file
 # GPU compositing bridge: map the derived scene to ff-render's GPU compositor
 # (#1365). Off by default so wgpu stays optional for headless / export-only builds;
 # Br3 extends this with "ff-render/display" for the zero-copy preview path.
@@ -44,9 +44,15 @@ log         = { workspace = true }
 ff-preview  = { workspace = true, optional = true }
 ff-render   = { workspace = true, optional = true }
 serde       = { version = "1.0.228", features = ["derive"], optional = true }
+# The project file is JSON, so the library needs this and not only the tests.
+serde_json  = { version = "1.0.149", optional = true }
 
 [[test]]
 name = "serde_persistence"
+required-features = ["serde"]
+
+[[test]]
+name = "project_format"
 required-features = ["serde"]
 
 # The editing model is unconditional, so its tests build by default (no feature gate).

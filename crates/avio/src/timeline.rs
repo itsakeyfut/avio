@@ -53,6 +53,16 @@ use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
 ///
 /// assert!(result.is_ok());
 /// ```
+///
+/// # Saving a timeline
+///
+/// Under the `serde` feature this type serialises, and that output is the **payload** of
+/// a project file rather than a project file itself: it carries no format version, so
+/// nothing reading it later can know which release wrote it.
+/// [`Project`](crate::Project) is what writes and reads a project, and it puts the
+/// version in an envelope around this model. A bare serialised `Timeline` still loads,
+/// as format version 0, because that is what every document written before the envelope
+/// existed looks like (#1905, ADR-0024).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timeline {
