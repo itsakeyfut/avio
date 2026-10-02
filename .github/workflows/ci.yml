@@ -84,22 +84,7 @@ jobs:
           # 20260831 does not, so without this the same commit passes or fails depending
           # on which one it lands on.
           brew update
-          # Homebrew installs a formula's dependencies in parallel, and two of them can
-          # contend for one lock: this step has died with `openssl@4` being installed
-          # while `openssl@3` was already locked by the same `brew install`. A retry gets
-          # past it, because whatever the first attempt did install is present for the
-          # second. Bounded, so a formula that is genuinely broken still fails the job.
-          for attempt in 1 2 3; do
-            if brew install ffmpeg@8 pkg-config; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "brew install ffmpeg@8 failed three times" >&2
-              exit 1
-            fi
-            echo "::warning::brew install contended for its own dependency locks, retrying"
-            sleep 20
-          done
+          brew install ffmpeg@8 pkg-config
           echo "prefix=$(brew --prefix ffmpeg@8)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
