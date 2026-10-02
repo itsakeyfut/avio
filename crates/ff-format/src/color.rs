@@ -1032,7 +1032,7 @@ impl Color {
     /// an autocomplete), and it is what
     /// `crates/ff-filter/tests/color_parse_reference_tests.rs` walks to re-check
     /// every row against the linked `FFmpeg`.
-    #[must_use]
+    #[must_use = "the iterator is lazy; nothing is walked unless it is consumed"]
     pub fn ffmpeg_color_names() -> impl ExactSizeIterator<Item = (&'static str, Self)> {
         FFMPEG_COLOR_NAMES
             .iter()
