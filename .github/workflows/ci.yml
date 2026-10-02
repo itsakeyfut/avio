@@ -84,6 +84,21 @@ jobs:
           # 20260831 does not, so without this the same commit passes or fails depending
           # on which one it lands on.
           brew update
+          # `ffmpeg@8` depends on `openssl@4` (formulae.brew.sh/api/formula/ffmpeg@8.json).
+          # `openssl@4` is not keg-only and its `link_overwrite` covers `bin/openssl`,
+          # `lib/libcrypto*`, `lib/libssl*` and the pkgconfig files, which are the ones
+          # the image's `openssl@3` already owns. Installing it therefore has to lock the
+          # `openssl@3` keg, and doing that from inside the `ffmpeg@8` transaction, which
+          # is already holding a dozen dependency locks, deadlocks against itself:
+          #
+          #   ffmpeg@8: A `brew install ffmpeg@8 pkg-config` process has already locked
+          #   /opt/homebrew/Cellar/openssl@3
+          #
+          # Unlinking first is one invocation holding one lock, and leaves `openssl@4`
+          # nothing to take over. A retry does not help; the lock is not transient (#1944).
+          # `|| true` because a later image may not carry `openssl@3`, which is the state
+          # this is reaching for rather than a failure.
+          brew unlink openssl@3 || true
           brew install ffmpeg@8 pkg-config
           echo "prefix=$(brew --prefix ffmpeg@8)" >> "$GITHUB_OUTPUT"
 
