@@ -44,7 +44,7 @@ fn render_with_audio(tag: &str, audio_source: &PathBuf, out: &PathBuf) -> Option
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video)])
         .audio_track(vec![Clip::new(audio_source)])
         .build()

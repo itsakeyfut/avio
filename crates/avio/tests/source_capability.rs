@@ -56,7 +56,7 @@ fn build_should_refuse_an_audio_only_source_on_a_video_track() {
 
     let result = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&audio)])
         .build();
 
@@ -87,7 +87,7 @@ fn build_should_accept_the_repository_assets() {
 
     let result = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video)])
         .audio_track(vec![Clip::new(&audio)])
         .build();
@@ -104,7 +104,7 @@ fn build_should_accept_the_repository_assets() {
 fn build_should_accept_a_missing_source() {
     let result = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new("no-such-file-9999.mp4")])
         .build();
     assert!(
@@ -129,7 +129,7 @@ fn build_should_accept_many_clips_on_one_source() {
     let clips: Vec<Clip> = (0..40).map(|_| Clip::new(&video)).collect();
     let result = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(clips)
         .build();
     assert!(result.is_ok(), "forty clips on one source: {result:?}");

@@ -45,12 +45,13 @@ use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_decode::VideoDecoder;
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec, VideoEncoder};
 use ff_filter::XfadeTransition;
+use ff_format::Rational;
 use ff_format::{AudioFrame, PixelFormat, SampleFormat, VideoFrame};
 use fixtures::{FileGuard, test_output_path};
 
 const W: u32 = 64;
 const H: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 
 /// Frames each clip contributes: 1 s.
 const CLIP: usize = 30;
@@ -93,7 +94,7 @@ fn make_solid_source(path: &Path, color: [u8; 3]) -> Option<()> {
 /// Writes `frames` frames of a flat `color`, or `None` when there is no encoder.
 fn make_solid_source_n(path: &Path, color: [u8; 3], frames: usize) -> Option<()> {
     let mut enc = VideoEncoder::create(path)
-        .video(W, H, FPS)
+        .video(W, H, FPS.as_f64())
         .video_codec(VideoCodec::Mpeg4)
         .build()
         .ok()?;
@@ -450,7 +451,7 @@ fn a_transition_with_no_handle_should_degrade_to_a_hard_cut_of_the_same_length()
         return;
     };
     #[allow(clippy::cast_precision_loss)]
-    let source_secs = SOURCE_FRAMES as f64 / FPS;
+    let source_secs = SOURCE_FRAMES as f64 / FPS.as_f64();
     let flush = Clip::new(&src[0])
         .offset(Duration::ZERO)
         .trim(Duration::ZERO, Duration::from_secs_f64(source_secs));

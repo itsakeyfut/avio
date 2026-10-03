@@ -26,7 +26,7 @@ fn s(v: f64) -> Duration {
 fn text_timeline() -> Timeline {
     Timeline::builder()
         .canvas(320, 180)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::solid(Color::rgb(20, 20, 20)).trim(Duration::ZERO, s(1.0)),
         ])
@@ -76,7 +76,7 @@ fn a_timeline_without_text_should_never_be_refused_for_the_text_renderer() {
     let _g = FileGuard::new(out.clone());
     let timeline = Timeline::builder()
         .canvas(320, 180)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::solid(Color::rgb(20, 20, 20)).trim(Duration::ZERO, s(1.0)),
         ])

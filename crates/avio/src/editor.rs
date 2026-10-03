@@ -276,43 +276,44 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::Clip;
+    use ff_format::Rational;
 
-    fn timeline(fps: f64) -> Timeline {
+    fn timeline(rate: Rational) -> Timeline {
         Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(fps)
+            .frame_rate(rate)
             .video_track(vec![Clip::new("a.mp4")])
             .build()
             .unwrap()
     }
 
-    fn set_fps(fps: f64) -> Command {
-        Command::SetFrameRate { fps }
+    fn set_fps(rate: Rational) -> Command {
+        Command::SetFrameRate { rate }
     }
 
     #[test]
     fn editor_new_should_start_with_no_undo_or_redo() {
-        let ed = Editor::new(timeline(30.0));
+        let ed = Editor::new(timeline(30.into()));
         assert!(!ed.can_undo());
         assert!(!ed.can_redo());
-        assert!((ed.current().frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(ed.current().frame_rate(), 30.into());
     }
 
     #[test]
     fn editor_apply_should_advance_and_enable_undo() {
-        let mut ed = Editor::new(timeline(30.0));
-        let cur = ed.apply(&set_fps(24.0)).unwrap();
-        assert!((cur.frame_rate() - 24.0).abs() < f64::EPSILON);
+        let mut ed = Editor::new(timeline(30.into()));
+        let cur = ed.apply(&set_fps(24.into())).unwrap();
+        assert_eq!(cur.frame_rate(), 24.into());
         assert!(ed.can_undo());
         assert!(!ed.can_redo());
     }
 
     #[test]
     fn editor_undo_should_restore_previous_version() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
         assert!(!ed.can_undo());
         assert!(ed.can_redo());
     }
@@ -322,7 +323,7 @@ mod tests {
         use crate::Marker;
         use std::time::Duration;
 
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let after = ed
             .apply(&Command::AddMarker {
                 marker: Marker::new(Duration::from_secs(1)),
@@ -343,7 +344,7 @@ mod tests {
 
         let base = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("a.mp4"),
                 Clip::new("b.mp4").offset(Duration::from_secs(10)),
@@ -387,55 +388,56 @@ mod tests {
 
     #[test]
     fn editor_redo_should_reapply_the_undone_version() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
         ed.undo().unwrap();
         let next = ed.redo().unwrap();
-        assert!((next.frame_rate() - 24.0).abs() < f64::EPSILON);
+        assert_eq!(next.frame_rate(), 24.into());
         assert!(!ed.can_redo());
     }
 
     #[test]
     fn editor_undo_at_start_should_return_none() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         assert!(ed.undo().is_none());
-        assert!((ed.current().frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(ed.current().frame_rate(), 30.into());
     }
 
     #[test]
     fn editor_redo_at_end_should_return_none() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
         assert!(ed.redo().is_none());
     }
 
     #[test]
     fn editor_new_edit_after_undo_should_truncate_redo() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
-        ed.apply(&set_fps(48.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
+        ed.apply(&set_fps(48.into())).unwrap();
         ed.undo().unwrap(); // back to the 24.0 version; 48.0 is now the redo tail
-        let cur = ed.apply(&set_fps(60.0)).unwrap(); // must discard the 48.0 redo
-        assert!((cur.frame_rate() - 60.0).abs() < f64::EPSILON);
+        let cur = ed.apply(&set_fps(60.into())).unwrap(); // must discard the 48.0 redo
+        assert_eq!(cur.frame_rate(), 60.into());
         assert!(!ed.can_redo());
         assert!(ed.redo().is_none());
     }
 
     #[test]
     fn editor_apply_error_should_leave_history_unchanged() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
-        let err = ed.apply(&set_fps(0.0)).unwrap_err(); // invalid: fps <= 0
-        assert_eq!(err, EditError::InvalidFrameRate(0.0));
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
+        let zero = Rational::new(0, 1);
+        let err = ed.apply(&set_fps(zero)).unwrap_err(); // invalid: not positive
+        assert_eq!(err, EditError::InvalidFrameRate(zero));
         // History untouched: still one edit deep, no redo, current is the 24.0 version.
         assert!(ed.can_undo());
         assert!(!ed.can_redo());
-        assert!((ed.current().frame_rate() - 24.0).abs() < f64::EPSILON);
+        assert_eq!(ed.current().frame_rate(), 24.into());
     }
 
     #[test]
     fn editor_should_preserve_clip_id_across_undo_redo() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let track = ed.current().video_tracks()[0].id;
         ed.apply(&Command::AddClip {
             track,
@@ -458,7 +460,7 @@ mod tests {
         use crate::{Marker, TrackKind};
         use std::time::Duration;
 
-        let ed = || Editor::new(timeline(30.0));
+        let ed = || Editor::new(timeline(30.into()));
 
         // One block per id-bearing entity. Each adds, discards the edit, and adds
         // again: without the session high-water the counter rewinds with the
@@ -543,7 +545,7 @@ mod tests {
 
     #[test]
     fn editor_apply_batch_should_be_one_undo_step() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let track = ed.current().video_tracks()[0].id;
         ed.apply(&Command::Batch(vec![
             Command::AddClip {
@@ -564,43 +566,45 @@ mod tests {
 
     #[test]
     fn editor_group_should_coalesce_to_one_undo_step() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         ed.begin_group();
-        ed.apply(&set_fps(24.0)).unwrap();
-        ed.apply(&set_fps(48.0)).unwrap();
-        assert!(
-            (ed.current().frame_rate() - 48.0).abs() < f64::EPSILON,
+        ed.apply(&set_fps(24.into())).unwrap();
+        ed.apply(&set_fps(48.into())).unwrap();
+        assert_eq!(
+            ed.current().frame_rate(),
+            48.into(),
             "the working version reflects grouped edits live"
         );
         ed.commit_group();
-        assert!((ed.current().frame_rate() - 48.0).abs() < f64::EPSILON);
+        assert_eq!(ed.current().frame_rate(), 48.into());
         // One undo step: undo restores the pre-gesture version (30), not 24.
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
         assert!(!ed.can_undo());
     }
 
     #[test]
     fn editor_empty_group_should_add_no_step() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
         ed.begin_group();
         ed.commit_group(); // no edits in the group
         assert!(!ed.can_redo());
         // Only the single real edit remains: one undo returns to 30.
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
         assert!(!ed.can_undo());
     }
 
     #[test]
     fn editor_cancel_group_should_discard_edits() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         ed.begin_group();
-        ed.apply(&set_fps(24.0)).unwrap();
+        ed.apply(&set_fps(24.into())).unwrap();
         ed.cancel_group();
-        assert!(
-            (ed.current().frame_rate() - 30.0).abs() < f64::EPSILON,
+        assert_eq!(
+            ed.current().frame_rate(),
+            30.into(),
             "cancel reverts to the pre-group version"
         );
         assert!(!ed.can_undo(), "cancel added no step");
@@ -608,10 +612,10 @@ mod tests {
 
     #[test]
     fn editor_undo_redo_should_be_disabled_during_a_group() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
         ed.begin_group();
-        ed.apply(&set_fps(48.0)).unwrap();
+        ed.apply(&set_fps(48.into())).unwrap();
         assert!(!ed.can_undo());
         assert!(ed.undo().is_none());
         assert!(ed.redo().is_none());
@@ -619,20 +623,20 @@ mod tests {
         // After commit, undo works again and restores the pre-gesture version.
         assert!(ed.can_undo());
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 24.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 24.into());
     }
 
     #[test]
     fn editor_amend_should_update_current_without_growing_history() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap(); // step 1
-        ed.amend(&set_fps(48.0)).unwrap(); // in place: no new step
-        assert!((ed.current().frame_rate() - 48.0).abs() < f64::EPSILON);
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap(); // step 1
+        ed.amend(&set_fps(48.into())).unwrap(); // in place: no new step
+        assert_eq!(ed.current().frame_rate(), 48.into());
         assert!(ed.can_undo());
         assert!(!ed.can_redo());
         // One undo goes past the amended value to the pre-step-1 version (30).
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
         assert!(!ed.can_undo());
     }
 
@@ -649,7 +653,7 @@ mod tests {
             group: 9,
             effect: 9,
         };
-        ids.raise(&timeline(30.0)); // a freshly built timeline's counters are all low
+        ids.raise(&timeline(30.into())); // a freshly built timeline's counters are all low
         assert_eq!(
             (ids.clip, ids.track, ids.marker, ids.group, ids.effect),
             (9, 9, 9, 9, 9),
@@ -659,7 +663,7 @@ mod tests {
 
     #[test]
     fn editor_replace_current_should_not_lower_the_id_high_water() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let track = ed.current().video_tracks()[0].id;
         ed.apply(&Command::AddClip {
             track,
@@ -670,7 +674,7 @@ mod tests {
         // A freshly built timeline's counters start low. Seating it as the current
         // version must not rewind the session's high-water, or the next add re-mints
         // an id the discarded value already used.
-        ed.replace_current(timeline(30.0));
+        ed.replace_current(timeline(30.into()));
         let track = ed.current().video_tracks()[0].id;
         ed.apply(&Command::AddClip {
             track,
@@ -686,19 +690,19 @@ mod tests {
 
     #[test]
     fn editor_replace_current_should_seat_value_and_drop_redo() {
-        let mut ed = Editor::new(timeline(30.0));
-        ed.apply(&set_fps(24.0)).unwrap();
-        ed.apply(&set_fps(48.0)).unwrap();
+        let mut ed = Editor::new(timeline(30.into()));
+        ed.apply(&set_fps(24.into())).unwrap();
+        ed.apply(&set_fps(48.into())).unwrap();
         ed.undo().unwrap(); // back to 24, redo tail = [48]
         assert!(ed.can_redo());
-        ed.replace_current(timeline(60.0));
-        assert!((ed.current().frame_rate() - 60.0).abs() < f64::EPSILON);
+        ed.replace_current(timeline(60.into()));
+        assert_eq!(ed.current().frame_rate(), 60.into());
         assert!(!ed.can_redo(), "seating a value drops the redo tail");
     }
 
     #[test]
     fn editor_group_should_keep_ids_monotonic() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let track = ed.current().video_tracks()[0].id;
         ed.begin_group();
         ed.apply(&Command::AddClip {
@@ -719,36 +723,37 @@ mod tests {
 
     #[test]
     fn editor_amend_during_group_should_fold_into_the_gesture() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         ed.begin_group();
-        ed.apply(&set_fps(24.0)).unwrap();
-        ed.amend(&set_fps(48.0)).unwrap(); // folds into the working version, not a step
-        assert!((ed.current().frame_rate() - 48.0).abs() < f64::EPSILON);
+        ed.apply(&set_fps(24.into())).unwrap();
+        ed.amend(&set_fps(48.into())).unwrap(); // folds into the working version, not a step
+        assert_eq!(ed.current().frame_rate(), 48.into());
         ed.commit_group();
         // Still one undo step: undo restores the pre-gesture version.
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
         assert!(!ed.can_undo());
     }
 
     #[test]
     fn editor_nested_begin_group_should_not_restart_the_gesture() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         ed.begin_group();
-        ed.apply(&set_fps(24.0)).unwrap(); // working now at 24
+        ed.apply(&set_fps(24.into())).unwrap(); // working now at 24
         ed.begin_group(); // no-op: must not reseed working from history (still 30)
-        assert!(
-            (ed.current().frame_rate() - 24.0).abs() < f64::EPSILON,
+        assert_eq!(
+            ed.current().frame_rate(),
+            24.into(),
             "a second begin_group must not discard in-progress edits"
         );
         ed.commit_group();
         let prev = ed.undo().unwrap();
-        assert!((prev.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(prev.frame_rate(), 30.into());
     }
 
     #[test]
     fn editor_set_clip_should_be_undoable() {
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let id = ed.current().video_tracks()[0].clips[0].id;
         let mut patch = Clip::new("patched.mp4");
         patch.scale = 1.5;
@@ -776,7 +781,7 @@ mod tests {
     #[test]
     fn editor_split_clip_should_be_undoable() {
         use std::time::Duration;
-        let mut ed = Editor::new(timeline(30.0));
+        let mut ed = Editor::new(timeline(30.into()));
         let id = ed.current().video_tracks()[0].clips[0].id;
         ed.apply(&Command::SplitClip {
             clip: id,
@@ -797,7 +802,7 @@ mod tests {
         use std::time::Duration;
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_track(vec![])
             .build()
@@ -829,7 +834,7 @@ mod tests {
         let b = Clip::new("b.mp4").offset(Duration::from_secs(4));
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![a, b])
             .build()
             .unwrap();

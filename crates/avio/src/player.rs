@@ -23,7 +23,7 @@ use crate::timeline::Timeline;
 ///
 /// let timeline = Timeline::builder()
 ///     .canvas(1920, 1080)
-///     .frame_rate(30.0)
+///     .frame_rate(30.into())
 ///     .video_track(vec![
 ///         Clip::new("intro.mp4").trim(Duration::ZERO, Duration::from_secs(5)),
 ///     ])

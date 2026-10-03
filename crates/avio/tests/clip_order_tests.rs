@@ -60,7 +60,7 @@ fn render_offsets(tag: &str, offsets: &[f64]) -> Option<f64> {
         .collect();
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(clips)
         .build()
     {
@@ -170,7 +170,7 @@ fn move_clip_should_leave_a_timeline_whose_render_matches_its_offsets() {
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(
             (0..3)
                 .map(|i| {
@@ -236,7 +236,7 @@ fn a_blended_top_layer_should_not_truncate_the_track_below() {
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&src).trim(Duration::ZERO, s(CLIP_SECS))])
         .video_track(vec![
             Clip::new(&src)
@@ -296,7 +296,7 @@ fn an_untrimmed_clips_composition_should_be_as_long_as_its_video() {
         let _go = FileGuard::new(out.clone());
         let timeline = match Timeline::builder()
             .canvas(160, 120)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new(&src)])
             .build()
         {

@@ -26,7 +26,7 @@ fn render_with_lock(src: &std::path::Path, lock: bool, tag: &str) -> Option<(f64
     let _g = FileGuard::new(out.clone());
     let timeline = Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track_with(
             Track::new(vec![Clip::new(src).trim(Duration::ZERO, s(1.0))]).locked(lock),
         )

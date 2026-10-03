@@ -53,7 +53,7 @@ fn render(tag: &str, master: bool, step: FilterStep) -> Option<std::path::PathBu
 
     let builder = Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video)]);
     let audio = vec![Clip::new(&tone)];
     let built = if master {

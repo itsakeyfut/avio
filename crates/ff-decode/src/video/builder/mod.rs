@@ -429,9 +429,24 @@ impl VideoDecoder {
     }
 
     /// Returns the frame rate in frames per second.
+    ///
+    /// Lossy for the broadcast rates: no `f64` spelled `29.97` is `30000/1001`. Use
+    /// [`frame_rate_exact`](Self::frame_rate_exact) where the distinction matters, such
+    /// as deciding which frame a position falls on.
     #[must_use]
     pub fn frame_rate(&self) -> f64 {
         self.stream_info.fps()
+    }
+
+    /// Returns the frame rate as the ratio the stream declares.
+    ///
+    /// This is the value the container holds, so `30000/1001` comes back as those two
+    /// integers rather than as a decimal that cannot represent them. A caller that has
+    /// to say which frame a timeline position is on needs this one, because `29.97` and
+    /// `30000/1001` put a long timeline's frames in different places.
+    #[must_use]
+    pub fn frame_rate_exact(&self) -> ff_format::Rational {
+        self.stream_info.frame_rate()
     }
 
     /// Returns the duration of the **video stream** this decoder opened.

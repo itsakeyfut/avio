@@ -38,10 +38,12 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
+use ff_format::Rational;
+
 use crate::timeline::Timeline;
 
 /// The format version this release writes, and the highest it can read.
-pub const PROJECT_FORMAT_VERSION: u32 = 1;
+pub const PROJECT_FORMAT_VERSION: u32 = 2;
 
 /// The version a document carries when it has no `format_version` at all, which is every
 /// document written before the envelope existed.
@@ -50,6 +52,8 @@ const UNVERSIONED: u32 = 0;
 /// The envelope's field names, which are frozen and must not be renamed.
 const FIELD_VERSION: &str = "format_version";
 const FIELD_TIMELINE: &str = "timeline";
+/// The model field version 2 changed from a number to a ratio.
+const FIELD_FRAME_RATE: &str = "frame_rate";
 
 /// A saved project: the editing document plus the format version it was written with.
 ///
@@ -58,7 +62,7 @@ const FIELD_TIMELINE: &str = "timeline";
 ///
 /// let timeline = Timeline::builder()
 ///     .canvas(1920, 1080)
-///     .frame_rate(30.0)
+///     .frame_rate(30.into())
 ///     .video_track(vec![Clip::new("clip.mp4")])
 ///     .build()?;
 /// Project::new(timeline).save("song.avio")?;
@@ -225,10 +229,140 @@ struct Step {
 ///
 /// Adding a step never requires editing an existing one: a step describes a conversion
 /// out of a version that has shipped, and a shipped version does not change.
-const STEPS: &[Step] = &[Step {
-    from: UNVERSIONED,
-    apply: wrap_bare_model,
-}];
+const STEPS: &[Step] = &[
+    Step {
+        from: UNVERSIONED,
+        apply: wrap_bare_model,
+    },
+    Step {
+        from: 1,
+        apply: rate_to_rational,
+    },
+];
+
+/// The decimals that name a standard rate, and the ratio each one means.
+///
+/// A project that stored `29.97` was authored against NTSC, because that is what the
+/// number means in this domain. Reading it literally as `2997/100` would pin a timeline
+/// that was cutting NTSC material to a grid 0.1% off, and frame-exact addressing is
+/// exactly what would make that error visible afterwards. Recorded as an ADR, because the
+/// literal reading is defensible.
+const STANDARD_RATES: &[(f64, i32, i32)] = &[
+    (29.97, 30_000, 1001),
+    (23.976, 24_000, 1001),
+    (59.94, 60_000, 1001),
+    (47.952, 48_000, 1001),
+    (119.88, 120_000, 1001),
+];
+
+/// How close a stored decimal has to be to a standard rate to be read as one.
+///
+/// Wide enough to catch the spellings a host might have written (`29.97`, `29.970`, and
+/// the `30000.0/1001.0` an `f64` division produces, which is 29.97002997...), and far
+/// narrower than the gap to any neighbouring rate.
+const RATE_TOLERANCE: f64 = 1e-3;
+
+/// The largest denominator a rate that is not standard is reduced to.
+///
+/// A stored decimal carries at most a few places in practice, so a thousandth resolves
+/// every rate anyone writes while keeping the numerator inside `i32`.
+const RATE_DENOMINATOR: i32 = 1000;
+
+/// Version 1 to 2: the model's `frame_rate` becomes a ratio.
+///
+/// Version 1 stored a decimal, which cannot represent the broadcast rates: no `f64`
+/// spelled `29.97` is `30000/1001`, so a timeline could not say which frame a position
+/// fell on (#1947). This is the chain's first step that converts rather than rewraps.
+fn rate_to_rational(document: Value) -> Result<Value, ProjectError> {
+    let mut document = document;
+    let Some(object) = document.as_object_mut() else {
+        return Err(ProjectError::MigrationFailed {
+            from: 1,
+            reason: "the version 1 document is not an object".to_string(),
+        });
+    };
+
+    let timeline = object
+        .get_mut(FIELD_TIMELINE)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| ProjectError::MigrationFailed {
+            from: 1,
+            reason: format!("the envelope carries no `{FIELD_TIMELINE}` object"),
+        })?;
+
+    // An absent rate is left absent rather than defaulted: the model's own `Deserialize`
+    // decides what a missing field means, and guessing here would put a rate into a
+    // document that never had one.
+    if let Some(stored) = timeline.get(FIELD_FRAME_RATE) {
+        // Already a ratio: leave it. This is reachable, and not only through a corrupt
+        // document. **Version 0 is defined by the absence of an envelope, not by a
+        // shape**, so a bare model serialised by *this* release is read as version 0,
+        // wrapped by the step from 0, and then handed to this step with its rate already
+        // converted. The step from 0 cannot stamp the version whose shape the model has,
+        // because it cannot know it, so every later step has to be idempotent on the
+        // field it owns.
+        if stored.is_object() {
+            timeline.insert(FIELD_FRAME_RATE.to_string(), stored.clone());
+        } else {
+            let decimal = stored
+                .as_f64()
+                .ok_or_else(|| ProjectError::MigrationFailed {
+                    from: 1,
+                    reason: format!("`{FIELD_FRAME_RATE}` is not a number: {stored}"),
+                })?;
+            let rate =
+                rational_from_decimal(decimal).ok_or_else(|| ProjectError::MigrationFailed {
+                    from: 1,
+                    reason: format!("`{FIELD_FRAME_RATE}` is not a usable rate: {decimal}"),
+                })?;
+            timeline.insert(FIELD_FRAME_RATE.to_string(), rate);
+        }
+    }
+
+    object.insert(FIELD_VERSION.to_string(), Value::from(2u32));
+    Ok(document)
+}
+
+/// The ratio a stored decimal rate means, or `None` when it names no rate at all.
+///
+/// `None` for a value that cannot be a frame rate (not finite, not positive, or too large
+/// to reduce), which the caller turns into a failed migration rather than silently
+/// storing a degenerate ratio.
+fn rational_from_decimal(decimal: f64) -> Option<Value> {
+    if !decimal.is_finite() || decimal <= 0.0 {
+        return None;
+    }
+
+    for &(standard, num, den) in STANDARD_RATES {
+        if (decimal - standard).abs() < RATE_TOLERANCE {
+            return Some(rational_value(num, den));
+        }
+    }
+
+    let scaled = (decimal * f64::from(RATE_DENOMINATOR)).round();
+    if scaled < 1.0 || scaled > f64::from(i32::MAX) {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the bounds check above rejects every value a numerator cannot hold"
+    )]
+    let num = scaled as i32;
+    let reduced = Rational::new(num, RATE_DENOMINATOR).reduce();
+    Some(rational_value(reduced.num(), reduced.den()))
+}
+
+/// A ratio in the shape `Rational`'s derived `Serialize` writes.
+///
+/// Built by hand rather than by serialising a `Rational`, so that a change to the
+/// derived shape fails the fixture tests here instead of silently changing what a
+/// migrated document looks like.
+fn rational_value(num: i32, den: i32) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("num".to_string(), Value::from(num));
+    map.insert("den".to_string(), Value::from(den));
+    Value::Object(map)
+}
 
 /// Version 0 to 1: put the envelope around a document that never had one.
 ///
@@ -239,7 +373,7 @@ const STEPS: &[Step] = &[Step {
 /// migrated document the same shape.
 #[expect(
     clippy::unnecessary_wraps,
-    reason = "the signature is Step::apply's, and a later step will have a reason to fail"
+    reason = "the signature is Step::apply's, which `rate_to_rational` needs in order to fail"
 )]
 fn wrap_bare_model(model: Value) -> Result<Value, ProjectError> {
     let mut envelope = serde_json::Map::new();
@@ -450,17 +584,20 @@ mod tests {
         assert_eq!(out, document, "no step runs when there is nothing to cross");
     }
 
-    /// The real chain, exercised: a version 0 document is a bare model, and the step puts
-    /// the envelope around it.
+    /// The real chain's first step, in isolation: a version 0 document is a bare model,
+    /// and the step puts the envelope around it without touching the model.
+    ///
+    /// Migrated to 1 rather than to `PROJECT_FORMAT_VERSION`, because the step from 1
+    /// does change the model and this test is about the step that does not.
     #[test]
     fn the_version_zero_step_should_wrap_a_bare_model_in_the_envelope() {
         let bare = json!({ "frame_rate": 30.0 });
 
-        let out = migrate(bare.clone(), UNVERSIONED, PROJECT_FORMAT_VERSION, STEPS).unwrap();
+        let out = migrate(bare.clone(), UNVERSIONED, 1, STEPS).unwrap();
 
         assert_eq!(
             out.get(FIELD_VERSION).and_then(Value::as_u64),
-            Some(u64::from(PROJECT_FORMAT_VERSION)),
+            Some(1),
             "the envelope carries the version it was migrated to"
         );
         assert_eq!(
@@ -468,6 +605,163 @@ mod tests {
             Some(&bare),
             "the model is unchanged, only wrapped"
         );
+    }
+
+    /// Both steps, composed. The chain had one step until #1947, so this is the first
+    /// test that two of them run in order on one document: the envelope goes on, and
+    /// then the rate inside it becomes a ratio.
+    #[test]
+    fn migrate_should_run_both_steps_from_an_unversioned_document() {
+        let bare = json!({ "frame_rate": 29.97, "canvas_width": 1920 });
+
+        let out = migrate(bare, UNVERSIONED, PROJECT_FORMAT_VERSION, STEPS).unwrap();
+
+        assert_eq!(
+            out.get(FIELD_VERSION).and_then(Value::as_u64),
+            Some(u64::from(PROJECT_FORMAT_VERSION)),
+            "the last step stamps the version it produced"
+        );
+        let timeline = out.get(FIELD_TIMELINE).expect("the envelope went on");
+        assert_eq!(
+            timeline.get(FIELD_FRAME_RATE),
+            Some(&rational_value(30000, 1001)),
+            "and the rate inside it became the ratio 29.97 names"
+        );
+        assert_eq!(
+            timeline.get("canvas_width").and_then(Value::as_u64),
+            Some(1920),
+            "the rest of the model is untouched"
+        );
+    }
+
+    #[test]
+    fn rate_to_rational_should_map_a_decimal_broadcast_rate_to_its_standard_rational() {
+        for (decimal, num, den) in [
+            (29.97, 30_000, 1001),
+            (23.976, 24_000, 1001),
+            (59.94, 60_000, 1001),
+            (47.952, 48_000, 1001),
+            (119.88, 120_000, 1001),
+            // What an `f64` division of the exact ratio produces, which is what a host
+            // that computed the rate rather than typing it would have stored.
+            (30_000.0 / 1001.0, 30_000, 1001),
+        ] {
+            let document = json!({
+                FIELD_VERSION: 1,
+                FIELD_TIMELINE: { FIELD_FRAME_RATE: decimal },
+            });
+            let out = rate_to_rational(document).unwrap();
+            assert_eq!(
+                out.get(FIELD_TIMELINE)
+                    .and_then(|m| m.get(FIELD_FRAME_RATE)),
+                Some(&rational_value(num, den)),
+                "{decimal} names {num}/{den}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_to_rational_should_keep_an_integer_rate_exact() {
+        for n in [24, 25, 30, 50, 60] {
+            let document = json!({
+                FIELD_VERSION: 1,
+                FIELD_TIMELINE: { FIELD_FRAME_RATE: f64::from(n) },
+            });
+            let out = rate_to_rational(document).unwrap();
+            assert_eq!(
+                out.get(FIELD_TIMELINE)
+                    .and_then(|m| m.get(FIELD_FRAME_RATE)),
+                Some(&rational_value(n, 1)),
+                "{n} fps is {n}/1, not a reduced thousandth"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_to_rational_should_reduce_an_unrecognised_rate() {
+        // 12.5 names no standard rate, so it is read literally and reduced: 12500/1000
+        // is 25/2.
+        let document = json!({
+            FIELD_VERSION: 1,
+            FIELD_TIMELINE: { FIELD_FRAME_RATE: 12.5 },
+        });
+        let out = rate_to_rational(document).unwrap();
+        assert_eq!(
+            out.get(FIELD_TIMELINE)
+                .and_then(|m| m.get(FIELD_FRAME_RATE)),
+            Some(&rational_value(25, 2))
+        );
+    }
+
+    /// The shape `rational_value` writes by hand has to be the shape `Rational`'s
+    /// derived `Serialize` writes, or a migrated document would not deserialise into the
+    /// model. Asserted against a real `Rational` rather than against another literal, so
+    /// a change to the derive fails here instead of at a user's next load.
+    #[test]
+    fn the_migrations_ratio_shape_should_match_what_rational_serialises_to() {
+        let fps = Rational::new(30000, 1001);
+        let serialised: Value = serde_json::to_value(fps).expect("a Rational serialises");
+        assert_eq!(serialised, rational_value(30000, 1001));
+    }
+
+    /// A bare model serialised by *this* release is read as version 0, because version 0
+    /// is the absence of an envelope rather than a shape. The step from 0 wraps it and
+    /// stamps 1, so this step is then handed a rate that is already a ratio and has to
+    /// leave it alone. Found by `a_bare_serialised_timeline_should_load_as_version_zero`
+    /// going red, not by the design pass.
+    #[test]
+    fn rate_to_rational_should_leave_a_rate_that_is_already_a_ratio() {
+        let document = json!({
+            FIELD_VERSION: 1,
+            FIELD_TIMELINE: { FIELD_FRAME_RATE: rational_value(30000, 1001) },
+        });
+        let out = rate_to_rational(document).unwrap();
+        assert_eq!(
+            out.get(FIELD_TIMELINE)
+                .and_then(|m| m.get(FIELD_FRAME_RATE)),
+            Some(&rational_value(30000, 1001)),
+            "an already-converted rate must survive unchanged, not be refused"
+        );
+        assert_eq!(out.get(FIELD_VERSION).and_then(Value::as_u64), Some(2));
+    }
+
+    #[test]
+    fn rate_to_rational_should_stamp_version_two() {
+        let document = json!({
+            FIELD_VERSION: 1,
+            FIELD_TIMELINE: { FIELD_FRAME_RATE: 30.0 },
+        });
+        let out = rate_to_rational(document).unwrap();
+        assert_eq!(out.get(FIELD_VERSION).and_then(Value::as_u64), Some(2));
+    }
+
+    #[test]
+    fn rate_to_rational_should_refuse_a_rate_that_is_not_a_rate() {
+        for bad in [json!(0.0), json!(-30.0), json!(f64::MAX), json!("30")] {
+            let document = json!({
+                FIELD_VERSION: 1,
+                FIELD_TIMELINE: { FIELD_FRAME_RATE: bad.clone() },
+            });
+            let err = rate_to_rational(document).unwrap_err();
+            assert!(
+                matches!(err, ProjectError::MigrationFailed { from, .. } if from == 1),
+                "expected a failed migration out of version 1 for {bad}, got {err:?}"
+            );
+        }
+    }
+
+    /// An absent rate stays absent: the model's own `Deserialize` decides what a missing
+    /// field means, and putting one in here would invent a rate the document never had.
+    #[test]
+    fn rate_to_rational_should_leave_an_absent_rate_absent() {
+        let document = json!({
+            FIELD_VERSION: 1,
+            FIELD_TIMELINE: { "canvas_width": 1920 },
+        });
+        let out = rate_to_rational(document).unwrap();
+        let timeline = out.get(FIELD_TIMELINE).expect("the envelope survives");
+        assert!(timeline.get(FIELD_FRAME_RATE).is_none());
+        assert_eq!(out.get(FIELD_VERSION).and_then(Value::as_u64), Some(2));
     }
 
     #[test]

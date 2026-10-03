@@ -28,13 +28,14 @@ use std::time::Duration;
 use avio::{Clip, Pacing, PlayerHandle, PreviewCompositor, Timeline, TimelinePlayer};
 use ff_encode::{VideoCodec, VideoEncoder};
 use ff_filter::{RealtimeLayer, XfadeTransition};
+use ff_format::Rational;
 use ff_format::{VideoFrame, VideoFrame as Frame};
 use ff_preview::FrameSink;
 use fixtures::{FileGuard, test_output_path};
 
 const W: u32 = 64;
 const H: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 /// Each clip is trimmed to 1 s, and each source holds another second past that: the
 /// handle the transition reads. A source cut flush to the clip would clamp the
 /// transition to a hard cut and this suite would assert nothing; a source with exactly
@@ -105,7 +106,7 @@ impl FrameSink for CountingSink {
 /// Writes `SOURCE_FRAMES` frames of a flat colour, or `None` when there is no encoder.
 fn make_source(path: &std::path::Path, color: [u8; 3]) -> Option<()> {
     let mut enc = VideoEncoder::create(path)
-        .video(W, H, FPS)
+        .video(W, H, FPS.as_f64())
         .video_codec(VideoCodec::Mpeg4)
         .build()
         .ok()?;

@@ -50,7 +50,7 @@ fn render_and_measure(tag: &str, placement: Placement) -> Option<(f64, f64, f64)
 
     let builder = Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video)]);
     let audio = vec![Clip::new(&tone)];
     let built = match placement {

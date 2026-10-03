@@ -76,7 +76,7 @@ fn main() {
 
     let timeline = match Timeline::builder()
         .canvas(1280, 720)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![clip_a, clip_b])
         .build()
     {

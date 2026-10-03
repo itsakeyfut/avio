@@ -18,6 +18,7 @@ use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_decode::VideoDecoder;
 use ff_encode::{BitrateMode, VideoCodec};
 use ff_filter::XfadeTransition;
+use ff_format::Rational;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 const SRC_FRAMES: usize = 15;
@@ -79,7 +80,7 @@ fn export_config() -> EncoderConfig {
 fn build_timeline(src: &std::path::Path) -> Option<Timeline> {
     Timeline::builder()
         .canvas(CANVAS, CANVAS)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(src)])
         .build()
         .ok()
@@ -168,7 +169,7 @@ fn corner_luma(path: &std::path::Path, at: usize) -> Option<f64> {
 fn two_track_timeline(base: &std::path::Path, over: &std::path::Path) -> Option<Timeline> {
     Timeline::builder()
         .canvas(CANVAS, CANVAS)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(base)])
         .video_track(vec![
             Clip::new(over).with_position(10.0, 4.0).with_scale(0.5),
@@ -203,7 +204,7 @@ fn mean_rgb(path: &std::path::Path) -> Option<(f64, f64, f64)> {
 fn opacity_timeline(base: &std::path::Path, over: &std::path::Path) -> Option<Timeline> {
     Timeline::builder()
         .canvas(CANVAS, CANVAS)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(base)])
         .video_track(vec![Clip::new(over).with_opacity(0.5)])
         .build()
@@ -283,7 +284,7 @@ fn a_base_track_should_apply_its_own_effect_exactly_once_under_an_overlay() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new(&base).with_video_effect(ff_filter::FilterStep::Hue { degrees: 60.0 }),
             ])
@@ -346,7 +347,7 @@ fn an_overlay_should_be_stretched_to_the_canvas_the_way_the_cpu_stretches_it() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new(&dark)])
             .video_track(vec![
                 Clip::new(&wide).with_position(0.0, 0.0).with_scale(0.5),
@@ -540,7 +541,7 @@ fn a_transition_on_the_base_track_should_render_under_a_live_overlay() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new(&dark)
                     .offset(Duration::ZERO)
@@ -700,7 +701,7 @@ fn export_should_produce_frames_on_cpu_and_gpu_routes() {
 #[test]
 fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
     const SRC_FPS: f64 = 24.0;
-    const OUT_FPS: f64 = 30.0;
+    const OUT_FPS: Rational = Rational::new(30, 1);
     const SRC_24_FRAMES: usize = 24; // ~1 s of 24 fps source
 
     let src = test_output_path("gpuexport_24fps_src.mp4");
@@ -724,7 +725,7 @@ fn gpu_export_should_conform_a_slower_source_to_the_timeline_rate() {
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation
     )]
-    let expected = (src_frames as f64 * OUT_FPS / SRC_FPS).round() as usize;
+    let expected = (src_frames as f64 * OUT_FPS.as_f64() / SRC_FPS).round() as usize;
     let Some(timeline) = Timeline::builder()
         .canvas(CANVAS, CANVAS)
         .frame_rate(OUT_FPS)
@@ -905,7 +906,7 @@ fn gpu_export_should_match_the_cpu_export_for_every_rendered_transition() {
         let build = || {
             Timeline::builder()
                 .canvas(CANVAS, CANVAS)
-                .frame_rate(30.0)
+                .frame_rate(30.into())
                 .video_track(vec![
                     Clip::new(&a).trim(Duration::ZERO, Duration::from_secs(1)),
                     Clip::new(&b)
@@ -1013,7 +1014,7 @@ fn a_positioned_base_clip_should_export_the_same_on_both_routes() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new(&bright).with_position(10.0, 4.0).with_scale(0.5),
             ])
@@ -1064,7 +1065,7 @@ fn a_rotated_base_clip_should_take_the_cpu_route() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new(&bright).with_rotation(45.0)])
             .build()
             .ok()
@@ -1121,7 +1122,7 @@ fn a_placed_base_under_an_overlay_should_export_the_same_on_both_routes() {
     let build = || {
         Timeline::builder()
             .canvas(CANVAS, CANVAS)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new(&bright).with_position(10.0, 4.0).with_scale(0.5),
             ])

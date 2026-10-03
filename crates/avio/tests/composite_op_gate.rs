@@ -30,10 +30,11 @@ use avio::{
     TimelinePlayer, Track,
 };
 use ff_encode::{BitrateMode, VideoCodec};
+use ff_format::Rational;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 const CANVAS: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 const FRAMES: usize = 10;
 
 /// Two encoded sources for a base track and an overlay track, or `None` when this
@@ -44,8 +45,8 @@ fn sources(tag: &str) -> Option<(PathBuf, PathBuf, FileGuard, FileGuard)> {
     let over = test_output_path(&format!("composite_gate_{tag}_over.mp4"));
     let gb = FileGuard::new(base.clone());
     let go = FileGuard::new(over.clone());
-    make_source_file(&base, CANVAS, CANVAS, FPS, FRAMES, 200, 128, 128)?;
-    make_source_file(&over, CANVAS, CANVAS, FPS, FRAMES, 60, 128, 128)?;
+    make_source_file(&base, CANVAS, CANVAS, FPS.as_f64(), FRAMES, 200, 128, 128)?;
+    make_source_file(&over, CANVAS, CANVAS, FPS.as_f64(), FRAMES, 60, 128, 128)?;
     Some((base, over, gb, go))
 }
 

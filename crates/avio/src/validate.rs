@@ -164,7 +164,7 @@ impl Timeline {
     ///
     /// let timeline = Timeline::builder()
     ///     .canvas(1920, 1080)
-    ///     .frame_rate(30.0)
+    ///     .frame_rate(30.into())
     ///     .video_track(vec![Clip::new("a.mp4")])
     ///     .build()
     ///     .unwrap();
@@ -185,7 +185,7 @@ impl Timeline {
         }
         // A timeline-level property, so it is checked here rather than per track
         // (#1932).
-        if !is_positive_finite(self.frame_rate) {
+        if !self.frame_rate.is_positive() {
             issues.push(TimelineIssue::DegenerateFrameRate);
         }
         // Track-level automation is typed and lives on the track itself, so it can
@@ -298,6 +298,7 @@ fn check_overlaps(track: &Track, issues: &mut Vec<TimelineIssue>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use ff_format::Rational;
     use std::time::Duration;
 
     use ff_filter::XfadeTransition;
@@ -308,7 +309,7 @@ mod tests {
     fn base(clips: Vec<Clip>) -> crate::timeline::TimelineBuilder {
         Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(clips)
     }
 
@@ -654,12 +655,23 @@ mod tests {
     /// (#1932).
     #[test]
     fn validate_should_report_a_degenerate_frame_rate() {
-        for fps in [f64::NAN, f64::INFINITY, 0.0, -30.0] {
+        // #1932's four cases respelled for a ratio: `0/1` and `-30/1` break `num > 0`,
+        // `30/0` and `0/0` break `den > 0`. `Rational` cannot be NaN or infinite, but
+        // `Rational::new` does not reject a zero denominator, so the set is no smaller
+        // (#1947).
+        for rate in [
+            Rational::new(0, 1),
+            Rational::new(-30, 1),
+            Rational::new(30, 0),
+            Rational::new(0, 0),
+        ] {
             let mut t = base(vec![Clip::new("v.mp4")]).build().unwrap();
-            t.frame_rate = fps;
+            t.frame_rate = rate;
             assert!(
                 t.validate().contains(&TimelineIssue::DegenerateFrameRate),
-                "expected a report for frame_rate={fps}, got {:?}",
+                "expected a report for frame_rate={}/{}, got {:?}",
+                rate.num(),
+                rate.den(),
                 t.validate()
             );
         }
@@ -699,7 +711,7 @@ mod tests {
         // exists, and no I/O error surfaces.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("does_not_exist_1.mp4").trim(Duration::ZERO, Duration::from_secs(2)),
             ])

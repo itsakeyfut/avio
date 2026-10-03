@@ -245,6 +245,14 @@ pub(crate) struct Placement {
 /// up a slot longer or shorter than the layer fills (#1862). Both read this, so they
 /// cannot drift apart.
 ///
+/// **Rounding, not truncating, and that is load-bearing.** Converting a position into a
+/// `Duration` and back is inexact at every rate, because a frame is rarely a whole number
+/// of nanoseconds and `Duration::from_secs_f64` is itself approximate: measured over 2006
+/// frames, flooring here loses between 135 and 783 of them, at `25/1` and `50/1` as well
+/// as at `30000/1001`. Rounding loses none at any rate.
+/// `tests/frame_rate_round_trip.rs` pins both halves of that, so this cannot be
+/// simplified to a cast without a test going red (#1947).
+///
 /// `None` when the rate is not a usable number, which leaves a caller free to fall back
 /// to the unquantised position rather than collapsing every offset to zero.
 pub(crate) fn offset_frames(seconds: f64, frame_rate: f64) -> Option<f64> {
@@ -253,6 +261,22 @@ pub(crate) fn offset_frames(seconds: f64, frame_rate: f64) -> Option<f64> {
     }
     Some((seconds * frame_rate).round())
 }
+
+/// Hand-computed frame positions at `30000/1001`, used by the test below.
+///
+/// Each nanosecond figure is `frame * 1001 / 30000` seconds worked out as an exact
+/// fraction and then truncated to nanoseconds, which is what `Duration` holds. They are
+/// written out rather than computed so the test cannot agree with the code by performing
+/// the same float arithmetic twice, which is what the acceptance criterion asks for.
+#[cfg(test)]
+const NTSC_POSITIONS: &[(u64, u64)] = &[
+    (1, 33_366_666),
+    (2, 66_733_333),
+    (3, 100_100_000),
+    (30, 1_001_000_000),
+    (1800, 60_060_000_000),
+    (108_000, 3_603_600_000_000),
+];
 
 /// A timeline position snapped to the frame [`offset_frames`] puts it on.
 fn snap_to_frame(seconds: f64, frame_rate: f64) -> f64 {
@@ -623,6 +647,43 @@ mod tests {
 
     fn no_anim() -> TrackAutomation {
         TrackAutomation::default()
+    }
+
+    /// The placement rule is exact at the broadcast rate, against figures worked out by
+    /// hand rather than by running the same float arithmetic the code runs.
+    ///
+    /// This is #1947's second criterion. The positions are in [`NTSC_POSITIONS`]; each is
+    /// `frame * 1001 / 30000` seconds as an exact fraction, truncated to the nanoseconds a
+    /// `Duration` holds.
+    #[test]
+    fn offset_frames_should_be_exact_at_the_broadcast_rate() {
+        let rate = ff_format::Rational::new(30000, 1001);
+        for &(frame, nanos) in NTSC_POSITIONS {
+            let seconds = Duration::from_nanos(nanos).as_secs_f64();
+            let got = offset_frames(seconds, rate.as_f64()).expect("a usable rate");
+            assert!(
+                (got - frame as f64).abs() < f64::EPSILON,
+                "frame {frame} is at {nanos} ns, but offset_frames read it as {got}"
+            );
+        }
+    }
+
+    /// And truncating there would not be, which is why the rule rounds. Flooring the same
+    /// positions misreads the ones whose nanosecond count was truncated downward.
+    #[test]
+    fn truncating_instead_of_rounding_should_misread_a_broadcast_position() {
+        let rate = ff_format::Rational::new(30000, 1001).as_f64();
+        let misread = NTSC_POSITIONS
+            .iter()
+            .filter(|&&(frame, nanos)| {
+                let seconds = Duration::from_nanos(nanos).as_secs_f64();
+                (seconds * rate) as u64 != frame
+            })
+            .count();
+        assert!(
+            misread > 0,
+            "if flooring read every hand-computed position correctly, the rounding in              offset_frames would be arbitrary rather than required"
+        );
     }
 
     // video_layer

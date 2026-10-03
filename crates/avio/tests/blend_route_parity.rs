@@ -180,7 +180,7 @@ fn every_blend_mode_should_agree_between_the_two_render_routes() {
         let timeline = |m: BlendMode| {
             Timeline::builder()
                 .canvas(SIDE, SIDE)
-                .frame_rate(30.0)
+                .frame_rate(30.into())
                 .video_track(vec![Clip::new(&base).trim(Duration::ZERO, s(0.2))])
                 .video_track(vec![
                     Clip::new(&over)

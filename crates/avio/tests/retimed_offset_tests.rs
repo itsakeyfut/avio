@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use avio::{Clip, Command, EncoderConfig, Timeline, TimelineError};
 use ff_filter::FilterError;
+use ff_format::Rational;
 use fixtures::{
     FileGuard, first_sound_secs, first_visible_secs, make_source_file, test_output_path,
     video_luma_per_frame, write_tone_wav,
@@ -33,7 +34,7 @@ use fixtures::{
 const SOURCE_SECS: f64 = 1.0;
 /// The timeline rate every render here uses. Held once because the expected frame
 /// counts are computed from it as well as the timeline being built with it.
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 const SPEED: f64 = 2.0;
 const CONTENT_SECS: f64 = SOURCE_SECS / SPEED;
 /// One frame at 30 fps is 33ms. The audio start is read from the decoded stream and
@@ -85,7 +86,7 @@ fn render_video(tag: &str, offset: f64, speed: f64) -> Option<f64> {
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![clip_at(&video, offset, speed)])
         .build()
     {
@@ -107,7 +108,7 @@ fn render_audio(tag: &str, offset: f64, speed: f64) -> Option<Option<f64>> {
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         // A video track long enough to hold the whole programme, so the audio is not
         // cut short by the composition ending first.
         .video_track(vec![Clip::new(&video).trim(Duration::ZERO, s(3.0))])
@@ -314,7 +315,7 @@ fn a_retimed_clip_at_an_offgrid_offset_should_keep_its_last_frame() {
         let Some(r) = render_frames(tag, 0.0, SOURCE_SECS, offset, speed) else {
             return;
         };
-        let expected_lit = (SOURCE_SECS / speed * FPS).ceil() as usize;
+        let expected_lit = (SOURCE_SECS / speed * FPS.as_f64()).ceil() as usize;
         assert_eq!(
             r.lit, expected_lit,
             "a {speed}x clip at {offset}s must keep every frame it contributes"
@@ -327,7 +328,7 @@ fn a_retimed_clip_at_an_offgrid_offset_should_keep_its_last_frame() {
             r.frames - 1,
             "the last frame must carry picture: {speed}x at {offset}s left it black"
         );
-        let lead_in = (offset * FPS).round() as usize;
+        let lead_in = (offset * FPS.as_f64()).round() as usize;
         assert_eq!(
             r.first_lit, lead_in,
             "and the picture must start on the frame the offset lands on"
@@ -361,7 +362,7 @@ fn a_clip_contributing_a_fraction_of_a_frame_should_keep_all_of_them() {
             r.lit,
             expected_lit,
             "a clip contributing {} frames must occupy {expected_lit}",
-            out_pt / SPEED * FPS
+            out_pt / SPEED * FPS.as_f64()
         );
         assert_eq!(
             r.frames,
@@ -435,7 +436,7 @@ fn splitting_a_retimed_clip_should_not_change_the_programme_length() {
     let build = || {
         Timeline::builder()
             .canvas(160, 120)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new(&video)
                     .trim(s(SOURCE_SECS), s(SOURCE_SECS * 2.0))
@@ -515,7 +516,7 @@ fn splitting_a_retimed_clip_should_not_change_the_programme_length() {
 fn the_preview_and_the_export_should_agree_on_where_a_retimed_clip_starts() {
     let timeline = Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new("nonexistent.mp4")
                 .trim(s(SOURCE_SECS), s(SOURCE_SECS * 2.0))

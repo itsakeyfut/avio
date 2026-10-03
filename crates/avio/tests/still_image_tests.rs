@@ -27,12 +27,13 @@ use std::time::Duration;
 
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_filter::FilterError;
+use ff_format::Rational;
 use fixtures::{FileGuard, assets_dir, test_output_path, video_luma_per_frame};
 
 /// The clip's length on the timeline, and the rate it is rendered at, so the expected
 /// frame count is the product of the two.
 const CLIP_SECS: f64 = 3.0;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 /// The fixtures are a bright drawing on white; the canvas behind them is black. Anything
 /// in between separates "the picture is here" from "the background is showing".
 const LUMA_FLOOR: f64 = 40.0;
@@ -117,7 +118,7 @@ fn render_still(tag: &str, src: &PathBuf, force_cpu: bool) -> Option<Vec<f64>> {
 /// lossy format, on both routes.
 #[test]
 fn a_still_image_should_render_for_its_clips_duration() {
-    let expected = (CLIP_SECS * FPS).round() as usize;
+    let expected = (CLIP_SECS * FPS.as_f64()).round() as usize;
     for (format, src) in image_fixtures() {
         if !src.exists() {
             println!("Skipping: fixture not found at {}", src.display());
