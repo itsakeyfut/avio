@@ -429,6 +429,64 @@ pub(super) unsafe fn add_raw_filter_step(
     Ok(step_ctx)
 }
 
+/// The filter and argument string for an audio delay at a known sample rate.
+///
+/// A positive or zero `ms` delays the audio with `adelay`; a negative one advances it
+/// by trimming the start with `atrim`.
+///
+/// **The delay is expressed in samples, and that is load-bearing.** `adelay` reads its
+/// `delays` option as a string: an entry ending in `S` is taken as an `int64` sample
+/// count and used exactly, while any other entry goes through
+/// `av_sscanf(arg, "%f", &delay)` and is rounded to a C `float` before being multiplied
+/// by the rate. That float's ulp grows with the offset and overtakes one sample period
+/// about four minutes in:
+///
+/// | offset | float ulp | one sample at 48 kHz |
+/// |---|---|---|
+/// | 60 s | 0.0039 ms | 0.0208 ms |
+/// | 300 s | 0.0313 ms | 0.0208 ms |
+/// | 1800 s | 0.125 ms | 0.0208 ms |
+///
+/// So a millisecond argument cannot place a clip on a named sample in material of any
+/// length, however precisely the string is written. Converting here, where the rate is
+/// known, is what makes the placement exact (#1915).
+pub(crate) fn audio_delay_args(ms: f64, sample_rate: u32) -> (&'static str, String) {
+    if ms >= 0.0 {
+        // The nearest sample is the answer; truncating is the defect this replaced.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a sample index at any realistic offset is far inside i64, and the cast saturates rather than wrapping"
+        )]
+        let samples = (ms / 1000.0 * f64::from(sample_rate)).round() as i64;
+        ("adelay", format!("delays={samples}S:all=1"))
+    } else {
+        ("atrim", format!("start={}", -ms / 1000.0))
+    }
+}
+
+/// Create and link the node a `FilterStep::AudioDelay` expands to.
+///
+/// Both graph builders route through here so the conversion from milliseconds to
+/// samples exists once: a clip's placement must not depend on which builder it went
+/// through. Dispatching on the sign here is also why the node's filter cannot
+/// disagree with its arguments, which a static `filter_name()` could not express.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same `AVFilterGraph`,
+/// and `sample_rate` must be the rate of the audio at `prev_ctx`'s output.
+pub(crate) unsafe fn add_audio_delay_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    ms: f64,
+    sample_rate: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let (filter_name, args) = audio_delay_args(ms, sample_rate);
+    // SAFETY: the caller's contract is this function's, passed straight through.
+    add_raw_filter_step(graph, prev_ctx, filter_name, &args, index, "adelay")
+}
+
 /// Number of entries in an `AVFilterInOut` linked list.
 ///
 /// # Safety
@@ -1130,11 +1188,73 @@ pub(crate) unsafe fn add_pitch_shift_chain(
 
 #[cfg(test)]
 mod tests {
+    use super::audio_delay_args;
     use super::decompose_atempo;
     use super::escape_movie_path;
     use super::overlay_alpha_suffix;
     use super::{rubberband_pitch_args, rubberband_tempo_args};
     use ff_format::AlphaMode;
+
+    // `adelay`'s millisecond form is parsed through a C `float`, so the argument has
+    // to name a sample. These compare the whole string because the suffix is the
+    // point: a value that is right in a different unit still places the clip wrong.
+    #[test]
+    fn audio_delay_args_should_use_the_sample_suffix() {
+        // 1000 ms at 48 kHz is 48000 samples.
+        assert_eq!(
+            audio_delay_args(1000.0, 48_000),
+            ("adelay", "delays=48000S:all=1".to_string())
+        );
+    }
+
+    #[test]
+    fn audio_delay_args_should_round_a_fractional_sample_to_the_nearest() {
+        // 0.0125 ms at 48 kHz is 0.6 of a sample, so rounding gives 1 and truncating
+        // gives 0. Chosen because the fraction is above a half: at 1.234567 ms the
+        // sample count is 59.259216 and both rules agree on 59, which would make this
+        // test pass against the truncation it exists to catch.
+        assert_eq!(
+            audio_delay_args(0.012_5, 48_000),
+            ("adelay", "delays=1S:all=1".to_string())
+        );
+        // The sub-millisecond offset the issue is about, for the record.
+        assert_eq!(
+            audio_delay_args(1.234_567, 48_000),
+            ("adelay", "delays=59S:all=1".to_string())
+        );
+    }
+
+    #[test]
+    fn audio_delay_args_should_scale_with_the_sample_rate() {
+        // The same delay is a different number of samples at a different rate, which
+        // is why the rate is a parameter rather than the mix target's constant.
+        assert_eq!(
+            audio_delay_args(1000.0, 44_100),
+            ("adelay", "delays=44100S:all=1".to_string())
+        );
+        assert_ne!(
+            audio_delay_args(1000.0, 44_100),
+            audio_delay_args(1000.0, 48_000)
+        );
+    }
+
+    #[test]
+    fn audio_delay_args_should_use_atrim_for_a_negative_delay() {
+        // Advancing the audio trims its start instead, in seconds: `atrim` takes a
+        // duration, which is parsed at microsecond resolution rather than as a float.
+        assert_eq!(
+            audio_delay_args(-100.0, 48_000),
+            ("atrim", "start=0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn audio_delay_args_should_treat_zero_as_a_zero_sample_delay() {
+        assert_eq!(
+            audio_delay_args(0.0, 48_000),
+            ("adelay", "delays=0S:all=1".to_string())
+        );
+    }
 
     #[test]
     fn rubberband_pitch_args_should_convert_semitones_to_scale() {
@@ -2646,24 +2766,6 @@ pub(super) fn audio_buffersrc_args(
     )
 }
 
-/// Parse the `sample_rate` field from a `buffersrc_args` string.
-///
-/// The expected format is `sample_rate=R:sample_fmt=FMT:channels=C:...`.
-/// Returns `44100` as a safe fallback if the field is absent or unparseable.
-pub(super) fn parse_sample_rate_from_buffersrc(buffersrc_args: &str) -> u32 {
-    buffersrc_args
-        .split(':')
-        .find_map(|kv| {
-            let (k, v) = kv.split_once('=')?;
-            if k == "sample_rate" {
-                v.parse().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(44100)
-}
-
 // Parametric EQ (multi-band chain)
 
 /// Insert a chain of filter nodes for a [`FilterStep::ParametricEq`] step.
@@ -3245,6 +3347,7 @@ impl FilterGraphInner {
         buffersrc_args: &str,
         num_inputs: usize,
         steps: &[FilterStep],
+        sample_rate: u32,
         _hw: Option<&HwAccel>,
     ) -> BuildResult {
         let graph = graph_nn.as_ptr();
@@ -3399,12 +3502,11 @@ impl FilterGraphInner {
             }
 
             // SpeedChange — asetrate only (speed and pitch change together).
-            // The sample rate is resolved from buffersrc_args so the integer
-            // value is substituted literally into the filter args.
+            // `asetrate` takes an absolute rate, so the integer is substituted
+            // literally into the filter args.
             if let FilterStep::SpeedChange { factor } = step {
-                let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                let new_sr = (f64::from(sr) * factor).round() as u64;
+                let new_sr = (f64::from(sample_rate) * factor).round() as u64;
                 // SAFETY: graph and prev_ctx are valid pointers in the same graph.
                 prev_ctx = add_raw_filter_step(
                     graph,
@@ -3422,14 +3524,11 @@ impl FilterGraphInner {
             // atempo chain restores the original duration.  For |semitones| > 12
             // the compensation factor falls outside a single atempo instance's
             // range, so add_atempo_chain decomposes it into linked instances.
-            // The actual sample rate is resolved from buffersrc_args so the
-            // integer value is substituted literally.
             if let FilterStep::PitchShift { semitones, algo } = step {
                 // The expansion lives in `add_pitch_shift_chain` so the
-                // composition builder runs the same one (#1817); only the way the
-                // sample rate is obtained differs between the two callers.
-                let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
-                prev_ctx = add_pitch_shift_chain(graph, prev_ctx, *semitones, *algo, sr, i)?;
+                // composition builder runs the same one (#1817).
+                prev_ctx =
+                    add_pitch_shift_chain(graph, prev_ctx, *semitones, *algo, sample_rate, i)?;
                 continue;
             }
 
@@ -3463,15 +3562,13 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // AudioDelay dispatches to adelay (positive/zero) or atrim (negative).
+            // AudioDelay dispatches to adelay (positive/zero) or atrim (negative), and
+            // converts to samples, through the helper the mix builder also uses. The
+            // rate here is the one the first pushed frame reported, so it needs no
+            // normaliser: it is already the rate at this point in the chain.
             if let FilterStep::AudioDelay { ms } = step {
-                let (filter_name, args) = if *ms >= 0.0 {
-                    ("adelay".to_string(), format!("delays={ms}:all=1"))
-                } else {
-                    ("atrim".to_string(), format!("start={}", -ms / 1000.0))
-                };
                 // SAFETY: graph and prev_ctx are valid pointers in the same graph.
-                prev_ctx = add_raw_filter_step(graph, prev_ctx, &filter_name, &args, i, "adelay")?;
+                prev_ctx = add_audio_delay_step(graph, prev_ctx, *ms, sample_rate, i)?;
                 continue;
             }
 

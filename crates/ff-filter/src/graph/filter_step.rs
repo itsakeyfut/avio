@@ -1977,9 +1977,13 @@ impl FilterStep {
             }
             Self::StereoToMono => "mono|c0=0.5*c0+0.5*c1".to_string(),
             Self::ChannelMap { mapping } => format!("map={mapping}"),
-            // args() is not used directly for AudioDelay — the audio build loop
-            // dispatches to add_raw_filter_step with the correct filter name and
-            // args based on the sign of ms.  These are provided for completeness.
+            // Not the path any graph builder takes. Both the single-source builder
+            // and the mix builder dispatch `AudioDelay` to `add_audio_delay_step`,
+            // which converts to samples using the rate at that point in the chain;
+            // this form has no rate to work with and so cannot be sample-exact
+            // (#1915). Kept for completeness, and because `filter_name()` reports
+            // `adelay` for either sign while this reports `atrim`'s argument for a
+            // negative delay, the two must not be combined to build a node.
             Self::AudioDelay { ms } => {
                 if *ms >= 0.0 {
                     format!("delays={ms}:all=1")

@@ -319,6 +319,7 @@ impl FilterGraphInner {
                 &args,
                 num_inputs,
                 &self.steps,
+                sample_rate,
                 self.hw.as_ref(),
             ) {
                 Ok((src_ctxs, asink_ctx)) => {

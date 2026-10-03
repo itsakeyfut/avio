@@ -337,6 +337,20 @@ pub fn measure_audio(path: &std::path::Path) -> Option<(f64, f64, f64)> {
 /// parameter because the caller knows its own fixture: a synthesised tone wants a
 /// value well above the codec's noise, while a quiet source wants a lower one.
 pub fn first_sound_secs(path: &std::path::Path, floor: f64) -> Option<f64> {
+    let (sample, rate) = first_sound_sample(path, floor)?;
+    Some(sample as f64 / f64::from(rate))
+}
+
+/// The onset of [`first_sound_secs`] as a sample index, with the stream's rate.
+///
+/// The seconds form divides by the rate, which is the right unit for a tolerance
+/// measured in frames and the wrong one for a tolerance measured in samples. A
+/// placement test needs the index itself: it is the quantity the export is supposed
+/// to get exactly right (#1915), and a comparison in seconds reintroduces the
+/// rounding the measurement is looking for.
+///
+/// `None` where this build cannot decode the file, or no sample exceeds `floor`.
+pub fn first_sound_sample(path: &std::path::Path, floor: f64) -> Option<(u64, u32)> {
     let mut decoder = ff_decode::AudioDecoder::open(path)
         .output_format(SampleFormat::F32)
         .build()
@@ -356,7 +370,7 @@ pub fn first_sound_secs(path: &std::path::Path, floor: f64) -> Option<f64> {
                 // once per channel. This would be wrong for a planar format, where
                 // plane 0 holds channel 0 alone while `channels` still counts them all.
                 let frames_in = i / channels;
-                return Some((elapsed + frames_in) as f64 / f64::from(sample_rate));
+                return Some(((elapsed + frames_in) as u64, sample_rate));
             }
         }
         elapsed += frame.samples();
