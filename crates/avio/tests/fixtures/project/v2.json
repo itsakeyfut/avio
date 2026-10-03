@@ -1,0 +1,98 @@
+{
+  "format_version": 2,
+  "timeline": {
+    "canvas_width": 640,
+    "canvas_height": 360,
+    "canvas_explicit": true,
+    "frame_rate": {
+      "num": 30,
+      "den": 1
+    },
+    "video_tracks": [
+      {
+        "id": 1,
+        "name": "",
+        "mute": false,
+        "solo": false,
+        "enabled": true,
+        "lock": false,
+        "clips": [
+          {
+            "id": 1,
+            "group": null,
+            "source": {
+              "File": "input.mp4"
+            },
+            "in_point": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "out_point": {
+              "secs": 2,
+              "nanos": 0
+            },
+            "offset": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "metadata": {},
+            "transition": null,
+            "transition_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "volume_db": 0.0,
+            "volume_track": null,
+            "pitch": 0.0,
+            "pitch_track": null,
+            "pan": 0.0,
+            "fade_in": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "fade_out": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "opacity": 1.0,
+            "opacity_track": null,
+            "x": 0.0,
+            "y": 0.0,
+            "x_track": null,
+            "y_track": null,
+            "scale": 1.0,
+            "scale_track": null,
+            "rotation": 0.0,
+            "rotation_track": null,
+            "fit": "None",
+            "blend_mode": "Normal",
+            "composite_op": "Over",
+            "speed": 1.0,
+            "proxy": null,
+            "effects": []
+          }
+        ],
+        "audio_effects": [],
+        "automation": {
+          "opacity": null,
+          "x": null,
+          "y": null,
+          "scale_x": null,
+          "scale_y": null,
+          "rotation": null,
+          "volume": null,
+          "pan": null
+        }
+      }
+    ],
+    "audio_tracks": [],
+    "next_clip_id": 2,
+    "next_track_id": 2,
+    "next_marker_id": 1,
+    "next_group_id": 1,
+    "next_effect_id": 1,
+    "markers": [],
+    "lavfi_overlay": null,
+    "audio_filter": []
+  }
+}

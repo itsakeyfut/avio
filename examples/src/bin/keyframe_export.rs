@@ -26,7 +26,9 @@ fn main() -> BoxResult<()> {
     let Some(v) = in_video.first() else {
         return Err("input has no video stream".into());
     };
-    let (canvas_w, canvas_h, fps) = (v.width(), v.height(), v.fps());
+    let (canvas_w, canvas_h, rate) = (v.width(), v.height(), v.frame_rate());
+    // The ratio drives the timeline; the decimal is only for the messages below.
+    let fps = rate.as_f64();
 
     // ── Overlay opacity animated 0 -> 1 over the first second ─────────────────
     let opacity = AnimationTrack::new()
@@ -36,7 +38,7 @@ fn main() -> BoxResult<()> {
     let output = tmp.path().join("keyframe.mp4");
     let timeline = Timeline::builder()
         .canvas(canvas_w, canvas_h)
-        .frame_rate(fps)
+        .frame_rate(rate)
         .video_track(vec![Clip::new(&input)])
         .video_track(vec![Clip::new(&input).with_opacity_track(opacity)])
         .build()?;

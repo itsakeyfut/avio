@@ -22,12 +22,13 @@ use std::time::Duration;
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_encode::{AudioCodec, VideoCodec, VideoEncoder};
 use ff_filter::FilterError;
+use ff_format::Rational;
 use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 use fixtures::{FileGuard, silent_audio_frame, test_output_path};
 
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 128;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 const FRAMES: usize = 90;
 /// Eight horizontal bands: band 0 says a frame is present, bands 1..=7 carry the
 /// index, so indices up to 127 are representable.
@@ -71,11 +72,11 @@ fn indexed_frame(index: usize) -> VideoFrame {
 fn make_marked_source(path: &PathBuf) -> Option<()> {
     let sample_rate = 48_000u32;
     let audio_frame_samples = 1024usize;
-    let audio_frames =
-        ((sample_rate as f64 * FRAMES as f64 / FPS) as usize).div_ceil(audio_frame_samples);
+    let audio_frames = ((sample_rate as f64 * FRAMES as f64 / FPS.as_f64()) as usize)
+        .div_ceil(audio_frame_samples);
 
     let mut encoder = match VideoEncoder::create(path)
-        .video(WIDTH, HEIGHT, FPS)
+        .video(WIDTH, HEIGHT, FPS.as_f64())
         .video_codec(VideoCodec::Mpeg4)
         .audio(sample_rate, 2)
         .audio_codec(AudioCodec::Aac)
@@ -252,7 +253,7 @@ fn trims_should_start_on_the_same_source_frame_on_both_routes() {
             FileGuard::new(cpu_out.clone()),
         );
 
-        let expected = (start * FPS).round() as usize;
+        let expected = (start * FPS.as_f64()).round() as usize;
 
         let Some(t_cpu) = trimmed(&src, start) else {
             return;

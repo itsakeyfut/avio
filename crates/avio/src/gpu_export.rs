@@ -1152,7 +1152,7 @@ mod tests {
     fn square_timeline(clips: Vec<Clip>) -> Timeline {
         Timeline::builder()
             .canvas(64, 64)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(clips)
             .build()
             .unwrap()
@@ -1162,7 +1162,7 @@ mod tests {
     fn two_track_timeline(base: Vec<Clip>, over: Vec<Clip>) -> Timeline {
         Timeline::builder()
             .canvas(64, 64)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(base)
             .video_track(over)
             .build()
@@ -1319,7 +1319,7 @@ mod tests {
             timeline.lavfi_overlay.as_deref(),
             timeline.video_tracks.iter().any(|t| t.solo),
             (timeline.canvas_width, timeline.canvas_height),
-            timeline.frame_rate,
+            timeline.frame_rate.as_f64(),
         )
     }
 
@@ -1975,7 +1975,7 @@ mod tests {
         // unopenable source must fall back rather than fail mid-export.
         let t = Timeline::builder()
             .canvas(64, 64)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_track(vec![Clip::new("b.mp4")])
             .build()

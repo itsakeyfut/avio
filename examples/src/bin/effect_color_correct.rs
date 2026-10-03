@@ -101,11 +101,13 @@ fn main() -> BoxResult<()> {
     let Some(v) = in_video.first() else {
         return Err("input has no video stream".into());
     };
-    let (canvas_w, canvas_h, fps) = (v.width(), v.height(), v.fps());
+    let (canvas_w, canvas_h, rate) = (v.width(), v.height(), v.frame_rate());
+    // The ratio drives the timeline; the decimal is only for the messages below.
+    let fps = rate.as_f64();
 
     let baseline = Timeline::builder()
         .canvas(canvas_w, canvas_h)
-        .frame_rate(fps)
+        .frame_rate(rate)
         .video_track(vec![Clip::new(&input)])
         .build()?;
     let Some(clip) = first_clip_id(&baseline) else {

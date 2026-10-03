@@ -27,11 +27,12 @@ use avio::{
 };
 use ff_decode::VideoDecoder;
 use ff_encode::{BitrateMode, VideoCodec};
+use ff_format::Rational;
 use ff_preview::FrameSink;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 const CANVAS: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 const FRAMES: usize = 10;
 /// The frame inspected on every route: past any encoder warm-up, inside the clip.
 const SAMPLE: usize = 3;
@@ -211,7 +212,7 @@ fn assert_all_routes(label: &str, timeline: &Timeline, sample: usize, want: Opti
 fn source(label: &str, w: u32, h: u32) -> Option<(std::path::PathBuf, FileGuard)> {
     let path = test_output_path(&format!("base_transform_{label}_src.mp4"));
     let guard = FileGuard::new(path.clone());
-    make_source_file(&path, w, h, FPS, FRAMES, 235, 128, 128)?;
+    make_source_file(&path, w, h, FPS.as_f64(), FRAMES, 235, 128, 128)?;
     Some((path, guard))
 }
 
@@ -309,7 +310,7 @@ fn a_second_clip_smaller_than_the_implicit_canvas_should_sit_on_it_on_every_rout
     let Some((second, _g2)) = source("implicit_second", CANVAS, CANVAS / 2) else {
         return;
     };
-    let first_len = Duration::from_secs_f64(5.0 / FPS);
+    let first_len = Duration::from_secs_f64(5.0 / FPS.as_f64());
     let builder = Timeline::builder().frame_rate(FPS).video_track(vec![
         Clip::new(&first).trim(Duration::ZERO, first_len),
         Clip::new(&second).offset(first_len),

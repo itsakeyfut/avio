@@ -9,6 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use avio::{Clip, Pacing, PlayerHandle, Timeline, TimelinePlayer};
+use ff_format::Rational;
 // `FrameSink` / `PlayerEvent` are ff-preview primitives (avio no longer re-exports
 // standalone preview types; it keeps only the TimelinePlayer engine surface).
 use ff_preview::{FrameSink, PlayerEvent};
@@ -38,7 +39,7 @@ fn timeline_runner_run_should_deliver_frames_for_single_clip() {
 
     let timeline = Timeline::builder()
         .canvas(1280, 720)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(2)),
         ])
@@ -84,9 +85,9 @@ fn timeline_runner_resume_after_seek_while_paused_should_not_drift() {
         return;
     }
 
-    let fps = 30.0_f64;
+    let fps = Rational::new(30, 1);
     let seek_target = Duration::from_secs(1);
-    let two_frame_periods = Duration::from_secs_f64(2.0 / fps);
+    let two_frame_periods = Duration::from_secs_f64(2.0 / fps.as_f64());
 
     let timeline = Timeline::builder()
         .canvas(1280, 720)
@@ -153,7 +154,7 @@ fn timeline_runner_seek_should_deliver_seek_completed_event() {
 
     let timeline = Timeline::builder()
         .canvas(1280, 720)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(10)),
         ])
@@ -228,7 +229,7 @@ fn timeline_runner_should_render_and_advance_generated_solid_sources() {
 
     let timeline = Timeline::builder()
         .canvas(64, 48)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::solid(Color::rgb(20, 40, 200)).trim(Duration::ZERO, Duration::from_secs(1)),
         ])

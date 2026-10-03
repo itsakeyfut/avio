@@ -43,6 +43,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 /// assert_eq!(frame_duration.num(), 1001);
 /// assert_eq!(frame_duration.den(), 30000);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct Rational {
     num: i32,

@@ -25,7 +25,7 @@ fn s(v: f64) -> Duration {
 fn linked_pair() -> Timeline {
     let t = Timeline::builder()
         .canvas(320, 180)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new("v.mp4").trim(Duration::ZERO, s(4.0)),
             Clip::new("v2.mp4")

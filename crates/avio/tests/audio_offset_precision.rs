@@ -31,6 +31,7 @@ use std::time::Duration;
 use avio::{Clip, EncoderConfig, Timeline, TimelineError};
 use ff_filter::FilterError;
 use ff_format::AudioCodec;
+use ff_format::Rational;
 use fixtures::{FileGuard, first_sound_sample, make_source_file, test_output_path, write_tone_wav};
 
 /// 500.5 ms. Not a whole number of milliseconds, so `as_millis()` truncated it to
@@ -42,7 +43,7 @@ const OFFSET_NANOS: u64 = 500_500_000;
 const OUTPUT_RATE: u32 = 48_000;
 /// Long enough that the offset clip is well inside the programme.
 const TONE_SECS: f64 = 1.0;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 /// Well above the noise a lossless path leaves in a silent lead-in, well below the
 /// tone's half scale.
 const SOUND_FLOOR: f64 = 0.05;
@@ -65,7 +66,7 @@ fn expected_samples() -> u64 {
 fn sources(tag: &str, rate: u32) -> Option<(PathBuf, FileGuard, PathBuf, FileGuard)> {
     let video = test_output_path(&format!("aoff_src_{tag}.mp4"));
     let gv = FileGuard::new(video.clone());
-    make_source_file(&video, 160, 120, FPS, 90, 70, 90, 110)?;
+    make_source_file(&video, 160, 120, FPS.as_f64(), 90, 70, 90, 110)?;
 
     let tone = test_output_path(&format!("aoff_tone_{tag}.wav"));
     let gt = FileGuard::new(tone.clone());

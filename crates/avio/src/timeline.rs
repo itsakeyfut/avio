@@ -15,7 +15,7 @@ use ff_filter::{
     AnimatedValue, AnimationTrack, FilterGraph, FilterStep, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoLayer,
 };
-use ff_format::{AudioFrame, ChannelLayout};
+use ff_format::{AudioFrame, ChannelLayout, Rational};
 
 use crate::clip::Clip;
 use crate::derive;
@@ -25,6 +25,11 @@ use crate::marker::Marker;
 use crate::track::{AudioProperty, Track, VideoProperty};
 use ff_pipeline::EncoderConfig;
 use ff_pipeline::Progress;
+
+/// The frame rate a timeline falls back to when nothing sets one and there is no file to
+/// probe. Thirty exactly rather than 29.97: a default should be the simple rate, not a
+/// broadcast one nobody asked for.
+const DEFAULT_FRAME_RATE: Rational = Rational::new(30, 1);
 use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
 
 /// An ordered layout of [`Clip`] instances across video and audio tracks.
@@ -47,7 +52,7 @@ use ff_pipeline::pipeline::hwaccel_to_hardware_encoder;
 ///
 /// let result = Timeline::builder()
 ///     .canvas(1920, 1080)
-///     .frame_rate(30.0)
+///     .frame_rate(30.into())
 ///     .video_track(vec![clip])
 ///     .build();
 ///
@@ -72,7 +77,7 @@ pub struct Timeline {
     /// opposed to it being auto-probed from the first clip). Lets consumers such
     /// as the real-time preview know a deliberate output aspect was requested.
     pub(crate) canvas_explicit: bool,
-    pub(crate) frame_rate: f64,
+    pub(crate) frame_rate: Rational,
     /// `video_tracks[track_idx].clips[clip_idx]`; track 0 = bottom layer.
     pub(crate) video_tracks: Vec<Track>,
     pub(crate) audio_tracks: Vec<Track>,
@@ -144,8 +149,29 @@ impl Timeline {
         }
     }
 
-    /// Returns the frame rate in frames per second.
-    pub fn frame_rate(&self) -> f64 {
+    /// Returns the output frame rate, as the ratio it was authored as.
+    ///
+    /// A ratio rather than a decimal because the broadcast rates are not decimals:
+    /// `30000/1001` is not any `f64` spelled `29.97`, and a model that cannot tell them
+    /// apart cannot say which frame a position falls on (#1947).
+    ///
+    /// # Converting to a decimal
+    ///
+    /// `as_f64()` is the right thing to do at a boundary, and `avio` does it at every
+    /// one: the encoder, the filter graph and the GPU route all take an `f64`. **That
+    /// loses nothing for frame arithmetic**, which is worth stating because the opposite
+    /// looks true. An `f64` carries 52 bits of mantissa, and both a nanosecond count and
+    /// a frame index sit far inside exact-integer range, so the product is nowhere near
+    /// half a frame out. `tests/frame_rate_round_trip.rs` holds this: a frame survives the
+    /// trip to a `Duration` and back through the decimal, at every rate, including ten
+    /// million frames in.
+    ///
+    /// What the ratio buys is knowing *which* rate this is, not arithmetic the decimal
+    /// gets wrong. The one rule the decimal does depend on is **rounding** the reverse
+    /// conversion rather than truncating it, which the same test pins: flooring loses
+    /// frames at every rate, 25 and 50 included, because converting a position into a
+    /// `Duration` is itself inexact.
+    pub fn frame_rate(&self) -> Rational {
         self.frame_rate
     }
 
@@ -237,7 +263,7 @@ impl Timeline {
     /// ```ignore
     /// let timeline = Timeline::builder()
     ///     .canvas(1920, 1080)
-    ///     .frame_rate(30.0)
+    ///     .frame_rate(30.into())
     ///     .video_track(vec![Clip::new("input.mp4")])
     ///     .build()?;
     ///
@@ -310,7 +336,11 @@ impl Timeline {
             .flat_map(|track| track.clips.iter())
             .map(Clip::duration)
             .try_fold(Duration::ZERO, |acc, dur| dur.map(|d| acc + d))
-            .map(|total_dur| (total_dur.as_secs_f64() * self.frame_rate).round().max(0.0) as u64);
+            .map(|total_dur| {
+                (total_dur.as_secs_f64() * self.frame_rate.as_f64())
+                    .round()
+                    .max(0.0) as u64
+            });
 
         let Timeline {
             canvas_width,
@@ -328,6 +358,12 @@ impl Timeline {
             lavfi_overlay,
             audio_filter,
         } = self;
+
+        // Every consumer below takes a decimal: the composer, the encoder, the GPU
+        // route and the derive. Converting once here rather than at each call keeps them
+        // reading one number, and `Timeline::frame_rate`'s documentation records the
+        // measurement that says the decimal loses nothing for frame arithmetic.
+        let fps = frame_rate.as_f64();
 
         let nv = video_tracks.len();
         let na = audio_tracks.len();
@@ -391,7 +427,7 @@ impl Timeline {
                 lavfi_overlay.as_deref(),
                 any_video_solo,
                 (canvas_width, canvas_height),
-                frame_rate,
+                fps,
             )
             .and_then(|idx| crate::gpu_compositor::GpuCompositor::new().map(|core| (idx, core)))
         };
@@ -399,7 +435,7 @@ impl Timeline {
         // How long the composition is, resolved once because both export routes need
         // the same answer: the CPU graph ends its canvas here and the GPU drain stops
         // here, so the two cannot disagree about where the programme ends.
-        let composition_end = composition_end(&video_tracks, any_video_solo, frame_rate);
+        let composition_end = composition_end(&video_tracks, any_video_solo, fps);
 
         // The CPU composition graph is skipped when the GPU export path will run.
         let build_cpu_video = {
@@ -427,8 +463,7 @@ impl Timeline {
             // Generate the canvas/conform at the timeline rate — the same rate
             // the encoder uses below. A hardcoded mismatch stretches the video
             // relative to the audio for non-30fps timelines.
-            let mut composer =
-                MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(frame_rate);
+            let mut composer = MultiTrackComposer::new(canvas_width, canvas_height).frame_rate(fps);
             // Inactive tracks (disabled, muted, or shadowed by a solo elsewhere in
             // this list) contribute no layers. The enumerate index is preserved so
             // the per-track cross-fade offset bookkeeping (`prev_end_by_track`)
@@ -479,7 +514,7 @@ impl Timeline {
                         &track.automation,
                         canvas_width,
                         canvas_height,
-                        frame_rate,
+                        fps,
                         &derive::Placement {
                             stream_start,
                             transition: transition_dur,
@@ -596,7 +631,7 @@ impl Timeline {
         // 5. Build encoder.
         let hw = hwaccel_to_hardware_encoder(config.hardware);
         let mut enc_builder = VideoEncoder::create(output)
-            .video(canvas_width, canvas_height, frame_rate)
+            .video(canvas_width, canvas_height, fps)
             .video_codec(config.video_codec)
             .bitrate_mode(config.bitrate_mode)
             .hardware_encoder(hw);
@@ -619,7 +654,7 @@ impl Timeline {
             crate::gpu_export::drain_video_gpu(
                 &tracks,
                 (canvas_width, canvas_height),
-                frame_rate,
+                fps,
                 &mut encoder,
                 &mut core,
                 &on_progress,
@@ -629,25 +664,11 @@ impl Timeline {
             )?;
         } else if let Some(vgraph) = video_graph {
             log::info!("export compositor path=cpu");
-            drain_composited_graph(
-                vgraph,
-                &mut encoder,
-                &on_progress,
-                start,
-                total_frames,
-                frame_rate,
-            )?;
+            drain_composited_graph(vgraph, &mut encoder, &on_progress, start, total_frames, fps)?;
         }
         #[cfg(not(feature = "gpu"))]
         if let Some(vgraph) = video_graph {
-            drain_composited_graph(
-                vgraph,
-                &mut encoder,
-                &on_progress,
-                start,
-                total_frames,
-                frame_rate,
-            )?;
+            drain_composited_graph(vgraph, &mut encoder, &on_progress, start, total_frames, fps)?;
         }
 
         // 7. Drain audio graph → (optional master bus) → encoder.
@@ -1037,7 +1058,7 @@ fn mix_tracks_with_effects(
 pub struct TimelineBuilder {
     canvas_width: Option<u32>,
     canvas_height: Option<u32>,
-    frame_rate: Option<f64>,
+    frame_rate: Option<Rational>,
     video_tracks: Vec<Track>,
     audio_tracks: Vec<Track>,
     /// See [`TimelineBuilder::lavfi_overlay`].
@@ -1076,11 +1097,20 @@ impl TimelineBuilder {
         }
     }
 
-    /// Sets the output frame rate in frames per second.
+    /// Sets the output frame rate.
+    ///
+    /// A ratio, so the rate is unambiguous: `Rational::new(30000, 1001)` is NTSC, and
+    /// `30.into()` is thirty. There is deliberately no decimal form, because `29.97` is
+    /// a different rate from `30000/1001` and only the caller knows which was meant
+    /// (#1947).
+    ///
+    /// [`build`](Self::build) returns
+    /// [`TimelineError::InvalidFrameRate`](crate::TimelineError::InvalidFrameRate) for a
+    /// rate that is not positive, which for a ratio includes a zero denominator.
     #[must_use]
-    pub fn frame_rate(self, fps: f64) -> Self {
+    pub fn frame_rate(self, rate: Rational) -> Self {
         Self {
-            frame_rate: Some(fps),
+            frame_rate: Some(rate),
             ..self
         }
     }
@@ -1274,8 +1304,12 @@ impl TimelineBuilder {
         // After resolution rather than before, so a rate that came from probing a
         // source is judged too: a file reporting a nonsense rate is the same broken
         // document as a caller passing one (#1932).
-        if !crate::clip::is_positive_finite(frame_rate) {
-            return Err(TimelineError::InvalidFrameRate { fps: frame_rate });
+        // `Rational::is_positive()` is `num > 0 && den > 0`, so this rejects every
+        // degenerate ratio in one call: `0/1`, a negative, and a zero denominator, which
+        // `as_f64()` would report as infinity or NaN. A ratio does not remove the
+        // degenerate cases, it respells them (#1947).
+        if !frame_rate.is_positive() {
+            return Err(TimelineError::InvalidFrameRate { rate: frame_rate });
         }
 
         // Stamp stable ids from monotonic counters (0 = unset; ids start at 1),
@@ -1322,7 +1356,7 @@ impl TimelineBuilder {
     /// When all three values are explicitly set, returns them directly.
     /// Otherwise probes the first video clip with `VideoDecoder`. For
     /// audio-only timelines (no video tracks) falls back to 1920×1080 @ 30 fps.
-    fn resolve_canvas_and_fps(&self) -> Result<(u32, u32, f64), TimelineError> {
+    fn resolve_canvas_and_fps(&self) -> Result<(u32, u32, Rational), TimelineError> {
         let need_probe = self.canvas_width.is_none()
             || self.canvas_height.is_none()
             || self.frame_rate.is_none();
@@ -1345,7 +1379,10 @@ impl TimelineBuilder {
             let vdec = VideoDecoder::open(source).build()?;
             let w = self.canvas_width.unwrap_or_else(|| vdec.width());
             let h = self.canvas_height.unwrap_or_else(|| vdec.height());
-            let fps = self.frame_rate.unwrap_or_else(|| vdec.frame_rate());
+            // `frame_rate_exact`, not `frame_rate`: the decoder's decimal cannot
+            // represent the broadcast rates, and this value is what every frame
+            // position is computed from.
+            let fps = self.frame_rate.unwrap_or_else(|| vdec.frame_rate_exact());
             return Ok((w, h, fps));
         }
 
@@ -1354,7 +1391,7 @@ impl TimelineBuilder {
         Ok((
             self.canvas_width.unwrap_or(1920),
             self.canvas_height.unwrap_or(1080),
-            self.frame_rate.unwrap_or(30.0),
+            self.frame_rate.unwrap_or(DEFAULT_FRAME_RATE),
         ))
     }
 }
@@ -1531,7 +1568,8 @@ impl Timeline {
             .collect();
 
         ff_preview::Scene {
-            fps: self.frame_rate().max(1.0),
+            // The scene carries a decimal; the conversion is the usual boundary one.
+            fps: self.frame_rate().as_f64().max(1.0),
             // Always concrete: explicit, or probed from the first clip at build. The
             // preview places every layer on this canvas exactly as the export does
             // (ADR-0016), so an implicit canvas must not leave the runner to derive
@@ -1749,61 +1787,57 @@ mod tests {
 
     /// The builder reaches the state with no command at all, so `apply`'s guard is not
     /// enough (ADR-0023).
+    ///
+    /// These are #1932's cases, respelled rather than relaxed. A `Rational` cannot be
+    /// `NaN` or infinite, but it degenerates in four ways instead, because
+    /// `Rational::new` normalises a negative denominator and does not reject a zero one
+    /// (#1947). The table keeps #1932's lesson: `num > 0` and `den > 0` are two halves of
+    /// one predicate and each is broken on its own here, so dropping either fails a row.
     #[test]
-    fn build_should_refuse_a_nan_frame_rate() {
-        let result = Timeline::builder()
-            .canvas(1920, 1080)
-            .frame_rate(f64::NAN)
-            .video_track(vec![Clip::new("v.mp4")])
-            .build();
-        let err = result.unwrap_err();
-        assert!(
-            matches!(&err, TimelineError::InvalidFrameRate { fps } if fps.is_nan()),
-            "expected InvalidFrameRate for NaN, got {err:?}"
-        );
-    }
-
-    /// Not only the non-finite half: dropping `> 0.0` from the predicate left every
-    /// other test here green, so zero and negatives are asserted at `build` too.
-    #[test]
-    fn build_should_refuse_a_zero_or_negative_frame_rate() {
-        for fps in [0.0, -30.0] {
+    fn build_should_refuse_a_degenerate_frame_rate() {
+        // `0/1` and `-30/1` break `num > 0`; `30/0` and `0/0` break `den > 0`, and
+        // `as_f64` would report those last two as infinity and `NaN`.
+        for rate in [
+            Rational::new(0, 1),
+            Rational::new(-30, 1),
+            Rational::new(30, 0),
+            Rational::new(0, 0),
+        ] {
             let result = Timeline::builder()
                 .canvas(1920, 1080)
-                .frame_rate(fps)
+                .frame_rate(rate)
                 .video_track(vec![Clip::new("v.mp4")])
                 .build();
             let err = result.unwrap_err();
+            // The components rather than `==`: `Rational`'s `PartialEq` cross-multiplies,
+            // so `0/0` compares equal to every ratio and two of these rows would pass
+            // even if the error named something else.
             assert!(
-                matches!(&err, TimelineError::InvalidFrameRate { fps: got } if *got == fps),
-                "expected InvalidFrameRate for {fps}, got {err:?}"
+                matches!(&err, TimelineError::InvalidFrameRate { rate: got } if got.num() == rate.num() && got.den() == rate.den()),
+                "expected InvalidFrameRate naming {}/{}, got {err:?}",
+                rate.num(),
+                rate.den()
             );
         }
     }
 
-    #[test]
-    fn build_should_refuse_an_infinite_frame_rate() {
-        let result = Timeline::builder()
-            .canvas(1920, 1080)
-            .frame_rate(f64::INFINITY)
-            .video_track(vec![Clip::new("v.mp4")])
-            .build();
-        let err = result.unwrap_err();
-        assert!(
-            matches!(&err, TimelineError::InvalidFrameRate { fps } if fps.is_infinite()),
-            "expected InvalidFrameRate for infinity, got {err:?}"
-        );
-    }
-
-    /// The control: the check must not refuse an ordinary rate.
+    /// The control: the check must not refuse an ordinary rate, including the broadcast
+    /// one this whole change exists to be able to hold.
     #[test]
     fn build_should_accept_a_normal_frame_rate() {
-        let result = Timeline::builder()
-            .canvas(1920, 1080)
-            .frame_rate(29.97)
-            .video_track(vec![Clip::new("v.mp4")])
-            .build();
-        assert!(result.is_ok(), "29.97 is an ordinary rate: {result:?}");
+        for rate in [Rational::new(30, 1), Rational::new(30000, 1001)] {
+            let result = Timeline::builder()
+                .canvas(1920, 1080)
+                .frame_rate(rate)
+                .video_track(vec![Clip::new("v.mp4")])
+                .build();
+            assert!(
+                result.is_ok(),
+                "{}/{} is an ordinary rate: {result:?}",
+                rate.num(),
+                rate.den()
+            );
+        }
     }
 
     /// The kind is which list holds the track, so the query has to consult both
@@ -1812,7 +1846,7 @@ mod tests {
     fn track_kind_should_answer_for_both_lists() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3")])
             .build()
@@ -1831,7 +1865,7 @@ mod tests {
     fn track_kind_should_be_none_for_an_unknown_id() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .build()
             .unwrap();
@@ -1844,7 +1878,7 @@ mod tests {
     fn build_should_refuse_a_generated_clip_on_an_audio_track() {
         let result = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![
                 Clip::text(ff_format::TextSpec::new("title"))
@@ -1871,7 +1905,7 @@ mod tests {
     fn build_should_accept_a_file_clip_on_an_audio_track() {
         let result = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3")])
             .build();
@@ -1915,7 +1949,7 @@ mod tests {
         let timeline = Timeline::builder()
             // Explicit canvas + fps so build() does not probe the fake sources.
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("a.mp4")
                     .trim(Duration::from_secs(1), Duration::from_secs(3))
@@ -2010,7 +2044,7 @@ mod tests {
         // animated scalar, scale/rotation as self-animating effect steps (ADR-0005).
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("base.mp4")])
             .video_track(vec![Clip::new("overlay.mp4")])
             .video_animation(
@@ -2061,7 +2095,7 @@ mod tests {
     fn to_scene_should_carry_lavfi_overlay() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .lavfi_overlay("color=s=1920x1080:c=black@0.0")
             .build()
@@ -2077,7 +2111,7 @@ mod tests {
     fn timeline_default_audio_filter_should_be_empty() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .build()
             .unwrap();
@@ -2088,7 +2122,7 @@ mod tests {
     fn timeline_builder_audio_filter_should_set_chain() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .audio_filter(vec![FilterStep::Volume(-6.0)])
             .build()
@@ -2107,7 +2141,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3").with_speed(2.0)]) // neutral volume
             .audio_animation(
@@ -2131,7 +2165,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4").with_pitch(3.0)])
             .audio_track(vec![Clip::new("a.mp3").with_pitch(1.0).with_pitch_track(
                 AnimationTrack::new().push(Keyframe::new(Duration::ZERO, 5.0, Easing::Linear)),
@@ -2152,7 +2186,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4").pan(-0.4)])
             .audio_track(vec![Clip::new("a.mp3")]) // center clip pan
             .audio_animation(
@@ -2185,7 +2219,7 @@ mod tests {
         // is preserved.
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("base.mp4"),
                 Clip::text(TextSpec::new("Title")).trim(Duration::ZERO, Duration::from_secs(2)),
@@ -2213,7 +2247,7 @@ mod tests {
     fn to_scene_should_drop_disabled_video_track_placements() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track_with(Track::new(vec![Clip::new("base.mp4")]).enabled(false))
             .video_track(vec![Clip::new("overlay.mp4")])
             .build()
@@ -2232,7 +2266,7 @@ mod tests {
     fn to_scene_should_drop_muted_video_track_placements() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track_with(Track::new(vec![Clip::new("base.mp4")]).muted(true))
             .build()
             .unwrap();
@@ -2245,7 +2279,7 @@ mod tests {
     fn to_scene_solo_should_keep_only_soloed_video_tracks() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("base.mp4")]) // not soloed
             .video_track_with(Track::new(vec![Clip::new("overlay.mp4")]).soloed(true))
             .build()
@@ -2263,7 +2297,7 @@ mod tests {
     fn to_scene_should_drop_muted_audio_track_placements() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track_with(Track::new(vec![Clip::new("a.mp3")]).muted(true))
             .build()
@@ -2277,7 +2311,7 @@ mod tests {
     fn to_scene_should_drop_disabled_audio_track_placements() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track_with(Track::new(vec![Clip::new("a.mp3")]).enabled(false))
             .build()
@@ -2291,7 +2325,7 @@ mod tests {
     fn to_scene_solo_should_keep_only_soloed_audio_tracks() {
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3")]) // not soloed
             .audio_track_with(Track::new(vec![Clip::new("b.mp3")]).soloed(true))
@@ -2318,7 +2352,7 @@ mod tests {
         // reject it before touching FFmpeg (deterministic on any machine).
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::text(TextSpec::new("no out_point"))])
             .build()
             .unwrap();
@@ -2342,7 +2376,7 @@ mod tests {
         assert!(clip.in_point.is_none());
         let timeline = Timeline::builder()
             .canvas(160, 90)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![clip])
             .build()
             .unwrap();
@@ -2367,7 +2401,7 @@ mod tests {
             .unwrap();
         assert_eq!(timeline.canvas_width, 1920);
         assert_eq!(timeline.canvas_height, 1080);
-        assert!((timeline.frame_rate - 30.0).abs() < f64::EPSILON);
+        assert_eq!(timeline.frame_rate, 30.into());
     }
 
     #[test]
@@ -2375,14 +2409,14 @@ mod tests {
         let clip = Clip::new("video.mp4");
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![clip])
             .build()
             .unwrap();
 
         assert_eq!(timeline.canvas_width, 1920);
         assert_eq!(timeline.canvas_height, 1080);
-        assert!((timeline.frame_rate - 30.0).abs() < f64::EPSILON);
+        assert_eq!(timeline.frame_rate, 30.into());
         assert_eq!(timeline.video_tracks.len(), 1);
         assert!(timeline.audio_tracks.is_empty());
     }
@@ -2402,7 +2436,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("video.mp4")])
             .video_animation(0, VideoProperty::Opacity, track)
             .build()
@@ -2429,7 +2463,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .audio_track(vec![Clip::new("audio.mp4")])
             .audio_animation(0, AudioProperty::Volume, track)
             .build()
@@ -2448,7 +2482,7 @@ mod tests {
         // Track 0 carries an opacity animation; track 1 does not.
         let mut timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_track(vec![Clip::new("b.mp4")])
             .video_animation(
@@ -2480,7 +2514,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_track(vec![Clip::new("b.mp4")])
             .video_animation(
@@ -2519,7 +2553,7 @@ mod tests {
         // warn, not a panic) and leave no automation behind.
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_animation(
                 5,
@@ -2541,7 +2575,7 @@ mod tests {
 
         let timeline = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("a.mp4")])
             .video_animation(
                 0,

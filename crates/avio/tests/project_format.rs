@@ -14,6 +14,7 @@ use avio::{
     Clip, ClipSource, PROJECT_FORMAT_VERSION, Project, ProjectError, Timeline, Track,
     XfadeTransition,
 };
+use ff_format::Rational;
 use ff_format::{Color, TextSpec};
 
 fn s(v: f64) -> Duration {
@@ -25,7 +26,7 @@ fn s(v: f64) -> Duration {
 fn sample() -> Timeline {
     Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new("a.mp4").trim(Duration::ZERO, s(2.0)),
             Clip::new("b.mp4")
@@ -60,7 +61,7 @@ fn a_project_should_round_trip_through_json() {
 
     assert_eq!(after.canvas_width(), before.canvas_width());
     assert_eq!(after.canvas_height(), before.canvas_height());
-    assert!((after.frame_rate() - before.frame_rate()).abs() < f64::EPSILON);
+    assert_eq!(after.frame_rate(), before.frame_rate());
     assert_eq!(after.video_tracks().len(), before.video_tracks().len());
     assert_eq!(after.audio_tracks().len(), before.audio_tracks().len());
 
@@ -122,7 +123,7 @@ fn every_committed_fixture_should_load_to_its_expected_model() {
         .into_timeline();
     assert_eq!(v0.canvas_width(), 640);
     assert_eq!(v0.canvas_height(), 360);
-    assert!((v0.frame_rate() - 30.0).abs() < f64::EPSILON);
+    assert_eq!(v0.frame_rate(), 30.into());
     assert_eq!(v0.video_tracks().len(), 1);
     assert_eq!(v0.video_tracks()[0].clips.len(), 1);
     assert!(matches!(
@@ -131,12 +132,68 @@ fn every_committed_fixture_should_load_to_its_expected_model() {
     ));
     assert_eq!(v0.video_tracks()[0].clips[0].out_point, Some(s(2.0)));
 
-    // v1: the envelope, same model.
+    // v1: the envelope, same model. Its decimal `30.0` migrates to the ratio `30/1`.
     let v1 = Project::from_json_str(&fixture("v1.json"))
         .unwrap()
         .into_timeline();
     assert_eq!(v1.canvas_width(), 640);
+    assert_eq!(v1.frame_rate(), 30.into());
     assert_eq!(v1.video_tracks()[0].clips[0].out_point, Some(s(2.0)));
+
+    // v2: the rate is already a ratio, so the chain has nothing left to do.
+    let v2 = Project::from_json_str(&fixture("v2.json"))
+        .unwrap()
+        .into_timeline();
+    assert_eq!(v2.canvas_width(), 640);
+    assert_eq!(v2.frame_rate(), 30.into());
+    assert_eq!(v2.video_tracks()[0].clips[0].out_point, Some(s(2.0)));
+}
+
+/// The promise this change exists for, end to end: a project authored at a broadcast rate
+/// is written and read back holding that exact ratio.
+///
+/// `30/1` round-trips under any plausible mistake in the ratio's serialised shape, so the
+/// rate here is one whose numerator and denominator are both load-bearing.
+#[test]
+fn a_broadcast_rate_should_survive_saving_and_loading() {
+    let before = Timeline::builder()
+        .canvas(640, 360)
+        .frame_rate(Rational::new(30_000, 1001))
+        .video_track(vec![Clip::new("input.mp4").trim(Duration::ZERO, s(2.0))])
+        .build()
+        .expect("a timeline whose clip is never opened still builds");
+
+    let text = Project::new(before).to_json_string().expect("serialises");
+    let after = Project::from_json_str(&text)
+        .expect("deserialises")
+        .into_timeline();
+
+    let rate = after.frame_rate();
+    assert_eq!(
+        (rate.num(), rate.den()),
+        (30_000, 1001),
+        "the ratio has to come back as itself, not as a decimal that approximates it"
+    );
+}
+
+/// The branch an integer rate cannot test: a version 1 document that stored `29.97` has
+/// to come back as `30000/1001`, not as the decimal read literally.
+///
+/// Someone who wrote `29.97` was cutting NTSC material, because that is what the number
+/// means here. Reading it as `2997/100` would pin the project to a grid 0.1% off, and the
+/// frame-exact addressing this change exists for is what would then make that visible
+/// (#1947).
+#[test]
+fn a_version_one_decimal_broadcast_rate_should_load_as_its_standard_ratio() {
+    let loaded = Project::from_json_str(&fixture("v1-ntsc.json"))
+        .unwrap()
+        .into_timeline();
+    let rate = loaded.frame_rate();
+    assert_eq!(
+        (rate.num(), rate.den()),
+        (30000, 1001),
+        "29.97 names 30000/1001; a literal reading would give 2997/100"
+    );
 }
 
 #[test]

@@ -58,10 +58,12 @@ pub enum TimelineError {
     /// [`TimelineIssue::DegenerateFrameRate`](crate::TimelineIssue::DegenerateFrameRate),
     /// and the edit path returns
     /// [`EditError::InvalidFrameRate`](crate::EditError::InvalidFrameRate).
-    #[error("frame rate {fps} is not a positive, finite number")]
+    #[error("frame rate {rate} is not positive")]
     InvalidFrameRate {
-        /// The rejected frame rate.
-        fps: f64,
+        /// The rejected frame rate, as the ratio it was given as. A ratio rather than a
+        /// decimal so `30/0` and `0/0` stay distinguishable; `as_f64` collapses them to
+        /// infinity and `NaN` (#1947).
+        rate: ff_format::Rational,
     },
 
     /// A source file exists but the configured render path cannot use it.

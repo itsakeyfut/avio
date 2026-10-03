@@ -59,14 +59,15 @@ use avio::{
 };
 use ff_decode::VideoDecoder;
 use ff_encode::{BitrateMode, VideoCodec};
+use ff_format::Rational;
 use ff_preview::FrameSink;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 const CANVAS_W: u32 = 64;
 const CANVAS_H: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 /// Frames in the source, and therefore the frames the export must decode (give or take
-/// an encoder flush frame). The clip's duration follows from this and `FPS`, so the two
+/// an encoder flush frame). The clip's duration follows from this and `FPS.as_f64()`, so the two
 /// legs are compared against one definition of the timeline's length.
 const EXPECTED_FRAMES: usize = 15;
 /// The source fill in YUV. Deliberately chromatic (≈ rgb(165, 110, 53)): a grey source
@@ -222,7 +223,7 @@ fn preview_and_export_should_agree_structurally() {
         &src,
         CANVAS_W,
         CANVAS_H,
-        FPS,
+        FPS.as_f64(),
         EXPECTED_FRAMES,
         SRC_YUV[0],
         SRC_YUV[1],
@@ -305,14 +306,14 @@ fn preview_and_export_should_agree_structurally() {
         preview.frames < MAX_PREVIEW_FRAMES,
         "preview runner did not terminate (spin guard tripped at {MAX_PREVIEW_FRAMES} frames)"
     );
-    // The timeline is exactly the source's length: `EXPECTED_FRAMES` frames at `FPS`.
-    let end = Duration::from_secs_f64(EXPECTED_FRAMES as f64 / FPS);
+    // The timeline is exactly the source's length: `EXPECTED_FRAMES` frames at `FPS.as_f64()`.
+    let end = Duration::from_secs_f64(EXPECTED_FRAMES as f64 / FPS.as_f64());
     // Unpaced delivery drops nothing, so the preview must have played the same frames
     // the export encoded, and its last frame must be the last one before `end`. This
     // used to be a half-span bound and then an elapsed-time arm (#1723, #1780), each
     // widened for a wall-clock runner that lost frames under load; ADR-0015 removed
     // the wall clock from this test instead.
-    let frame_period = Duration::from_secs_f64(1.0 / FPS);
+    let frame_period = Duration::from_secs_f64(1.0 / FPS.as_f64());
     assert_eq!(
         preview.frames, EXPECTED_FRAMES,
         "preview must deliver every source frame: {} frames, last pts {:?} (end {end:?})",

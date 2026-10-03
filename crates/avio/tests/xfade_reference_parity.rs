@@ -211,7 +211,7 @@ fn worst_window_divergence(
 ) -> Option<(f64, usize)> {
     let timeline = Timeline::builder()
         .canvas(W, H)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new(a).trim(Duration::ZERO, Duration::from_secs(1)),
             Clip::new(b)

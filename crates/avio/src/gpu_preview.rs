@@ -184,7 +184,7 @@ mod tests {
         // Forcing CPU must never inject the GPU compositor, regardless of adapter.
         let timeline = Timeline::builder()
             .canvas(16, 16)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::solid(Color::rgb(10, 20, 30)).trim(Duration::ZERO, Duration::from_secs(1)),
             ])
@@ -210,7 +210,7 @@ mod tests {
         }
         let timeline = Timeline::builder()
             .canvas(16, 16)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::solid(Color::rgb(10, 20, 30)).trim(Duration::ZERO, Duration::from_secs(1)),
             ])

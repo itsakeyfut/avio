@@ -48,7 +48,7 @@ fn render_pitched(tag: &str, semitones: f64, source_rate: u32) -> Option<PathBuf
     let out = test_output_path(&format!("pitch_out_{tag}.mp4"));
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video)])
         .audio_track(vec![Clip::new(&tone).with_pitch(semitones)])
         .build()

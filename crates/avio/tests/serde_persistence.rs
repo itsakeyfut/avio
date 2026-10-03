@@ -23,7 +23,7 @@ use ff_format::{Color, TextSpec};
 fn sample_timeline() -> Timeline {
     Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new("intro.mp4")
                 .trim(Duration::from_secs(1), Duration::from_secs(3))
@@ -72,7 +72,7 @@ fn timeline_should_round_trip_through_serde() {
     // Structural + id-preservation checks on the deserialized document.
     assert_eq!(back.canvas_width(), 1920);
     assert_eq!(back.canvas_height(), 1080);
-    assert!((back.frame_rate() - 30.0).abs() < f64::EPSILON);
+    assert_eq!(back.frame_rate(), 30.into());
     assert_eq!(back.video_tracks().len(), 2);
     assert_eq!(back.audio_tracks().len(), 1);
 
@@ -201,7 +201,7 @@ fn clip_typed_effects_should_round_trip_through_serde() {
     // are stamped, then round-trip the whole timeline.
     let base = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new("v.mp4")])
         .build()
         .unwrap();
@@ -259,7 +259,7 @@ fn clip_typed_effects_should_round_trip_through_serde() {
 fn timeline_audio_filter_should_round_trip_through_serde() {
     let original = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .audio_track(vec![Clip::new("music.mp3")])
         .audio_filter(vec![
             FilterStep::Volume(-2.0),
@@ -302,7 +302,7 @@ fn timeline_track_audio_effects_should_round_trip_through_serde() {
     ]);
     let original = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .audio_track_with(track)
         .build()
         .unwrap();
@@ -341,7 +341,7 @@ fn timeline_track_audio_effects_should_round_trip_through_serde() {
 fn markers_should_round_trip_through_serde() {
     let base = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new("a.mp4")])
         .build()
         .unwrap();
@@ -387,7 +387,7 @@ fn markers_should_round_trip_through_serde() {
 fn groups_should_round_trip_through_serde() {
     let base = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::new("a.mp4"),
             Clip::new("b.mp4"),

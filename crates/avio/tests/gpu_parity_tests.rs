@@ -2455,7 +2455,7 @@ fn preview_runner_should_fall_back_and_advance_on_unsupported_clip() {
 
     let timeline = Timeline::builder()
         .canvas(64, 48)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![
             Clip::solid(Color::rgb(20, 120, 200))
                 .trim(Duration::ZERO, Duration::from_secs(1))

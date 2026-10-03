@@ -99,7 +99,7 @@ fn render_audio(tag: &str, speed: f64) -> Option<(f64, f64)> {
 
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video).trim(Duration::ZERO, s(4.0))])
         .audio_track(vec![
             Clip::new(&tone)
@@ -169,7 +169,7 @@ fn a_retimed_clips_audio_and_video_should_cover_the_same_span() {
     };
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![clip(&video)])
         .audio_track(vec![clip(&tone)])
         .build()
@@ -231,7 +231,7 @@ fn a_silent_clip_at_a_high_speed_should_stay_finite() {
     let _go = FileGuard::new(out.clone());
     let timeline = match Timeline::builder()
         .canvas(160, 120)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![Clip::new(&video).trim(Duration::ZERO, s(1.0))])
         .audio_track(vec![
             Clip::new(&silent)

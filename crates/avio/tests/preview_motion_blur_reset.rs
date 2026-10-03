@@ -28,13 +28,14 @@ use std::time::Duration;
 use avio::{Clip, GpuPreviewCompositor, Pacing, PlayerHandle, Timeline, TimelinePlayer};
 use ff_encode::{VideoCodec, VideoEncoder};
 use ff_filter::FilterStep;
+use ff_format::Rational;
 use ff_format::VideoFrame;
 use ff_preview::FrameSink;
 use fixtures::{FileGuard, test_output_path};
 
 const W: u32 = 64;
 const H: u32 = 64;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 const SOURCE_FRAMES: usize = 45;
 /// Each clip runs one second, so the cut is at 1 s.
 const CLIP: Duration = Duration::from_secs(1);
@@ -68,7 +69,7 @@ impl FrameSink for RecordingSink {
 /// Writes `SOURCE_FRAMES` frames of a flat colour, or `None` when there is no encoder.
 fn make_source(path: &std::path::Path, color: [u8; 3]) -> Option<()> {
     let mut enc = VideoEncoder::create(path)
-        .video(W, H, FPS)
+        .video(W, H, FPS.as_f64())
         .video_codec(VideoCodec::Mpeg4)
         .build()
         .ok()?;

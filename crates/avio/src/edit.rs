@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use ff_filter::BlendMode;
+use ff_format::Rational;
 use thiserror::Error;
 
 use crate::clip::{Clip, ClipSource};
@@ -246,8 +247,10 @@ pub enum Command {
     },
     /// Set the output frame rate (must be positive).
     SetFrameRate {
-        /// Frames per second.
-        fps: f64,
+        /// The rate, as a ratio. `Rational::new(30000, 1001)` is NTSC and `30.into()`
+        /// is thirty; there is no decimal form, because the two are different rates
+        /// and only the caller knows which was meant (#1947).
+        rate: Rational,
     },
     /// Append a typed effect to a clip's ordered effect list (assigned a fresh
     /// [`EffectId`]). The effect starts enabled.
@@ -406,13 +409,17 @@ pub enum EditError {
         /// Requested height.
         height: u32,
     },
-    /// Frame rate must be a positive, finite number.
+    /// Frame rate must be positive.
     ///
-    /// `NaN` and infinity are rejected alongside zero and negatives: a frame rate
-    /// divides the timeline into frames, and none of the four has an interpretation
-    /// there (#1932).
+    /// A frame rate divides the timeline into frames, and a degenerate ratio has no
+    /// interpretation there (#1932). Since the rate became a ratio the degenerate set is
+    /// spelled differently but is no smaller: `0/1`, a negative, and a zero denominator,
+    /// which `Rational::is_positive` rejects together (#1947).
+    ///
+    /// The ratio is carried rather than a decimal, because `as_f64` reports `30/0` as
+    /// infinity and `0/0` as `NaN` and so could not name back the value that was passed.
     #[error("invalid frame rate: {0}")]
-    InvalidFrameRate(f64),
+    InvalidFrameRate(Rational),
 }
 
 /// Applies `command` to `timeline`, returning a **new** [`Timeline`].
@@ -715,13 +722,15 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             next.canvas_height = *height;
             next.canvas_explicit = true;
         }
-        Command::SetFrameRate { fps } => {
-            // `<= 0.0` was not this: `NaN` fails every comparison, so it slipped
-            // through, and infinity passed outright (#1932).
-            if !crate::clip::is_positive_finite(*fps) {
-                return Err(EditError::InvalidFrameRate(*fps));
+        Command::SetFrameRate { rate } => {
+            // `Rational::is_positive` is `num > 0 && den > 0`, so one call covers every
+            // degenerate ratio, including the zero denominator that `as_f64` would
+            // report as infinity (#1947). The predicate this replaced was
+            // `is_positive_finite`, which stays for `speed` (still a decimal).
+            if !rate.is_positive() {
+                return Err(EditError::InvalidFrameRate(*rate));
             }
-            next.frame_rate = *fps;
+            next.frame_rate = *rate;
         }
         Command::AddEffect { clip, kind } => {
             // Reserve a fresh id before the mutable clip borrow (as `AddClip` does).
@@ -1334,7 +1343,7 @@ mod tests {
         let clips: Vec<Clip> = (0..n).map(|i| Clip::new(format!("clip{i}.mp4"))).collect();
         Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(clips)
             .build()
             .unwrap()
@@ -1354,7 +1363,7 @@ mod tests {
     fn two_clips_at(off0: u64, off1: u64) -> Timeline {
         Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("a.mp4").offset(Duration::from_secs(off0)),
                 Clip::new("b.mp4").offset(Duration::from_secs(off1)),
@@ -1552,7 +1561,7 @@ mod tests {
     fn apply_should_preserve_clip_ids_across_an_unrelated_edit() {
         let t = timeline_with(2);
         let ids_before: Vec<ClipId> = t.video_tracks()[0].clips.iter().map(|c| c.id).collect();
-        let out = apply(&t, &Command::SetFrameRate { fps: 24.0 }).unwrap();
+        let out = apply(&t, &Command::SetFrameRate { rate: 24.into() }).unwrap();
         let ids_after: Vec<ClipId> = out.video_tracks()[0].clips.iter().map(|c| c.id).collect();
         assert_eq!(
             ids_before, ids_after,
@@ -1579,8 +1588,8 @@ mod tests {
     #[test]
     fn apply_set_frame_rate_should_update_fps() {
         let t = timeline_with(1);
-        let out = apply(&t, &Command::SetFrameRate { fps: 24.0 }).unwrap();
-        assert!((out.frame_rate() - 24.0).abs() < f64::EPSILON);
+        let out = apply(&t, &Command::SetFrameRate { rate: 24.into() }).unwrap();
+        assert_eq!(out.frame_rate(), 24.into());
     }
 
     #[test]
@@ -1691,7 +1700,7 @@ mod tests {
     fn build_should_assign_unique_ids_across_all_tracks() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v0.mp4"), Clip::new("v1.mp4")])
             .video_track(vec![Clip::new("v2.mp4")])
             .audio_track(vec![Clip::new("a0.mp3")])
@@ -1724,44 +1733,49 @@ mod tests {
         assert_eq!(clip_ids.len(), n_clips, "clip ids unique across all tracks");
     }
 
+    /// #1932's cases, respelled for a ratio rather than relaxed. `NaN` and infinity
+    /// cannot be built, but `Rational::new` normalises a negative denominator and does
+    /// not reject a zero one, so the degenerate set is still four wide (#1947). Both
+    /// halves of `num > 0 && den > 0` are broken on their own here, which is the shape
+    /// #1932 found was missing.
     #[test]
-    fn apply_invalid_frame_rate_should_err() {
+    fn set_frame_rate_should_refuse_a_degenerate_rate() {
         let t = timeline_with(1);
-        let err = apply(&t, &Command::SetFrameRate { fps: 0.0 }).unwrap_err();
-        assert_eq!(err, EditError::InvalidFrameRate(0.0));
-    }
-
-    /// `NaN` fails every comparison, so the old `<= 0.0` guard let it through (#1932).
-    #[test]
-    fn set_frame_rate_should_refuse_a_nan() {
-        let t = timeline_with(1);
-        let err = apply(&t, &Command::SetFrameRate { fps: f64::NAN }).unwrap_err();
-        assert!(
-            matches!(err, EditError::InvalidFrameRate(fps) if fps.is_nan()),
-            "expected InvalidFrameRate for NaN, got {err:?}"
-        );
-    }
-
-    /// Infinity passed the old guard outright.
-    #[test]
-    fn set_frame_rate_should_refuse_an_infinite_rate() {
-        let t = timeline_with(1);
-        for fps in [f64::INFINITY, f64::NEG_INFINITY] {
-            let err = apply(&t, &Command::SetFrameRate { fps }).unwrap_err();
-            assert_eq!(
-                err,
-                EditError::InvalidFrameRate(fps),
-                "expected InvalidFrameRate for {fps}"
+        for rate in [
+            Rational::new(0, 1),
+            Rational::new(-30, 1),
+            Rational::new(30, 0),
+            Rational::new(0, 0),
+        ] {
+            let err = apply(&t, &Command::SetFrameRate { rate }).unwrap_err();
+            // The components rather than `==`: `Rational`'s `PartialEq` cross-multiplies,
+            // so `0/0` equals every ratio and two of these rows would pass even if the
+            // error named something else.
+            assert!(
+                matches!(err, EditError::InvalidFrameRate(got) if got.num() == rate.num() && got.den() == rate.den()),
+                "expected InvalidFrameRate naming {}/{}, got {err:?}",
+                rate.num(),
+                rate.den()
             );
         }
+    }
+
+    /// The control: an ordinary rate is accepted, including the broadcast one the model
+    /// could not previously hold.
+    #[test]
+    fn set_frame_rate_should_accept_a_broadcast_rate() {
+        let t = timeline_with(1);
+        let rate = Rational::new(30_000, 1001);
+        let out = apply(&t, &Command::SetFrameRate { rate }).unwrap();
+        assert_eq!(out.frame_rate(), rate);
     }
 
     /// The control: a predicate that refuses everything is not a fix.
     #[test]
     fn set_frame_rate_should_accept_a_normal_rate() {
         let t = timeline_with(1);
-        let out = apply(&t, &Command::SetFrameRate { fps: 24.0 }).unwrap();
-        assert!((out.frame_rate() - 24.0).abs() < f64::EPSILON);
+        let out = apply(&t, &Command::SetFrameRate { rate: 24.into() }).unwrap();
+        assert_eq!(out.frame_rate(), 24.into());
     }
 
     #[test]
@@ -1794,12 +1808,12 @@ mod tests {
                     track: track0(&t),
                     clip: Box::new(Clip::new("a.mp4")),
                 },
-                Command::SetFrameRate { fps: 24.0 },
+                Command::SetFrameRate { rate: 24.into() },
             ]),
         )
         .unwrap();
         assert_eq!(out.video_tracks()[0].clips.len(), 2);
-        assert!((out.frame_rate() - 24.0).abs() < f64::EPSILON);
+        assert_eq!(out.frame_rate(), 24.into());
     }
 
     #[test]
@@ -1816,14 +1830,14 @@ mod tests {
                 Command::RemoveClip {
                     clip: ClipId::UNSET,
                 },
-                Command::SetFrameRate { fps: 24.0 },
+                Command::SetFrameRate { rate: 24.into() },
             ]),
         )
         .unwrap_err();
         assert_eq!(err, EditError::ClipNotFound { id: ClipId::UNSET });
         // apply returned Err, so the caller keeps the original timeline unchanged.
         assert_eq!(t.video_tracks()[0].clips.len(), 1);
-        assert!((t.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(t.frame_rate(), 30.into());
     }
 
     #[test]
@@ -1831,7 +1845,7 @@ mod tests {
         let t = timeline_with(1);
         let out = apply(&t, &Command::Batch(vec![])).unwrap();
         assert_eq!(out.video_tracks()[0].clips.len(), 1);
-        assert!((out.frame_rate() - 30.0).abs() < f64::EPSILON);
+        assert_eq!(out.frame_rate(), 30.into());
     }
 
     #[test]
@@ -1972,7 +1986,7 @@ mod tests {
         // `find_clip_mut` scans both track lists, so SetClip resolves an audio clip.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3")])
             .build()
@@ -1999,7 +2013,7 @@ mod tests {
     fn split_setup(clip: Clip) -> (Timeline, ClipId) {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![clip])
             .build()
             .unwrap();
@@ -2179,7 +2193,7 @@ mod tests {
         // `find_clip_track_mut` scans both lists, so SplitClip resolves an audio clip.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![
                 Clip::new("a.mp3").trim(Duration::ZERO, Duration::from_secs(8)),
@@ -2210,7 +2224,7 @@ mod tests {
         clip.scale = 1.5;
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![clip])
             .video_track(vec![]) // empty destination track
             .build()
@@ -2278,7 +2292,7 @@ mod tests {
         }));
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![clip])
             .video_track(vec![])
             .build()
@@ -2331,7 +2345,7 @@ mod tests {
         };
         Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4), mk("c.mp4", 8)])
             .build()
             .unwrap()
@@ -2366,7 +2380,7 @@ mod tests {
         };
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4)])
             .video_track(vec![Clip::new("o.mp4").offset(Duration::from_secs(4))])
             .build()
@@ -2390,7 +2404,7 @@ mod tests {
         a.speed = 2.0;
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![a, Clip::new("b.mp4").offset(Duration::from_secs(5))])
             .build()
             .unwrap();
@@ -2408,7 +2422,7 @@ mod tests {
         // `a` is open-ended (no trim); its footprint is unknown, so nothing shifts.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("a.mp4").offset(Duration::ZERO),
                 Clip::new("b.mp4").offset(Duration::from_secs(5)),
@@ -2495,7 +2509,7 @@ mod tests {
         };
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![mk("a.mp4", 0), mk("b.mp4", 4)])
             .video_track(vec![Clip::new("o.mp4").offset(Duration::from_secs(4))])
             .build()
@@ -2532,7 +2546,7 @@ mod tests {
         a.speed = 2.0;
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![a, Clip::new("b.mp4").offset(Duration::from_secs(5))])
             .build()
             .unwrap();
@@ -2633,7 +2647,7 @@ mod tests {
         // applies.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("a.mp4").offset(Duration::ZERO),
                 Clip::new("b.mp4").offset(Duration::from_secs(5)),
@@ -2932,7 +2946,7 @@ mod tests {
         // A/V pair (video v, audio a, both @0), grouped. Move v to a 2nd video track @5s.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![Clip::new("v.mp4")])
             .audio_track(vec![Clip::new("a.mp3")])
             .build()
@@ -2975,7 +2989,7 @@ mod tests {
         // Grouped video v + audio a; an ungrouped video clip w must survive.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4"),
                 Clip::new("w.mp4").offset(Duration::from_secs(30)),
@@ -3031,7 +3045,7 @@ mod tests {
     fn trim_clip_should_carry_the_delta_not_the_value_to_a_member() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::from_secs(2), Duration::from_secs(6)),
             ])
@@ -3068,7 +3082,7 @@ mod tests {
     fn trim_propagation_should_scale_by_each_member_speed() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4")
                     .trim(Duration::ZERO, Duration::from_secs(8))
@@ -3104,7 +3118,7 @@ mod tests {
     fn trim_propagation_should_clamp_a_member_instead_of_inverting_it() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(10)),
             ])
@@ -3146,7 +3160,7 @@ mod tests {
     fn trim_should_not_propagate_an_unset_out_point() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -3179,7 +3193,7 @@ mod tests {
     fn ripple_trim_should_propagate_to_every_group_member_and_ripple_each_track() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
                 Clip::new("v2.mp4")
@@ -3232,7 +3246,7 @@ mod tests {
     fn split_clip_should_put_the_right_halves_in_one_new_group() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(10)),
             ])
@@ -3265,7 +3279,7 @@ mod tests {
     fn linked_pair() -> (Timeline, ClipId, ClipId) {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -3311,7 +3325,7 @@ mod tests {
     fn split_clip_should_skip_a_group_member_that_does_not_span_the_cut() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(8)),
             ])
@@ -3381,7 +3395,7 @@ mod tests {
     fn split_clip_should_leave_an_ungrouped_clip_ungrouped() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -3412,7 +3426,7 @@ mod tests {
     fn locked_and_unlocked() -> (Timeline, ClipId, ClipId, TrackId) {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track_with(
                 Track::new(vec![
                     Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
@@ -3511,7 +3525,7 @@ mod tests {
         // member that is still free.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -3553,7 +3567,7 @@ mod tests {
         // track even when the clip it names sits on a free one.
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -3625,8 +3639,8 @@ mod tests {
     #[test]
     fn timeline_level_commands_should_be_unaffected_by_a_lock() {
         let (t, _clip, _free, _track) = locked_and_unlocked();
-        let out = apply(&t, &Command::SetFrameRate { fps: 25.0 }).unwrap();
-        assert!((out.frame_rate() - 25.0).abs() < f64::EPSILON);
+        let out = apply(&t, &Command::SetFrameRate { rate: 25.into() }).unwrap();
+        assert_eq!(out.frame_rate(), 25.into());
         let out = apply(
             &out,
             &Command::SetCanvas {
@@ -4098,7 +4112,7 @@ mod tests {
     fn video_and_audio() -> (Timeline, ClipId, TrackId, TrackId) {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])
@@ -4251,7 +4265,7 @@ mod tests {
     fn a_locked_track_should_be_refused_before_the_kind_rule() {
         let t = Timeline::builder()
             .canvas(1920, 1080)
-            .frame_rate(30.0)
+            .frame_rate(30.into())
             .video_track(vec![
                 Clip::new("v.mp4").trim(Duration::ZERO, Duration::from_secs(4)),
             ])

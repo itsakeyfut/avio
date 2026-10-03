@@ -136,7 +136,9 @@ fn main() -> BoxResult<()> {
     let Some(v) = in_video.first() else {
         return Err("input has no video stream".into());
     };
-    let (canvas_w, canvas_h, fps) = (v.width(), v.height(), v.fps());
+    let (canvas_w, canvas_h, rate) = (v.width(), v.height(), v.frame_rate());
+    // The ratio drives the timeline; the decimal is only for the messages below.
+    let fps = rate.as_f64();
     let duration = in_info.duration();
 
     // The clip builder's colour correction is a `ColorCorrect` effect on the same list
@@ -144,7 +146,7 @@ fn main() -> BoxResult<()> {
     let clip = Clip::new(&input).with_color_correction(0.0, CONTRAST, 1.0);
     let timeline = Timeline::builder()
         .canvas(canvas_w, canvas_h)
-        .frame_rate(fps)
+        .frame_rate(rate)
         .video_track(vec![clip])
         .build()?;
 

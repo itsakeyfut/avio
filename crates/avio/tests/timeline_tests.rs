@@ -13,12 +13,13 @@ use avio::{AudioProperty, Clip, EncoderConfig, Timeline, TimelineError, Track};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
 use ff_filter::FilterStep;
 use ff_filter::animation::{AnimationTrack, Easing};
+use ff_format::Rational;
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
 // Small canvas for fast CI runs.
 const W: u32 = 160;
 const H: u32 = 90;
-const FPS: f64 = 30.0;
+const FPS: Rational = Rational::new(30, 1);
 // 30 frames ≈ 1 second of source content per clip.
 const FRAME_COUNT: usize = 30;
 
@@ -45,7 +46,7 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
     let _g_out = FileGuard::new(out_path.clone());
 
     // Y=76, U=84, V=255 ≈ red in YUV420P
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 76, 84, 255).is_none() {
         return;
     }
 
@@ -138,7 +139,7 @@ fn timeline_audio_filter_should_render_through_master_chain() {
     let _g_src = FileGuard::new(src_path.clone());
     let _g_out = FileGuard::new(out_path.clone());
 
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 76, 84, 255).is_none() {
         return;
     }
 
@@ -200,7 +201,7 @@ fn timeline_track_audio_effect_should_render_through_per_track_chain() {
     let _g_src = FileGuard::new(src_path.clone());
     let _g_out = FileGuard::new(out_path.clone());
 
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 76, 84, 255).is_none() {
         return;
     }
 
@@ -265,7 +266,7 @@ fn timeline_two_tracks_one_with_effect_should_render_mixed_audio() {
     let _g_src = FileGuard::new(src_path.clone());
     let _g_out = FileGuard::new(out_path.clone());
 
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 76, 84, 255).is_none() {
         return;
     }
 
@@ -329,7 +330,7 @@ fn timeline_track_effect_with_master_bus_should_render() {
     let _g_src = FileGuard::new(src_path.clone());
     let _g_out = FileGuard::new(out_path.clone());
 
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 76, 84, 255).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 76, 84, 255).is_none() {
         return;
     }
 
@@ -394,7 +395,7 @@ fn render_with_progress_should_cancel_when_callback_returns_false() {
     let _g_out = FileGuard::new(out_path.clone());
 
     // Y=100, U=100, V=100 ≈ grey
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 100, 100, 100).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 100, 100, 100).is_none() {
         return;
     }
 
@@ -449,7 +450,7 @@ fn timeline_with_transition_should_build_without_error() {
 
     let result = Timeline::builder()
         .canvas(1920, 1080)
-        .frame_rate(30.0)
+        .frame_rate(30.into())
         .video_track(vec![clip_a, clip_b])
         .build();
 
@@ -470,7 +471,7 @@ fn render_with_progress_should_invoke_callback_with_incrementing_frame_count() {
     let _g_src = FileGuard::new(src_path.clone());
     let _g_out = FileGuard::new(out_path.clone());
 
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 100, 100, 100).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 100, 100, 100).is_none() {
         return;
     }
 
@@ -543,7 +544,7 @@ fn timeline_with_volume_animation_should_encode_successfully() {
     let _g_out = FileGuard::new(out_path.clone());
 
     // Y=128, U=128, V=128 ≈ grey
-    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 128, 128, 128).is_none() {
+    if make_source_file(&src_path, W, H, FPS.as_f64(), FRAME_COUNT, 128, 128, 128).is_none() {
         return;
     }
 
