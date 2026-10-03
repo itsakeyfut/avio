@@ -19,6 +19,7 @@ mod push_pull;
 
 pub(crate) use build::add_and_link_step;
 pub(crate) use build::add_asetrate_resample_chain;
+pub(crate) use build::add_audio_delay_step;
 pub(crate) use build::add_pitch_shift_chain;
 pub(crate) use build::have_filter;
 pub(crate) use build::{

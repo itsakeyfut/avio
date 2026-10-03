@@ -551,10 +551,11 @@ pub(crate) fn audio_track(
     // move together because they were wrong together: A/V stayed in sync only because
     // both were scaled by the same factor.
     if clip.offset > Duration::ZERO {
-        // `as_millis()` matches the old inline `adelay` (integer ms); offset
-        // magnitudes are far below f64's exact-integer range.
-        #[allow(clippy::cast_precision_loss)]
-        let ms = clip.offset.as_millis() as f64;
+        // Full precision, as `ATrim` above already uses: `as_millis()` truncated to a
+        // whole millisecond, which at 48 kHz pulled every clip up to 47 samples toward
+        // the start of the timeline (#1915). The graph builder turns this into a sample
+        // index, so what is lost here cannot be recovered later.
+        let ms = clip.offset.as_secs_f64() * 1000.0;
         effects.push(FilterStep::AudioDelay { ms });
     }
     // Per-clip pitch shift (semitones), via the shared `audio_pitch` so export and
@@ -1293,6 +1294,28 @@ mod tests {
         assert!(matches!(kinds[3], FilterStep::AudioDelay { .. }));
         assert!(matches!(kinds[4], FilterStep::AFadeIn { .. }));
         assert!(matches!(kinds[5], FilterStep::AFadeOut { .. }));
+    }
+
+    /// The offset is a position on the timeline, so its sub-millisecond part has to
+    /// reach the graph builder: `as_millis()` truncated it, which at 48 kHz moved
+    /// every clip up to 47 samples toward the start (#1915). The builder converts
+    /// this to a sample index, so precision lost here is lost for good.
+    #[test]
+    fn audio_delay_should_keep_a_sub_millisecond_offset() {
+        let clip = Clip::new("a.mp3").offset(Duration::from_nanos(1_234_567));
+        let track = audio_track(&clip, &no_anim(), None);
+        let delay = track
+            .effects
+            .iter()
+            .find_map(|s| match s {
+                FilterStep::AudioDelay { ms } => Some(*ms),
+                _ => None,
+            })
+            .expect("an offset clip carries an AudioDelay");
+        assert!(
+            (delay - 1.234_567).abs() < 1e-9,
+            "the offset must survive as fractional milliseconds, got {delay}"
+        );
     }
 
     #[test]

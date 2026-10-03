@@ -2028,6 +2028,34 @@ unsafe fn build_audio_mix_unsafe(
                     sample_rate,
                     combined_idx,
                 )
+            } else if let crate::FilterStep::AudioDelay { ms } = step {
+                // `sample_rate` is the rate `adelay` sees, so the sample count below is
+                // in the right unit. That is not obvious, because the engine's track
+                // spec carries the target rate and the conditional `aresample` above
+                // therefore never fires, leaving `amovie` emitting the file's own rate
+                // into this chain. It holds because `adelay` reads `delays` in
+                // `config_input`, after format negotiation, and negotiation resolves
+                // this link to the rate the sink demands: every filter between here and
+                // `aformat` is rate-agnostic, so the conversion lands upstream of
+                // `adelay` rather than below it.
+                //
+                // Measured rather than assumed, because the alternative was an explicit
+                // `add_rate_normaliser` here of the kind `Speed` needs above. With a
+                // 44.1 kHz source and no normaliser the clip still lands within one
+                // sample of `offset * 48000`, so the node would have been dead weight.
+                // `Speed` is not the same case: `asetrate` takes an absolute rate at
+                // construction, before negotiation has decided anything.
+                //
+                // The assumption is pinned by
+                // `audio_offset_precision::the_export_should_place_a_clip_on_the_right_sample_at_44_1_khz`,
+                // which fails if negotiation ever stops doing this (#1915).
+                crate::filter_inner::add_audio_delay_step(
+                    graph,
+                    chain_end,
+                    *ms,
+                    sample_rate,
+                    combined_idx,
+                )
             } else {
                 // Audio mix path: `animation_entries` is empty for audio steps.
                 crate::filter_inner::add_and_link_step(
