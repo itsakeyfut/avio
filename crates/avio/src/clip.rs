@@ -12,7 +12,7 @@ use ff_filter::{
     AnimationTrack, BlendMode, CompositeOp, FilterGraph, FilterStep, RealtimeLayer,
     RealtimeLayerDescriptor, XfadeTransition,
 };
-use ff_format::{Color, PixelFormat, TextSpec, VideoFrame};
+use ff_format::{Color, PixelFormat, Rational, TextSpec, Timestamp, VideoFrame};
 
 use crate::effect::{ClipEffect, EffectDomain, EffectKind, Param};
 use crate::error::TimelineError;
@@ -1154,6 +1154,55 @@ impl Clip {
             _ => None,
         }
     }
+
+    /// Which frame **of the source** the in-point falls on, at `source_rate`.
+    ///
+    /// Zero when no in-point is set, which is where the source starts.
+    ///
+    /// # Why the rate is a parameter
+    ///
+    /// An in-point is a position in the source, so it has to be counted at the source's
+    /// own rate: a 23.976 clip in a 29.97 timeline has its in-point on the frame the user
+    /// picked in the source, not on whatever frame the timeline's rate would compute. The
+    /// model does not store the source's rate, because a probe already knows it and
+    /// holding a second copy is how the two come to disagree; and this is a getter, so it
+    /// must not open the file to find out (ADR-0023 keeps I/O in `TimelineBuilder::build`).
+    ///
+    /// Use [`Timeline::frame_at`](crate::Timeline::frame_at) for a position on the
+    /// timeline, which is counted at the timeline's rate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use avio::Clip;
+    /// use ff_format::Rational;
+    ///
+    /// let clip = Clip::new("a.mp4").trim(Duration::from_secs(1), Duration::from_secs(2));
+    /// assert_eq!(clip.in_point_frame(Rational::new(24_000, 1001)), 24);
+    /// assert_eq!(clip.in_point_frame(Rational::new(30_000, 1001)), 30);
+    /// ```
+    #[must_use]
+    pub fn in_point_frame(&self, source_rate: Rational) -> u64 {
+        Timestamp::from_duration(
+            self.in_point.unwrap_or(Duration::ZERO),
+            source_rate.invert(),
+        )
+        .as_frame_number_rational(source_rate)
+    }
+
+    /// Which frame of the source the out-point falls on, at `source_rate`.
+    ///
+    /// `None` when no out-point is set, which is the clip running to the end of its
+    /// source: there is no frame to name without opening the file. See
+    /// [`in_point_frame`](Self::in_point_frame) for why the rate is a parameter.
+    #[must_use]
+    pub fn out_point_frame(&self, source_rate: Rational) -> Option<u64> {
+        self.out_point.map(|out| {
+            Timestamp::from_duration(out, source_rate.invert())
+                .as_frame_number_rational(source_rate)
+        })
+    }
 }
 
 /// Reusable single-frame renderer for a [`Clip`]'s video effect chain.
@@ -1214,6 +1263,33 @@ impl VideoEffectRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An in-point is a position in the **source**, so it is counted at the source's rate.
+    ///
+    /// The case that separates this from using the timeline's rate: a 23.976 clip whose
+    /// in-point is one second is on frame 24 of its source, not on the frame 29.97 would
+    /// compute for the same position.
+    #[test]
+    fn in_point_frame_should_count_in_the_sources_own_rate() {
+        let clip = Clip::new("a.mp4").trim(Duration::from_secs(1), Duration::from_secs(2));
+
+        assert_eq!(clip.in_point_frame(Rational::new(24_000, 1001)), 24);
+        assert_eq!(clip.out_point_frame(Rational::new(24_000, 1001)), Some(48));
+
+        assert_eq!(
+            clip.in_point_frame(Rational::new(30_000, 1001)),
+            30,
+            "the same position is a different frame at a different rate, which is why the \
+             rate is a parameter"
+        );
+    }
+
+    #[test]
+    fn in_point_frame_should_read_zero_when_no_in_point_is_set() {
+        let clip = Clip::new("a.mp4");
+        assert_eq!(clip.in_point_frame(Rational::new(30, 1)), 0);
+        assert_eq!(clip.out_point_frame(Rational::new(30, 1)), None);
+    }
 
     /// Only the generated sources are refused, and only on an audio track. A `File`
     /// source is accepted for both kinds here on purpose: deciding it needs to read

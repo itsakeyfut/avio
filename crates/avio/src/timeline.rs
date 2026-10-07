@@ -15,7 +15,7 @@ use ff_filter::{
     AnimatedValue, AnimationTrack, FilterGraph, FilterStep, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoLayer,
 };
-use ff_format::{AudioFrame, ChannelLayout, Rational};
+use ff_format::{AudioFrame, ChannelLayout, Rational, Timecode, TimecodeError, Timestamp};
 
 use crate::clip::Clip;
 use crate::derive;
@@ -173,6 +173,61 @@ impl Timeline {
     /// `Duration` is itself inexact.
     pub fn frame_rate(&self) -> Rational {
         self.frame_rate
+    }
+
+    /// Which output frame `position` falls on.
+    ///
+    /// The same rule the export places a clip by, so a host and the render agree about
+    /// where a frame is. Rounds to the nearest frame rather than truncating, and that is
+    /// load-bearing: converting a position into a `Duration` is inexact at every rate, so
+    /// truncating loses frames even at 25 and 50 fps where one frame is a whole number of
+    /// nanoseconds. `ff_format`'s `time` module documents the measurement.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use avio::{Clip, Timeline};
+    /// use ff_format::Rational;
+    ///
+    /// let timeline = Timeline::builder()
+    ///     .canvas(640, 360)
+    ///     .frame_rate(Rational::new(30_000, 1001))
+    ///     .video_track(vec![Clip::new("a.mp4")])
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(timeline.frame_at(Duration::from_secs(1)), 30);
+    /// assert_eq!(timeline.position_of_frame(30), Duration::from_nanos(1_001_000_000));
+    /// ```
+    #[must_use]
+    pub fn frame_at(&self, position: Duration) -> u64 {
+        Timestamp::from_duration(position, self.frame_rate.invert())
+            .as_frame_number_rational(self.frame_rate)
+    }
+
+    /// Where frame `frame` starts.
+    ///
+    /// The inverse of [`frame_at`](Self::frame_at): every frame this returns a position
+    /// for reads back as itself.
+    #[must_use]
+    pub fn position_of_frame(&self, frame: u64) -> Duration {
+        Timestamp::from_frame_number(frame, self.frame_rate).as_duration()
+    }
+
+    /// The timecode of `position`, written against this timeline's rate.
+    ///
+    /// Drop-frame wherever the rate defines it, which is what a delivery specification
+    /// means by a timecode at 29.97. [`Timecode`] carries the rules.
+    ///
+    /// # Errors
+    ///
+    /// [`TimecodeError::UnusableRate`](ff_format::TimecodeError::UnusableRate) when the
+    /// timeline's rate cannot name a frame. `build` refuses such a rate, so this is
+    /// unreachable through the builder and is returned rather than panicking because
+    /// `Timeline`'s fields are also reachable by deserialising a document.
+    pub fn timecode_at(&self, position: Duration) -> Result<Timecode, TimecodeError> {
+        Timecode::at(self.frame_at(position), self.frame_rate)
     }
 
     /// Returns a slice of all video tracks.
@@ -1648,6 +1703,67 @@ fn source_serves_kind(info: &ff_format::MediaInfo, kind: TrackKind) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Every frame has to read back as itself, at a rate where a frame is not a whole
+    /// number of nanoseconds.
+    #[test]
+    fn frame_at_and_position_of_frame_should_round_trip() {
+        for rate in [
+            Rational::new(30_000, 1001),
+            Rational::new(24_000, 1001),
+            Rational::new(30, 1),
+            Rational::new(25, 1),
+        ] {
+            let timeline = Timeline::builder()
+                .canvas(640, 360)
+                .frame_rate(rate)
+                .video_track(vec![Clip::new("a.mp4")])
+                .build()
+                .unwrap();
+            for frame in [0u64, 1, 2, 29, 30, 1799, 1800, 107_892] {
+                let back = timeline.frame_at(timeline.position_of_frame(frame));
+                assert_eq!(
+                    back,
+                    frame,
+                    "frame {frame} at {}/{} came back as {back}",
+                    rate.num(),
+                    rate.den()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn timecode_at_should_use_drop_frame_at_a_broadcast_rate() {
+        let timeline = Timeline::builder()
+            .canvas(640, 360)
+            .frame_rate(Rational::new(30_000, 1001))
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+
+        let tc = timeline
+            .timecode_at(timeline.position_of_frame(1800))
+            .unwrap();
+        assert!(tc.is_drop_frame());
+        assert_eq!(tc.to_string(), "00:01:00;02");
+    }
+
+    #[test]
+    fn timecode_at_should_use_non_drop_where_the_rate_defines_no_dropping() {
+        let timeline = Timeline::builder()
+            .canvas(640, 360)
+            .frame_rate(Rational::new(25, 1))
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+
+        let tc = timeline
+            .timecode_at(timeline.position_of_frame(1500))
+            .unwrap();
+        assert!(!tc.is_drop_frame());
+        assert_eq!(tc.to_string(), "00:01:00:00");
+    }
 
     // --- a source the render cannot use is refused at build (#1850) ---
 

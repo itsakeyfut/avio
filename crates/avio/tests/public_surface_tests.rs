@@ -32,6 +32,13 @@ fn format_value_types_should_be_publicly_reachable() {
     let _: avio::ChannelLayout = avio::ChannelLayout::default();
     let _: avio::Rational = avio::Rational::default();
     let _: avio::Timestamp = avio::Timestamp::default();
+    // `Timeline::timecode_at` returns both of these, so a caller depending only on `avio`
+    // has to be able to name them: every public type the engine hands out is re-exported
+    // from this crate.
+    let tc: avio::Timecode = avio::Timecode::at(0, avio::Rational::new(30, 1)).unwrap();
+    let _: u64 = tc.frame();
+    let _: Result<avio::Timecode, avio::TimecodeError> =
+        avio::Timecode::parse("00:00:00:00", avio::Rational::new(30, 1));
     let _: avio::MediaInfo = avio::MediaInfo::default();
 }
 

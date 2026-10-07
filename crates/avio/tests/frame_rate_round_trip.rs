@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 
+use avio::{Clip, Timeline};
 use ff_format::Rational;
 
 /// Every rate the engine is expected to hold.
@@ -50,14 +51,27 @@ fn frames() -> Vec<u64> {
     v
 }
 
-/// The position of frame `n`, as the engine computes it.
-fn position(n: u64, rate: Rational) -> Duration {
-    Duration::from_secs_f64(n as f64 / rate.as_f64())
+/// The position of frame `n`, through the engine's own conversion.
+///
+/// A timeline rather than a local helper, so this exercises the code the export uses.
+/// Until #1827 these were reimplemented here, which pinned the *rule* but not the code:
+/// `derive::offset_frames` is `pub(crate)` and unreachable from an integration test.
+fn timeline_at(rate: Rational) -> Timeline {
+    Timeline::builder()
+        .canvas(64, 64)
+        .frame_rate(rate)
+        .video_track(vec![Clip::new("never-opened.mp4")])
+        .build()
+        .expect("a timeline whose clip is never opened still builds")
 }
 
-/// Which frame a position falls on, rounding. This is `derive::offset_frames`'s rule.
+fn position(n: u64, rate: Rational) -> Duration {
+    timeline_at(rate).position_of_frame(n)
+}
+
+/// Which frame a position falls on, rounding, which is the engine's placement rule.
 fn frame_at_rounding(at: Duration, rate: Rational) -> u64 {
-    (at.as_secs_f64() * rate.as_f64()).round() as u64
+    timeline_at(rate).frame_at(at)
 }
 
 /// The same, truncating, which is the rule this change had to not adopt.

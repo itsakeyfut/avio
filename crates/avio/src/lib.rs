@@ -62,8 +62,8 @@ pub use ff_format::{
     ColorTransfer, ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError,
     Hdr10Metadata, MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions,
     PixelFormat, Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo,
-    SubtitleStreamInfoBuilder, TextSpec, TextStyle, Timestamp, VideoCodec, VideoFrame,
-    VideoStreamInfo, VideoStreamInfoBuilder,
+    SubtitleStreamInfoBuilder, TextSpec, TextStyle, Timecode, TimecodeError, Timestamp, VideoCodec,
+    VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // probe (media metadata)

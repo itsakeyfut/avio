@@ -326,6 +326,60 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// Error type for reading and writing SMPTE timecode.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum TimecodeError {
+    /// The frame rate does not divide time into frames, so it cannot name one.
+    ///
+    /// A ratio that is not positive, which includes a zero denominator.
+    #[error("frame rate {}/{} cannot name a frame", rate.num(), rate.den())]
+    UnusableRate {
+        /// The rejected rate.
+        rate: crate::time::Rational,
+    },
+
+    /// Drop-frame was asked for at a rate that does not define it.
+    ///
+    /// SMPTE defines drop-frame only where the nominal rate is a multiple of 30, so 29.97,
+    /// 59.94 and 119.88. Refused rather than quietly written as non-drop, because a
+    /// timecode that claims to be drop-frame and is not names a different position.
+    #[error("drop-frame timecode is not defined at {}/{}", rate.num(), rate.den())]
+    DropFrameUnavailable {
+        /// The rate that does not define drop-frame.
+        rate: crate::time::Rational,
+    },
+
+    /// The string is not four numbers separated by three separators.
+    #[error("malformed timecode: {text}")]
+    Malformed {
+        /// The string as given.
+        text: String,
+    },
+
+    /// A field holds a value it cannot name, such as a frames field at the nominal rate.
+    #[error("timecode {field} is {value}, which is above the maximum {max}")]
+    FieldOutOfRange {
+        /// Which of hours, minutes, seconds or frames.
+        field: &'static str,
+        /// The value read.
+        value: u64,
+        /// The highest value the field can hold.
+        max: u64,
+    },
+
+    /// The string names one of the frame numbers drop-frame skips.
+    ///
+    /// At 29.97, `00:01:00;00` and `00:01:00;01` are not written: the minute starts at
+    /// `;02`. Reading one of them as the next real frame would move the position its
+    /// author wrote, so it is refused instead.
+    #[error("timecode {text} names a frame number drop-frame skips")]
+    DroppedFrameNumber {
+        /// The string as given.
+        text: String,
+    },
+}
+
 /// Error type for subtitle parsing operations.
 #[derive(Debug, Error)]
 pub enum SubtitleError {
