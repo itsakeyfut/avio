@@ -277,6 +277,36 @@ impl Timestamp {
         (self.as_secs_f64() * 1_000_000.0).round() as i64
     }
 
+    /// Creates a timestamp at frame `frame` of a stream running at `fps`.
+    ///
+    /// The inverse of [`as_frame_number_rational`](Self::as_frame_number_rational): the time base is
+    /// `1/fps`, so the frame number *is* the presentation timestamp and no arithmetic is
+    /// involved. That is what makes the pair exact at a broadcast rate, where naming a
+    /// position in seconds cannot be.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::{Rational, Timestamp};
+    ///
+    /// let fps = Rational::new(30000, 1001);     // 29.97
+    /// let ts = Timestamp::from_frame_number(30, fps);
+    /// assert_eq!(ts.pts(), 30);
+    /// assert_eq!(ts.time_base(), Rational::new(1001, 30000));
+    /// assert_eq!(ts.as_frame_number_rational(fps), 30);
+    /// ```
+    #[must_use]
+    pub fn from_frame_number(frame: u64, fps: Rational) -> Self {
+        // `as i64` rather than `try_into`: a frame index that overflows `i64` is 9.7
+        // billion years of material at 30 fps, and `Timestamp`'s own pts is an `i64`
+        // already, so there is no narrower type to report the failure in.
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "a frame index large enough to wrap i64 is not a position any timeline can hold"
+        )]
+        Self::new(frame as i64, fps.invert())
+    }
+
     /// Converts the timestamp to a frame number at the given frame rate.
     ///
     /// # Arguments
@@ -296,18 +326,28 @@ impl Timestamp {
     #[inline]
     pub fn as_frame_number(&self, fps: f64) -> u64 {
         let secs = self.as_secs_f64();
-        if secs < 0.0 {
+        // Through `frame_at_seconds` so the rounding rule has one implementation: `avio`'s
+        // export places clips with the same function, and the two must not be able to
+        // disagree about which frame a position is on (avio#1827).
+        crate::time::frame_at_seconds(secs, fps).unwrap_or_else(|| {
             log::warn!(
-                "timestamp is negative, returning frame 0 \
+                "timestamp cannot name a frame, returning frame 0 \
                  secs={secs} fps={fps} fallback=0"
             );
             0
-        } else {
-            (secs * fps).round() as u64
-        }
+        })
     }
 
     /// Converts the timestamp to a frame number using a rational frame rate.
+    ///
+    /// **This is exact**, which is worth saying because a broadcast rate looks as though it
+    /// could not be. One second at `30000/1001` is 29.97002997... frames, and the nearest
+    /// frame is 30; there is no ambiguity to hedge about. The decimal the conversion goes
+    /// through is sufficient for it, because an `f64` carries 52 bits of mantissa and both
+    /// the nanosecond count and the frame index sit far inside exact-integer range. What
+    /// the ratio buys is knowing *which* rate this is, not arithmetic the decimal gets
+    /// wrong, and `avio`'s `tests/frame_rate_round_trip.rs` holds that over ten million
+    /// frames.
     ///
     /// # Arguments
     ///
@@ -320,8 +360,7 @@ impl Timestamp {
     ///
     /// let ts = Timestamp::new(90000, Rational::new(1, 90000));  // 1 second
     /// let fps = Rational::new(30000, 1001);  // 29.97 fps
-    /// let frame = ts.as_frame_number_rational(fps);
-    /// assert!(frame == 29 || frame == 30);  // Should be approximately 30
+    /// assert_eq!(ts.as_frame_number_rational(fps), 30);
     /// ```
     #[must_use]
     pub fn as_frame_number_rational(&self, fps: Rational) -> u64 {
@@ -524,6 +563,44 @@ mod tests {
     /// Helper for approximate float comparison in tests
     fn approx_eq(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    /// The pair has to be an inverse at every rate, which is the property `avio` builds
+    /// frame addressing on (avio#1827).
+    #[test]
+    fn from_frame_number_should_be_the_inverse_of_as_frame_number() {
+        for (num, den) in [
+            (30_000, 1001),
+            (24_000, 1001),
+            (60_000, 1001),
+            (48_000, 1001),
+            (30, 1),
+            (24, 1),
+            (25, 1),
+            (50, 1),
+        ] {
+            let fps = Rational::new(num, den);
+            for frame in [0u64, 1, 2, 29, 30, 1799, 1800, 107_892, 1_000_000] {
+                let back = Timestamp::from_frame_number(frame, fps).as_frame_number_rational(fps);
+                assert_eq!(back, frame, "frame {frame} at {num}/{den}");
+            }
+        }
+    }
+
+    /// And the position it names is the one a `Duration` holds, so the two ways of asking
+    /// where a frame is agree.
+    #[test]
+    fn from_frame_number_should_agree_with_a_duration_at_the_same_position() {
+        let fps = Rational::new(30_000, 1001);
+        for frame in [1u64, 2, 30, 1800] {
+            let position = Timestamp::from_frame_number(frame, fps).as_duration();
+            let rebuilt = Timestamp::from_duration(position, fps.invert());
+            assert_eq!(
+                rebuilt.as_frame_number_rational(fps),
+                frame,
+                "frame {frame}"
+            );
+        }
     }
 
     mod timestamp_tests {

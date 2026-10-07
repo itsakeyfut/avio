@@ -79,6 +79,21 @@ pub enum Command {
         /// New timeline offset.
         offset: Duration,
     },
+    /// Move a clip so it starts on a given output frame.
+    ///
+    /// The frame is counted at the timeline's rate, and the position it names is the one
+    /// [`Timeline::frame_at`](crate::Timeline::frame_at) reads back and the one the export
+    /// places the clip at: all three go through the same conversion, so a host that snaps
+    /// to a frame gets the frame it asked for (#1827).
+    ///
+    /// Otherwise exactly [`MoveClip`](Self::MoveClip), including carrying a grouped
+    /// clip's linked members by the same delta.
+    MoveClipToFrame {
+        /// Clip to move.
+        clip: ClipId,
+        /// Output frame the clip should start on, counted from zero.
+        frame: u64,
+    },
     /// Set the source in/out points of the clip with id `clip`.
     ///
     /// A grouped clip carries its linked members: each one's window moves by the
@@ -480,15 +495,13 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
             }
         }
         Command::MoveClip { clip, offset } => {
-            let c = find_clip_mut(&mut next, *clip).ok_or(EditError::ClipNotFound { id: *clip })?;
-            let old_offset = c.offset;
-            let group = c.group;
-            c.offset = *offset;
-            // A grouped move carries the linked members by the same offset delta,
-            // in this one `apply` (so it is a single undo step).
-            if let Some(g) = group {
-                shift_group_offsets(&mut next, g, *clip, old_offset, *offset);
-            }
+            move_clip(&mut next, *clip, *offset)?;
+        }
+        Command::MoveClipToFrame { clip, frame } => {
+            // The frame's position from the timeline's own conversion, so this command and
+            // `Timeline::frame_at` agree by construction rather than by coincidence.
+            let offset = next.position_of_frame(*frame);
+            move_clip(&mut next, *clip, offset)?;
         }
         Command::TrimClip {
             clip,
@@ -885,6 +898,7 @@ fn locked_target(timeline: &Timeline, command: &Command) -> Option<TrackId> {
     match command {
         // Clip edits that carry to the rest of the group.
         Command::MoveClip { clip, .. }
+        | Command::MoveClipToFrame { clip, .. }
         | Command::TrimClip { clip, .. }
         | Command::RippleTrim { clip, .. }
         | Command::SplitClip { clip, .. }
@@ -1197,6 +1211,25 @@ fn ripple_trim_one(
 
 /// Shifts every member of `group` except `except` by the offset delta `new - old`
 /// (saturating), so the group keeps its relative timing when one member moves.
+/// Places `clip` at `offset`, carrying its group.
+///
+/// Shared by [`Command::MoveClip`] and [`Command::MoveClipToFrame`] so the group
+/// propagation has one implementation: a frame-addressed move that forgot to carry linked
+/// members would be a silently different command rather than the same one in another unit
+/// (#1827).
+fn move_clip(next: &mut Timeline, clip: ClipId, offset: Duration) -> Result<(), EditError> {
+    let c = find_clip_mut(next, clip).ok_or(EditError::ClipNotFound { id: clip })?;
+    let old_offset = c.offset;
+    let group = c.group;
+    c.offset = offset;
+    // A grouped move carries the linked members by the same offset delta, in this one
+    // `apply` (so it is a single undo step).
+    if let Some(g) = group {
+        shift_group_offsets(next, g, clip, old_offset, offset);
+    }
+    Ok(())
+}
+
 fn shift_group_offsets(
     timeline: &mut Timeline,
     group: GroupId,
@@ -1347,6 +1380,72 @@ mod tests {
             .video_track(clips)
             .build()
             .unwrap()
+    }
+
+    /// A timeline at a broadcast rate, where a frame is not a whole number of
+    /// milliseconds and the placement therefore has something to get wrong.
+    fn ntsc_timeline_with(n: usize) -> Timeline {
+        let clips: Vec<Clip> = (0..n).map(|i| Clip::new(format!("clip{i}.mp4"))).collect();
+        Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(Rational::new(30_000, 1001))
+            .video_track(clips)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn move_clip_to_frame_should_place_the_clip_at_that_frames_position() {
+        let t = ntsc_timeline_with(1);
+        let id = t.video_tracks()[0].clips[0].id;
+
+        for frame in [1u64, 2, 30, 1800, 107_892] {
+            let out = apply(&t, &Command::MoveClipToFrame { clip: id, frame }).unwrap();
+            let moved = &out.video_tracks()[0].clips[0];
+            assert_eq!(
+                moved.offset,
+                t.position_of_frame(frame),
+                "frame {frame} must land on the position the timeline names for it"
+            );
+            // And the position reads back as the frame that was asked for, which is the
+            // property a host snapping to a frame depends on.
+            assert_eq!(out.frame_at(moved.offset), frame);
+        }
+    }
+
+    /// The reason both arms call one helper: a frame-addressed move that forgot the group
+    /// would be a silently different command rather than the same one in another unit.
+    #[test]
+    fn move_clip_to_frame_should_carry_a_grouped_clip() {
+        let t = ntsc_timeline_with(2);
+        let a = t.video_tracks()[0].clips[0].id;
+        let b = t.video_tracks()[0].clips[1].id;
+        let grouped = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let b_before = grouped.video_tracks()[0].clips[1].offset;
+
+        let out = apply(&grouped, &Command::MoveClipToFrame { clip: a, frame: 30 }).unwrap();
+
+        let delta = out.video_tracks()[0].clips[0].offset;
+        assert_eq!(delta, grouped.position_of_frame(30));
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            b_before + delta,
+            "the linked member moves by the same delta, in one undo step"
+        );
+    }
+
+    #[test]
+    fn move_clip_to_frame_should_refuse_a_clip_that_does_not_exist() {
+        let t = ntsc_timeline_with(1);
+        let err = apply(
+            &t,
+            &Command::MoveClipToFrame {
+                clip: ClipId::from_raw(999),
+                frame: 30,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::ClipNotFound { .. }));
     }
 
     /// The id of the first video track.

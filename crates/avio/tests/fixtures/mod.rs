@@ -293,7 +293,22 @@ pub fn video_luma_per_frame(path: &std::path::Path) -> Option<(f64, Vec<f64>)> {
 /// finds where the clip's picture begins.
 pub fn first_visible_secs(path: &std::path::Path, floor: f64) -> Option<f64> {
     let (fps, luma) = video_luma_per_frame(path)?;
-    luma.iter().position(|&v| v > floor).map(|i| i as f64 / fps)
+    let index = luma.iter().position(|&v| v > floor)?;
+    Some(index as f64 / fps)
+}
+
+/// The onset of [`first_visible_secs`] as a frame index.
+///
+/// The seconds form divides by the rate, which is the right unit for a tolerance measured
+/// in time and the wrong one for a placement. A frame-addressed edit has to be checked
+/// against the index itself: it is the quantity the export is supposed to get exactly
+/// right (#1827), and comparing in seconds reintroduces the rounding the measurement is
+/// looking for.
+///
+/// `None` where this build cannot decode the file, or no frame exceeds `floor`.
+pub fn first_visible_frame(path: &std::path::Path, floor: f64) -> Option<usize> {
+    let (_fps, luma) = video_luma_per_frame(path)?;
+    luma.iter().position(|&v| v > floor)
 }
 
 /// The peak, RMS and decoded length in seconds of a file's audio, or `None`

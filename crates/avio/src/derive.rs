@@ -256,10 +256,18 @@ pub(crate) struct Placement {
 /// `None` when the rate is not a usable number, which leaves a caller free to fall back
 /// to the unquantised position rather than collapsing every offset to zero.
 pub(crate) fn offset_frames(seconds: f64, frame_rate: f64) -> Option<f64> {
-    if !frame_rate.is_finite() || frame_rate <= 0.0 || !seconds.is_finite() {
-        return None;
-    }
-    Some((seconds * frame_rate).round())
+    // Through `ff_format::time::frame_at_seconds`, which is the only implementation of the
+    // rule. `Timeline::frame_at` hands a host the answer from the same function, so the
+    // position a caller is told a frame is at and the position the export puts it at
+    // cannot come to differ (#1827).
+    //
+    // `f64` rather than the `u64` the primitive returns because `snap_to_frame` divides
+    // this back by the rate; the value is a whole number either way.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a frame index large enough to lose precision as f64 is 9.5 million years of material"
+    )]
+    ff_format::time::frame_at_seconds(seconds, frame_rate).map(|frame| frame as f64)
 }
 
 /// Hand-computed frame positions at `30000/1001`, used by the test below.
