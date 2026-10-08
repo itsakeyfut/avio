@@ -15,7 +15,9 @@ use ff_filter::{
     AnimatedValue, AnimationTrack, FilterGraph, FilterStep, MultiTrackAudioMixer,
     MultiTrackComposer, ProxySource, VideoLayer,
 };
-use ff_format::{AudioFrame, ChannelLayout, Rational, Timecode, TimecodeError, Timestamp};
+use ff_format::{
+    AudioFrame, Beats, ChannelLayout, Rational, Tempo, Timecode, TimecodeError, Timestamp,
+};
 
 use crate::clip::Clip;
 use crate::derive;
@@ -78,6 +80,20 @@ pub struct Timeline {
     /// as the real-time preview know a deliberate output aspect was requested.
     pub(crate) canvas_explicit: bool,
     pub(crate) frame_rate: Rational,
+    /// The tempo musical positions are counted against, when the project has one.
+    ///
+    /// `None` for an edit that is not music-driven, which is most of them. Optional rather
+    /// than defaulted: a beat-addressed command on a timeline with no tempo is refused,
+    /// because guessing one would place a clip somewhere the caller did not ask for.
+    ///
+    /// **The `Option` is also why the project format did not have to move for this field.**
+    /// `serde` treats a missing field for an `Option` as `None` on its own, so a document
+    /// written before the field existed deserialises unchanged; a required field would be
+    /// a missing-field error and need a migration step. No `serde(default)` attribute is
+    /// involved, and adding one would be inert: the fixture test
+    /// `a_document_written_before_the_tempo_existed_should_load_without_one` passes with
+    /// and without it, which is how this was established (#1914).
+    pub(crate) tempo: Option<Tempo>,
     /// `video_tracks[track_idx].clips[clip_idx]`; track 0 = bottom layer.
     pub(crate) video_tracks: Vec<Track>,
     pub(crate) audio_tracks: Vec<Track>,
@@ -213,6 +229,63 @@ impl Timeline {
     #[must_use]
     pub fn position_of_frame(&self, frame: u64) -> Duration {
         Timestamp::from_frame_number(frame, self.frame_rate).as_duration()
+    }
+
+    /// The tempo musical positions are counted against, if this project has one.
+    #[must_use]
+    pub const fn tempo(&self) -> Option<Tempo> {
+        self.tempo
+    }
+
+    /// Where `beat` falls on the timeline, or `None` when there is no tempo.
+    ///
+    /// # The picture is on the frame and the sound is on the beat
+    ///
+    /// Worth reading before measuring an export, because the split looks like a defect the
+    /// first time it is seen. A beat almost never lands on a frame boundary. At 174 BPM and
+    /// 29.97 fps:
+    ///
+    /// | beat | position | nearest frame | picture lands at | offset |
+    /// |---|---|---|---|---|
+    /// | 1 | 344.828 ms | 10 | 333.667 ms | -11.161 ms |
+    /// | 2 | 689.655 ms | 21 | 700.700 ms | +11.045 ms |
+    /// | 16 | 5517.241 ms | 165 | 5505.500 ms | -11.741 ms |
+    ///
+    /// A clip's **picture** is quantised to the output frame grid, so it can be up to half
+    /// a frame from the beat: **16.68 ms** at 29.97 fps. Its **sound** is placed within one
+    /// sample, **0.0208 ms** at 48 kHz. That is a factor of 800, and both halves are
+    /// correct: a frame cannot be shown between frames, and there is no reason to move the
+    /// audio off the beat to match the picture.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use avio::{Beats, Clip, Rational, Tempo, Timeline};
+    ///
+    /// let timeline = Timeline::builder()
+    ///     .canvas(640, 360)
+    ///     .frame_rate(Rational::new(30, 1))
+    ///     .tempo(Tempo::new(Rational::new(174, 1)).unwrap())
+    ///     .video_track(vec![Clip::new("a.mp4")])
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// let beat_one = timeline.position_of_beat(Beats::new(Rational::new(1, 1))).unwrap();
+    /// assert_eq!(beat_one, Duration::from_nanos(344_827_586));
+    /// ```
+    #[must_use]
+    pub fn position_of_beat(&self, beat: Beats) -> Option<Duration> {
+        self.tempo.map(|t| t.position_of(beat))
+    }
+
+    /// Which beat `position` falls on, rounded to the nearest `1/subdivision`.
+    ///
+    /// `None` without a tempo, and `None` where the count is not representable or
+    /// `subdivision` is zero; [`Tempo::beat_at`] documents why the grid is a parameter.
+    #[must_use]
+    pub fn beat_at(&self, position: Duration, subdivision: u32) -> Option<Beats> {
+        self.tempo.and_then(|t| t.beat_at(position, subdivision))
     }
 
     /// The timecode of `position`, written against this timeline's rate.
@@ -402,6 +475,7 @@ impl Timeline {
             canvas_height,
             canvas_explicit: _,
             frame_rate,
+            tempo: _,
             video_tracks,
             audio_tracks,
             next_clip_id: _,
@@ -1114,6 +1188,7 @@ pub struct TimelineBuilder {
     canvas_width: Option<u32>,
     canvas_height: Option<u32>,
     frame_rate: Option<Rational>,
+    tempo: Option<Tempo>,
     video_tracks: Vec<Track>,
     audio_tracks: Vec<Track>,
     /// See [`TimelineBuilder::lavfi_overlay`].
@@ -1135,6 +1210,7 @@ impl TimelineBuilder {
             canvas_width: None,
             canvas_height: None,
             frame_rate: None,
+            tempo: None,
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
             lavfi_overlay: None,
@@ -1148,6 +1224,18 @@ impl TimelineBuilder {
         Self {
             canvas_width: Some(width),
             canvas_height: Some(height),
+            ..self
+        }
+    }
+
+    /// Sets the tempo musical positions are counted against.
+    ///
+    /// Leaving it unset is normal: an edit that is not music-driven has no tempo, and a
+    /// beat-addressed command on such a timeline is refused rather than guessed.
+    #[must_use]
+    pub fn tempo(self, tempo: Tempo) -> Self {
+        Self {
+            tempo: Some(tempo),
             ..self
         }
     }
@@ -1393,6 +1481,7 @@ impl TimelineBuilder {
             canvas_height,
             canvas_explicit,
             frame_rate,
+            tempo: self.tempo,
             video_tracks,
             audio_tracks,
             next_clip_id,
@@ -1703,6 +1792,46 @@ fn source_serves_kind(info: &ff_format::MediaInfo, kind: TrackKind) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_of_beat_should_be_none_without_a_tempo() {
+        let timeline = Timeline::builder()
+            .canvas(640, 360)
+            .frame_rate(Rational::new(30, 1))
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+
+        assert!(timeline.tempo().is_none());
+        assert!(
+            timeline
+                .position_of_beat(Beats::new(Rational::new(1, 1)))
+                .is_none()
+        );
+        assert!(timeline.beat_at(Duration::from_secs(1), 4).is_none());
+    }
+
+    #[test]
+    fn position_of_beat_and_beat_at_should_round_trip_on_their_own_grid() {
+        let timeline = Timeline::builder()
+            .canvas(640, 360)
+            .frame_rate(Rational::new(30_000, 1001))
+            .tempo(Tempo::new(Rational::new(174, 1)).unwrap())
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+
+        for (num, den) in [(0, 1), (1, 1), (7, 2), (1, 3), (5, 16), (1740, 1)] {
+            let b = Beats::new(Rational::new(num, den));
+            let position = timeline.position_of_beat(b).unwrap();
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "the denominators here are the positive grid sizes above"
+            )]
+            let back = timeline.beat_at(position, den as u32).unwrap();
+            assert_eq!(back.count(), b.count(), "beat {num}/{den}");
+        }
+    }
 
     /// Every frame has to read back as itself, at a rate where a frame is not a whole
     /// number of nanoseconds.

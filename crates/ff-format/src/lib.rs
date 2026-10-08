@@ -77,7 +77,7 @@ pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
 pub use color::{AlphaMode, Color, ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 pub use container::{ContainerInfo, ContainerInfoBuilder};
-pub use error::{FormatError, FrameError, SubtitleError, TimecodeError};
+pub use error::{FormatError, FrameError, SubtitleError, TempoError, TimecodeError};
 pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};
 pub use hdr::{Hdr10Metadata, MasteringDisplay};
@@ -91,7 +91,7 @@ pub use stream::{
     VideoStreamInfo, VideoStreamInfoBuilder,
 };
 pub use text::{Anchor, TextSpec, TextStyle};
-pub use time::{Rational, Timecode, Timestamp};
+pub use time::{Beats, Rational, Tempo, Timecode, Timestamp};
 
 /// Prelude module for convenient imports.
 ///

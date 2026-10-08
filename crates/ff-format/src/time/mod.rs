@@ -40,12 +40,23 @@
 //!
 //! [`Timecode`] writes a frame position the way a delivery specification writes it, and
 //! carries the drop-frame rules.
+//!
+//! # Beats
+//!
+//! [`Beats`] is a musical position and [`Tempo`] converts between one and a wall-clock
+//! position. A beat count is a fraction rather than a tick index, so triplets and dotted
+//! values are exact; the bound that representation has is documented on `Beats`, and
+//! reaching it is refused rather than wrapped.
 
+mod beats;
 mod rational;
+mod tempo;
 mod timecode;
 mod timestamp;
 
+pub use beats::Beats;
 pub use rational::Rational;
+pub use tempo::Tempo;
 pub use timecode::Timecode;
 pub use timestamp::Timestamp;
 

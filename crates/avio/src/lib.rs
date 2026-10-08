@@ -57,13 +57,13 @@
 // in from ff-format anyway).
 pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
-    AlphaMode, Anchor, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder,
+    AlphaMode, Anchor, AudioCodec, AudioFrame, AudioStreamInfo, AudioStreamInfoBuilder, Beats,
     ChannelLayout, ChapterInfo, ChapterInfoBuilder, Color, ColorPrimaries, ColorRange, ColorSpace,
     ColorTransfer, ContainerInfo, ContainerInfoBuilder, ErrorSeverity, FormatError, FrameError,
     Hdr10Metadata, MasteringDisplay, MediaError, MediaInfo, MediaInfoBuilder, NetworkOptions,
     PixelFormat, Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo,
-    SubtitleStreamInfoBuilder, TextSpec, TextStyle, Timecode, TimecodeError, Timestamp, VideoCodec,
-    VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
+    SubtitleStreamInfoBuilder, Tempo, TempoError, TextSpec, TextStyle, Timecode, TimecodeError,
+    Timestamp, VideoCodec, VideoFrame, VideoStreamInfo, VideoStreamInfoBuilder,
 };
 
 // probe (media metadata)

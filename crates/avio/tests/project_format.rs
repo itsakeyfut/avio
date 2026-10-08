@@ -14,8 +14,8 @@ use avio::{
     Clip, ClipSource, PROJECT_FORMAT_VERSION, Project, ProjectError, Timeline, Track,
     XfadeTransition,
 };
-use ff_format::Rational;
 use ff_format::{Color, TextSpec};
+use ff_format::{Rational, Tempo};
 
 fn s(v: f64) -> Duration {
     Duration::from_secs_f64(v)
@@ -147,6 +147,59 @@ fn every_committed_fixture_should_load_to_its_expected_model() {
     assert_eq!(v2.canvas_width(), 640);
     assert_eq!(v2.frame_rate(), 30.into());
     assert_eq!(v2.video_tracks()[0].clips[0].out_point, Some(s(2.0)));
+}
+
+/// The other half: a project that *does* carry a tempo survives being written and read.
+///
+/// The fixture test below covers a document with no tempo, and `Rational`'s own equality
+/// cross-multiplies, so a tempo whose numerator and denominator were both mangled in the
+/// same ratio would still compare equal. This asserts the components, at a tempo whose
+/// denominator is not 1 so both carry information (#1914).
+#[test]
+fn a_tempo_should_survive_saving_and_loading() {
+    // 93.75 BPM is 375/4, which no decimal holds exactly.
+    let tempo = Tempo::new(Rational::new(375, 4)).expect("93.75 is a tempo");
+    let before = Timeline::builder()
+        .canvas(640, 360)
+        .frame_rate(Rational::new(30, 1))
+        .tempo(tempo)
+        .video_track(vec![Clip::new("input.mp4").trim(Duration::ZERO, s(2.0))])
+        .build()
+        .expect("a timeline whose clip is never opened still builds");
+
+    let text = Project::new(before).to_json_string().expect("serialises");
+    let after = Project::from_json_str(&text)
+        .expect("deserialises")
+        .into_timeline();
+
+    let bpm = after.tempo().expect("the tempo came back").bpm();
+    assert_eq!(
+        (bpm.num(), bpm.den()),
+        (375, 4),
+        "the ratio has to come back as itself, not as a decimal that approximates it"
+    );
+}
+
+/// A field added after a format version shipped reads back as absent rather than failing.
+///
+/// `tempo` was added to `Timeline` in #1914 without moving `PROJECT_FORMAT_VERSION`,
+/// because `serde(default)` means a version 2 document simply has no tempo. `v2.json`
+/// predates the field, so it is the fixture that proves it: without the attribute the
+/// deserialisation fails outright, which is the failure a user would meet on opening an
+/// older project.
+#[test]
+fn a_document_written_before_the_tempo_existed_should_load_without_one() {
+    let loaded = Project::from_json_str(&fixture("v2.json"))
+        .expect("a version 2 document still loads after a field was added")
+        .into_timeline();
+
+    assert!(
+        loaded.tempo().is_none(),
+        "a project that never had a tempo must not acquire one"
+    );
+    // And the rest of the model is unaffected, so the absent field is the only difference.
+    assert_eq!(loaded.frame_rate(), 30.into());
+    assert_eq!(loaded.canvas_width(), 640);
 }
 
 /// The promise this change exists for, end to end: a project authored at a broadcast rate
