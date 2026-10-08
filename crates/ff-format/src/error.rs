@@ -326,6 +326,20 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// Error type for a tempo.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum TempoError {
+    /// The tempo does not divide time into beats, so it cannot name one.
+    ///
+    /// A fraction that is not positive, which includes a zero denominator.
+    #[error("tempo {}/{} beats per minute cannot name a beat", bpm.num(), bpm.den())]
+    UnusableRate {
+        /// The rejected tempo.
+        bpm: crate::time::Rational,
+    },
+}
+
 /// Error type for reading and writing SMPTE timecode.
 #[derive(Debug, Error)]
 #[non_exhaustive]

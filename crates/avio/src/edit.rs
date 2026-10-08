@@ -15,7 +15,9 @@
 use std::time::Duration;
 
 use ff_filter::BlendMode;
-use ff_format::Rational;
+#[cfg(test)]
+use ff_format::Tempo;
+use ff_format::{Beats, Rational};
 use thiserror::Error;
 
 use crate::clip::{Clip, ClipSource};
@@ -78,6 +80,24 @@ pub enum Command {
         clip: ClipId,
         /// New timeline offset.
         offset: Duration,
+    },
+    /// Move a clip so it starts on a given beat.
+    ///
+    /// The beat is counted against the timeline's tempo, and the position it names is the
+    /// one [`Timeline::position_of_beat`](crate::Timeline::position_of_beat) reads back:
+    /// both go through the same conversion, so a host snapping to a grid gets the beat it
+    /// asked for (#1914).
+    ///
+    /// Refused with [`EditError::NoTempo`] when the timeline has no tempo, rather than
+    /// guessing one.
+    ///
+    /// Otherwise exactly [`MoveClip`](Self::MoveClip), including carrying a grouped clip's
+    /// linked members by the same delta.
+    MoveClipToBeat {
+        /// Clip to move.
+        clip: ClipId,
+        /// Beat the clip should start on, counted from the start of the timeline.
+        beat: Beats,
     },
     /// Move a clip so it starts on a given output frame.
     ///
@@ -424,6 +444,15 @@ pub enum EditError {
         /// Requested height.
         height: u32,
     },
+    /// The timeline has no tempo, so a beat cannot be resolved to a position.
+    ///
+    /// Raised by [`Command::MoveClipToBeat`]. Refused rather than defaulted: a tempo the
+    /// caller did not set would place the clip somewhere it did not ask for, and silently
+    /// (#1914). Set one with
+    /// [`TimelineBuilder::tempo`](crate::TimelineBuilder::tempo).
+    #[error("the timeline has no tempo, so a beat names no position")]
+    NoTempo,
+
     /// Frame rate must be positive.
     ///
     /// A frame rate divides the timeline into frames, and a degenerate ratio has no
@@ -496,6 +525,13 @@ pub fn apply(timeline: &Timeline, command: &Command) -> Result<Timeline, EditErr
         }
         Command::MoveClip { clip, offset } => {
             move_clip(&mut next, *clip, *offset)?;
+        }
+        Command::MoveClipToBeat { clip, beat } => {
+            // The beat's position from the timeline's own conversion, so this command and
+            // `Timeline::position_of_beat` agree by construction rather than by
+            // coincidence.
+            let offset = next.position_of_beat(*beat).ok_or(EditError::NoTempo)?;
+            move_clip(&mut next, *clip, offset)?;
         }
         Command::MoveClipToFrame { clip, frame } => {
             // The frame's position from the timeline's own conversion, so this command and
@@ -898,6 +934,7 @@ fn locked_target(timeline: &Timeline, command: &Command) -> Option<TrackId> {
     match command {
         // Clip edits that carry to the rest of the group.
         Command::MoveClip { clip, .. }
+        | Command::MoveClipToBeat { clip, .. }
         | Command::MoveClipToFrame { clip, .. }
         | Command::TrimClip { clip, .. }
         | Command::RippleTrim { clip, .. }
@@ -1392,6 +1429,103 @@ mod tests {
             .video_track(clips)
             .build()
             .unwrap()
+    }
+
+    /// A timeline with a tempo, at a rate where a beat is not a whole number of
+    /// milliseconds so the placement has something to get wrong.
+    fn musical_timeline_with(n: usize) -> Timeline {
+        let clips: Vec<Clip> = (0..n).map(|i| Clip::new(format!("clip{i}.mp4"))).collect();
+        Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(Rational::new(30_000, 1001))
+            .tempo(Tempo::new(Rational::new(174, 1)).unwrap())
+            .video_track(clips)
+            .build()
+            .unwrap()
+    }
+
+    fn beat(num: i32, den: i32) -> Beats {
+        Beats::new(Rational::new(num, den))
+    }
+
+    #[test]
+    fn move_clip_to_beat_should_place_the_clip_at_that_beats_position() {
+        let t = musical_timeline_with(1);
+        let id = t.video_tracks()[0].clips[0].id;
+
+        // Whole beats, a half, a triplet and a long way in.
+        for b in [beat(1, 1), beat(7, 2), beat(1, 3), beat(1740, 1)] {
+            let out = apply(&t, &Command::MoveClipToBeat { clip: id, beat: b }).unwrap();
+            let moved = &out.video_tracks()[0].clips[0];
+            assert_eq!(
+                moved.offset,
+                t.position_of_beat(b).unwrap(),
+                "beat {}/{} must land on the position the timeline names for it",
+                b.count().num(),
+                b.count().den()
+            );
+        }
+    }
+
+    /// The reason this shares `move_clip`: a beat-addressed move that forgot the group
+    /// would be a silently different command rather than the same one in another unit.
+    #[test]
+    fn move_clip_to_beat_should_carry_a_grouped_clip() {
+        let t = musical_timeline_with(2);
+        let a = t.video_tracks()[0].clips[0].id;
+        let b = t.video_tracks()[0].clips[1].id;
+        let grouped = apply(&t, &Command::GroupClips { clips: vec![a, b] }).unwrap();
+        let b_before = grouped.video_tracks()[0].clips[1].offset;
+
+        let out = apply(
+            &grouped,
+            &Command::MoveClipToBeat {
+                clip: a,
+                beat: beat(4, 1),
+            },
+        )
+        .unwrap();
+
+        let delta = out.video_tracks()[0].clips[0].offset;
+        assert_eq!(delta, grouped.position_of_beat(beat(4, 1)).unwrap());
+        assert_eq!(
+            out.video_tracks()[0].clips[1].offset,
+            b_before + delta,
+            "the linked member moves by the same delta, in one undo step"
+        );
+    }
+
+    /// Refused rather than defaulted: a tempo the caller did not set would place the clip
+    /// somewhere it did not ask for, and silently.
+    #[test]
+    fn move_clip_to_beat_should_refuse_a_timeline_with_no_tempo() {
+        let t = timeline_with(1);
+        assert!(t.tempo().is_none(), "the plain helper sets no tempo");
+        let id = t.video_tracks()[0].clips[0].id;
+
+        let err = apply(
+            &t,
+            &Command::MoveClipToBeat {
+                clip: id,
+                beat: beat(1, 1),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, EditError::NoTempo);
+    }
+
+    #[test]
+    fn move_clip_to_beat_should_refuse_a_clip_that_does_not_exist() {
+        let t = musical_timeline_with(1);
+        let err = apply(
+            &t,
+            &Command::MoveClipToBeat {
+                clip: ClipId::from_raw(999),
+                beat: beat(1, 1),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EditError::ClipNotFound { .. }));
     }
 
     #[test]
