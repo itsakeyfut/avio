@@ -99,7 +99,7 @@ All crates share a single workspace version and are released together in lockste
 ### Windows
 
 ```powershell
-vcpkg install ffmpeg[core,drawtext]:x64-windows
+vcpkg install "ffmpeg[avcodec,avformat,avfilter,swscale,swresample,drawtext]:x64-windows"
 $env:VCPKG_ROOT = "C:\vcpkg"
 ```
 
