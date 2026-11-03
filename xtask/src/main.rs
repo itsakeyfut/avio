@@ -31,6 +31,9 @@ const USAGE: &str = "\
 cargo xtask <command> [args]
 
 Development tasks (run these yourself):
+  setup
+        Check that all prerequisites for building avio are satisfied, and print
+        install instructions for anything that is missing. Run this after cloning.
   gate -p <crate> [-p <crate>...] [--timeout <secs>]
         The whole local gate in one exit code: fmt, clippy, check, doc, msrv, test.
         --no-tests drops the test step.
@@ -66,6 +69,7 @@ fn main() -> ExitCode {
     let rest = &args[1..];
 
     let code = match command.as_str() {
+        "setup" => dev::setup::run(rest),
         "gate" => dev::gate::run(rest),
         "commits" => dev::commits::run(rest),
         "adr-check" => dev::adr_check::run(rest),

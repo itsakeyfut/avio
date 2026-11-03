@@ -8,4 +8,5 @@ pub mod adr_check;
 pub mod commits;
 pub mod dep_graph;
 pub mod gate;
+pub mod setup;
 pub mod test;
