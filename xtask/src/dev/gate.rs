@@ -149,7 +149,25 @@ fn cargo_with_env(
     env: &[(&str, &str)],
     log: &mut String,
 ) -> Step {
-    record(name, "cargo", args, env, None, log)
+    record(name, "cargo", &inject_jobs(args), env, None, log)
+}
+
+/// Inserts `--jobs N` after the subcommand name in `args`.
+///
+/// `cargo fmt` wraps rustfmt and does not compile, so `--jobs` does not apply
+/// to it. Every other gate step (clippy, check, doc) does compile and benefits
+/// from the cap.
+fn inject_jobs(args: &[String]) -> Vec<String> {
+    let Some(subcommand) = args.first() else {
+        return args.to_vec();
+    };
+    if subcommand == "fmt" {
+        return args.to_vec();
+    }
+    let n = super::jobs::cap().to_string();
+    let mut full = vec![subcommand.clone(), "--jobs".to_string(), n];
+    full.extend_from_slice(&args[1..]);
+    full
 }
 
 /// The MSRV check, skipped rather than failed when the pinned toolchain is absent.
@@ -175,7 +193,10 @@ fn msrv(packages: &[String], log: &mut String) -> Step {
     // because the tests reach feature-gated API (RK-029). The current toolchain
     // covers `--all-targets --all-features` in the `check` step above; this step
     // answers one question, whether the pinned toolchain can build the crate.
-    let mut args = owned(&[&format!("+{MSRV}"), "check"]);
+    // The toolchain specifier (+1.93.0) must come first, then the subcommand,
+    // then --jobs (which is a subcommand-level flag in this cargo version).
+    let n = super::jobs::cap().to_string();
+    let mut args = owned(&[&format!("+{MSRV}"), "check", "--jobs", &n]);
     args.extend(packages.iter().cloned());
     record("msrv", "cargo", &args, &[], None, log)
 }
