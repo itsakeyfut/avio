@@ -53,13 +53,12 @@ fn total_ram_gb() -> usize {
 #[cfg(target_os = "linux")]
 fn try_total_ram_gb() -> Option<usize> {
     let content = std::fs::read_to_string("/proc/meminfo").ok()?;
-    for line in content.lines() {
-        // Format: "MemTotal:       16645464 kB"
+    // Format: "MemTotal:       16645464 kB"
+    content.lines().find_map(|line| {
         let rest = line.strip_prefix("MemTotal:")?;
         let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-        return Some((kb / (1024 * 1024)) as usize);
-    }
-    None
+        Some((kb / (1024 * 1024)) as usize)
+    })
 }
 
 #[cfg(target_os = "macos")]
