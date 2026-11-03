@@ -267,7 +267,8 @@ fn run_one(
     rows: &mut Vec<Row>,
     log: &mut String,
 ) {
-    let mut args = vec!["test".to_string()];
+    let n = crate::dev::jobs::cap().to_string();
+    let mut args = vec!["test".to_string(), "--jobs".to_string(), n];
     args.extend(cargo_args.iter().cloned());
     let captured = proc::capture("cargo", &args, Some(timeout));
 
