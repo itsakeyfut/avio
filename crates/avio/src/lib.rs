@@ -132,6 +132,7 @@ mod ids;
 mod marker;
 #[cfg(feature = "serde")]
 mod project;
+mod source_use;
 mod timeline;
 mod track;
 mod transition;
@@ -158,6 +159,7 @@ pub use ids::{ClipId, EffectId, GroupId, MarkerId, TrackId, TrackKind};
 pub use marker::Marker;
 #[cfg(feature = "serde")]
 pub use project::{PROJECT_FORMAT_VERSION, Project, ProjectError};
+pub use source_use::{SourceRole, SourceUse};
 pub use timeline::{Timeline, TimelineBuilder};
 pub use track::{AudioProperty, Track, TrackAutomation, VideoProperty};
 pub use validate::TimelineIssue;
