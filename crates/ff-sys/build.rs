@@ -8,10 +8,12 @@
 //!
 //! Requires FFmpeg installed via VCPKG:
 //! ```bash
-//! vcpkg install ffmpeg[core,drawtext]:x64-windows
+//! vcpkg install "ffmpeg[avcodec,avformat,avfilter,swscale,swresample,drawtext]:x64-windows"
 //! ```
 //!
 //! The `drawtext` feature adds freetype; without it text clips cannot render.
+//! The remaining features (`avcodec`, `avformat`, `avfilter`, `swscale`, `swresample`)
+//! are individual libraries that were a single `core` feature in older vcpkg ports.
 //!
 //! Environment variables:
 //! - `VCPKG_ROOT`: Path to VCPKG installation (default: `C:\vcpkg`)
