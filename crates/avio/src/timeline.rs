@@ -6,7 +6,7 @@
 //! [`Timeline::render()`].
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ff_decode::VideoDecoder;
@@ -24,6 +24,7 @@ use crate::derive;
 use crate::error::TimelineError;
 use crate::ids::{ClipId, EffectId, TrackId, TrackKind};
 use crate::marker::Marker;
+use crate::source_use::{SourceRole, SourceUse};
 use crate::track::{AudioProperty, Track, VideoProperty};
 use ff_pipeline::EncoderConfig;
 use ff_pipeline::Progress;
@@ -329,6 +330,69 @@ impl Timeline {
             return Some(TrackKind::Audio);
         }
         None
+    }
+
+    /// Returns every clip that references `path` as its active source or proxy.
+    ///
+    /// Includes clips on disabled or muted tracks: a clip on an inactive track is still
+    /// a reference — relinking it without knowing it exists is the damage this API
+    /// exists to prevent.
+    ///
+    /// The walk is in track order (video tracks, then audio tracks) and within each
+    /// track in clip order. Performs no I/O; `path` need not exist on disk.
+    pub fn find_source_uses(&self, path: &Path) -> Vec<SourceUse> {
+        let mut uses = Vec::new();
+        for (tracks, kind) in [
+            (self.video_tracks.as_slice(), TrackKind::Video),
+            (self.audio_tracks.as_slice(), TrackKind::Audio),
+        ] {
+            for track in tracks {
+                for clip in &track.clips {
+                    if clip.source_path() == Some(path) {
+                        uses.push(SourceUse {
+                            clip: clip.id,
+                            track: track.id,
+                            track_kind: kind,
+                            role: SourceRole::ActiveSource,
+                        });
+                    }
+                    if clip.proxy.as_deref() == Some(path) {
+                        uses.push(SourceUse {
+                            clip: clip.id,
+                            track: track.id,
+                            track_kind: kind,
+                            role: SourceRole::Proxy,
+                        });
+                    }
+                }
+            }
+        }
+        uses
+    }
+
+    /// Returns every distinct file-backed path this timeline references — active
+    /// sources and proxies — each exactly once, in walk order (video tracks first,
+    /// then audio; clips in track order).
+    ///
+    /// Performs no I/O; non-existent paths are included.
+    pub fn distinct_sources(&self) -> Vec<PathBuf> {
+        let mut seen = std::collections::HashSet::new();
+        let mut order = Vec::new();
+        for (tracks, _kind) in [
+            (self.video_tracks.as_slice(), TrackKind::Video),
+            (self.audio_tracks.as_slice(), TrackKind::Audio),
+        ] {
+            for track in tracks {
+                for clip in &track.clips {
+                    for path in clip.source_path().into_iter().chain(clip.proxy.as_deref()) {
+                        if seen.insert(path.to_path_buf()) {
+                            order.push(path.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+        order
     }
 
     /// Returns the timeline's editorial markers.
@@ -2835,6 +2899,104 @@ mod tests {
         assert!(
             back.video_tracks[0].automation.opacity.is_some(),
             "track automation must survive a serde round-trip"
+        );
+    }
+
+    // --- find_source_uses / distinct_sources (#1902) ---
+
+    #[test]
+    fn find_source_uses_should_return_empty_for_unused_path() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+        assert!(t.find_source_uses(std::path::Path::new("b.mp4")).is_empty());
+    }
+
+    #[test]
+    fn find_source_uses_should_return_active_source() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            .video_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+        let uses = t.find_source_uses(std::path::Path::new("a.mp4"));
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].track_kind, TrackKind::Video);
+        assert_eq!(uses[0].role, crate::source_use::SourceRole::ActiveSource);
+    }
+
+    #[test]
+    fn find_source_uses_should_return_proxy() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            .video_track(vec![Clip::new("a.mp4").proxy("a_proxy.mp4")])
+            .build()
+            .unwrap();
+        let uses = t.find_source_uses(std::path::Path::new("a_proxy.mp4"));
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].role, crate::source_use::SourceRole::Proxy);
+    }
+
+    #[test]
+    fn find_source_uses_should_include_clips_on_disabled_tracks() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            .video_track_with(Track::new(vec![Clip::new("a.mp4")]).enabled(false))
+            .build()
+            .unwrap();
+        let uses = t.find_source_uses(std::path::Path::new("a.mp4"));
+        assert_eq!(
+            uses.len(),
+            1,
+            "clip on a disabled track is still a reference"
+        );
+    }
+
+    #[test]
+    fn find_source_uses_performs_no_io() {
+        // A path that does not exist on disk — the method must not panic or error.
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            .video_track(vec![Clip::new("nonexistent-9999.mp4")])
+            .build()
+            .unwrap();
+        let uses = t.find_source_uses(std::path::Path::new("nonexistent-9999.mp4"));
+        assert_eq!(uses.len(), 1, "non-existent path is still a reference");
+    }
+
+    #[test]
+    fn distinct_sources_should_return_each_path_exactly_once() {
+        let t = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.into())
+            // Two clips on the same source, plus a proxy on the second.
+            .video_track(vec![
+                Clip::new("a.mp4"),
+                Clip::new("a.mp4").proxy("a_proxy.mp4"),
+            ])
+            .audio_track(vec![Clip::new("a.mp4")])
+            .build()
+            .unwrap();
+        let sources = t.distinct_sources();
+        assert_eq!(
+            sources.len(),
+            2,
+            "a.mp4 and a_proxy.mp4, each once: {sources:?}"
+        );
+        assert!(
+            sources.contains(&std::path::PathBuf::from("a.mp4")),
+            "active source must appear"
+        );
+        assert!(
+            sources.contains(&std::path::PathBuf::from("a_proxy.mp4")),
+            "proxy must appear"
         );
     }
 }
