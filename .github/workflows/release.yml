@@ -117,7 +117,7 @@ jobs:
           toolchain: "1.93.0"
 
       - name: Publish changed crates
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
